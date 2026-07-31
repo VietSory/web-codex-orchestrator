@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+.runs/
+.worktrees/
+.agent-output/
+*.log
+.env
+.env.*
+!.env.example

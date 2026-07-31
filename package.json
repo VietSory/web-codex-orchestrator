@@ -1,0 +1,24 @@
+{
+  "name": "web-codex-orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Validate and execute structured task bundles in isolated coding workflows.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "wco": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "validate": "tsx src/cli/index.ts validate",
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "tsx --test tests/bundle-validator.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "tsx": "latest",
+    "typescript": "latest"
+  }
+}

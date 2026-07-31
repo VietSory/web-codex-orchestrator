@@ -1,0 +1,22 @@
+{
+  "criteria": [
+    {
+      "id": "AC-001",
+      "description": "The health endpoint returns a successful status and stable response body.",
+      "required": true,
+      "verification": {
+        "type": "automated-test",
+        "reference": "TC-001"
+      }
+    },
+    {
+      "id": "AC-002",
+      "description": "The project still typechecks.",
+      "required": true,
+      "verification": {
+        "type": "command",
+        "reference": "typecheck"
+      }
+    }
+  ]
+}

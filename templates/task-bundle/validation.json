@@ -1,0 +1,22 @@
+{
+  "commands": [
+    {
+      "id": "typecheck",
+      "command": "npm run typecheck",
+      "required": true,
+      "timeout_seconds": 180
+    },
+    {
+      "id": "test",
+      "command": "npm test",
+      "required": true,
+      "timeout_seconds": 600
+    },
+    {
+      "id": "build",
+      "command": "npm run build",
+      "required": true,
+      "timeout_seconds": 300
+    }
+  ]
+}

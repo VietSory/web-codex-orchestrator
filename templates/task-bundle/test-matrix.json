@@ -1,0 +1,17 @@
+{
+  "cases": [
+    {
+      "id": "TC-001",
+      "category": "happy-path",
+      "given": [
+        "The application is running"
+      ],
+      "when": "A client requests the health endpoint",
+      "then": [
+        "The response has a success status",
+        "The response body follows repository conventions",
+        "No secret or internal configuration is exposed"
+      ]
+    }
+  ]
+}
