@@ -1,16 +1,45 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "task_id": "TASK-2026-001",
   "title": "Add a health endpoint",
   "repository": {
     "base_branch": "main",
     "base_commit": "HEAD"
   },
+  "payload": {
+    "type": "none",
+    "review_before_execution": true
+  },
+  "delivery": {
+    "mode": "github_pull_request",
+    "remote": "origin",
+    "base_branch": "main",
+    "branch_name": "codex/207-scala-rule-pack",
+    "draft": true,
+    "push_after": [
+      "VERIFIER_PASS",
+      "SOL_APPROVE"
+    ],
+    "auto_merge": false
+  },
+    "git_policy": {
+    "allowed_remote": "origin",
+    "allowed_branch_prefix": "codex/",
+    "deny_direct_push_branches": [
+      "main",
+      "master",
+      "develop",
+      "production"
+    ],
+    "allow_force_push": false,
+    "allow_remote_branch_delete": false,
+    "allow_merge": false
+  },
   "limits": {
     "max_internal_iterations": 8,
-    "max_review_rounds": 2,
-    "max_changed_files": 10,
-    "max_diff_lines": 800
+    "max_review_rounds": 3,
+    "max_changed_files": 50,
+    "max_diff_lines": 8000
   },
   "allowed_paths": [
     "src/**",

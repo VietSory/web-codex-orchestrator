@@ -1,5 +1,5 @@
 export interface BundleManifest {
-  schema_version: "1.0";
+  schema_version: "1.0" | "1.1";
   task_id: string;
   title: string;
   repository: {
@@ -14,6 +14,13 @@ export interface BundleManifest {
   };
   allowed_paths: string[];
   forbidden_paths: string[];
+  payload?: BundlePayload;
+}
+
+export interface BundlePayload {
+  type: "none" | "apply-script" | "patch" | "files";
+  entrypoint?: string;
+  review_before_execution: true;
 }
 
 export interface AcceptanceCriterion {
