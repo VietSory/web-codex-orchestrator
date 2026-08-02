@@ -15,6 +15,7 @@ export type GitErrorCode =
   | "BASE_COMMIT_NOT_ANCESTOR"
   | "BRANCH_POLICY_VIOLATION"
   | "BRANCH_ALREADY_EXISTS"
+  | "GIT_CHECKOUT_FILTER_UNSAFE"
   | "WORKTREE_PATH_UNSAFE"
   | "WORKTREE_ALREADY_EXISTS"
   | "WORKTREE_CREATE_FAILED"
@@ -22,10 +23,20 @@ export type GitErrorCode =
   | "OPERATIONAL_ERROR";
 
 export class GitBoundaryError extends Error {
-  constructor(readonly code: GitErrorCode, message: string, readonly result?: GitCommandResult) {
+  constructor(
+    readonly code: GitErrorCode,
+    message: string,
+    readonly result?: GitCommandResult,
+    readonly cleanupErrors: CleanupError[] = [],
+  ) {
     super(message);
     this.name = "GitBoundaryError";
   }
+}
+
+export interface CleanupError {
+  action: string;
+  message: string;
 }
 
 export interface GitCommandResult {
@@ -66,6 +77,7 @@ export interface CreatedWorktree {
   branch_name: string;
   base_commit: string;
   created: boolean;
+  branch_tip?: string;
 }
 
 export function isGitBoundaryError(error: unknown): error is GitBoundaryError {

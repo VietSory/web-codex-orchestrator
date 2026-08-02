@@ -1,11 +1,21 @@
 import { spawn } from "node:child_process";
+import path from "node:path";
 import type { GitCommandResult } from "./contracts.js";
 
 export class GitRunner {
-  constructor(private readonly env: NodeJS.ProcessEnv = process.env) {}
+  constructor(
+    private readonly env: NodeJS.ProcessEnv = process.env,
+    readonly runtimeDirectory?: string,
+  ) {}
 
   private safeEnvironment(): NodeJS.ProcessEnv {
-    const result: NodeJS.ProcessEnv = { GIT_TERMINAL_PROMPT: "0" };
+    const result: NodeJS.ProcessEnv = {
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_CONFIG_NOSYSTEM: "1",
+    };
+    if (this.runtimeDirectory !== undefined) {
+      result.GIT_CONFIG_GLOBAL = path.join(this.runtimeDirectory, "empty-config");
+    }
     for (const key of ["PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL"]) {
       const value = this.env[key];
       if (value !== undefined) result[key] = value;

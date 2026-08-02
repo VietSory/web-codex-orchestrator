@@ -142,7 +142,7 @@ function parsePhase3Arguments(args: string[], mode: "prepare" | "scan" | "watch"
 }
 
 function phase3ExitCode(code: string): number {
-  const policyCodes = new Set(["EXECUTION_CONTRACT_REQUIRED", "DELIVERY_CONTRACT_INVALID", "GIT_POLICY_INVALID", "BRANCH_POLICY_VIOLATION", "BASE_COMMIT_INVALID", "FETCH_DISABLED", "REPOSITORY_NOT_REGISTERED", "REMOTE_NOT_ALLOWED", "WORKTREE_PATH_UNSAFE"]);
+  const policyCodes = new Set(["EXECUTION_CONTRACT_REQUIRED", "DELIVERY_CONTRACT_INVALID", "GIT_POLICY_INVALID", "BRANCH_POLICY_VIOLATION", "BASE_COMMIT_INVALID", "FETCH_DISABLED", "REPOSITORY_NOT_REGISTERED", "REMOTE_NOT_ALLOWED", "WORKTREE_PATH_UNSAFE", "GIT_CHECKOUT_FILTER_UNSAFE"]);
   return policyCodes.has(code) ? 1 : 3;
 }
 
@@ -171,7 +171,17 @@ async function runScan(args: string[]): Promise<void> {
   if (!parsed || !parsed.inboxDirectory) { printUsage(); process.exitCode = 2; return; }
   try {
     const summary = await scanInbox({ inboxDirectory: parsed.inboxDirectory, stateDirectory: parsed.stateDirectory, configPath: parsed.configPath });
-    process.stdout.write(`${JSON.stringify(summary)}\n`);
+    if (parsed.json) {
+      process.stdout.write(`${JSON.stringify(summary)}\n`);
+    } else {
+      console.log(`Discovered: ${summary.discovered}`);
+      console.log(`Ready for Codex: ${summary.ready_for_codex}`);
+      console.log(`Rejected: ${summary.rejected}`);
+      console.log(`Blocked: ${summary.blocked}`);
+      console.log(`Failed: ${summary.failed}`);
+      console.log(`Skipped: ${summary.skipped}`);
+      console.log(`Unstable: ${summary.unstable}`);
+    }
     if (summary.failed > 0) process.exitCode = 3;
     else if (summary.rejected > 0 || summary.blocked > 0) process.exitCode = 1;
   } catch (error) {

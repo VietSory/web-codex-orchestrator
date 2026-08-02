@@ -5,13 +5,14 @@ import type { BundleManifest } from "../bundle/contracts.js";
 import { loadTrustedConfig } from "../config/config-loader.js";
 import { validateExecutionContract } from "../execution/execution-validator.js";
 import type { ExecutionIssue } from "../execution/contracts.js";
-import { GitBoundaryError, isGitBoundaryError, type CreatedWorktree } from "../git/contracts.js";
+import { GitBoundaryError, isGitBoundaryError, type CleanupError, type CreatedWorktree } from "../git/contracts.js";
 import { prepareBase } from "../git/base-commit.js";
 import { validateBranchPolicy } from "../git/branch-policy.js";
 import { GitRunner } from "../git/git-runner.js";
 import { resolveRepository } from "../git/repository-resolver.js";
 import { verifyRemote } from "../git/remote-verifier.js";
 import { createIsolatedWorktree } from "../git/worktree-manager.js";
+import { ensureGitRuntime } from "../git/git-runtime.js";
 import { intakeArchive, type IntakeOptions } from "../intake/intake-service.js";
 import type { AcceptedIntakeReceipt, IntakeReceipt } from "../intake/contracts.js";
 import { appendRunEvent } from "./event-journal.js";
@@ -37,6 +38,7 @@ export type PreparationErrorCode =
   | "BASE_COMMIT_NOT_ANCESTOR"
   | "BRANCH_POLICY_VIOLATION"
   | "BRANCH_ALREADY_EXISTS"
+  | "GIT_CHECKOUT_FILTER_UNSAFE"
   | "WORKTREE_PATH_UNSAFE"
   | "WORKTREE_ALREADY_EXISTS"
   | "WORKTREE_CREATE_FAILED"
@@ -91,11 +93,11 @@ function firstIssue(issues: ExecutionIssue[]): PreparationError {
   return new PreparationError(issue?.code ?? "DELIVERY_CONTRACT_INVALID", issue?.message ?? "Invalid execution contract.");
 }
 
-function errorDetails(error: unknown): { code: PreparationErrorCode; message: string } {
-  if (error instanceof PreparationError) return { code: error.code, message: error.message };
-  if (isGitBoundaryError(error)) return { code: error.code, message: error.message };
-  if (error && typeof error === "object" && "code" in error && typeof error.code === "string") return { code: error.code, message: error instanceof Error ? error.message : String(error) };
-  return { code: "OPERATIONAL_ERROR", message: error instanceof Error ? error.message : String(error) };
+function errorDetails(error: unknown): { code: PreparationErrorCode; message: string; cleanupErrors: CleanupError[] } {
+  if (error instanceof PreparationError) return { code: error.code, message: error.message, cleanupErrors: [] };
+  if (isGitBoundaryError(error)) return { code: error.code, message: error.message, cleanupErrors: [...error.cleanupErrors] };
+  if (error && typeof error === "object" && "code" in error && typeof error.code === "string") return { code: error.code, message: error instanceof Error ? error.message : String(error), cleanupErrors: [] };
+  return { code: "OPERATIONAL_ERROR", message: error instanceof Error ? error.message : String(error), cleanupErrors: [] };
 }
 
 function isBlockedCode(code: PreparationErrorCode): boolean {
@@ -122,6 +124,10 @@ async function acceptedBundlePath(stateDirectory: string, receipt: AcceptedIntak
   return canonical;
 }
 
+function protectedGitArguments(stateDirectory: string): string[] {
+  return ["-c", `core.hooksPath=${path.join(path.resolve(stateDirectory), "git-runtime", "empty-hooks")}`, "-c", "core.fsmonitor=false"];
+}
+
 async function verifyExistingRun(receipt: RunReceipt, stateDirectory: string, runner: GitRunner): Promise<void> {
   if (receipt.status !== "READY_FOR_CODEX" || receipt.state !== "READY_FOR_CODEX") throw new PreparationError("RUN_RECEIPT_INCONSISTENT", "Existing run receipt is not complete.", receipt);
   const worktreesRoot = path.resolve(stateDirectory, "worktrees");
@@ -130,17 +136,40 @@ async function verifyExistingRun(receipt: RunReceipt, stateDirectory: string, ru
   if (!relative || relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) throw new PreparationError("RUN_RECEIPT_INCONSISTENT", "Existing worktree path escapes state-dir/worktrees.", receipt);
   const info = await lstat(candidate).catch(() => undefined);
   if (!info || info.isSymbolicLink() || !info.isDirectory()) throw new PreparationError("RUN_RECEIPT_INCONSISTENT", "Existing run worktree is missing or unsafe.", receipt);
-  const head = await runner.run(["rev-parse", "HEAD"], candidate);
-  const branch = await runner.run(["branch", "--show-current"], candidate);
-  const status = await runner.run(["status", "--porcelain"], candidate);
+  const safeArgs = protectedGitArguments(stateDirectory);
+  const head = await runner.run([...safeArgs, "rev-parse", "HEAD"], candidate);
+  const branch = await runner.run([...safeArgs, "branch", "--show-current"], candidate);
+  const status = await runner.run([...safeArgs, "status", "--porcelain"], candidate);
   if (head.exitCode !== 0 || head.stdout.trim() !== receipt.base_commit || branch.exitCode !== 0 || branch.stdout.trim() !== receipt.branch_name || status.exitCode !== 0 || status.stdout.trim() !== "") throw new PreparationError("RUN_RECEIPT_INCONSISTENT", "Existing run receipt does not match the actual worktree.", receipt);
 }
 
-async function removeCreatedWorktree(worktree: CreatedWorktree | undefined, repositoryPath: string, runner: GitRunner): Promise<void> {
-  if (!worktree?.created) return;
-  await runner.run(["worktree", "remove", "--force", worktree.path], repositoryPath);
-  await rm(worktree.path, { recursive: true, force: true }).catch(() => undefined);
-  await runner.run(["branch", "-D", worktree.branch_name], repositoryPath);
+async function removeCreatedWorktree(worktree: CreatedWorktree | undefined, repositoryPath: string, runner: GitRunner): Promise<CleanupError[]> {
+  if (!worktree?.created) return [];
+  const errors: CleanupError[] = [];
+  try {
+    const removed = await runner.run(["worktree", "remove", "--force", worktree.path], repositoryPath);
+    if (removed.exitCode !== 0) errors.push({ action: "worktree-remove", message: "Git worktree removal failed." });
+  } catch {
+    errors.push({ action: "worktree-remove", message: "Git worktree removal failed." });
+  }
+  try {
+    const info = await lstat(worktree.path);
+    if (!info.isSymbolicLink() && info.isDirectory()) await rm(worktree.path, { recursive: true, force: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") errors.push({ action: "worktree-path-remove", message: "Worktree path cleanup failed." });
+  }
+  try {
+    const current = await runner.run(["rev-parse", "--verify", `refs/heads/${worktree.branch_name}`], repositoryPath);
+    if (current.exitCode !== 0 || (worktree.branch_tip !== undefined && current.stdout.trim() !== worktree.branch_tip)) {
+      errors.push({ action: "branch-remove", message: "Created branch changed before cleanup; it was preserved." });
+    } else {
+      const removedBranch = await runner.run(["branch", "-D", worktree.branch_name], repositoryPath);
+      if (removedBranch.exitCode !== 0) errors.push({ action: "branch-remove", message: "Created branch cleanup failed." });
+    }
+  } catch {
+    errors.push({ action: "branch-remove", message: "Created branch cleanup failed." });
+  }
+  return errors;
 }
 
 function newReceipt(
@@ -175,8 +204,9 @@ function newReceipt(
 export async function prepareTask(options: PreparationOptions): Promise<PreparationResult> {
   const stateDirectory = path.resolve(options.stateDirectory);
   const now = options.now ?? (() => new Date());
-  const runner = options.runner ?? new GitRunner();
   await ensurePhaseState(stateDirectory);
+  const gitRuntime = await ensureGitRuntime(stateDirectory);
+  const runner = options.runner ?? new GitRunner(process.env, gitRuntime.root);
   let intake: IntakeReceipt;
   try {
     intake = await intakeArchive(options.archivePath, stateDirectory, options.intakeOptions);
@@ -251,7 +281,7 @@ export async function prepareTask(options: PreparationOptions): Promise<Preparat
     receipt.status = "CREATING_WORKTREE"; receipt.state = "CREATING_WORKTREE"; receipt.updated_at = now().toISOString();
     await appendRunEvent(stateDirectory, receipt.task_id, receipt.archive_sha256, receipt.run_id, "VERIFYING_BASE", "CREATING_WORKTREE", {}, now);
     await writeRunReceipt(stateDirectory, receipt);
-    worktree = await createIsolatedWorktree({ stateDirectory, taskId: receipt.task_id, archiveSha256: receipt.archive_sha256, branchName: execution.contract.delivery.branch_name, baseCommit: execution.contract.repository.base_commit, repository, runner });
+    worktree = await createIsolatedWorktree({ stateDirectory, taskId: receipt.task_id, archiveSha256: receipt.archive_sha256, branchName: execution.contract.delivery.branch_name, baseCommit: execution.contract.repository.base_commit, repository, runner, hooksDirectory: gitRuntime.hooksPath });
     receipt.worktree_path = worktree.path;
     receipt.status = "VERIFYING_WORKTREE"; receipt.state = "VERIFYING_WORKTREE"; receipt.updated_at = now().toISOString();
     await appendRunEvent(stateDirectory, receipt.task_id, receipt.archive_sha256, receipt.run_id, "CREATING_WORKTREE", "VERIFYING_WORKTREE", {}, now);
@@ -267,13 +297,17 @@ export async function prepareTask(options: PreparationOptions): Promise<Preparat
     }
     const detail = errorDetails(error);
     const previousState = receipt.state;
-    receipt.errors = [{ code: detail.code, message: detail.message }];
+    const cleanupErrors = [...detail.cleanupErrors];
+    if (repositoryPath) cleanupErrors.push(...await removeCreatedWorktree(worktree, repositoryPath, runner));
+    receipt.errors = [
+      { code: detail.code, message: detail.message },
+      ...cleanupErrors.map((cleanup) => ({ code: "CLEANUP_FAILED", message: `${cleanup.action}: ${cleanup.message}` })),
+    ];
     receipt.status = isBlockedCode(detail.code) ? "BLOCKED" : "FAILED";
     receipt.state = receipt.status;
     receipt.updated_at = now().toISOString();
     if (previousState !== receipt.status) await appendRunEvent(stateDirectory, receipt.task_id, receipt.archive_sha256, receipt.run_id, previousState, receipt.status, {}, now).catch(() => undefined);
     await writeRunReceipt(stateDirectory, receipt).catch(() => undefined);
-    if (repositoryPath) await removeCreatedWorktree(worktree, repositoryPath, runner).catch(() => undefined);
     throw new PreparationError(detail.code, detail.message, receipt);
   } finally {
     await branchLock?.release();

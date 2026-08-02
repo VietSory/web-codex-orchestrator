@@ -6,3 +6,5 @@
 - Added Phase 2 secure ZIP intake and Bundle Contract v1.1 checksum/payload validation.
 - Added Phase 3 inbox scanning, trusted repository routing, exact-base Git
   worktree preparation, run receipts, locks, and schema 1.2 execution policy.
+- Hardened Phase 3 worktree ownership cleanup, disabled checkout hooks and
+  external filters, and rejected/redacted credential-bearing remote URLs.

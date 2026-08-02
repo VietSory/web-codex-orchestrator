@@ -42,6 +42,9 @@ node dist/cli/index.js watch \
   --jsonl
 ```
 
+Add `--json` to `scan` for one machine-readable result object. Without it,
+`scan` prints a short human-readable summary; diagnostics remain on stderr.
+
 Accepted bundles are stored under `.wco/accepted/<task-id>/<archive-sha256>/`.
 Rejected archives and structured reports are stored under
 `.wco/rejected/<archive-sha256>/`. Temporary quarantine directories are removed
@@ -58,3 +61,9 @@ configuration: bundle manifests contain only logical repository IDs, never
 filesystem paths. Preparation verifies the remote and exact base commit, then
 stops at `READY_FOR_CODEX`; it does not execute payloads or validation commands,
 create commits, push, call GitHub, or invoke Codex.
+
+Preparation uses an isolated Git runtime under `git-runtime/` (empty global
+configuration and hooks), rejects repositories with external smudge/process
+filters, and creates the worktree detached before attaching its validated local
+branch. Credential-bearing HTTP(S) registry URLs are rejected and persisted
+remote URLs are sanitized.

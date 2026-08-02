@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { ConfigIssue, ConfigValidationReport, TrustedConfig } from "./contracts.js";
+import { hasSensitiveHttpUserInfo } from "./remote-url.js";
 
 const TOP_LEVEL = new Set(["config_version", "inbox", "repositories"]);
 const INBOX_FIELDS = new Set(["poll_interval_ms", "stable_age_ms", "stable_observations", "maximum_candidates_per_scan"]);
@@ -53,7 +54,11 @@ export function validateConfig(value: unknown): ConfigValidationReport {
       for (const key of unknownFields(raw, REPOSITORY_FIELDS)) add(issues, `Unknown repository field for ${id}: ${key}`);
       if (typeof raw.path !== "string" || !path.isAbsolute(raw.path)) add(issues, `Repository ${id}.path must be absolute.`);
       if (typeof raw.remote !== "string" || !REMOTE_NAME_PATTERN.test(raw.remote)) add(issues, `Repository ${id}.remote must be a safe Git remote name.`);
-      if (!Array.isArray(raw.expected_remote_urls) || raw.expected_remote_urls.length === 0 || !raw.expected_remote_urls.every((url) => typeof url === "string" && url.length > 0)) add(issues, `Repository ${id}.expected_remote_urls must be a non-empty string array.`);
+      if (!Array.isArray(raw.expected_remote_urls) || raw.expected_remote_urls.length === 0 || !raw.expected_remote_urls.every((url) => typeof url === "string" && url.length > 0)) {
+        add(issues, `Repository ${id}.expected_remote_urls must be a non-empty string array.`);
+      } else if (raw.expected_remote_urls.some((url) => typeof url === "string" && hasSensitiveHttpUserInfo(url))) {
+        add(issues, `Repository ${id}.expected_remote_urls must not contain HTTP(S) userinfo or credentials.`);
+      }
       if (raw.fetch_policy !== "never" && raw.fetch_policy !== "if-missing" && raw.fetch_policy !== "always") add(issues, `Repository ${id}.fetch_policy is invalid.`);
     }
   }

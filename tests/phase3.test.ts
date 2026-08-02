@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cp, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,9 +9,26 @@ import { validateConfig } from "../src/config/config-validator.js";
 import { validateExecutionContract } from "../src/execution/execution-validator.js";
 import { prepareTask, PreparationError } from "../src/run/preparation-service.js";
 import { scanInbox } from "../src/inbox/scanner.js";
+import { GitRunner } from "../src/git/git-runner.js";
+import { createIsolatedWorktree } from "../src/git/worktree-manager.js";
 import { copyTemplate, updateChecksums, writeYazlZip } from "./helpers/zip-fixture.js";
 
 interface CommandResult { code: number; stdout: string; stderr: string; }
+
+async function pathExists(target: string): Promise<boolean> {
+  return await lstat(target).then(() => true).catch(() => false);
+}
+
+async function treeContains(target: string, needle: string): Promise<boolean> {
+  if (!await pathExists(target)) return false;
+  const info = await lstat(target);
+  if (info.isFile()) return (await readFile(target, "utf8")).includes(needle);
+  if (!info.isDirectory() || info.isSymbolicLink()) return false;
+  for (const entry of await readdir(target)) {
+    if (await treeContains(path.join(target, entry), needle)) return true;
+  }
+  return false;
+}
 
 async function command(args: string[], cwd: string): Promise<CommandResult> {
   return await new Promise<CommandResult>((resolve, reject) => {
@@ -21,6 +38,21 @@ async function command(args: string[], cwd: string): Promise<CommandResult> {
     child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
     child.once("error", reject);
     child.once("close", (code) => resolve({ code: code ?? 3, stdout: Buffer.concat(stdout).toString(), stderr: Buffer.concat(stderr).toString() }));
+  });
+}
+
+function runCli(args: string[]): Promise<CommandResult> {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, ["--import", "tsx", path.resolve("src/cli/index.ts"), ...args], {
+      cwd: path.resolve("."),
+      env: { ...process.env },
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const stdout: Buffer[] = []; const stderr: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    child.on("close", (code) => resolve({ code: code ?? 3, stdout: Buffer.concat(stdout).toString(), stderr: Buffer.concat(stderr).toString() }));
   });
 }
 
@@ -135,5 +167,90 @@ test("P3 config rejects unknown fields and symlink paths", async () => {
     await symlink(config, link);
     const { loadTrustedConfig } = await import("../src/config/config-loader.js");
     await assert.rejects(loadTrustedConfig(link), (error: unknown) => error instanceof Error && "code" in error && (error as { code: unknown }).code === "CONFIG_SYMLINK");
+  });
+});
+
+test("P3-074: post-checkout hooks cannot run during worktree preparation", async () => {
+  await withFixture(async ({ archive, state, config, root, repo }) => {
+    const marker = path.join(root, "post-checkout-marker");
+    await writeFile(path.join(repo, ".git", "hooks", "post-checkout"), `#!/bin/sh\nprintf marker > ${marker}\n`, { mode: 0o700 });
+    const receipt = await prepareTask({ archivePath: archive, stateDirectory: state, configPath: config });
+    assert.equal(receipt.status, "READY_FOR_CODEX");
+    assert.equal(await pathExists(marker), false);
+  });
+});
+
+test("P3-075: external smudge filters are blocked before checkout", async () => {
+  await withFixture(async ({ archive, state, config, root, repo }) => {
+    const marker = path.join(root, "smudge-marker");
+    const filterCommand = `printf marker > ${marker}`;
+    const configured = await command(["git", "config", "filter.phase3.smudge", filterCommand], repo);
+    assert.equal(configured.code, 0, configured.stderr);
+    await assert.rejects(
+      prepareTask({ archivePath: archive, stateDirectory: state, configPath: config }),
+      (error: unknown) => error instanceof PreparationError && error.code === "GIT_CHECKOUT_FILTER_UNSAFE",
+    );
+    assert.equal(await pathExists(marker), false);
+    assert.equal(await pathExists(path.join(state, "worktrees", "TASK-2026-003", "a".repeat(64), "repository")), false);
+  });
+});
+
+test("P3-076: credential-bearing HTTP remotes are rejected without leaking the token", async () => {
+  await withFixture(async ({ archive, state, config, root }) => {
+    const token = "phase3-fake-token-DO-NOT-LEAK";
+    const unsafe = JSON.parse(await readFile(config, "utf8")) as Record<string, unknown>;
+    const repositories = unsafe.repositories as Record<string, Record<string, unknown>>;
+    repositories.fixture!.expected_remote_urls = [`https://user:${token}@github.com/example/repo.git`];
+    const unsafeConfig = path.join(root, "unsafe-config.json");
+    await writeFile(unsafeConfig, `${JSON.stringify(unsafe, null, 2)}\n`);
+    await assert.rejects(
+      prepareTask({ archivePath: archive, stateDirectory: state, configPath: unsafeConfig }),
+      (error: unknown) => error instanceof PreparationError && error.code === "CONFIG_INVALID" && !error.message.includes(token),
+    );
+    assert.equal(await treeContains(state, token), false);
+  });
+});
+
+test("P3 worktree race: a branch created after the preflight survives failed preparation", async () => {
+  await withFixture(async ({ state, repo, commit }) => {
+    const branchName = "codex/race";
+    const raceRunner = new class extends GitRunner {
+      private raced = false;
+      override async run(args: readonly string[], cwd: string) {
+        const result = await super.run(args, cwd);
+        if (!this.raced && args[0] === "show-ref" && args[1] === "--verify" && args[3] === `refs/heads/${branchName}`) {
+          this.raced = true;
+          await command(["git", "branch", branchName, commit], cwd);
+        }
+        return result;
+      }
+    }();
+    const repository = {
+      id: "fixture",
+      configured_path: repo,
+      path: repo,
+      remote: "origin",
+      expected_remote_urls: [],
+      fetch_policy: "never" as const,
+    };
+    await assert.rejects(
+      createIsolatedWorktree({ stateDirectory: state, taskId: "TASK-RACE", archiveSha256: "a".repeat(64), branchName, baseCommit: commit, repository, runner: raceRunner }),
+      (error: unknown) => error instanceof Error && "code" in error && (error as { code: unknown }).code === "BRANCH_ALREADY_EXISTS",
+    );
+    const branch = await command(["git", "show-ref", "--verify", "--quiet", `refs/heads/${branchName}`], repo);
+    assert.equal(branch.code, 0, branch.stderr);
+    assert.equal(await pathExists(path.join(state, "worktrees", "TASK-RACE", "a".repeat(64), "repository")), false);
+  });
+});
+
+test("P3 CLI scan emits human output by default and one JSON object with --json", async () => {
+  await withFixture(async ({ state, config, inbox }) => {
+    const human = await runCli(["scan", "--inbox", inbox, "--state-dir", state, "--config", config]);
+    assert.equal(human.code, 0, human.stderr);
+    assert.equal(human.stdout.startsWith("Discovered: 0"), true);
+    assert.equal(human.stdout.trim().startsWith("{"), false);
+    const json = await runCli(["scan", "--inbox", inbox, "--state-dir", state, "--config", config, "--json"]);
+    assert.equal(json.code, 0, json.stderr);
+    assert.deepEqual(JSON.parse(json.stdout) as { discovered: number }, { scan_version: "1.0", discovered: 0, unstable: 0, skipped: 0, ready_for_codex: 0, rejected: 0, blocked: 0, failed: 0, results: [] });
   });
 });
