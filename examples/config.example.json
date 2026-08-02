@@ -1,0 +1,20 @@
+{
+  "config_version": "1.0",
+  "inbox": {
+    "poll_interval_ms": 2000,
+    "stable_age_ms": 3000,
+    "stable_observations": 2,
+    "maximum_candidates_per_scan": 100
+  },
+  "repositories": {
+    "web-codex-orchestrator": {
+      "path": "/absolute/path/to/web-codex-orchestrator",
+      "remote": "origin",
+      "expected_remote_urls": [
+        "https://github.com/VietSory/web-codex-orchestrator.git",
+        "git@github.com:VietSory/web-codex-orchestrator.git"
+      ],
+      "fetch_policy": "if-missing"
+    }
+  }
+}
