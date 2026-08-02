@@ -40,6 +40,8 @@ const REQUIRED_FILES_V1_1 = [
   "checksums.json",
 ] as const;
 
+const TASK_ID_PATTERN = /^(?!\.{1,2}$)[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
 const SHELL_META_PATTERN = /[;&|><`$]|\r|\n/;
 
 const ALLOWED_COMMAND_PREFIXES = [
@@ -212,8 +214,11 @@ function validateManifest(value: unknown, issues: BundleValidationIssue[]): valu
   if (value.schema_version !== "1.0" && value.schema_version !== "1.1") {
     addIssue(issues, 'manifest.schema_version must equal "1.0" or "1.1".');
   }
-  if (!isNonEmptyString(value.task_id) || !/^[A-Za-z0-9._-]+$/.test(value.task_id)) {
-    addIssue(issues, "manifest.task_id must contain only letters, numbers, dot, underscore, or hyphen.");
+  if (!isNonEmptyString(value.task_id) || !TASK_ID_PATTERN.test(value.task_id)) {
+    addIssue(
+      issues,
+      "manifest.task_id must be 1-128 characters, start with a letter or number, and must not equal . or ..",
+    );
   }
   if (!isNonEmptyString(value.title)) {
     addIssue(issues, "manifest.title is required.");

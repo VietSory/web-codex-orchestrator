@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { intakeArchive } from "../src/intake/intake-service.js";
+import { IntakeError } from "../src/intake/errors.js";
+import { hashArchive } from "../src/intake/archive-hash.js";
 import type { IntakeReceipt } from "../src/intake/contracts.js";
 import {
   copyTemplate,
@@ -34,6 +36,16 @@ async function validArchive(
   const bundle = await copyTemplate(root);
   await writeYazlZip(bundle, archivePath, wrapper);
   return bundle;
+}
+
+async function archiveWithTaskId(root: string, archivePath: string, taskId: string): Promise<void> {
+  const bundle = await copyTemplate(root);
+  const manifestPath = path.join(bundle, "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, unknown>;
+  manifest.task_id = taskId;
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  await updateChecksums(bundle);
+  await writeYazlZip(bundle, archivePath);
 }
 
 async function rejected(
@@ -251,9 +263,31 @@ test("ZIP-027: duplicate intake is idempotent", async () => {
 
 test("ZIP-028: failed extraction leaves no quarantine debris", async () => {
   await withArchive(async (root, archivePath, stateDirectory) => {
-    await writeFile(archivePath, Buffer.from("not a complete zip"));
-    await rejected(archivePath, stateDirectory, "ZIP_MALFORMED");
+    let firstEntryWasWritten = false;
+    await writeRawZip(archivePath, [
+      { name: "first.txt", data: Buffer.from("first") },
+      {
+        name: "later.txt",
+        data: Buffer.from("later"),
+        compressionMethod: 8,
+        compressedData: Buffer.from("not-a-deflate-stream"),
+        uncompressedSize: 5,
+      },
+    ]);
+    const receipt = await rejected(archivePath, stateDirectory, "ZIP_MALFORMED", {
+      onFileExtracted: async (outputPath) => {
+        if (path.basename(outputPath) === "first.txt") {
+          firstEntryWasWritten = (await stat(outputPath)).isFile();
+        }
+      },
+    });
+    assert.equal(firstEntryWasWritten, true);
     assert.deepEqual(await readdir(path.join(stateDirectory, "quarantine")), []);
+    if (!receipt.archive_sha256) assert.fail("Rejected receipt should retain the archive hash.");
+    assert.deepEqual(
+      (await readdir(path.join(stateDirectory, "rejected", receipt.archive_sha256))).sort(),
+      ["rejection.json", "source.zip"],
+    );
   });
 });
 
@@ -313,5 +347,111 @@ test("ZIP-034/035: directory validation and Phase 1 behavior remain available", 
     const report = await direct.validateBundleDirectory(bundle);
     assert.equal(report.ok, true);
     await rm(stateDirectory, { recursive: true, force: true });
+  });
+});
+
+for (const [id, taskId] of [
+  ["ZIP-036", "."],
+  ["ZIP-037", ".."],
+  ["ZIP-038", "a".repeat(129)],
+] as const) {
+  test(`${id}: unsafe task ID is rejected before accepted storage`, async () => {
+    await withArchive(async (root, archivePath, stateDirectory) => {
+      await archiveWithTaskId(root, archivePath, taskId);
+      await rejected(archivePath, stateDirectory, "BUNDLE_CONTRACT_INVALID");
+      assert.deepEqual(await readdir(path.join(stateDirectory, "accepted")), []);
+    });
+  });
+}
+
+for (const [id, lifecycle] of [
+  ["ZIP-039", "accepted"],
+  ["ZIP-040", "rejected"],
+  ["ZIP-041", "quarantine"],
+] as const) {
+  test(`${id}: lifecycle-directory symlink is operationally rejected`, async () => {
+    await withArchive(async (root, archivePath, stateDirectory) => {
+      await validArchive(root, archivePath);
+      const target = path.join(root, `${lifecycle}-target`);
+      await mkdir(stateDirectory, { recursive: true });
+      await mkdir(target);
+      await symlink(target, path.join(stateDirectory, lifecycle));
+      await assert.rejects(
+        intakeArchive(archivePath, stateDirectory),
+        (error: unknown) => error instanceof IntakeError && error.code === "OPERATIONAL_ERROR",
+      );
+    });
+  });
+}
+
+test("lifecycle-directory regular files are operationally rejected", async () => {
+  await withArchive(async (root, archivePath, stateDirectory) => {
+    await validArchive(root, archivePath);
+    await mkdir(stateDirectory, { recursive: true });
+    await writeFile(path.join(stateDirectory, "accepted"), "not a directory");
+    await assert.rejects(
+      intakeArchive(archivePath, stateDirectory),
+      (error: unknown) => error instanceof IntakeError && error.code === "OPERATIONAL_ERROR",
+    );
+  });
+});
+
+test("ZIP-042: receipt hash describes the stable quarantined source after input replacement", async () => {
+  await withArchive(async (root, archivePath, stateDirectory) => {
+    await validArchive(root, archivePath);
+    const replacementRoot = path.join(root, "replacement");
+    const replacementBundle = await copyTemplate(replacementRoot);
+    const manifestPath = path.join(replacementBundle, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, unknown>;
+    manifest.task_id = "TASK-REPLACED";
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    await updateChecksums(replacementBundle);
+    const replacementArchive = path.join(root, "replacement.zip");
+    await writeYazlZip(replacementBundle, replacementArchive);
+
+    const receipt = await intakeArchive(archivePath, stateDirectory, {
+      beforeQuarantineCopy: async () => {
+        await rm(archivePath);
+        await rename(replacementArchive, archivePath);
+      },
+    });
+    assert.equal(receipt.status, "accepted");
+    if (receipt.status !== "accepted") return;
+    assert.equal(receipt.task_id, "TASK-REPLACED");
+    const source = path.join(stateDirectory, "accepted", receipt.task_id, receipt.archive_sha256, "source.zip");
+    assert.equal(await hashArchive(source), receipt.archive_sha256);
+  });
+});
+
+for (const [id, entry, expectedCode] of [
+  ["ZIP-043", { name: "CON.txt", data: Buffer.from("x") }, "ZIP_UNSAFE_PATH"],
+  ["ZIP-044", { name: "payload/file.", data: Buffer.from("x") }, "ZIP_UNSAFE_PATH"],
+  ["ZIP-045", { name: "payload/file ", data: Buffer.from("x") }, "ZIP_UNSAFE_PATH"],
+  ["ZIP-046", { name: "x".repeat(241), data: Buffer.from("x") }, "ZIP_UNSAFE_PATH"],
+  ["ZIP-047", { name: `payload/${"x".repeat(101)}`, data: Buffer.from("x") }, "ZIP_UNSAFE_PATH"],
+  ["ZIP-048", { name: "unsupported.bin", data: Buffer.from("x"), compressionMethod: 12 }, "ZIP_UNSUPPORTED_COMPRESSION"],
+  ["ZIP-049", { name: "fifo", data: Buffer.from("x"), externalFileAttributes: 0x11a40000 }, "ZIP_UNSUPPORTED_ENTRY_TYPE"],
+] as const) {
+  test(`${id}: ZIP entry policy rejects ${entry.name}`, async () => {
+    await withArchive(async (_root, archivePath, stateDirectory) => {
+      await writeRawZip(archivePath, [entry]);
+      await rejected(archivePath, stateDirectory, expectedCode);
+    });
+  });
+}
+
+test("ZIP-050/051: ancestor and duplicate paths are policy collisions", async () => {
+  await withArchive(async (root, archivePath, stateDirectory) => {
+    await writeRawZip(archivePath, [
+      { name: "a", data: Buffer.from("file") },
+      { name: "a/b", data: Buffer.from("descendant") },
+    ]);
+    await rejected(archivePath, stateDirectory, "ZIP_PATH_COLLISION");
+    const duplicate = path.join(root, "wco-task-duplicate.zip");
+    await writeRawZip(duplicate, [
+      { name: "same.txt", data: Buffer.from("first") },
+      { name: "same.txt", data: Buffer.from("second") },
+    ]);
+    await rejected(duplicate, stateDirectory, "ZIP_PATH_COLLISION");
   });
 });

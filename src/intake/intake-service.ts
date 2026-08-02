@@ -1,4 +1,4 @@
-import { copyFile, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
@@ -14,6 +14,7 @@ import type {
 } from "./contracts.js";
 import { IntakeError, isIntakeError } from "./errors.js";
 import { hashArchive } from "./archive-hash.js";
+import { copyStableInputToQuarantine } from "./stable-input.js";
 import { verifyBundleChecksums } from "./checksum-verifier.js";
 import { resolveLogicalRoot } from "./root-resolver.js";
 import { extractArchive, inspectArchive } from "./secure-extractor.js";
@@ -22,6 +23,10 @@ export interface IntakeOptions {
   limits?: Partial<ArchiveLimits>;
   now?: () => Date;
   createUniqueId?: () => string;
+  /** Test seam invoked after input validation and before its stable copy opens. */
+  beforeQuarantineCopy?: () => Promise<void> | void;
+  /** Test seam invoked only after one streamed file has reached disk. */
+  onFileExtracted?: (outputPath: string) => Promise<void> | void;
 }
 
 interface IntakeContext {
@@ -58,19 +63,45 @@ function operational(error: unknown): IntakeError {
   return new IntakeError("OPERATIONAL_ERROR", message);
 }
 
-async function ensureStateDirectory(stateDirectory: string): Promise<void> {
+async function ensureRealDirectory(directory: string): Promise<void> {
   try {
-    const info = await lstat(stateDirectory);
+    const info = await lstat(directory);
     if (!info.isDirectory() || info.isSymbolicLink()) {
-      throw new IntakeError("OPERATIONAL_ERROR", "State directory is not a real directory.");
+      throw new IntakeError("OPERATIONAL_ERROR", `Unsafe lifecycle directory: ${directory}`);
     }
+    return;
   } catch (error) {
     if (isIntakeError(error)) throw error;
-    await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") throw error;
   }
-  await mkdir(path.join(stateDirectory, "quarantine"), { recursive: true, mode: 0o700 });
-  await mkdir(path.join(stateDirectory, "accepted"), { recursive: true, mode: 0o700 });
-  await mkdir(path.join(stateDirectory, "rejected"), { recursive: true, mode: 0o700 });
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const created = await lstat(directory);
+  if (!created.isDirectory() || created.isSymbolicLink()) {
+    throw new IntakeError("OPERATIONAL_ERROR", `Unsafe lifecycle directory: ${directory}`);
+  }
+}
+
+async function ensureStateDirectory(stateDirectory: string): Promise<void> {
+  await ensureRealDirectory(stateDirectory);
+  await ensureRealDirectory(path.join(stateDirectory, "quarantine"));
+  await ensureRealDirectory(path.join(stateDirectory, "accepted"));
+  await ensureRealDirectory(path.join(stateDirectory, "rejected"));
+}
+
+function resolveContainedDirectory(
+  rootDirectory: string,
+  segments: string[],
+  code: "BUNDLE_CONTRACT_INVALID" | "OPERATIONAL_ERROR",
+  message: string,
+): string {
+  const root = path.resolve(rootDirectory);
+  const target = path.resolve(root, ...segments);
+  const relative = path.relative(root, target);
+  if (!relative || relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) {
+    throw new IntakeError(code, message);
+  }
+  return target;
 }
 
 async function readReceipt(receiptPath: string): Promise<IntakeReceipt | undefined> {
@@ -127,7 +158,12 @@ async function persistRejected(
   if (!context.archiveHash || !context.quarantineDirectory) {
     throw new IntakeError("OPERATIONAL_ERROR", detail.message);
   }
-  const finalDirectory = path.join(context.stateDirectory, "rejected", context.archiveHash);
+  const finalDirectory = resolveContainedDirectory(
+    path.join(context.stateDirectory, "rejected"),
+    [context.archiveHash],
+    "OPERATIONAL_ERROR",
+    "Rejected archive escapes rejected storage.",
+  );
   const existing = await readReceipt(path.join(finalDirectory, "rejection.json"));
   if (existing?.status === "rejected") return existing;
 
@@ -167,7 +203,12 @@ async function persistAccepted(
   if (!context.archiveHash || !context.quarantineDirectory) {
     throw new IntakeError("OPERATIONAL_ERROR", "Cannot persist accepted bundle without an archive hash.");
   }
-  const finalDirectory = path.join(context.stateDirectory, "accepted", taskId, context.archiveHash);
+  const finalDirectory = resolveContainedDirectory(
+    path.join(context.stateDirectory, "accepted"),
+    [taskId, context.archiveHash],
+    "BUNDLE_CONTRACT_INVALID",
+    "Task ID escapes accepted storage.",
+  );
   const existing = await readReceipt(path.join(finalDirectory, "intake.json"));
   if (existing?.status === "accepted") return existing;
 
@@ -212,8 +253,7 @@ async function persistAccepted(
 
 async function validateInput(
   archivePath: string,
-  limits: ArchiveLimits,
-): Promise<{ bytes: number }> {
+): Promise<void> {
   let info;
   try {
     info = await lstat(archivePath);
@@ -225,10 +265,6 @@ async function validateInput(
   if (!archivePath.toLowerCase().endsWith(".zip")) {
     throw new IntakeError("INPUT_NOT_ZIP", "Input filename must end in .zip.");
   }
-  if (info.size > limits.maximumArchiveBytes) {
-    throw new IntakeError("ARCHIVE_TOO_LARGE", `Archive exceeds ${limits.maximumArchiveBytes} bytes.`);
-  }
-  return { bytes: info.size };
 }
 
 /** Secure ZIP intake. It only inspects, extracts, hashes and validates metadata. */
@@ -246,12 +282,8 @@ export async function intakeArchive(
   };
 
   try {
-    const input = await validateInput(context.archivePath, limits);
-    context.archiveBytes = input.bytes;
+    await validateInput(context.archivePath);
     await ensureStateDirectory(context.stateDirectory);
-    context.archiveHash = await hashArchive(context.archivePath);
-    const existing = await findExistingReceipt(context.stateDirectory, context.archiveHash);
-    if (existing) return existing;
 
     context.quarantineDirectory = path.join(
       context.stateDirectory,
@@ -259,17 +291,32 @@ export async function intakeArchive(
       createUniqueId(),
     );
     await mkdir(context.quarantineDirectory, { recursive: true, mode: 0o700 });
-    await copyFile(context.archivePath, path.join(context.quarantineDirectory, "source.zip"));
+    await options.beforeQuarantineCopy?.();
+    const sourceArchive = path.join(context.quarantineDirectory, "source.zip");
+    const copied = await copyStableInputToQuarantine(
+      context.archivePath,
+      sourceArchive,
+      limits.maximumArchiveBytes,
+    );
+    context.archiveBytes = copied.bytes;
+    context.archiveHash = await hashArchive(sourceArchive);
+    const existing = await findExistingReceipt(context.stateDirectory, context.archiveHash);
+    if (existing) {
+      await rm(context.quarantineDirectory, { recursive: true, force: true });
+      return existing;
+    }
 
-    const inspection = await inspectArchive(path.join(context.quarantineDirectory, "source.zip"), limits);
+    const inspection = await inspectArchive(sourceArchive, limits);
     context.entryCount = inspection.entryCount;
     context.totalUncompressedBytes = inspection.totalUncompressedBytes;
     const extracting = path.join(context.quarantineDirectory, "extracting");
+    const extractionOptions = options.onFileExtracted ? { onFileExtracted: options.onFileExtracted } : {};
     await extractArchive(
-      path.join(context.quarantineDirectory, "source.zip"),
+      sourceArchive,
       extracting,
       inspection.entries,
       limits,
+      extractionOptions,
     );
 
     const root = resolveLogicalRoot(inspection.entries);

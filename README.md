@@ -19,6 +19,14 @@ node dist/cli/index.js intake ./downloads/wco-task-207.zip --state-dir ./.wco
 node dist/cli/index.js intake ./downloads/wco-task-207.zip --state-dir ./.wco --json
 ```
 
+For regular use, keep state outside the repository so quarantined downloads
+cannot be accidentally added to source control:
+
+```bash
+node dist/cli/index.js intake ./downloads/wco-task-207.zip \
+  --state-dir ~/.local/state/web-codex-orchestrator
+```
+
 Accepted bundles are stored under `.wco/accepted/<task-id>/<archive-sha256>/`.
 Rejected archives and structured reports are stored under
 `.wco/rejected/<archive-sha256>/`. Temporary quarantine directories are removed

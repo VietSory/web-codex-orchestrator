@@ -16,6 +16,11 @@ const YAUZL_OPTIONS = {
   strictFileNames: true,
 } as const;
 
+export interface ExtractionOptions {
+  /** Test seam; production callers never execute archive content here. */
+  onFileExtracted?: (outputPath: string) => Promise<void> | void;
+}
+
 function malformedArchive(error: unknown): IntakeError {
   if (isIntakeError(error)) return error;
   const message = error instanceof Error ? error.message : String(error);
@@ -100,6 +105,7 @@ export async function extractArchive(
   extractionRoot: string,
   expectedEntries: SafeZipEntry[],
   limits: ArchiveLimits,
+  options: ExtractionOptions = {},
 ): Promise<void> {
   await mkdir(extractionRoot, { recursive: true, mode: 0o700 });
   let zip: yauzl.ZipFile;
@@ -134,6 +140,7 @@ export async function extractArchive(
 
       await ensureDirectory(path.dirname(outputPath));
       await streamEntry(zip, entry, outputPath);
+      await options.onFileExtracted?.(outputPath);
     }
     if (index !== expectedEntries.length) {
       throw new IntakeError("ZIP_MALFORMED", "ZIP entry count changed between inspection and extraction.");

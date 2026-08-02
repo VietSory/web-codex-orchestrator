@@ -16,6 +16,7 @@ export interface EntryPolicyState {
   exactPaths: Set<string>;
   lowercasePaths: Set<string>;
   nfcPaths: Set<string>;
+  regularPaths: Set<string>;
 }
 
 export function createEntryPolicyState(): EntryPolicyState {
@@ -23,6 +24,7 @@ export function createEntryPolicyState(): EntryPolicyState {
     exactPaths: new Set<string>(),
     lowercasePaths: new Set<string>(),
     nfcPaths: new Set<string>(),
+    regularPaths: new Set<string>(),
   };
 }
 
@@ -104,9 +106,32 @@ export function inspectEntry(
   ) {
     throw new IntakeError("ZIP_PATH_COLLISION", "ZIP entry path collides with another entry.", rawName);
   }
+
+  const canonicalSegments = lowercasePath.split("/");
+  for (let length = 1; length < canonicalSegments.length; length += 1) {
+    if (state.regularPaths.has(canonicalSegments.slice(0, length).join("/"))) {
+      throw new IntakeError(
+        "ZIP_PATH_COLLISION",
+        "ZIP entry is nested below a regular-file entry.",
+        rawName,
+      );
+    }
+  }
+  if (!isDirectory) {
+    for (const existingPath of state.lowercasePaths) {
+      if (existingPath.startsWith(`${lowercasePath}/`)) {
+        throw new IntakeError(
+          "ZIP_PATH_COLLISION",
+          "ZIP regular file collides with existing descendant entries.",
+          rawName,
+        );
+      }
+    }
+  }
   state.exactPaths.add(normalizedPath);
   state.lowercasePaths.add(lowercasePath);
   state.nfcPaths.add(nfcPath);
+  if (!isDirectory) state.regularPaths.add(lowercasePath);
 
   if (entry.uncompressedSize > limits.maximumEntryUncompressedBytes) {
     throw new IntakeError(
