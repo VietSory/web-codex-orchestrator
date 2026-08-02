@@ -11,3 +11,7 @@
 - Added Phase 4 schema 1.3 structured validation, trusted agent/verifier
   configuration, isolated execution state machine, dual-review gates, and
   fail-closed Codex/sandbox adapters.
+- Hardened Phase 4 runtime/auth and sandbox preflight, cancellation and
+  timeout cleanup, Git-ref and bundle immutability checks, bounded/redacted
+  review evidence, generated-artifact receipts, trusted change limits, and
+  resume repair routing.

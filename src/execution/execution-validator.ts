@@ -29,6 +29,11 @@ export function isPlausibleBranchName(value: string): boolean {
   return value.split("/").every((segment) => segment.length > 0 && !segment.startsWith(".") && !segment.endsWith("."));
 }
 
+function isSafeBranchPrefix(value: string): boolean {
+  if (typeof value !== "string" || value.length === 0 || value.length > 128 || !value.endsWith("/") || value.startsWith("/") || value.includes("\\") || value.includes("..") || value.includes("//") || /[\u0000-\u0020\u007f~^:?*\[\]]/.test(value)) return false;
+  return isPlausibleBranchName(value.slice(0, -1));
+}
+
 function validateCore(manifest: Record<string, unknown>, issues: ExecutionIssue[]): void {
   const repository = manifest.repository;
   const delivery = manifest.delivery;
@@ -71,8 +76,8 @@ function validateCore(manifest: Record<string, unknown>, issues: ExecutionIssue[
     add(issues, "GIT_POLICY_INVALID", "git_policy is required for an executable bundle.");
   } else {
     if (!nonEmpty(policy.allowed_remote)) add(issues, "GIT_POLICY_INVALID", "git_policy.allowed_remote is required.");
-    if (!nonEmpty(policy.allowed_branch_prefix)) add(issues, "GIT_POLICY_INVALID", "git_policy.allowed_branch_prefix is required.");
-    if (!Array.isArray(policy.deny_direct_push_branches) || !policy.deny_direct_push_branches.every(nonEmpty)) add(issues, "GIT_POLICY_INVALID", "git_policy.deny_direct_push_branches must be a string array.");
+    if (!nonEmpty(policy.allowed_branch_prefix) || !isSafeBranchPrefix(policy.allowed_branch_prefix)) add(issues, "GIT_POLICY_INVALID", "git_policy.allowed_branch_prefix is unsafe.");
+    if (!Array.isArray(policy.deny_direct_push_branches) || !policy.deny_direct_push_branches.every((branch) => nonEmpty(branch) && isPlausibleBranchName(branch))) add(issues, "GIT_POLICY_INVALID", "git_policy.deny_direct_push_branches must contain valid branch names.");
     if (policy.allow_force_push !== false || policy.allow_remote_branch_delete !== false || policy.allow_merge !== false) add(issues, "GIT_POLICY_INVALID", "Force push, remote branch delete, and merge must all be disabled.");
   }
   if (isRecord(delivery) && isRecord(policy) && delivery.remote !== policy.allowed_remote) add(issues, "DELIVERY_CONTRACT_INVALID", "delivery.remote must equal git_policy.allowed_remote.");

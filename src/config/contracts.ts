@@ -52,6 +52,9 @@ export interface VerificationConfig {
   allowed_environment_keys: string[];
   maximum_command_seconds: number;
   maximum_output_bytes: number;
+  maximum_file_bytes?: number;
+  maximum_changed_files?: number;
+  maximum_diff_lines?: number;
   allowed_generated_paths: string[];
 }
 

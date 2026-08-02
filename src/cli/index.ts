@@ -9,8 +9,11 @@ import { CandidatePolicyError } from "../inbox/candidate-policy.js";
 import { scanInbox } from "../inbox/scanner.js";
 import { watchInbox } from "../inbox/watcher.js";
 import { executeRun } from "../execution/execution-service.js";
-import { readExecutionReceipt } from "../execution/execution-store.js";
+import { executionPaths, readExecutionReceipt } from "../execution/execution-store.js";
 import { isExecutionError } from "../execution/errors.js";
+import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
+import { CodexVerificationSandbox } from "../verifier/codex-sandbox.js";
+import { redact } from "../evidence/log-redaction.js";
 
 function printUsage(): void {
   console.log("Usage:");
@@ -252,12 +255,12 @@ async function runExecute(args: string[]): Promise<void> {
   const onSigInt = () => { signalCode = 130; controller.abort(); }; const onSigTerm = () => { signalCode = 143; controller.abort(); };
   process.once("SIGINT", onSigInt); process.once("SIGTERM", onSigTerm);
   try {
-    const receipt = await executeRun({ runId: parsed.runId, stateDirectory: parsed.stateDirectory, configPath: parsed.configPath, signal: controller.signal });
+    const receipt = await executeRun({ runId: parsed.runId, stateDirectory: parsed.stateDirectory, configPath: parsed.configPath, agentClient: new CodexSdkAgentClient(), sandbox: new CodexVerificationSandbox(), signal: controller.signal });
     if (parsed.json) process.stdout.write(`${JSON.stringify(receipt)}\n`);
-    else { console.log(`State: ${receipt.state}`); console.log(`Iterations: ${receipt.implementer.iterations}`); console.log(`Verification rounds: ${receipt.verification.rounds}`); console.log(`Terra reviews: ${receipt.internal_reviewer.rounds} (${receipt.internal_reviewer.verdict ?? "none"})`); console.log(`Sol reviews: ${receipt.final_reviewer.rounds} (${receipt.final_reviewer.verdict ?? "none"})`); console.log(receipt.worktree_path); }
+    else { console.log(`State: ${receipt.state}`); console.log(`Iterations: ${receipt.implementer.iterations}`); console.log(`Verification rounds: ${receipt.verification.rounds}`); console.log(`Terra reviews: ${receipt.internal_reviewer.rounds} (${receipt.internal_reviewer.verdict ?? "none"})`); console.log(`Sol reviews: ${receipt.final_reviewer.rounds} (${receipt.final_reviewer.verdict ?? "none"})`); console.log(`Artifacts: ${executionPaths(parsed.stateDirectory, receipt.run_id.slice(0, receipt.run_id.lastIndexOf(":")), receipt.run_id.slice(receipt.run_id.lastIndexOf(":") + 1)).directory}`); console.log(receipt.worktree_path); }
     if (receipt.state !== "READY_FOR_PUBLISH") process.exitCode = signalCode ?? executionExitCode(receipt.errors[0]?.code ?? receipt.state);
   } catch (error) {
-    const code = isExecutionError(error) ? error.code : "OPERATIONAL_ERROR"; const message = error instanceof Error ? error.message : String(error);
+    const code = isExecutionError(error) ? error.code : "OPERATIONAL_ERROR"; const message = redact(error instanceof Error ? error.message : String(error));
     if (parsed.json) process.stdout.write(`${JSON.stringify({ state: "FAILED", error: { code, message } })}\n`); else process.stderr.write(`${code}: ${message}\n`);
     process.exitCode = signalCode ?? executionExitCode(code);
   } finally { process.removeListener("SIGINT", onSigInt); process.removeListener("SIGTERM", onSigTerm); }
@@ -270,8 +273,8 @@ async function runExecutionStatus(args: string[]): Promise<void> {
     const separator = parsed.runId.lastIndexOf(":"); if (separator <= 0) throw new Error("Invalid run ID.");
     const receipt = await readExecutionReceipt(parsed.stateDirectory, parsed.runId.slice(0, separator), parsed.runId.slice(separator + 1));
     if (!receipt) { process.exitCode = 3; if (parsed.json) process.stdout.write(`${JSON.stringify({ status: "NOT_FOUND" })}\n`); else process.stderr.write("EXECUTION_RECEIPT_INCONSISTENT: execution receipt not found\n"); return; }
-    if (parsed.json) process.stdout.write(`${JSON.stringify(receipt)}\n`); else console.log(`State: ${receipt.state}\nIterations: ${receipt.implementer.iterations}\nVerification rounds: ${receipt.verification.rounds}`);
-  } catch (error) { const code = isExecutionError(error) ? error.code : "OPERATIONAL_ERROR"; if (parsed.json) process.stdout.write(`${JSON.stringify({ status: "FAILED", error: { code, message: error instanceof Error ? error.message : String(error) } })}\n`); else process.stderr.write(`${code}: ${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 3; }
+    if (parsed.json) process.stdout.write(`${JSON.stringify(receipt)}\n`); else console.log(`State: ${receipt.state}\nIterations: ${receipt.implementer.iterations}\nVerification rounds: ${receipt.verification.rounds}\nTerra reviews: ${receipt.internal_reviewer.rounds} (${receipt.internal_reviewer.verdict ?? "none"})\nSol reviews: ${receipt.final_reviewer.rounds} (${receipt.final_reviewer.verdict ?? "none"})\nArtifacts: ${executionPaths(parsed.stateDirectory, parsed.runId.slice(0, separator), parsed.runId.slice(separator + 1)).directory}`);
+  } catch (error) { const code = isExecutionError(error) ? error.code : "OPERATIONAL_ERROR"; const message = redact(error instanceof Error ? error.message : String(error)); if (parsed.json) process.stdout.write(`${JSON.stringify({ status: "FAILED", error: { code, message } })}\n`); else process.stderr.write(`${code}: ${message}\n`); process.exitCode = 3; }
 }
 
 async function main(): Promise<void> {

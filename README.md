@@ -9,7 +9,7 @@ commands, calls Codex, accesses the network, or changes Git remotes.
 ## Commands
 
 ```bash
-npm install
+npm ci
 npm run validate -- ./templates/task-bundle
 npm run typecheck
 npm test
@@ -81,6 +81,9 @@ branch. Credential-bearing HTTP(S) registry URLs are rejected and persisted
 remote URLs are sanitized.
 
 Phase 4 uses injected fake agents and verification sandboxes in normal tests.
-The production adapter fails closed when a supported Codex runtime or sandbox
-is unavailable. It never commits, pushes, creates a product PR, executes a
-payload, or contacts the public network.
+Before any real model turn, the production adapter performs a credential-free
+runtime/auth preflight and requires an enforceable sandbox; it fails closed
+with a stable error when either is unavailable. Trusted verification caps are
+applied after taking the lower of local and bundle limits. It never commits,
+pushes, creates a product PR, executes a payload, or contacts the public
+network.

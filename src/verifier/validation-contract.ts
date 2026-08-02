@@ -7,12 +7,12 @@ import { validateArguments, validateExecutable } from "./executable-policy.js";
 
 function record(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
 export async function validateStructuredValidationContract(value: unknown, worktreePath: string, policy: { allowed_executables: string[]; allowed_environment_keys: string[]; maximum_command_seconds: number; maximum_output_bytes: number }): Promise<ValidationContract> {
-  if (!record(value) || !Array.isArray(value.commands) || value.commands.length === 0) throw new ExecutionError("VALIDATION_CONTRACT_INVALID", "validation.json.commands must be a non-empty array.");
+  if (!record(value) || !Array.isArray(value.commands) || value.commands.length === 0 || value.commands.length > 256) throw new ExecutionError("VALIDATION_CONTRACT_INVALID", "validation.json.commands must be a bounded non-empty array.");
   const ids = new Set<string>(); const commands: StructuredValidationCommand[] = [];
   for (const [index, raw] of value.commands.entries()) {
     const label = `validation.commands[${index}]`;
     if (!record(raw) || Object.keys(raw).some((key) => !["id", "executable", "args", "cwd", "environment", "required", "timeout_seconds", "maximum_output_bytes"].includes(key))) throw new ExecutionError("VALIDATION_CONTRACT_INVALID", `${label} has unknown fields.`);
-    if (typeof raw.id !== "string" || !raw.id || ids.has(raw.id)) throw new ExecutionError("VALIDATION_CONTRACT_INVALID", `${label}.id is invalid.`); ids.add(raw.id as string);
+    if (typeof raw.id !== "string" || !raw.id || raw.id.length > 128 || ids.has(raw.id)) throw new ExecutionError("VALIDATION_CONTRACT_INVALID", `${label}.id is invalid.`); ids.add(raw.id as string);
     const executable = validateExecutable(raw.executable, policy.allowed_executables);
     const args = validateArguments(executable, raw.args);
     if (typeof raw.cwd !== "string" || !raw.cwd || raw.cwd.includes("\\") || raw.cwd.split("/").includes("..") || path.isAbsolute(raw.cwd)) throw new ExecutionError("VALIDATION_CWD_UNSAFE", `${label}.cwd is unsafe.`);

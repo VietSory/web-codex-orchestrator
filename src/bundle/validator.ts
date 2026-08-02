@@ -369,6 +369,8 @@ function validateStructuredValidationCommand(
   label: string,
   issues: BundleValidationIssue[],
 ): boolean {
+  const allowedFields = new Set(["id", "executable", "args", "cwd", "environment", "required", "timeout_seconds", "maximum_output_bytes"]);
+  for (const key of Object.keys(item)) if (!allowedFields.has(key)) addIssue(issues, `${label} contains an unknown field: ${key}`);
   if (typeof item.command === "string") {
     if (SHELL_META_PATTERN.test(item.command)) addIssue(issues, `Shell operators or substitutions are not allowed: ${item.command}`);
     addIssue(issues, `${label}.command is not allowed in schema 1.3; use executable and args.`);
@@ -376,7 +378,7 @@ function validateStructuredValidationCommand(
   if (typeof item.executable !== "string" || !item.executable || !VALIDATION_EXECUTABLE_PATTERN.test(item.executable) || item.executable.includes("/") || item.executable.includes("\\") || /\s/.test(item.executable) || VALIDATION_SHELL_META_PATTERN.test(item.executable)) {
     addIssue(issues, `${label}.executable must be a simple executable name.`);
   }
-  if (!Array.isArray(item.args) || !item.args.every((arg) => typeof arg === "string" && !arg.includes("\u0000"))) {
+  if (!Array.isArray(item.args) || item.args.length > 256 || !item.args.every((arg) => typeof arg === "string" && arg.length <= 4096 && !arg.includes("\u0000"))) {
     addIssue(issues, `${label}.args must be an array of strings without NUL bytes.`);
   }
   if (typeof item.cwd !== "string" || !item.cwd || item.cwd.startsWith("/") || item.cwd.startsWith("\\") || /^[A-Za-z]:/.test(item.cwd) || item.cwd.split(/[\\/]/).includes("..")) {
@@ -385,9 +387,9 @@ function validateStructuredValidationCommand(
   if (!isRecord(item.environment)) {
     addIssue(issues, `${label}.environment must be an object.`);
   } else {
-    const denied = new Set(["PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "GIT_DIR", "GIT_WORK_TREE", "NODE_OPTIONS", "LD_PRELOAD", "SSH_AUTH_SOCK", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]);
+    const denied = new Set(["PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "SHELL", "COMSPEC", "CODEX_HOME", "BASH_ENV", "ENV", "CDPATH", "IFS", "GIT_DIR", "GIT_WORK_TREE", "NODE_OPTIONS", "PYTHONPATH", "LD_PRELOAD", "SSH_AUTH_SOCK", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]);
     for (const [key, value] of Object.entries(item.environment)) {
-      if (!VALIDATION_ENVIRONMENT_KEY_PATTERN.test(key) || denied.has(key) || /TOKEN|SECRET|PASSWORD|AUTH|CREDENTIAL|PROXY/i.test(key) || typeof value !== "string" || value.length > 1024 || value.includes("\u0000") || VALIDATION_SHELL_META_PATTERN.test(value)) {
+      if (!VALIDATION_ENVIRONMENT_KEY_PATTERN.test(key) || denied.has(key) || /^GIT_CONFIG/i.test(key) || /^DYLD_/i.test(key) || /TOKEN|SECRET|PASSWORD|AUTH|CREDENTIAL|PROXY/i.test(key) || typeof value !== "string" || value.length > 1024 || value.includes("\u0000") || VALIDATION_SHELL_META_PATTERN.test(value)) {
         addIssue(issues, `${label}.environment contains a denied or unsafe entry.`);
       }
     }
@@ -404,8 +406,8 @@ function validateStructuredValidationCommand(
 
 function validateValidationContract(value: unknown, issues: BundleValidationIssue[], schemaVersion: unknown): value is ValidationContract {
   if (!assertRecord(value, "validation.json", issues)) return false;
-  if (!Array.isArray(value.commands) || value.commands.length === 0) {
-    addIssue(issues, "validation.commands must be a non-empty array.");
+  if (!Array.isArray(value.commands) || value.commands.length === 0 || value.commands.length > 256) {
+    addIssue(issues, "validation.commands must be a bounded non-empty array.");
     return false;
   }
 

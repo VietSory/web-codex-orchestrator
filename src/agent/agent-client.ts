@@ -1,1 +1,1 @@
-export type { AgentClient, AgentRole, AgentTurnRequest, AgentTurnResponse } from "./contracts.js";
+export type { AgentClient, AgentRole, AgentThread, AgentTurnRequest, AgentTurnResponse } from "./contracts.js";

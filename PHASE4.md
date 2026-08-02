@@ -8,10 +8,17 @@ reviews for the same digest.
 
 The normal test suite injects `FakeAgentClient` and
 `FakeVerificationSandbox`. `CodexSdkAgentClient` and
-`CodexVerificationSandbox` fail closed unless a supported runtime is injected.
-No Phase 4 operation commits, pushes, invokes GitHub, executes payload files,
-or automates a browser.
+`CodexVerificationSandbox` fail closed unless a supported runtime is injected;
+the agent client performs a credential-free runtime/auth preflight and the
+sandbox is checked before the first model turn. No Phase 4 operation commits,
+pushes, invokes GitHub, executes payload files, or automates a browser.
 
 Execution artifacts are stored below
 `runs/<task-id>/<archive-sha256>/execution/` using atomic JSON writes and an
 append-only state journal. `execution-status` is read-only.
+
+Trusted verification configuration caps changed files, diff lines, file size,
+command duration, and command output. Bundle limits are always reduced to the
+trusted cap. Model prompts contain only bounded, redacted request/plan,
+change-set, and verification evidence; complete transcripts and environment
+values are never persisted.

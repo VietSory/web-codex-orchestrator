@@ -1,4 +1,4 @@
-import type { AgentClient, AgentRole, AgentTurnRequest, AgentTurnResponse } from "./contracts.js";
+import type { AgentClient, AgentRole, AgentThread, AgentTurnRequest, AgentTurnResponse } from "./contracts.js";
 
 export type FakeResponse = unknown | ((request: AgentTurnRequest) => unknown | Promise<unknown>);
 
@@ -7,12 +7,22 @@ export class FakeAgentClient implements AgentClient {
   readonly threads: string[] = [];
   private index = 0;
   constructor(private readonly responses: FakeResponse[] = []) {}
+  async checkAvailability(): Promise<void> { return undefined; }
+  async startThread(request: Omit<AgentTurnRequest, "thread_id">): Promise<AgentThread> {
+    const threadId = `${request.role}-fake-thread-${this.threads.length + 1}`;
+    this.threads.push(threadId);
+    return { thread_id: threadId };
+  }
+  async resumeThread(threadId: string): Promise<AgentThread> {
+    if (!threadId) throw new Error("threadId is required");
+    return { thread_id: threadId };
+  }
   async turn(request: AgentTurnRequest): Promise<AgentTurnResponse> {
     this.calls.push({ ...request });
     const value = this.responses[Math.min(this.index++, Math.max(0, this.responses.length - 1))];
     const output = typeof value === "function" ? await value(request) : value ?? this.defaultOutput(request.role);
-    const threadId = request.thread_id ?? `${request.role}-fake-${this.calls.length}`;
-    this.threads.push(threadId);
+    const threadId = request.thread_id ?? `${request.role}-fake-thread-${this.threads.length + 1}`;
+    if (!this.threads.includes(threadId)) this.threads.push(threadId);
     return { thread_id: threadId, output };
   }
   private defaultOutput(role: AgentRole): unknown {

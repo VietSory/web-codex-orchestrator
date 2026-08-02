@@ -149,6 +149,8 @@ export interface VerificationCommandResult {
   stderr_truncated: boolean;
   stdout?: string;
   stderr?: string;
+  stdout_log_path?: string;
+  stderr_log_path?: string;
   generated_paths: string[];
   status: "PASS" | "FAIL" | "TIMEOUT" | "DENIED" | "MUTATED";
 }
@@ -160,6 +162,7 @@ export interface ChangeEntry {
   content_sha256: string | null;
   old_path?: string;
   binary?: boolean;
+  special?: boolean;
 }
 
 export interface ChangeSet {
@@ -172,6 +175,7 @@ export interface ChangeSet {
   untracked_paths: string[];
   generated_paths: string[];
   tracked_diff_sha256?: string;
+  refs_sha256?: string;
 }
 
 export interface ExecutionReceipt {
@@ -182,12 +186,13 @@ export interface ExecutionReceipt {
   branch_name: string;
   worktree_path: string;
   accepted_bundle_path: string;
+  repository_refs_sha256?: string | null;
   implementer: { model: string; reasoning_effort: string; thread_id: string; iterations: number };
-  internal_reviewer: { model: string; reasoning_effort: string; rounds: number; latest_thread_id: string | null; verdict: ReviewVerdict | null; reviewed_change_set_sha256: string | null };
-  final_reviewer: { model: string; reasoning_effort: string; rounds: number; latest_thread_id: string | null; verdict: ReviewVerdict | null; reviewed_change_set_sha256: string | null };
+  internal_reviewer: { model: string; reasoning_effort: string; rounds: number; latest_thread_id: string | null; thread_ids?: string[]; verdict: ReviewVerdict | null; reviewed_change_set_sha256: string | null };
+  final_reviewer: { model: string; reasoning_effort: string; rounds: number; latest_thread_id: string | null; thread_ids?: string[]; verdict: ReviewVerdict | null; reviewed_change_set_sha256: string | null };
   verification: { rounds: number; required_commands_passed: boolean; verified_change_set_sha256: string | null; commands: VerificationCommandResult[] };
   change_set_sha256: string | null;
-  usage: { input_tokens: number; cached_input_tokens: number; output_tokens: number };
+  usage: { input_tokens: number; cached_input_tokens: number; output_tokens: number; total_turns?: number; started_at?: string };
   errors: Array<{ code: string; message: string }>;
   created_at: string;
   updated_at: string;
