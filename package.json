@@ -14,7 +14,7 @@
     "validate": "tsx src/cli/index.ts validate",
     "typecheck": "tsc -p tsconfig.json",
     "build": "tsc -p tsconfig.build.json",
-    "test": "tsx --test tests/**/*.test.ts"
+    "test": "tsx --test tests/*.test.ts"
   },
   "devDependencies": {
     "@types/node": "latest",
