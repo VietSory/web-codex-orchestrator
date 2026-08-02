@@ -31,11 +31,11 @@ export async function resolveRepository(
   }
   if (!path.isAbsolute(canonical)) throw new GitBoundaryError("REPOSITORY_PATH_UNSAFE", "Resolved repository path is not absolute.");
 
-  const worktree = await runner.run(["rev-parse", "--is-inside-work-tree"], canonical);
-  if (worktree.exitCode !== 0 || worktree.stdout.trim() !== "true") throw new GitBoundaryError("REPOSITORY_NOT_GIT", "Configured path is not a Git worktree.", worktree);
   const bare = await runner.run(["rev-parse", "--is-bare-repository"], canonical);
   if (bare.exitCode !== 0) throw new GitBoundaryError("REPOSITORY_NOT_GIT", "Configured path is not a Git repository.", bare);
   if (bare.stdout.trim() === "true") throw new GitBoundaryError("REPOSITORY_BARE", "Configured repository must not be bare.", bare);
+  const worktree = await runner.run(["rev-parse", "--is-inside-work-tree"], canonical);
+  if (worktree.exitCode !== 0 || worktree.stdout.trim() !== "true") throw new GitBoundaryError("REPOSITORY_NOT_GIT", "Configured path is not a Git worktree.", worktree);
 
   return {
     id: repositoryId,

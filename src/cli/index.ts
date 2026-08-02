@@ -142,7 +142,8 @@ function parsePhase3Arguments(args: string[], mode: "prepare" | "scan" | "watch"
 }
 
 function phase3ExitCode(code: string): number {
-  return code === "OPERATIONAL_ERROR" || code === "FETCH_FAILED" || code === "WORKTREE_CREATE_FAILED" || code === "WORKTREE_VERIFY_FAILED" ? 3 : 1;
+  const policyCodes = new Set(["EXECUTION_CONTRACT_REQUIRED", "DELIVERY_CONTRACT_INVALID", "GIT_POLICY_INVALID", "BRANCH_POLICY_VIOLATION", "BASE_COMMIT_INVALID", "FETCH_DISABLED", "REPOSITORY_NOT_REGISTERED", "REMOTE_NOT_ALLOWED", "WORKTREE_PATH_UNSAFE"]);
+  return policyCodes.has(code) ? 1 : 3;
 }
 
 async function runPrepare(args: string[]): Promise<void> {
@@ -197,7 +198,7 @@ async function runWatch(args: string[]): Promise<void> {
     const code = error instanceof CandidatePolicyError ? error.code : error instanceof Error && "code" in error ? String((error as { code: unknown }).code) : "OPERATIONAL_ERROR";
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`${code}: ${message}\n`);
-    process.exitCode = code === "WATCH_LOCKED" ? 1 : 3;
+    process.exitCode = 3;
   } finally {
     process.removeListener("SIGINT", stop);
     process.removeListener("SIGTERM", stop);

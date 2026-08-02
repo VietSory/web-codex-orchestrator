@@ -99,7 +99,13 @@ function errorDetails(error: unknown): { code: PreparationErrorCode; message: st
 }
 
 function isBlockedCode(code: PreparationErrorCode): boolean {
-  return code !== "OPERATIONAL_ERROR" && code !== "FETCH_FAILED" && code !== "WORKTREE_CREATE_FAILED" && code !== "WORKTREE_VERIFY_FAILED";
+  const failedCodes = new Set([
+    "OPERATIONAL_ERROR", "CONFIG_NOT_FOUND", "CONFIG_NOT_REGULAR_FILE", "CONFIG_SYMLINK", "CONFIG_INVALID",
+    "REPOSITORY_PATH_UNSAFE", "REPOSITORY_NOT_GIT", "REPOSITORY_BARE", "REMOTE_NOT_FOUND", "REMOTE_URL_MISMATCH",
+    "FETCH_FAILED", "BASE_COMMIT_NOT_FOUND", "BASE_COMMIT_NOT_ANCESTOR", "BRANCH_ALREADY_EXISTS", "WORKTREE_ALREADY_EXISTS",
+    "WORKTREE_CREATE_FAILED", "WORKTREE_VERIFY_FAILED", "RUN_RECEIPT_INCONSISTENT", "RUN_LOCKED",
+  ]);
+  return !failedCodes.has(code);
 }
 
 async function acceptedBundlePath(stateDirectory: string, receipt: AcceptedIntakeReceipt): Promise<string> {
@@ -200,6 +206,7 @@ export async function prepareTask(options: PreparationOptions): Promise<Preparat
       }
     } catch (error) {
       if (error instanceof PreparationError) { preserveExistingRun = true; throw error; }
+      preserveExistingRun = true;
       throw new PreparationError("RUN_RECEIPT_INCONSISTENT", `Existing run receipt cannot be read: ${error instanceof Error ? error.message : String(error)}`);
     }
     if (existing) {

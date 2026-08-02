@@ -11,7 +11,13 @@ import { StabilityTracker } from "./stability-tracker.js";
 function delay(milliseconds: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, milliseconds)); }
 
 function classify(code: string): ScanCandidateResult["result"] {
-  if (code === "OPERATIONAL_ERROR" || code === "FETCH_FAILED" || code === "WORKTREE_CREATE_FAILED" || code === "WORKTREE_VERIFY_FAILED") return "failed";
+  const operationalCodes = new Set([
+    "OPERATIONAL_ERROR", "CONFIG_NOT_FOUND", "CONFIG_NOT_REGULAR_FILE", "CONFIG_SYMLINK", "CONFIG_INVALID",
+    "REPOSITORY_PATH_UNSAFE", "REPOSITORY_NOT_GIT", "REPOSITORY_BARE", "REMOTE_NOT_FOUND", "REMOTE_URL_MISMATCH",
+    "FETCH_FAILED", "BASE_COMMIT_NOT_FOUND", "BASE_COMMIT_NOT_ANCESTOR", "BRANCH_ALREADY_EXISTS", "WORKTREE_ALREADY_EXISTS",
+    "WORKTREE_CREATE_FAILED", "WORKTREE_VERIFY_FAILED", "RUN_RECEIPT_INCONSISTENT", "RUN_LOCKED",
+  ]);
+  if (operationalCodes.has(code)) return "failed";
   if (code.startsWith("ZIP_") || code.startsWith("BUNDLE_") || code.startsWith("CHECKSUM_") || code.startsWith("PAYLOAD_") || code === "EXECUTION_CONTRACT_REQUIRED") return "rejected";
   return "blocked";
 }
