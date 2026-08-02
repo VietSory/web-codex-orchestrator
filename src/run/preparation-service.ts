@@ -124,8 +124,9 @@ async function acceptedBundlePath(stateDirectory: string, receipt: AcceptedIntak
   return canonical;
 }
 
-function protectedGitArguments(stateDirectory: string): string[] {
-  return ["-c", `core.hooksPath=${path.join(path.resolve(stateDirectory), "git-runtime", "empty-hooks")}`, "-c", "core.fsmonitor=false"];
+function safeGitArguments(runner: GitRunner, stateDirectory: string, args: readonly string[]): string[] {
+  if (runner.runtimeDirectory !== undefined) return [...args];
+  return ["-c", `core.hooksPath=${path.join(path.resolve(stateDirectory), "git-runtime", "empty-hooks")}`, "-c", "core.fsmonitor=false", ...args];
 }
 
 async function verifyExistingRun(receipt: RunReceipt, stateDirectory: string, runner: GitRunner): Promise<void> {
@@ -136,18 +137,18 @@ async function verifyExistingRun(receipt: RunReceipt, stateDirectory: string, ru
   if (!relative || relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) throw new PreparationError("RUN_RECEIPT_INCONSISTENT", "Existing worktree path escapes state-dir/worktrees.", receipt);
   const info = await lstat(candidate).catch(() => undefined);
   if (!info || info.isSymbolicLink() || !info.isDirectory()) throw new PreparationError("RUN_RECEIPT_INCONSISTENT", "Existing run worktree is missing or unsafe.", receipt);
-  const safeArgs = protectedGitArguments(stateDirectory);
-  const head = await runner.run([...safeArgs, "rev-parse", "HEAD"], candidate);
-  const branch = await runner.run([...safeArgs, "branch", "--show-current"], candidate);
-  const status = await runner.run([...safeArgs, "status", "--porcelain"], candidate);
+  const safeArgs = (args: readonly string[]) => safeGitArguments(runner, stateDirectory, args);
+  const head = await runner.run(safeArgs(["rev-parse", "HEAD"]), candidate);
+  const branch = await runner.run(safeArgs(["branch", "--show-current"]), candidate);
+  const status = await runner.run(safeArgs(["status", "--porcelain"]), candidate);
   if (head.exitCode !== 0 || head.stdout.trim() !== receipt.base_commit || branch.exitCode !== 0 || branch.stdout.trim() !== receipt.branch_name || status.exitCode !== 0 || status.stdout.trim() !== "") throw new PreparationError("RUN_RECEIPT_INCONSISTENT", "Existing run receipt does not match the actual worktree.", receipt);
 }
 
-async function removeCreatedWorktree(worktree: CreatedWorktree | undefined, repositoryPath: string, runner: GitRunner): Promise<CleanupError[]> {
+async function removeCreatedWorktree(worktree: CreatedWorktree | undefined, stateDirectory: string, repositoryPath: string, runner: GitRunner): Promise<CleanupError[]> {
   if (!worktree?.created) return [];
   const errors: CleanupError[] = [];
   try {
-    const removed = await runner.run(["worktree", "remove", "--force", worktree.path], repositoryPath);
+    const removed = await runner.run(safeGitArguments(runner, stateDirectory, ["worktree", "remove", "--force", worktree.path]), repositoryPath);
     if (removed.exitCode !== 0) errors.push({ action: "worktree-remove", message: "Git worktree removal failed." });
   } catch {
     errors.push({ action: "worktree-remove", message: "Git worktree removal failed." });
@@ -159,11 +160,11 @@ async function removeCreatedWorktree(worktree: CreatedWorktree | undefined, repo
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") errors.push({ action: "worktree-path-remove", message: "Worktree path cleanup failed." });
   }
   try {
-    const current = await runner.run(["rev-parse", "--verify", `refs/heads/${worktree.branch_name}`], repositoryPath);
+    const current = await runner.run(safeGitArguments(runner, stateDirectory, ["rev-parse", "--verify", `refs/heads/${worktree.branch_name}`]), repositoryPath);
     if (current.exitCode !== 0 || (worktree.branch_tip !== undefined && current.stdout.trim() !== worktree.branch_tip)) {
       errors.push({ action: "branch-remove", message: "Created branch changed before cleanup; it was preserved." });
     } else {
-      const removedBranch = await runner.run(["branch", "-D", worktree.branch_name], repositoryPath);
+      const removedBranch = await runner.run(safeGitArguments(runner, stateDirectory, ["branch", "-D", worktree.branch_name]), repositoryPath);
       if (removedBranch.exitCode !== 0) errors.push({ action: "branch-remove", message: "Created branch cleanup failed." });
     }
   } catch {
@@ -298,7 +299,7 @@ export async function prepareTask(options: PreparationOptions): Promise<Preparat
     const detail = errorDetails(error);
     const previousState = receipt.state;
     const cleanupErrors = [...detail.cleanupErrors];
-    if (repositoryPath) cleanupErrors.push(...await removeCreatedWorktree(worktree, repositoryPath, runner));
+    if (repositoryPath) cleanupErrors.push(...await removeCreatedWorktree(worktree, stateDirectory, repositoryPath, runner));
     receipt.errors = [
       { code: detail.code, message: detail.message },
       ...cleanupErrors.map((cleanup) => ({ code: "CLEANUP_FAILED", message: `${cleanup.action}: ${cleanup.message}` })),

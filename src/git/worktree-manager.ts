@@ -38,13 +38,17 @@ export interface WorktreeOptions {
   hooksDirectory?: string;
 }
 
-function protectedArguments(hooksDirectory: string): string[] {
-  return ["-c", `core.hooksPath=${hooksDirectory}`, "-c", "core.fsmonitor=false"];
+function safeGitArguments(runner: GitRunner, hooksDirectory: string, args: readonly string[]): string[] {
+  // GitRunner prepends these options whenever it has a runtime directory. The
+  // fallback keeps direct worktree-manager callers safe when they inject a
+  // runner without that runtime.
+  if (runner.runtimeDirectory !== undefined) return [...args];
+  return ["-c", `core.hooksPath=${hooksDirectory}`, "-c", "core.fsmonitor=false", ...args];
 }
 
-async function inspectCheckoutFilters(repository: ResolvedRepository, runner: GitRunner): Promise<void> {
+async function inspectCheckoutFilters(repository: ResolvedRepository, runner: GitRunner, hooksDirectory: string): Promise<void> {
   const result = await runner.run(
-    ["config", "--show-origin", "--get-regexp", "^filter\\..*\\.(smudge|process|required)$"],
+    safeGitArguments(runner, hooksDirectory, ["config", "--show-origin", "--get-regexp", "^filter\\..*\\.(smudge|process|required)$"]),
     repository.path,
   );
   if (result.exitCode === 0 && result.stdout.trim().length > 0) {
@@ -83,7 +87,7 @@ async function cleanupCreatedResources(
   const errors: CleanupError[] = [];
   if (worktreeAdded) {
     const removed = await runner.run(
-      [...protectedArguments(options.hooksDirectory ?? path.join(path.resolve(options.stateDirectory), "git-runtime", "empty-hooks")), "worktree", "remove", "--force", worktreePath],
+      safeGitArguments(runner, options.hooksDirectory ?? path.join(path.resolve(options.stateDirectory), "git-runtime", "empty-hooks"), ["worktree", "remove", "--force", worktreePath]),
       options.repository.path,
     ).catch((error: unknown) => {
       errors.push({ action: "worktree-remove", message: error instanceof Error ? error.message : "Git worktree removal failed." });
@@ -98,11 +102,11 @@ async function cleanupCreatedResources(
   }
   if (branchCreated) {
     const branchRef = `refs/heads/${options.branchName}`;
-    const current = await runner.run(["rev-parse", "--verify", branchRef], options.repository.path).catch(() => undefined);
+    const current = await runner.run(safeGitArguments(runner, options.hooksDirectory ?? path.join(path.resolve(options.stateDirectory), "git-runtime", "empty-hooks"), ["rev-parse", "--verify", branchRef]), options.repository.path).catch(() => undefined);
     if (!current || current.exitCode !== 0 || (branchTip !== undefined && current.stdout.trim() !== branchTip)) {
       errors.push({ action: "branch-remove", message: "Created branch changed before cleanup; it was preserved." });
     } else {
-      const removed = await runner.run(["branch", "-D", options.branchName], options.repository.path).catch(() => undefined);
+      const removed = await runner.run(safeGitArguments(runner, options.hooksDirectory ?? path.join(path.resolve(options.stateDirectory), "git-runtime", "empty-hooks"), ["branch", "-D", options.branchName]), options.repository.path).catch(() => undefined);
       if (!removed || removed.exitCode !== 0) errors.push({ action: "branch-remove", message: "Created branch cleanup failed." });
     }
   }
@@ -131,14 +135,15 @@ export async function createIsolatedWorktree(options: WorktreeOptions): Promise<
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
 
-  const branchRef = `refs/heads/${options.branchName}`;
-  const branch = await runner.run(["show-ref", "--verify", "--quiet", branchRef], options.repository.path);
-  if (branch.exitCode === 0) throw new GitBoundaryError("BRANCH_ALREADY_EXISTS", "Branch already exists.", branch);
-
   const hooksDirectory = options.hooksDirectory ?? path.join(stateDirectory, "git-runtime", "empty-hooks");
   await ensureDirectory(path.dirname(hooksDirectory));
   await ensureDirectory(hooksDirectory);
-  await inspectCheckoutFilters(options.repository, runner);
+
+  const branchRef = `refs/heads/${options.branchName}`;
+  const branch = await runner.run(safeGitArguments(runner, hooksDirectory, ["show-ref", "--verify", "--quiet", branchRef]), options.repository.path);
+  if (branch.exitCode === 0) throw new GitBoundaryError("BRANCH_ALREADY_EXISTS", "Branch already exists.", branch);
+
+  await inspectCheckoutFilters(options.repository, runner, hooksDirectory);
 
   let worktreeAdded = false;
   let branchCreated = false;
@@ -147,21 +152,20 @@ export async function createIsolatedWorktree(options: WorktreeOptions): Promise<
     // First create an unpopulated detached worktree. This gives the operation
     // a resource it can own before attempting the task branch, so a branch
     // appearing in the race window is never deleted by cleanup.
-    const added = await runner.run([
-      ...protectedArguments(hooksDirectory),
+    const added = await runner.run(safeGitArguments(runner, hooksDirectory, [
       "worktree", "add", "--detach", "--no-checkout", worktreePath, options.baseCommit,
-    ], options.repository.path);
+    ]), options.repository.path);
     if (added.exitCode !== 0) throw failed("WORKTREE_CREATE_FAILED", "Git worktree creation failed.", added);
     worktreeAdded = true;
 
     const canonicalWorktree = await realpath(worktreePath);
     if (!contained(worktreesRoot, canonicalWorktree)) throw failed("WORKTREE_VERIFY_FAILED", "Resolved worktree path escapes state-dir/worktrees.");
-    const owned = await runner.run(["worktree", "list", "--porcelain"], options.repository.path);
+    const owned = await runner.run(safeGitArguments(runner, hooksDirectory, ["worktree", "list", "--porcelain"]), options.repository.path);
     if (owned.exitCode !== 0 || !owned.stdout.split(/\r?\n/).some((line) => line === `worktree ${canonicalWorktree}`)) {
       throw failed("WORKTREE_VERIFY_FAILED", "New worktree ownership could not be verified.", owned);
     }
 
-    const createdBranch = await runner.run(["branch", options.branchName, options.baseCommit], options.repository.path);
+    const createdBranch = await runner.run(safeGitArguments(runner, hooksDirectory, ["branch", options.branchName, options.baseCommit]), options.repository.path);
     if (createdBranch.exitCode !== 0) {
       const code = /already exists|a branch named/i.test(`${createdBranch.stdout}\n${createdBranch.stderr}`)
         ? "BRANCH_ALREADY_EXISTS"
@@ -169,38 +173,35 @@ export async function createIsolatedWorktree(options: WorktreeOptions): Promise<
       throw new GitBoundaryError(code, code === "BRANCH_ALREADY_EXISTS" ? "Branch already exists." : "Task branch creation failed.", createdBranch);
     }
     branchCreated = true;
-    const branchRefResult = await runner.run(["rev-parse", "--verify", `refs/heads/${options.branchName}`], options.repository.path);
+    const branchRefResult = await runner.run(safeGitArguments(runner, hooksDirectory, ["rev-parse", "--verify", `refs/heads/${options.branchName}`]), options.repository.path);
     if (branchRefResult.exitCode !== 0 || branchRefResult.stdout.trim().length === 0) throw failed("WORKTREE_VERIFY_FAILED", "Created branch could not be verified.", branchRefResult);
     branchTip = branchRefResult.stdout.trim();
 
     // Point the detached worktree HEAD at the branch without invoking a
     // checkout. No repository files, hooks, or filters are executed.
-    const attached = await runner.run([
-      ...protectedArguments(hooksDirectory),
+    const attached = await runner.run(safeGitArguments(runner, hooksDirectory, [
       "symbolic-ref", "HEAD", `refs/heads/${options.branchName}`,
-    ], canonicalWorktree);
+    ]), canonicalWorktree);
     if (attached.exitCode !== 0) throw failed("WORKTREE_VERIFY_FAILED", "Worktree branch attachment failed.", attached);
 
     // Populate the index and materialize tracked bytes without invoking a
     // checkout hook. External smudge/process filters were rejected above.
-    const indexed = await runner.run([
-      ...protectedArguments(hooksDirectory),
+    const indexed = await runner.run(safeGitArguments(runner, hooksDirectory, [
       "read-tree", "HEAD",
-    ], canonicalWorktree);
+    ]), canonicalWorktree);
     if (indexed.exitCode !== 0) throw failed("WORKTREE_VERIFY_FAILED", "Worktree index initialization failed.", indexed);
-    const materialized = await runner.run([
-      ...protectedArguments(hooksDirectory),
+    const materialized = await runner.run(safeGitArguments(runner, hooksDirectory, [
       "checkout-index", "--all", "--force",
-    ], canonicalWorktree);
+    ]), canonicalWorktree);
     if (materialized.exitCode !== 0) throw failed("WORKTREE_VERIFY_FAILED", "Worktree materialization failed.", materialized);
 
-    const head = await runner.run([...protectedArguments(hooksDirectory), "rev-parse", "HEAD"], canonicalWorktree);
+    const head = await runner.run(safeGitArguments(runner, hooksDirectory, ["rev-parse", "HEAD"]), canonicalWorktree);
     if (head.exitCode !== 0 || head.stdout.trim() !== options.baseCommit) throw failed("WORKTREE_VERIFY_FAILED", "Worktree HEAD does not match the requested base commit.", head);
-    const currentBranch = await runner.run([...protectedArguments(hooksDirectory), "branch", "--show-current"], canonicalWorktree);
+    const currentBranch = await runner.run(safeGitArguments(runner, hooksDirectory, ["branch", "--show-current"]), canonicalWorktree);
     if (currentBranch.exitCode !== 0 || currentBranch.stdout.trim() !== options.branchName) throw failed("WORKTREE_VERIFY_FAILED", "Worktree branch does not match the requested branch.", currentBranch);
-    const status = await runner.run([...protectedArguments(hooksDirectory), "status", "--porcelain"], canonicalWorktree);
+    const status = await runner.run(safeGitArguments(runner, hooksDirectory, ["status", "--porcelain"]), canonicalWorktree);
     if (status.exitCode !== 0 || status.stdout.trim() !== "") throw failed("WORKTREE_VERIFY_FAILED", "New worktree is not clean.", status);
-    const listed = await runner.run(["worktree", "list", "--porcelain"], options.repository.path);
+    const listed = await runner.run(safeGitArguments(runner, hooksDirectory, ["worktree", "list", "--porcelain"]), options.repository.path);
     if (listed.exitCode !== 0 || !listed.stdout.split(/\r?\n/).some((line) => line === `worktree ${canonicalWorktree}`)) throw failed("WORKTREE_VERIFY_FAILED", "New worktree is not present in git worktree list.", listed);
     return { path: canonicalWorktree, branch_name: options.branchName, base_commit: options.baseCommit, created: true, ...(branchTip ? { branch_tip: branchTip } : {}) };
   } catch (error) {

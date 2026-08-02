@@ -10,6 +10,7 @@ import { validateExecutionContract } from "../src/execution/execution-validator.
 import { prepareTask, PreparationError } from "../src/run/preparation-service.js";
 import { scanInbox } from "../src/inbox/scanner.js";
 import { GitRunner } from "../src/git/git-runner.js";
+import { ensureGitRuntime } from "../src/git/git-runtime.js";
 import { createIsolatedWorktree } from "../src/git/worktree-manager.js";
 import { copyTemplate, updateChecksums, writeYazlZip } from "./helpers/zip-fixture.js";
 
@@ -218,7 +219,7 @@ test("P3 worktree race: a branch created after the preflight survives failed pre
       private raced = false;
       override async run(args: readonly string[], cwd: string) {
         const result = await super.run(args, cwd);
-        if (!this.raced && args[0] === "show-ref" && args[1] === "--verify" && args[3] === `refs/heads/${branchName}`) {
+        if (!this.raced && args.includes("show-ref") && args.includes(`refs/heads/${branchName}`)) {
           this.raced = true;
           await command(["git", "branch", branchName, commit], cwd);
         }
@@ -252,5 +253,67 @@ test("P3 CLI scan emits human output by default and one JSON object with --json"
     const json = await runCli(["scan", "--inbox", inbox, "--state-dir", state, "--config", config, "--json"]);
     assert.equal(json.code, 0, json.stderr);
     assert.deepEqual(JSON.parse(json.stdout) as { discovered: number }, { scan_version: "1.0", discovered: 0, unstable: 0, skipped: 0, ready_for_codex: 0, rejected: 0, blocked: 0, failed: 0, results: [] });
+  });
+});
+
+test("P3-077: reference-transaction hook is disabled during branch/worktree preparation", async () => {
+  await withFixture(async ({ archive, state, config, root, repo }) => {
+    const marker = path.join(root, "reference-transaction-prepare-marker");
+    await writeFile(path.join(repo, ".git", "hooks", "reference-transaction"), `#!/bin/sh\nprintf marker > ${marker}\n`, { mode: 0o700 });
+    const receipt = await prepareTask({ archivePath: archive, stateDirectory: state, configPath: config });
+    assert.equal(receipt.status, "READY_FOR_CODEX");
+    assert.equal(await pathExists(marker), false);
+  });
+});
+
+test("P3-078: reference-transaction hook is disabled during an allowlisted fetch", async () => {
+  await withFixture(async ({ archive, state, config, root, repo, remote, commit }) => {
+    const marker = path.join(root, "reference-transaction-fetch-marker");
+    const seeded = await command(["git", "--git-dir", remote, "fetch", repo, "refs/heads/main:refs/heads/main"], root);
+    assert.equal(seeded.code, 0, seeded.stderr);
+    await writeFile(path.join(repo, ".git", "hooks", "reference-transaction"), `#!/bin/sh\nprintf marker > ${marker}\n`, { mode: 0o700 });
+    const configValue = JSON.parse(await readFile(config, "utf8")) as { repositories: { fixture?: { fetch_policy: string } } };
+    configValue.repositories.fixture!.fetch_policy = "always";
+    await writeFile(config, `${JSON.stringify(configValue, null, 2)}\n`);
+    const receipt = await prepareTask({ archivePath: archive, stateDirectory: state, configPath: config });
+    assert.equal(receipt.status, "READY_FOR_CODEX");
+    assert.equal(await pathExists(marker), false);
+  });
+});
+
+test("P3-079: cleanup branch deletion is protected from reference-transaction hooks", async () => {
+  await withFixture(async ({ archive, state, config, root, repo }) => {
+    const marker = path.join(root, "reference-transaction-cleanup-marker");
+    await writeFile(path.join(repo, ".git", "hooks", "reference-transaction"), `#!/bin/sh\nprintf marker > ${marker}\n`, { mode: 0o700 });
+    class ForcedVerificationFailureRunner extends GitRunner {
+      private failed = false;
+
+      override async run(args: readonly string[], cwd: string) {
+        const result = await super.run(args, cwd);
+        if (!this.failed && args[0] === "status" && args[1] === "--porcelain" && cwd.includes(path.join("worktrees", "TASK-2026-003"))) {
+          this.failed = true;
+          return { ...result, exitCode: 1, stderr: "forced verification failure" };
+        }
+        return result;
+      }
+    }
+    const runner = new ForcedVerificationFailureRunner(process.env, path.join(state, "git-runtime"));
+    await assert.rejects(
+      prepareTask({ archivePath: archive, stateDirectory: state, configPath: config, runner }),
+      (error: unknown) => error instanceof PreparationError && error.code === "WORKTREE_VERIFY_FAILED",
+    );
+    const branch = await command(["git", "show-ref", "--verify", "--quiet", "refs/heads/codex/task-2026-003"], repo);
+    assert.equal(branch.code, 1, branch.stderr);
+    assert.equal(await pathExists(marker), false);
+  });
+});
+
+test("P3-080: every GitCommandResult from a runtime-bound runner carries hook protection", async () => {
+  await withFixture(async ({ state, repo }) => {
+    const runtime = await ensureGitRuntime(state);
+    const runner = new GitRunner(process.env, runtime.root);
+    const result = await runner.run(["rev-parse", "--is-inside-work-tree"], repo);
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.deepEqual(result.args.slice(0, 4), ["-c", `core.hooksPath=${runtime.hooksPath}`, "-c", "core.fsmonitor=false"]);
   });
 });

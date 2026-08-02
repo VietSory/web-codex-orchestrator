@@ -38,3 +38,6 @@ successfully created it.
 HTTP(S) registry URLs containing userinfo or credentials are rejected. Receipt
 and journal remote URLs are sanitized, and credential-bearing values are never
 written to state storage or CLI output.
+
+The test-to-case mapping is maintained in
+[`PHASE3-COVERAGE.md`](./PHASE3-COVERAGE.md).

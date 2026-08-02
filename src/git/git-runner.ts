@@ -25,8 +25,17 @@ export class GitRunner {
 
   async run(args: readonly string[], cwd: string): Promise<GitCommandResult> {
     const started = Date.now();
+    const effectiveArgs = this.runtimeDirectory === undefined
+      ? [...args]
+      : [
+          "-c",
+          `core.hooksPath=${path.join(this.runtimeDirectory, "empty-hooks")}`,
+          "-c",
+          "core.fsmonitor=false",
+          ...args,
+        ];
     return await new Promise<GitCommandResult>((resolve, reject) => {
-      const child = spawn("git", [...args], {
+      const child = spawn("git", effectiveArgs, {
         cwd,
         shell: false,
         env: this.safeEnvironment(),
@@ -39,7 +48,7 @@ export class GitRunner {
       child.once("error", reject);
       child.once("close", (exitCode) => resolve({
         executable: "git",
-        args: [...args],
+        args: effectiveArgs,
         cwd,
         exitCode: exitCode ?? 3,
         stdout: Buffer.concat(stdout).toString("utf8"),
@@ -51,7 +60,7 @@ export class GitRunner {
 
   async expect(args: readonly string[], cwd: string): Promise<GitCommandResult> {
     const result = await this.run(args, cwd);
-    if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr.trim() || result.stdout.trim()}`);
+    if (result.exitCode !== 0) throw new Error(`git ${result.args.join(" ")} failed: ${result.stderr.trim() || result.stdout.trim()}`);
     return result;
   }
 }
