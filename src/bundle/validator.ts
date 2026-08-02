@@ -41,6 +41,7 @@ const REQUIRED_FILES_V1_1 = [
 ] as const;
 
 const REQUIRED_FILES_V1_2 = REQUIRED_FILES_V1_1;
+const REQUIRED_FILES_V1_3 = REQUIRED_FILES_V1_1;
 
 const TASK_ID_PATTERN = /^(?!\.{1,2}$)[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
@@ -213,8 +214,8 @@ function validatePayload(value: unknown, issues: BundleValidationIssue[]): value
 function validateManifest(value: unknown, issues: BundleValidationIssue[]): value is BundleManifest {
   if (!assertRecord(value, "manifest.json", issues)) return false;
 
-  if (value.schema_version !== "1.0" && value.schema_version !== "1.1" && value.schema_version !== "1.2") {
-    addIssue(issues, 'manifest.schema_version must equal "1.0", "1.1", or "1.2".');
+  if (value.schema_version !== "1.0" && value.schema_version !== "1.1" && value.schema_version !== "1.2" && value.schema_version !== "1.3") {
+    addIssue(issues, 'manifest.schema_version must equal "1.0", "1.1", "1.2", or "1.3".');
   }
   if (!isNonEmptyString(value.task_id) || !TASK_ID_PATTERN.test(value.task_id)) {
     addIssue(
@@ -359,7 +360,49 @@ function validateCommand(command: string): string | null {
   return allowed ? null : `Command is not on the phase-1 allowlist: ${command}`;
 }
 
-function validateValidationContract(value: unknown, issues: BundleValidationIssue[]): value is ValidationContract {
+const VALIDATION_EXECUTABLE_PATTERN = /^[A-Za-z0-9._+-]+$/;
+const VALIDATION_SHELL_META_PATTERN = /[;&|><`$(){}\r\n]/;
+const VALIDATION_ENVIRONMENT_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+
+function validateStructuredValidationCommand(
+  item: Record<string, unknown>,
+  label: string,
+  issues: BundleValidationIssue[],
+): boolean {
+  if (typeof item.command === "string") {
+    if (SHELL_META_PATTERN.test(item.command)) addIssue(issues, `Shell operators or substitutions are not allowed: ${item.command}`);
+    addIssue(issues, `${label}.command is not allowed in schema 1.3; use executable and args.`);
+  }
+  if (typeof item.executable !== "string" || !item.executable || !VALIDATION_EXECUTABLE_PATTERN.test(item.executable) || item.executable.includes("/") || item.executable.includes("\\") || /\s/.test(item.executable) || VALIDATION_SHELL_META_PATTERN.test(item.executable)) {
+    addIssue(issues, `${label}.executable must be a simple executable name.`);
+  }
+  if (!Array.isArray(item.args) || !item.args.every((arg) => typeof arg === "string" && !arg.includes("\u0000"))) {
+    addIssue(issues, `${label}.args must be an array of strings without NUL bytes.`);
+  }
+  if (typeof item.cwd !== "string" || !item.cwd || item.cwd.startsWith("/") || item.cwd.startsWith("\\") || /^[A-Za-z]:/.test(item.cwd) || item.cwd.split(/[\\/]/).includes("..")) {
+    addIssue(issues, `${label}.cwd must be a safe relative directory inside the worktree.`);
+  }
+  if (!isRecord(item.environment)) {
+    addIssue(issues, `${label}.environment must be an object.`);
+  } else {
+    const denied = new Set(["PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "GIT_DIR", "GIT_WORK_TREE", "NODE_OPTIONS", "LD_PRELOAD", "SSH_AUTH_SOCK", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]);
+    for (const [key, value] of Object.entries(item.environment)) {
+      if (!VALIDATION_ENVIRONMENT_KEY_PATTERN.test(key) || denied.has(key) || /TOKEN|SECRET|PASSWORD|AUTH|CREDENTIAL|PROXY/i.test(key) || typeof value !== "string" || value.length > 1024 || value.includes("\u0000") || VALIDATION_SHELL_META_PATTERN.test(value)) {
+        addIssue(issues, `${label}.environment contains a denied or unsafe entry.`);
+      }
+    }
+  }
+  if (!isPositiveInteger(item.timeout_seconds) || item.timeout_seconds > 3600) {
+    addIssue(issues, `${label}.timeout_seconds must be an integer from 1 to 3600.`);
+  }
+  if (!isPositiveInteger(item.maximum_output_bytes) || item.maximum_output_bytes > 10_000_000) {
+    addIssue(issues, `${label}.maximum_output_bytes must be a positive bounded integer.`);
+  }
+  if (typeof item.required !== "boolean") addIssue(issues, `${label}.required must be boolean.`);
+  return true;
+}
+
+function validateValidationContract(value: unknown, issues: BundleValidationIssue[], schemaVersion: unknown): value is ValidationContract {
   if (!assertRecord(value, "validation.json", issues)) return false;
   if (!Array.isArray(value.commands) || value.commands.length === 0) {
     addIssue(issues, "validation.commands must be a non-empty array.");
@@ -375,16 +418,20 @@ function validateValidationContract(value: unknown, issues: BundleValidationIssu
     else if (ids.has(item.id)) addIssue(issues, `Duplicate validation command ID: ${item.id}`);
     else ids.add(item.id);
 
-    if (!isNonEmptyString(item.command)) {
-      addIssue(issues, `${label}.command is required.`);
+    if (schemaVersion === "1.3" || (item.command === undefined && item.executable !== undefined)) {
+      validateStructuredValidationCommand(item, label, issues);
     } else {
-      const commandError = validateCommand(item.command);
-      if (commandError) addIssue(issues, commandError);
-    }
+      if (!isNonEmptyString(item.command)) {
+        addIssue(issues, `${label}.command is required.`);
+      } else {
+        const commandError = validateCommand(item.command);
+        if (commandError) addIssue(issues, commandError);
+      }
 
-    if (typeof item.required !== "boolean") addIssue(issues, `${label}.required must be boolean.`);
-    if (!isPositiveInteger(item.timeout_seconds) || item.timeout_seconds > 3600) {
-      addIssue(issues, `${label}.timeout_seconds must be an integer from 1 to 3600.`);
+      if (typeof item.required !== "boolean") addIssue(issues, `${label}.required must be boolean.`);
+      if (!isPositiveInteger(item.timeout_seconds) || item.timeout_seconds > 3600) {
+        addIssue(issues, `${label}.timeout_seconds must be an integer from 1 to 3600.`);
+      }
     }
   }
 
@@ -505,7 +552,9 @@ export async function validateBundleDirectory(bundleDirectory: string): Promise<
   const manifestIssues: BundleValidationIssue[] = [];
   const manifestOk = validateManifest(manifestRaw, manifestIssues);
   const schemaVersion = isRecord(manifestRaw) ? manifestRaw.schema_version : undefined;
-  const requiredFiles = schemaVersion === "1.2"
+  const requiredFiles = schemaVersion === "1.3"
+    ? REQUIRED_FILES_V1_3
+    : schemaVersion === "1.2"
     ? REQUIRED_FILES_V1_2
     : schemaVersion === "1.1" ? REQUIRED_FILES_V1_1 : REQUIRED_FILES_V1_0;
 
@@ -536,7 +585,7 @@ export async function validateBundleDirectory(bundleDirectory: string): Promise<
   const testMatrixOk = validateTestMatrix(testMatrixRaw, sectionIssues);
   if (testMatrixOk) checks.push("Test matrix is valid.");
 
-  const validationOk = validateValidationContract(validationRaw, sectionIssues);
+  const validationOk = validateValidationContract(validationRaw, sectionIssues, schemaVersion);
   if (validationOk) checks.push("Validation commands are allowed.");
 
   const riskPolicyOk = validateRiskPolicy(riskPolicyRaw, sectionIssues);

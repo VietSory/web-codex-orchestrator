@@ -194,7 +194,7 @@ async function persistRejected(
 async function persistAccepted(
   context: IntakeContext,
   taskId: string,
-  bundleSchemaVersion: "1.0" | "1.1" | "1.2",
+  bundleSchemaVersion: "1.0" | "1.1" | "1.2" | "1.3",
   logicalRoot: string,
   checks: string[],
   inspection: { entryCount: number; totalUncompressedBytes: number },
@@ -321,12 +321,12 @@ export async function intakeArchive(
 
     const root = resolveLogicalRoot(inspection.entries);
     const bundleDirectory = root.rootRelative === "." ? extracting : path.join(extracting, root.rootRelative);
-    let schemaVersion: "1.0" | "1.1" | "1.2" = "1.0";
+    let schemaVersion: "1.0" | "1.1" | "1.2" | "1.3" = "1.0";
     try {
       const manifest = await readJsonFile(path.join(bundleDirectory, "manifest.json"));
       if (typeof manifest === "object" && manifest !== null && "schema_version" in manifest) {
         const candidate = (manifest as { schema_version?: unknown }).schema_version;
-        if (candidate === "1.1" || candidate === "1.2") schemaVersion = candidate;
+        if (candidate === "1.1" || candidate === "1.2" || candidate === "1.3") schemaVersion = candidate;
       }
     } catch {
       // The directory validator below returns the stable contract error.
@@ -337,7 +337,7 @@ export async function intakeArchive(
       "zip-entries-safe",
       "archive-limits-valid",
     ];
-    if (schemaVersion === "1.1" || schemaVersion === "1.2") {
+    if (schemaVersion === "1.1" || schemaVersion === "1.2" || schemaVersion === "1.3") {
       await verifyBundleChecksums(bundleDirectory);
       checks.push("checksums-valid");
     } else {

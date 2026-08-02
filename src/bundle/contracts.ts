@@ -1,5 +1,5 @@
 export interface BundleManifest {
-  schema_version: "1.0" | "1.1" | "1.2";
+  schema_version: "1.0" | "1.1" | "1.2" | "1.3";
   task_id: string;
   title: string;
   repository: {
@@ -71,12 +71,25 @@ export interface TestMatrix {
   cases: TestCase[];
 }
 
-export interface ValidationCommand {
+export interface LegacyValidationCommand {
   id: string;
   command: string;
   required: boolean;
   timeout_seconds: number;
 }
+
+export interface StructuredValidationCommand {
+  id: string;
+  executable: string;
+  args: string[];
+  cwd: string;
+  environment: Record<string, string>;
+  required: boolean;
+  timeout_seconds: number;
+  maximum_output_bytes: number;
+}
+
+export type ValidationCommand = LegacyValidationCommand | StructuredValidationCommand;
 
 export interface ValidationContract {
   commands: ValidationCommand[];

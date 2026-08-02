@@ -1,0 +1,2 @@
+const SECRET_PATTERNS = [/token\s*[:=]\s*[^\s,;]+/gi, /password\s*[:=]\s*[^\s,;]+/gi, /secret\s*[:=]\s*[^\s,;]+/gi, /authorization\s*[:=]\s*[^\s,;]+/gi, /\b(?:sk|ghp|github_pat)_[A-Za-z0-9_-]+\b/g];
+export function redact(value: string): string { return SECRET_PATTERNS.reduce((result, pattern) => result.replace(pattern, (match) => match.replace(/[:=].*$/, ": [REDACTED]").replace(/^\b(?:sk|ghp|github_pat)_[A-Za-z0-9_-]+\b$/, "[REDACTED]")), value); }

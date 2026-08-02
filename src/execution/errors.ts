@@ -10,3 +10,14 @@ export class ExecutionContractError extends Error {
 export function isExecutionContractError(error: unknown): error is ExecutionContractError {
   return error instanceof ExecutionContractError;
 }
+
+export class ExecutionError extends Error {
+  constructor(readonly code: ExecutionErrorCode, message: string, readonly details?: Record<string, unknown>) {
+    super(message);
+    this.name = "ExecutionError";
+  }
+}
+
+export function isExecutionError(error: unknown): error is ExecutionError {
+  return error instanceof ExecutionError;
+}

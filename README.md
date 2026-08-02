@@ -40,6 +40,16 @@ node dist/cli/index.js watch \
   --state-dir ~/.local/state/web-codex-orchestrator \
   --config ~/.config/web-codex-orchestrator/config.json \
   --jsonl
+
+node dist/cli/index.js execute \
+  --run-id TASK-2026-003:<archive-sha256> \
+  --state-dir ~/.local/state/web-codex-orchestrator \
+  --config ~/.config/web-codex-orchestrator/config.json \
+  --json
+
+node dist/cli/index.js execution-status \
+  --run-id TASK-2026-003:<archive-sha256> \
+  --state-dir ~/.local/state/web-codex-orchestrator --json
 ```
 
 Add `--json` to `scan` for one machine-readable result object. Without it,
@@ -52,8 +62,10 @@ after every operation.
 
 Schema 1.0 directory bundles remain supported. Schema 1.1 ZIP bundles use the
 canonical uppercase documentation files and require `checksums.json`.
-Schema 1.2 adds the execution, delivery, and Git policy contract. Intake still
-accepts 1.0 and 1.1, but only 1.2 can be prepared.
+Schema 1.2 adds the execution, delivery, and Git policy contract. Schema 1.3
+adds structured validation commands and the Phase 4 execution boundary.
+Intake accepts 1.0 through 1.3; Phase 3 prepares 1.2/1.3, while Phase 4
+executes only 1.3.
 
 Phase 3 stores run receipts and isolated worktrees below the configured state
 directory. The registry in `examples/config.example.json` is trusted local
@@ -67,3 +79,8 @@ configuration and hooks), rejects repositories with external smudge/process
 filters, and creates the worktree detached before attaching its validated local
 branch. Credential-bearing HTTP(S) registry URLs are rejected and persisted
 remote URLs are sanitized.
+
+Phase 4 uses injected fake agents and verification sandboxes in normal tests.
+The production adapter fails closed when a supported Codex runtime or sandbox
+is unavailable. It never commits, pushes, creates a product PR, executes a
+payload, or contacts the public network.

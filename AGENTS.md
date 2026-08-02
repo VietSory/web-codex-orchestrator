@@ -10,3 +10,8 @@
 - Phase 3 preparation may inspect Git and create only isolated local worktrees;
   it must not execute bundles, validation commands, Codex, commits, pushes,
   GitHub APIs, or browser automation.
+- Phase 4 execution is gated by an injected Codex SDK and sandbox; normal CI
+  uses fakes and never contacts a model provider or public network.
+- Phase 4 must stop before READY_FOR_PUBLISH unless deterministic verification,
+  an independent Terra review, and an independent Sol review approve the same
+  exact change-set digest.

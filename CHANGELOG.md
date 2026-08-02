@@ -8,3 +8,6 @@
   worktree preparation, run receipts, locks, and schema 1.2 execution policy.
 - Hardened Phase 3 worktree ownership cleanup, disabled checkout hooks and
   external filters, and rejected/redacted credential-bearing remote URLs.
+- Added Phase 4 schema 1.3 structured validation, trusted agent/verifier
+  configuration, isolated execution state machine, dual-review gates, and
+  fail-closed Codex/sandbox adapters.
