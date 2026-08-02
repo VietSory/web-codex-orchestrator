@@ -40,6 +40,8 @@ const REQUIRED_FILES_V1_1 = [
   "checksums.json",
 ] as const;
 
+const REQUIRED_FILES_V1_2 = REQUIRED_FILES_V1_1;
+
 const TASK_ID_PATTERN = /^(?!\.{1,2}$)[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 const SHELL_META_PATTERN = /[;&|><`$]|\r|\n/;
@@ -211,8 +213,8 @@ function validatePayload(value: unknown, issues: BundleValidationIssue[]): value
 function validateManifest(value: unknown, issues: BundleValidationIssue[]): value is BundleManifest {
   if (!assertRecord(value, "manifest.json", issues)) return false;
 
-  if (value.schema_version !== "1.0" && value.schema_version !== "1.1") {
-    addIssue(issues, 'manifest.schema_version must equal "1.0" or "1.1".');
+  if (value.schema_version !== "1.0" && value.schema_version !== "1.1" && value.schema_version !== "1.2") {
+    addIssue(issues, 'manifest.schema_version must equal "1.0", "1.1", or "1.2".');
   }
   if (!isNonEmptyString(value.task_id) || !TASK_ID_PATTERN.test(value.task_id)) {
     addIssue(
@@ -503,7 +505,9 @@ export async function validateBundleDirectory(bundleDirectory: string): Promise<
   const manifestIssues: BundleValidationIssue[] = [];
   const manifestOk = validateManifest(manifestRaw, manifestIssues);
   const schemaVersion = isRecord(manifestRaw) ? manifestRaw.schema_version : undefined;
-  const requiredFiles = schemaVersion === "1.1" ? REQUIRED_FILES_V1_1 : REQUIRED_FILES_V1_0;
+  const requiredFiles = schemaVersion === "1.2"
+    ? REQUIRED_FILES_V1_2
+    : schemaVersion === "1.1" ? REQUIRED_FILES_V1_1 : REQUIRED_FILES_V1_0;
 
   for (const fileName of requiredFiles) {
     try {

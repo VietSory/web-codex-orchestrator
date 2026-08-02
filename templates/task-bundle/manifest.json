@@ -1,10 +1,11 @@
 {
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "task_id": "TASK-2026-001",
   "title": "Add a health endpoint",
   "repository": {
+    "id": "web-codex-orchestrator",
     "base_branch": "main",
-    "base_commit": "HEAD"
+    "base_commit": "21941fed505122c20fd20460cbfd66334e3f2ddf"
   },
   "payload": {
     "type": "none",
