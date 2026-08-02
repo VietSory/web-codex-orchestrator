@@ -4,6 +4,7 @@ coverage/
 .runs/
 .worktrees/
 .agent-output/
+.wco/
 *.log
 .env
 .env.*
