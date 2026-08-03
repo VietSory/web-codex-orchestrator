@@ -15,9 +15,12 @@ fallback. The SDK receives only a minimal trusted environment; provider,
 SSH, token, preload, and arbitrary process variables are excluded. Reviews
 and verification are invalidated whenever the exact change-set digest changes.
 
-The trusted runtime requires an absolute `runtime.codex_executable` whose
-realpath resolves to a regular file. `runtime.codex_home`, when configured,
-must also be absolute. The accepted bundle is read by the orchestrator and
+The trusted runtime is `{ "source": "bundled", "codex_home": "..." }`, with
+`codex_home` optional and absolute when configured. WCO resolves the pinned
+`@openai/codex@0.145.0` package from its own installation and never uses a
+global `codex` executable, environment-selected executable, or a
+bundle-supplied path.
+The accepted bundle is read by the orchestrator and
 bounded content is placed in prompts; it is not an additional writable SDK
 root. Deterministic verifier failures are redacted and bounded before being
 stored in receipts, artifacts, or Terra correction prompts.

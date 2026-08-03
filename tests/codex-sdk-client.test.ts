@@ -5,6 +5,7 @@ import { CodexSdkAgentClient, type CodexFactory } from "../src/agent/codex-sdk-c
 import type { AgentTurnRequest } from "../src/agent/contracts.js";
 import { ASSESSMENT_OUTPUT_SCHEMA, REVIEW_OUTPUT_SCHEMA } from "../src/agent/output-schemas.js";
 import { ExecutionError } from "../src/execution/errors.js";
+import { fakeResolvedCodexRuntime } from "./helpers/codex-runtime-fixture.js";
 
 interface FakeThread {
   id: string | null;
@@ -80,7 +81,7 @@ function harness(finalResponse: string, initialId: string | null = null): { harn
 test("new SDK thread returns the ID populated after the first turn", async () => {
   const { harness: state, factory } = harness(JSON.stringify({ ok: true }));
   assert.equal(state.thread.id, null);
-  const response = await new CodexSdkAgentClient({ executable: "/trusted/codex", environment: {} }, factory).turn(request());
+  const response = await new CodexSdkAgentClient(fakeResolvedCodexRuntime(), factory).turn(request());
   assert.equal(state.startOptions?.model, "trusted-model");
   assert.equal(state.resumeId, undefined);
   assert.equal(response.thread_id, "real-thread-id");
@@ -91,7 +92,7 @@ test("new SDK thread returns the ID populated after the first turn", async () =>
 
 test("resume reconstructs the exact SDK thread and never starts one", async () => {
   const { harness: state, factory } = harness(JSON.stringify({ ok: true }), "existing-thread");
-  const response = await new CodexSdkAgentClient({ executable: "/trusted/codex", environment: {} }, factory).turn(request({ thread_id: "existing-thread" }));
+  const response = await new CodexSdkAgentClient(fakeResolvedCodexRuntime(), factory).turn(request({ thread_id: "existing-thread" }));
   assert.equal(state.resumeId, "existing-thread");
   assert.equal(state.startOptions, undefined);
   assert.equal(response.thread_id, "existing-thread");
@@ -99,7 +100,7 @@ test("resume reconstructs the exact SDK thread and never starts one", async () =
 
 test("implementer restrictions and exact SDK thread options are enforced", async () => {
   const { harness: state, factory } = harness(JSON.stringify({ ok: true }));
-  await new CodexSdkAgentClient({ executable: "/trusted/codex", environment: {} }, factory).turn(request());
+  await new CodexSdkAgentClient(fakeResolvedCodexRuntime(), factory).turn(request());
   assert.deepEqual(state.startOptions, {
     model: "trusted-model",
     modelReasoningEffort: "high",
@@ -111,8 +112,7 @@ test("implementer restrictions and exact SDK thread options are enforced", async
     additionalDirectories: [],
   });
   assert.deepEqual(state.codexOptions, {
-    codexPathOverride: "/trusted/codex",
-    env: {},
+    env: { PATH: "/trusted/bin" },
     config: { show_raw_agent_reasoning: false },
   });
 });
@@ -120,7 +120,7 @@ test("implementer restrictions and exact SDK thread options are enforced", async
 test("reviewer restrictions, schema, and cancellation signal are passed to the SDK", async () => {
   const { harness: state, factory } = harness(JSON.stringify({ ok: true }));
   const signal = new AbortController().signal;
-  await new CodexSdkAgentClient({ executable: "/trusted/codex", environment: {} }, factory).turn(request({ role: "internal_reviewer", output_schema: REVIEW_OUTPUT_SCHEMA, read_only: true, sandbox_mode: "read-only", signal }));
+  await new CodexSdkAgentClient(fakeResolvedCodexRuntime(), factory).turn(request({ role: "internal_reviewer", output_schema: REVIEW_OUTPUT_SCHEMA, read_only: true, sandbox_mode: "read-only", signal }));
   assert.equal(state.startOptions?.sandboxMode, "read-only");
   assert.equal(state.startOptions?.approvalPolicy, "never");
   assert.equal(state.startOptions?.networkAccessEnabled, false);
@@ -132,7 +132,7 @@ test("reviewer restrictions, schema, and cancellation signal are passed to the S
 
 test("invalid JSON and missing thread ID return stable errors", async () => {
   const invalid = harness("not-json");
-  await assert.rejects(() => new CodexSdkAgentClient({ executable: "/trusted/codex", environment: {} }, invalid.factory).turn(request()), (error: unknown) => error instanceof ExecutionError && error.code === "AGENT_OUTPUT_INVALID");
+  await assert.rejects(() => new CodexSdkAgentClient(fakeResolvedCodexRuntime(), invalid.factory).turn(request()), (error: unknown) => error instanceof ExecutionError && error.code === "AGENT_OUTPUT_INVALID");
   const missing = harness(JSON.stringify({ ok: true }));
   missing.harness.thread.id = null;
   missing.harness.thread.runStreamed = async () => {
@@ -143,7 +143,7 @@ test("invalid JSON and missing thread ID return stable errors", async () => {
     }
     return { events: withoutThreadId() };
   };
-  await assert.rejects(() => new CodexSdkAgentClient({ executable: "/trusted/codex", environment: {} }, missing.factory).turn(request()), (error: unknown) => error instanceof ExecutionError && error.code === "CODEX_TURN_FAILED");
+  await assert.rejects(() => new CodexSdkAgentClient(fakeResolvedCodexRuntime(), missing.factory).turn(request()), (error: unknown) => error instanceof ExecutionError && error.code === "CODEX_TURN_FAILED");
 });
 
 test("SDK environment does not inherit provider or credential variables", async () => {
@@ -154,7 +154,7 @@ test("SDK environment does not inherit provider or credential variables", async 
   process.env.SSH_AUTH_SOCK = "fake-ssh";
   try {
     const { harness: state, factory } = harness(JSON.stringify({ ok: true }));
-    await new CodexSdkAgentClient({ executable: "/trusted/codex", environment: { PATH: "/trusted/bin", AWS_SECRET_ACCESS_KEY: "runtime-aws", GITHUB_TOKEN: "runtime-github", OPENAI_API_KEY: "runtime-openai", SSH_AUTH_SOCK: "runtime-ssh" } }, factory).turn(request());
+    await new CodexSdkAgentClient(fakeResolvedCodexRuntime({ environment: { PATH: "/trusted/bin", AWS_SECRET_ACCESS_KEY: "runtime-aws", GITHUB_TOKEN: "runtime-github", OPENAI_API_KEY: "runtime-openai", SSH_AUTH_SOCK: "runtime-ssh" } }), factory).turn(request());
     const options = state.codexOptions as { env: Record<string, string> };
     assert.deepEqual(options.env, { PATH: "/trusted/bin" });
   } finally {
@@ -163,4 +163,15 @@ test("SDK environment does not inherit provider or credential variables", async 
       else process.env[key] = value;
     }
   }
+});
+
+test("an explicit SDK native override is forwarded only when trusted runtime supplies it", async () => {
+  const { harness: state, factory } = harness(JSON.stringify({ ok: true }));
+  const runtime = fakeResolvedCodexRuntime({ sdk_codex_path_override: "/trusted/native-codex" });
+  await new CodexSdkAgentClient(runtime, factory).turn(request());
+  assert.deepEqual(state.codexOptions, {
+    codexPathOverride: "/trusted/native-codex",
+    env: { PATH: "/trusted/bin" },
+    config: { show_raw_agent_reasoning: false },
+  });
 });

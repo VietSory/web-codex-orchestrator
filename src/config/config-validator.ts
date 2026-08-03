@@ -11,7 +11,7 @@ const AGENT_FIELDS = new Set(["implementer", "internal_reviewer", "final_reviewe
 const AGENT_PROFILE_FIELDS = new Set(["model", "reasoning_effort"]);
 const AGENT_LIMIT_FIELDS = new Set(["maximum_implementation_iterations", "maximum_internal_review_rounds", "maximum_sol_review_rounds", "maximum_total_agent_turns", "maximum_turn_seconds", "maximum_total_seconds", "maximum_total_input_tokens", "maximum_total_output_tokens"]);
 const VERIFICATION_FIELDS = new Set(["allowed_executables", "allowed_environment_keys", "maximum_command_seconds", "maximum_output_bytes", "maximum_file_bytes", "maximum_changed_files", "maximum_diff_lines", "allowed_generated_paths"]);
-const RUNTIME_FIELDS = new Set(["codex_executable", "codex_home"]);
+const RUNTIME_FIELDS = new Set(["source", "codex_home"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -72,8 +72,8 @@ export function validateConfig(value: unknown): ConfigValidationReport {
     if (!isRecord(runtime)) add(issues, "runtime must be an object.");
     else {
       for (const key of unknownFields(runtime, RUNTIME_FIELDS)) add(issues, `Unknown runtime configuration field: ${key}`);
-      if (typeof runtime.codex_executable !== "string" || !path.isAbsolute(runtime.codex_executable) || runtime.codex_executable.includes("\u0000") || /\r|\n/.test(runtime.codex_executable) || /\s/.test(path.basename(runtime.codex_executable))) add(issues, "runtime.codex_executable must be an absolute path to a trusted executable.");
-      if (runtime.codex_home !== undefined && (typeof runtime.codex_home !== "string" || !path.isAbsolute(runtime.codex_home) || runtime.codex_home.includes("\u0000") || /\r|\n/.test(runtime.codex_home))) add(issues, "runtime.codex_home must be an absolute path.");
+      if (runtime.source !== "bundled") add(issues, 'runtime.source must equal "bundled".');
+      if (runtime.codex_home !== undefined && (typeof runtime.codex_home !== "string" || !path.isAbsolute(runtime.codex_home) || runtime.codex_home.includes("\u0000"))) add(issues, "runtime.codex_home must be an absolute NUL-free path.");
     }
   }
   const agents = value.agents;

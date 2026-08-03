@@ -24,3 +24,6 @@
   incompatible Codex CLI versions during preflight.
 - Added a trusted root-level `sandbox_workspace_write.network_access=false`
   override to every Codex sandbox invocation, with loopback-denial coverage.
+- Switched Phase 4 to the explicitly pinned bundled `@openai/codex@0.145.0`
+  runtime and moved real sandbox/execution integrations out of the normal
+  deterministic test glob. Global Codex installations are ignored.

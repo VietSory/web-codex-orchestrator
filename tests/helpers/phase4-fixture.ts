@@ -38,7 +38,9 @@ export async function createPhase4Fixture(): Promise<Phase4Fixture> {
     await git(worktree, ["config", "user.email", "p4-fixture@example.invalid"]);
     await git(worktree, ["config", "user.name", "P4 Fixture"]);
     await writeFile(path.join(worktree, "README.md"), "fixture\n");
-    await git(worktree, ["add", "README.md"]);
+    await mkdir(path.join(worktree, "src"), { recursive: true });
+    await writeFile(path.join(worktree, "src", "index.mjs"), "export function identity(value) { return value; }\n");
+    await git(worktree, ["add", "README.md", "src/index.mjs"]);
     await git(worktree, ["commit", "-m", "fixture"]);
     const base = await git(worktree, ["rev-parse", "HEAD"]);
     await git(worktree, ["checkout", "-b", "codex/phase4-fixture"]);
@@ -55,6 +57,7 @@ export async function createPhase4Fixture(): Promise<Phase4Fixture> {
       config_version: "1.0",
       inbox: { poll_interval_ms: 1, stable_age_ms: 1, stable_observations: 1, maximum_candidates_per_scan: 1 },
       repositories: { repo: { path: worktree, remote: "origin", expected_remote_urls: ["file:///tmp/unused"], fetch_policy: "never" } },
+      runtime: { source: "bundled" },
       agents: {
         implementer: { model: "terra", reasoning_effort: "high" },
         internal_reviewer: { model: "terra", reasoning_effort: "high" },

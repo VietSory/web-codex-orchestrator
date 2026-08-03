@@ -10,6 +10,7 @@ export interface SpawnBoundedOptions {
   timeoutMs: number;
   stdoutMaxBytes: number;
   stderrMaxBytes: number;
+  shell?: false;
   signal?: AbortSignal;
 }
 

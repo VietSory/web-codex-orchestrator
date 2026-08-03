@@ -4,12 +4,12 @@ import { loadTrustedConfig } from "../config/config-loader.js";
 import { ExecutionError } from "./errors.js";
 import type { BundleManifest } from "../bundle/contracts.js";
 
-export interface Phase4Config extends TrustedConfig { agents: AgentConfig; verification: VerificationConfig; }
+export interface Phase4Config extends TrustedConfig { runtime: NonNullable<TrustedConfig["runtime"]>; agents: AgentConfig; verification: VerificationConfig; }
 
 export async function loadPhase4Config(configPath: string): Promise<Phase4Config> {
   let config;
   try { config = await loadTrustedConfig(configPath); } catch (error) { throw new ExecutionError("EXECUTION_CONFIG_INVALID", `Trusted Phase 4 config is unavailable: ${error instanceof Error ? error.message : String(error)}`); }
-  if (!config.agents || !config.verification) throw new ExecutionError("EXECUTION_CONFIG_INVALID", "Trusted config must include agents and verification for Phase 4.");
+  if (!config.runtime || !config.agents || !config.verification) throw new ExecutionError("EXECUTION_CONFIG_INVALID", "Trusted config must include bundled runtime, agents, and verification for Phase 4.");
   return config as Phase4Config;
 }
 

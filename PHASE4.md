@@ -7,15 +7,16 @@ validation commands through a sandbox, and requires independent Terra and Sol
 reviews for the same digest.
 
 The normal test suite injects `FakeAgentClient` and
-`FakeVerificationSandbox`. Production `execute` resolves the trusted
-`runtime.codex_executable`, constructs the official
-`@openai/codex-sdk@0.145.0` client, and performs bounded `codex --version` and
-`codex login status` preflight. `CodexVerificationSandbox` performs a smoke
-test and runs validation as `codex -c sandbox_workspace_write.network_access=false
-sandbox --permission-profile :workspace --cd <canonical-cwd> -- <executable>
-<args>`, matching the pinned 0.145.0 CLI contract. The trusted override is
-present even when `CODEX_HOME` requests workspace network access. The runtime
-preflight rejects other Codex CLI versions.
+`FakeVerificationSandbox`. Production `execute` resolves the trusted bundled
+`@openai/codex@0.145.0` launcher, constructs the official
+`@openai/codex-sdk@0.145.0` client, and performs bounded bundled `--version`
+and `login status` preflight. The global Codex installation is not inspected.
+`CodexVerificationSandbox` performs a smoke test and runs validation as
+`codex -c sandbox_workspace_write.network_access=false sandbox
+--permission-profile :workspace --cd <canonical-cwd> -- <executable> <args>`,
+matching the pinned 0.145.0 CLI contract. The trusted override is present even
+when `CODEX_HOME` requests workspace network access. The runtime preflight
+rejects other bundled package versions.
 There is no direct-host fallback. No Phase 4 operation commits, pushes,
 invokes GitHub, executes payload files, or automates a browser.
 

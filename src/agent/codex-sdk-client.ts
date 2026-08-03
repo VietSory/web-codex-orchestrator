@@ -3,7 +3,7 @@ import type { ThreadEvent, ThreadOptions } from "@openai/codex-sdk";
 import path from "node:path";
 import { ExecutionError, isExecutionError } from "../execution/errors.js";
 import { defaultSpawnBounded, type SpawnBoundedResult } from "../runtime/spawn-bounded.js";
-import { assertCompatibleCodexCliVersion, minimalCodexEnvironment, type ResolvedCodexRuntime } from "../runtime/codex-runtime.js";
+import { assertCompatibleCodexCliVersion, codexCliArgs, minimalCodexEnvironment, type ResolvedCodexRuntime } from "../runtime/codex-runtime.js";
 import type { AgentClient, AgentTurnRequest, AgentTurnResponse } from "./contracts.js";
 
 export type CodexFactory = (
@@ -32,9 +32,10 @@ export class CodexSdkAgentClient implements AgentClient {
   private async preflight(args: string[], failureCode: "CODEX_RUNTIME_NOT_FOUND" | "CODEX_AUTH_UNAVAILABLE"): Promise<SpawnBoundedResult> {
     const result = await defaultSpawnBounded({
       executable: this.runtime.executable,
-      args,
-      cwd: path.dirname(this.runtime.executable),
+      args: codexCliArgs(this.runtime, args),
+      cwd: this.runtime.state_directory ?? path.dirname(this.runtime.launcher_path),
       environment: minimalCodexEnvironment(this.runtime),
+      shell: false,
       timeoutMs: PREFLIGHT_TIMEOUT_MS,
       stdoutMaxBytes: PREFLIGHT_OUTPUT_BYTES,
       stderrMaxBytes: PREFLIGHT_OUTPUT_BYTES,
@@ -81,13 +82,14 @@ export class CodexSdkAgentClient implements AgentClient {
   async turn(request: AgentTurnRequest): Promise<AgentTurnResponse> {
     this.validateRequest(request);
     try {
-      const codex = this.createCodex({
-        codexPathOverride: this.runtime.executable,
+      const codexOptions: ConstructorParameters<typeof Codex>[0] = {
         env: minimalCodexEnvironment(this.runtime),
         config: {
           show_raw_agent_reasoning: false,
         },
-      });
+      };
+      if (this.runtime.sdk_codex_path_override) codexOptions.codexPathOverride = this.runtime.sdk_codex_path_override;
+      const codex = this.createCodex(codexOptions);
       const threadOptions: ThreadOptions = {
         model: request.model,
         modelReasoningEffort: request.reasoning_effort,

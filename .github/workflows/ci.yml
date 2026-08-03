@@ -3,20 +3,46 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches:
+      - main
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      CI: "true"
+      WCO_RUN_CODEX_INTEGRATION: "0"
+      WCO_RUN_SANDBOX_INTEGRATION: "0"
 
     steps:
       - uses: actions/checkout@v5
+
       - uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: npm
-      - run: npm ci
-      - run: npm run validate -- ./templates/task-bundle
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Confirm pinned Codex packages
+        run: |
+          npm ls @openai/codex
+          npm ls @openai/codex-sdk
+
+      - name: Validate bundle template
+        run: npm run validate -- ./templates/task-bundle
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit and fake integration tests
+        run: npm test
+
+      - name: Build
+        run: npm run build

@@ -58,16 +58,29 @@ review, and terminal gates for: `P4-001`, `P4-002`, `P4-003`, `P4-004`,
 
 The remaining matrix behavior is enforced by the same shared validators and
 service gates and is named above so coverage cannot silently drift. The
-optional `tests/codex-integration.test.ts` suite is opt-in and skips in normal
-CI; it never supplies credentials or enables network access.
+optional `tests/integration/codex-execution.integration.ts` suite is opt-in and
+skips in normal CI; it never supplies credentials or enables network access.
 
 The production wiring regressions are covered by
 `tests/codex-sdk-client.test.ts` for new/resumed SDK threads, restrictions,
 structured output, cancellation, bounded events, and environment filtering;
 `tests/codex-sandbox.test.ts` for the pinned sandbox argv contract, bounded
 process options, and fail-closed startup; `tests/codex-runtime.test.ts` for
-the exact CLI version guard; and `tests/verifier-fix-evidence.test.ts` for redacted
-verifier feedback in Terra's next correction prompt and persisted artifacts.
-The sandbox suite also covers P4-109's CODEX_HOME network override and P4-110's
-real loopback-denial check when `WCO_CODEX_EXECUTABLE` is supplied.
+the exact CLI version guard, bundled package resolution, global-CLI isolation,
+runtime config validation, and launcher-prefix arguments; and
+`tests/verifier-fix-evidence.test.ts` for redacted verifier feedback in Terra's
+next correction prompt and persisted artifacts.
+
+Additional release-gate coverage:
+
+- `P4-109` → `tests/codex-sandbox.test.ts` → explicit
+  `sandbox_workspace_write.network_access=false` argv override;
+- `P4-110` → `tests/integration/codex-sandbox.integration.ts` → real bundled
+  sandbox denies loopback access;
+- `P4-111` → `tests/codex-runtime.test.ts` → pinned version parser;
+- `P4-112` → `tests/codex-runtime.test.ts` → bundled package resolution;
+- `P4-113` → `tests/codex-runtime.test.ts` → global CLI ignored;
+- `P4-114` → `tests/codex-runtime.test.ts` → runtime config validation;
+- `P4-115` → `tests/codex-runtime.test.ts` → launcher-prefix CLI arguments.
+
 The real integration test consumes Codex usage only when explicitly enabled.

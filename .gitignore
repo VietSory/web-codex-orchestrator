@@ -5,6 +5,7 @@ coverage/
 .worktrees/
 .agent-output/
 .wco/
+.wco-tools/
 *.log
 .env
 .env.*

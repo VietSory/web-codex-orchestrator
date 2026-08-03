@@ -18,7 +18,7 @@
     }
   },
   "runtime": {
-    "codex_executable": "/absolute/path/to/codex",
+    "source": "bundled",
     "codex_home": "/absolute/path/to/.codex"
   },
   "agents": {

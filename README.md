@@ -15,9 +15,6 @@ npm run typecheck
 npm test
 npm run build
 
-which codex
-codex login status
-
 node dist/cli/index.js intake ./downloads/wco-task-207.zip --state-dir ./.wco
 node dist/cli/index.js intake ./downloads/wco-task-207.zip --state-dir ./.wco --json
 ```
@@ -84,24 +81,37 @@ branch. Credential-bearing HTTP(S) registry URLs are rejected and persisted
 remote URLs are sanitized.
 
 Phase 4 uses injected fake agents and verification sandboxes in normal tests.
-Production uses the pinned `@openai/codex-sdk@0.145.0` and performs bounded
-`codex --version` and `codex login status` preflight before any real turn. The
-Codex CLI must report version `0.145.0`; the verifier runs through
+Production uses the pinned `@openai/codex@0.145.0` and
+`@openai/codex-sdk@0.145.0` packages. WCO launches the bundled CLI launcher;
+the user's global `codex` installation and its version are irrelevant. The
+bundled runtime performs bounded `--version` and `login status` preflight
+before any real turn. Authentication is read from the configured `CODEX_HOME`,
+or from inherited HOME behavior when `codex_home` is omitted. The verifier runs
+through the pinned sandbox contract:
 `codex -c sandbox_workspace_write.network_access=false sandbox
 --permission-profile :workspace --cd <canonical-cwd> -- <executable> <args>`.
-There is no unsandboxed fallback. The
-accepted bundle is prompt context, never an additional writable SDK directory.
-The optional real integration consumes Codex usage and is disabled unless
-`WCO_RUN_CODEX_INTEGRATION=1` is set. Phase 4 never commits, pushes, creates
-a product PR, executes a payload, or contacts the public network.
+There is no unsandboxed fallback. The accepted bundle is prompt context, never
+an additional writable SDK directory. Normal CI uses fakes and consumes no
+Codex usage. The optional real sandbox gate is
+`WCO_RUN_SANDBOX_INTEGRATION=1 npm run test:sandbox-integration`; the optional
+real Phase 4 integration consumes Codex usage only when
+`WCO_RUN_CODEX_INTEGRATION=1` is set. Phase 4 never commits, pushes, creates a
+product PR, executes a payload, or contacts the public network.
 
 Production configuration is trusted local input:
 
 ```json
 {
   "runtime": {
-    "codex_executable": "/absolute/path/from-which-codex",
+    "source": "bundled",
     "codex_home": "/home/user/.codex"
   }
 }
+
+The global `codex` executable is not used, and no executable override
+environment variable is required. For a local release gate:
+
+```bash
+WCO_CODEX_HOME="$HOME/.codex" npm run phase4:release-gate
+```
 ```

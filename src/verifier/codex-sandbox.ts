@@ -2,7 +2,7 @@ import { lstat, mkdtemp, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 import { ExecutionError } from "../execution/errors.js";
 import { defaultSpawnBounded, type SpawnBounded } from "../runtime/spawn-bounded.js";
-import { minimalCodexEnvironment, type ResolvedCodexRuntime } from "../runtime/codex-runtime.js";
+import { codexCliArgs, minimalCodexEnvironment, type ResolvedCodexRuntime } from "../runtime/codex-runtime.js";
 import type { CommandRunOptions, SandboxRunResult, VerificationSandbox } from "./contracts.js";
 
 export function sandboxCommandArgs(workingDirectory: string, executable: string, args: readonly string[]): string[] {
@@ -33,9 +33,10 @@ export class CodexVerificationSandbox implements VerificationSandbox {
       smokeDirectory = await mkdtemp(path.join(root, ".wco-codex-sandbox-smoke-"));
       const result = await this.spawnBounded({
         executable: this.runtime.executable,
-        args: sandboxCommandArgs(smokeDirectory, process.execPath, ["-e", "process.exit(0)"]),
+        args: codexCliArgs(this.runtime, sandboxCommandArgs(smokeDirectory, process.execPath, ["-e", "process.exit(0)"])),
         cwd: smokeDirectory,
         environment: minimalCodexEnvironment(this.runtime),
+        shell: false,
         timeoutMs: 15_000,
         stdoutMaxBytes: 16_384,
         stderrMaxBytes: 16_384,
@@ -68,9 +69,10 @@ export class CodexVerificationSandbox implements VerificationSandbox {
     }
     const result = await this.spawnBounded({
       executable: this.runtime.executable,
-      args: sandboxCommandArgs(canonicalCwd, executable, args),
+      args: codexCliArgs(this.runtime, sandboxCommandArgs(canonicalCwd, executable, args)),
       cwd: canonicalCwd,
       environment: { ...minimalCodexEnvironment(this.runtime), ...options.env },
+      shell: false,
       timeoutMs: options.timeoutMs,
       stdoutMaxBytes: options.maximum_stdout_bytes ?? options.maximumOutputBytes,
       stderrMaxBytes: options.maximum_stderr_bytes ?? options.maximumOutputBytes,

@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -27,6 +27,8 @@ import { verifyDeterministically } from "../src/verifier/verifier.js";
 import { FakeVerificationSandbox } from "../src/verifier/fake-sandbox.js";
 import type { CommandRunOptions, SandboxRunResult, VerificationSandbox } from "../src/verifier/contracts.js";
 import { createPhase4Fixture, type Phase4Fixture } from "./helpers/phase4-fixture.js";
+import { resolveCodexRuntime } from "../src/runtime/codex-runtime.js";
+import { fakeResolvedCodexRuntime } from "./helpers/codex-runtime-fixture.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -157,11 +159,10 @@ test("P4-H-008: fake agent preserves a thread across turns", async () => {
 test("P4-018/P4-019: runtime auth preflight fails closed without exposing credentials", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-codex-preflight-"));
   try {
-    const executable = path.join(root, "codex");
-    await writeFile(executable, "#!/usr/bin/env node\nif (process.argv[2] === '--version') process.stdout.write('codex-cli 0.145.0\\n'); else process.exit(1);\n");
-    await chmod(executable, 0o755);
-    const client = new CodexSdkAgentClient({ executable, environment: {} });
-    await expectCode(() => client.checkAvailability(), "CODEX_AUTH_UNAVAILABLE");
+    const launcher = path.join(root, "fake-bundled-codex.js");
+    await writeFile(launcher, "if (process.argv.includes('--version')) process.stdout.write('codex-cli 0.145.0\\n'); else process.exit(1);\n");
+    const runtime = fakeResolvedCodexRuntime({ prefix_args: [launcher], launcher_path: launcher, environment: {} });
+    await expectCode(() => new CodexSdkAgentClient(runtime).checkAvailability(), "CODEX_AUTH_UNAVAILABLE");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
