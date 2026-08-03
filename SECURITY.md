@@ -6,7 +6,8 @@ repository. Agents cannot select repositories, models, network access,
 sandbox mode, credentials, or verifier limits. Validation commands are
 structured argument arrays, checked against a trusted executable/environment
 policy, and run only through the production Codex sandbox (`codex sandbox
-<platform> -- ...`) or a fake sandbox in tests. There is no unsandboxed
+--permission-profile :workspace --cd <canonical-cwd> -- ...`) or a fake sandbox
+in tests. The runtime is pinned to the compatible Codex CLI contract. There is no unsandboxed
 fallback. The SDK receives only a minimal trusted environment; provider,
 SSH, token, preload, and arbitrary process variables are excluded. Reviews
 and verification are invalidated whenever the exact change-set digest changes.

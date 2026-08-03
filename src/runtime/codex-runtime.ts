@@ -14,6 +14,20 @@ export interface ResolvedCodexRuntime {
   state_directory?: string;
 }
 
+export const PINNED_CODEX_CLI_VERSION = "0.145.0";
+
+export function detectCodexCliVersion(output: string): string | null {
+  return output.match(/\b(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)\b/)?.[1] ?? null;
+}
+
+export function assertCompatibleCodexCliVersion(output: string): string {
+  const detected = detectCodexCliVersion(output);
+  if (detected !== PINNED_CODEX_CLI_VERSION) {
+    throw new ExecutionError("CODEX_RUNTIME_VERSION_MISMATCH", "The Codex CLI version does not match the pinned 0.145.0 runtime contract.");
+  }
+  return detected;
+}
+
 const INHERITED_ENVIRONMENT_KEYS = [
   "PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "TMPDIR",
 ] as const;

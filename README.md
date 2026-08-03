@@ -86,7 +86,9 @@ remote URLs are sanitized.
 Phase 4 uses injected fake agents and verification sandboxes in normal tests.
 Production uses the pinned `@openai/codex-sdk@0.145.0` and performs bounded
 `codex --version` and `codex login status` preflight before any real turn. The
-verifier runs through `codex sandbox`; there is no unsandboxed fallback. The
+Codex CLI must report version `0.145.0`; the verifier runs through
+`codex sandbox --permission-profile :workspace --cd <canonical-cwd> --
+<executable> <args>`. There is no unsandboxed fallback. The
 accepted bundle is prompt context, never an additional writable SDK directory.
 The optional real integration consumes Codex usage and is disabled unless
 `WCO_RUN_CODEX_INTEGRATION=1` is set. Phase 4 never commits, pushes, creates

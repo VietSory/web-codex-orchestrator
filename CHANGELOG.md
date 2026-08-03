@@ -19,3 +19,6 @@
   runtime configuration, minimal environment preflight, structured output
   schemas, and the concrete Codex verifier sandbox. Required verifier failures
   now produce bounded redacted evidence for the next Terra correction turn.
+- Corrected the verifier invocation to the Codex 0.145.0 sandbox CLI contract,
+  using `--permission-profile :workspace --cd <canonical-cwd> --` and rejecting
+  incompatible Codex CLI versions during preflight.

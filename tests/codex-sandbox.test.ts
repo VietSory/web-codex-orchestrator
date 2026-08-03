@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { CodexVerificationSandbox, sandboxCommandArgs, sandboxPlatform } from "../src/verifier/codex-sandbox.js";
+import { CodexVerificationSandbox, sandboxCommandArgs } from "../src/verifier/codex-sandbox.js";
 import type { ResolvedCodexRuntime } from "../src/runtime/codex-runtime.js";
 import type { SpawnBounded, SpawnBoundedResult } from "../src/runtime/spawn-bounded.js";
 import { ExecutionError } from "../src/execution/errors.js";
@@ -17,11 +17,12 @@ async function fixture(): Promise<{ root: string; cwd: string; runtime: Resolved
   return { root, cwd, runtime: { executable: "/trusted/codex", environment: { PATH: "/trusted/bin" }, state_directory: root }, cleanup: async () => rm(root, { recursive: true, force: true }) };
 }
 
-test("sandbox platform command arguments keep executable and args separate", () => {
-  assert.deepEqual(sandboxCommandArgs("linux", "node", ["-e", "process.exit(0)"]), ["sandbox", "linux", "--", "node", "-e", "process.exit(0)"]);
-  assert.deepEqual(sandboxCommandArgs("macos", "node", ["--version"]), ["sandbox", "macos", "--", "node", "--version"]);
-  assert.deepEqual(sandboxCommandArgs("windows", "node", ["--version"]), ["sandbox", "windows", "--", "node", "--version"]);
-  assert.ok(["linux", "macos", "windows"].includes(sandboxPlatform()));
+test("sandbox uses the pinned 0.145.0 CLI contract with separate executable and args", () => {
+  const command = sandboxCommandArgs("/trusted/worktree", "node", ["-e", "process.exit(0)"]);
+  assert.deepEqual(command, ["sandbox", "--permission-profile", ":workspace", "--cd", "/trusted/worktree", "--", "node", "-e", "process.exit(0)"]);
+  assert.equal(command.includes("linux"), false);
+  assert.equal(command.includes("macos"), false);
+  assert.equal(command.includes("windows"), false);
 });
 
 test("sandbox forwards cwd, timeout, signal, independent caps, and shell=false", async () => {
@@ -33,13 +34,24 @@ test("sandbox forwards cwd, timeout, signal, independent caps, and shell=false",
     const result = await new CodexVerificationSandbox(state.runtime, spawn).run("node", ["--version"], { cwd: state.cwd, env: { CI: "1" }, timeoutMs: 1234, maximumOutputBytes: 999, maximum_stdout_bytes: 111, maximum_stderr_bytes: 222, network_access: false, writable_root: state.root, credential_directories: [], signal });
     assert.equal(result.exitCode, 0);
     assert.equal(captured?.executable, "/trusted/codex");
-    assert.deepEqual(captured?.args, ["sandbox", sandboxPlatform(), "--", "node", "--version"]);
+    assert.deepEqual(captured?.args, ["sandbox", "--permission-profile", ":workspace", "--cd", state.cwd, "--", "node", "--version"]);
     assert.equal(captured?.cwd, state.cwd);
     assert.equal(captured?.timeoutMs, 1234);
     assert.equal(captured?.stdoutMaxBytes, 111);
     assert.equal(captured?.stderrMaxBytes, 222);
     assert.equal(captured?.signal, signal);
     assert.deepEqual(captured?.environment, { PATH: "/trusted/bin", CI: "1" });
+  } finally { await state.cleanup(); }
+});
+
+test("sandbox smoke test uses the temporary directory as --cd", async () => {
+  const state = await fixture();
+  try {
+    let captured: Parameters<SpawnBounded>[0] | undefined;
+    const spawn: SpawnBounded = async (options) => { captured = options; return success; };
+    await new CodexVerificationSandbox(state.runtime, spawn).checkAvailability();
+    assert.ok(captured?.cwd?.startsWith(`${state.root}${path.sep}`));
+    assert.deepEqual(captured?.args, ["sandbox", "--permission-profile", ":workspace", "--cd", captured?.cwd, "--", process.execPath, "-e", "process.exit(0)"]);
   } finally { await state.cleanup(); }
 });
 

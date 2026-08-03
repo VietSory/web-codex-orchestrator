@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -155,8 +155,14 @@ test("P4-H-008: fake agent preserves a thread across turns", async () => {
 });
 
 test("P4-018/P4-019: runtime auth preflight fails closed without exposing credentials", async () => {
-  const client = new CodexSdkAgentClient({ executable: process.execPath, environment: {} });
-  await expectCode(() => client.checkAvailability(), "CODEX_AUTH_UNAVAILABLE");
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-codex-preflight-"));
+  try {
+    const executable = path.join(root, "codex");
+    await writeFile(executable, "#!/usr/bin/env node\nif (process.argv[2] === '--version') process.stdout.write('codex-cli 0.145.0\\n'); else process.exit(1);\n");
+    await chmod(executable, 0o755);
+    const client = new CodexSdkAgentClient({ executable, environment: {} });
+    await expectCode(() => client.checkAvailability(), "CODEX_AUTH_UNAVAILABLE");
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("P4-H-009: verification outputs remain bounded and redacted in command results", async () => {

@@ -2,8 +2,8 @@ import { Codex } from "@openai/codex-sdk";
 import type { ThreadEvent, ThreadOptions } from "@openai/codex-sdk";
 import path from "node:path";
 import { ExecutionError, isExecutionError } from "../execution/errors.js";
-import { defaultSpawnBounded } from "../runtime/spawn-bounded.js";
-import { minimalCodexEnvironment, type ResolvedCodexRuntime } from "../runtime/codex-runtime.js";
+import { defaultSpawnBounded, type SpawnBoundedResult } from "../runtime/spawn-bounded.js";
+import { assertCompatibleCodexCliVersion, minimalCodexEnvironment, type ResolvedCodexRuntime } from "../runtime/codex-runtime.js";
 import type { AgentClient, AgentTurnRequest, AgentTurnResponse } from "./contracts.js";
 
 export type CodexFactory = (
@@ -29,7 +29,7 @@ export class CodexSdkAgentClient implements AgentClient {
       (options) => new Codex(options),
   ) {}
 
-  private async preflight(args: string[], failureCode: "CODEX_RUNTIME_NOT_FOUND" | "CODEX_AUTH_UNAVAILABLE"): Promise<void> {
+  private async preflight(args: string[], failureCode: "CODEX_RUNTIME_NOT_FOUND" | "CODEX_AUTH_UNAVAILABLE"): Promise<SpawnBoundedResult> {
     const result = await defaultSpawnBounded({
       executable: this.runtime.executable,
       args,
@@ -42,10 +42,12 @@ export class CodexSdkAgentClient implements AgentClient {
     if (result.spawnError || result.timedOut || result.exitCode !== 0) {
       throw new ExecutionError(failureCode, failureCode === "CODEX_AUTH_UNAVAILABLE" ? "Codex authentication is unavailable." : "The Codex runtime is unavailable.");
     }
+    return result;
   }
 
   async checkAvailability(): Promise<void> {
-    await this.preflight(["--version"], "CODEX_RUNTIME_NOT_FOUND");
+    const version = await this.preflight(["--version"], "CODEX_RUNTIME_NOT_FOUND");
+    assertCompatibleCodexCliVersion(`${version.stdout}\n${version.stderr}`);
     await this.preflight(["login", "status"], "CODEX_AUTH_UNAVAILABLE");
   }
 

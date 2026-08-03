@@ -1,20 +1,12 @@
 import { lstat, mkdtemp, realpath, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { ExecutionError } from "../execution/errors.js";
 import { defaultSpawnBounded, type SpawnBounded } from "../runtime/spawn-bounded.js";
 import { minimalCodexEnvironment, type ResolvedCodexRuntime } from "../runtime/codex-runtime.js";
 import type { CommandRunOptions, SandboxRunResult, VerificationSandbox } from "./contracts.js";
 
-export function sandboxPlatform(): "linux" | "macos" | "windows" {
-  if (process.platform === "linux") return "linux";
-  if (process.platform === "darwin") return "macos";
-  if (process.platform === "win32") return "windows";
-  throw new ExecutionError("VERIFIER_SANDBOX_UNAVAILABLE", "The operating system is not supported by the Codex sandbox.");
-}
-
-export function sandboxCommandArgs(platform: "linux" | "macos" | "windows", executable: string, args: readonly string[]): string[] {
-  return ["sandbox", platform, "--", executable, ...args];
+export function sandboxCommandArgs(workingDirectory: string, executable: string, args: readonly string[]): string[] {
+  return ["sandbox", "--permission-profile", ":workspace", "--cd", workingDirectory, "--", executable, ...args];
 }
 
 function assertNulFree(executable: string, args: readonly string[]): void {
@@ -34,13 +26,14 @@ export class CodexVerificationSandbox implements VerificationSandbox {
   ) {}
 
   async checkAvailability(): Promise<void> {
-    const root = this.runtime.state_directory ?? os.tmpdir();
+    const root = this.runtime.state_directory;
+    if (!root) throw new ExecutionError("CODEX_SANDBOX_UNAVAILABLE", "A state directory is required for the Codex sandbox smoke test.");
     let smokeDirectory: string | undefined;
     try {
       smokeDirectory = await mkdtemp(path.join(root, ".wco-codex-sandbox-smoke-"));
       const result = await this.spawnBounded({
         executable: this.runtime.executable,
-        args: sandboxCommandArgs(sandboxPlatform(), process.execPath, ["-e", "process.exit(0)"]),
+        args: sandboxCommandArgs(smokeDirectory, process.execPath, ["-e", "process.exit(0)"]),
         cwd: smokeDirectory,
         environment: minimalCodexEnvironment(this.runtime),
         timeoutMs: 15_000,
@@ -75,7 +68,7 @@ export class CodexVerificationSandbox implements VerificationSandbox {
     }
     const result = await this.spawnBounded({
       executable: this.runtime.executable,
-      args: sandboxCommandArgs(sandboxPlatform(), executable, args),
+      args: sandboxCommandArgs(canonicalCwd, executable, args),
       cwd: canonicalCwd,
       environment: { ...minimalCodexEnvironment(this.runtime), ...options.env },
       timeoutMs: options.timeoutMs,
