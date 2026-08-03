@@ -22,7 +22,7 @@ import { snapshotBundle, assertBundleUnchanged } from "../src/execution/bundle-i
 import { executeRun } from "../src/execution/execution-service.js";
 import { validateEnvironment } from "../src/verifier/environment-policy.js";
 import { validateArguments } from "../src/verifier/executable-policy.js";
-import { ChildProcessSandbox } from "../src/verifier/command-runner.js";
+import { ChildProcessSandbox } from "./helpers/child-process-sandbox.js";
 import { verifyDeterministically } from "../src/verifier/verifier.js";
 import { FakeVerificationSandbox } from "../src/verifier/fake-sandbox.js";
 import type { CommandRunOptions, SandboxRunResult, VerificationSandbox } from "../src/verifier/contracts.js";
@@ -147,21 +147,15 @@ test("P4-H-007: interruption can resume through a fixing state", () => {
   assert.doesNotThrow(() => assertTransition("INTERRUPTED", "TERRA_FIXING"));
 });
 
-test("P4-H-008: fake agent exposes explicit thread start and resume", async () => {
+test("P4-H-008: fake agent preserves a thread across turns", async () => {
   const client = new FakeAgentClient();
-  const thread = await client.startThread({ role: "implementer", model: "terra", reasoning_effort: "high", prompt: "x", read_only: true, sandbox_mode: "read-only", network_access: false, live_web_search: false, cached_web_search: false });
-  assert.equal((await client.resumeThread(thread.thread_id)).thread_id, thread.thread_id);
-  const response = await client.turn({ role: "implementer", model: "terra", reasoning_effort: "high", thread_id: thread.thread_id, prompt: "x", read_only: true, sandbox_mode: "read-only", network_access: false, live_web_search: false, cached_web_search: false });
-  assert.equal(response.thread_id, thread.thread_id);
+  const first = await client.turn({ role: "implementer", model: "terra", reasoning_effort: "high", prompt: "x", output_schema: {}, read_only: true, approval_policy: "never", sandbox_mode: "read-only", network_access: false, live_web_search: false, cached_web_search: false, workspace_path: process.cwd(), accepted_bundle_path: path.resolve("templates/task-bundle") });
+  const response = await client.turn({ role: "implementer", model: "terra", reasoning_effort: "high", thread_id: first.thread_id, prompt: "x", output_schema: {}, read_only: true, approval_policy: "never", sandbox_mode: "read-only", network_access: false, live_web_search: false, cached_web_search: false, workspace_path: process.cwd(), accepted_bundle_path: path.resolve("templates/task-bundle") });
+  assert.equal(response.thread_id, first.thread_id);
 });
 
 test("P4-018/P4-019: runtime auth preflight fails closed without exposing credentials", async () => {
-  const client = new CodexSdkAgentClient({
-    async checkAuth() { return false; },
-    async startThread() { return { thread_id: "unused" }; },
-    async resumeThread(threadId) { return { thread_id: threadId }; },
-    async run() { return { thread_id: "unused", output: {} }; },
-  });
+  const client = new CodexSdkAgentClient({ executable: process.execPath, environment: {} });
   await expectCode(() => client.checkAvailability(), "CODEX_AUTH_UNAVAILABLE");
 });
 

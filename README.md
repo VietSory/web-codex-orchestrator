@@ -15,6 +15,9 @@ npm run typecheck
 npm test
 npm run build
 
+which codex
+codex login status
+
 node dist/cli/index.js intake ./downloads/wco-task-207.zip --state-dir ./.wco
 node dist/cli/index.js intake ./downloads/wco-task-207.zip --state-dir ./.wco --json
 ```
@@ -81,9 +84,21 @@ branch. Credential-bearing HTTP(S) registry URLs are rejected and persisted
 remote URLs are sanitized.
 
 Phase 4 uses injected fake agents and verification sandboxes in normal tests.
-Before any real model turn, the production adapter performs a credential-free
-runtime/auth preflight and requires an enforceable sandbox; it fails closed
-with a stable error when either is unavailable. Trusted verification caps are
-applied after taking the lower of local and bundle limits. It never commits,
-pushes, creates a product PR, executes a payload, or contacts the public
-network.
+Production uses the pinned `@openai/codex-sdk@0.145.0` and performs bounded
+`codex --version` and `codex login status` preflight before any real turn. The
+verifier runs through `codex sandbox`; there is no unsandboxed fallback. The
+accepted bundle is prompt context, never an additional writable SDK directory.
+The optional real integration consumes Codex usage and is disabled unless
+`WCO_RUN_CODEX_INTEGRATION=1` is set. Phase 4 never commits, pushes, creates
+a product PR, executes a payload, or contacts the public network.
+
+Production configuration is trusted local input:
+
+```json
+{
+  "runtime": {
+    "codex_executable": "/absolute/path/from-which-codex",
+    "codex_home": "/home/user/.codex"
+  }
+}
+```

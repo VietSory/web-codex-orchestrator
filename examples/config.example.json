@@ -17,6 +17,10 @@
       "fetch_policy": "if-missing"
     }
   },
+  "runtime": {
+    "codex_executable": "/absolute/path/to/codex",
+    "codex_home": "/absolute/path/to/.codex"
+  },
   "agents": {
     "implementer": {
       "model": "gpt-5.6-terra",

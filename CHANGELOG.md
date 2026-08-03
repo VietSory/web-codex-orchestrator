@@ -15,3 +15,7 @@
   timeout cleanup, Git-ref and bundle immutability checks, bounded/redacted
   review evidence, generated-artifact receipts, trusted change limits, and
   resume repair routing.
+- Wired production execution to `@openai/codex-sdk@0.145.0`, including trusted
+  runtime configuration, minimal environment preflight, structured output
+  schemas, and the concrete Codex verifier sandbox. Required verifier failures
+  now produce bounded redacted evidence for the next Terra correction turn.

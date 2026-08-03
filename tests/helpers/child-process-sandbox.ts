@@ -2,10 +2,11 @@ import { spawn } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import { lstat, realpath } from "node:fs/promises";
 import path from "node:path";
-import { ExecutionError } from "../execution/errors.js";
-import { redact } from "../evidence/log-redaction.js";
-import type { CommandRunOptions, SandboxRunResult, VerificationSandbox } from "./contracts.js";
+import { ExecutionError } from "../../src/execution/errors.js";
+import { redact } from "../../src/evidence/log-redaction.js";
+import type { CommandRunOptions, SandboxRunResult, VerificationSandbox } from "../../src/verifier/contracts.js";
 
+/** Test-only host runner. Production verification must use CodexVerificationSandbox. */
 export class ChildProcessSandbox implements VerificationSandbox {
   constructor(private readonly explicitlyEnabled = false) {}
   async checkAvailability(): Promise<void> {
@@ -17,12 +18,7 @@ export class ChildProcessSandbox implements VerificationSandbox {
     const root = path.resolve(options.writable_root);
     const cwd = path.resolve(options.cwd);
     if (cwd !== root && !cwd.startsWith(`${root}${path.sep}`)) throw new ExecutionError("VERIFIER_SANDBOX_UNAVAILABLE", "Host process cwd is outside the writable root.");
-    const [rootInfo, cwdInfo, canonicalRoot, canonicalCwd] = await Promise.all([
-      lstat(root).catch(() => undefined),
-      lstat(cwd).catch(() => undefined),
-      realpath(root).catch(() => ""),
-      realpath(cwd).catch(() => ""),
-    ]);
+    const [rootInfo, cwdInfo, canonicalRoot, canonicalCwd] = await Promise.all([lstat(root).catch(() => undefined), lstat(cwd).catch(() => undefined), realpath(root).catch(() => ""), realpath(cwd).catch(() => "")]);
     if (!rootInfo?.isDirectory() || rootInfo.isSymbolicLink() || !cwdInfo?.isDirectory() || cwdInfo.isSymbolicLink() || !canonicalRoot || !canonicalCwd || (canonicalCwd !== canonicalRoot && !canonicalCwd.startsWith(`${canonicalRoot}${path.sep}`))) throw new ExecutionError("VERIFIER_SANDBOX_UNAVAILABLE", "Host process cwd or writable root is not a canonical directory.");
     const started = performance.now();
     return await new Promise<SandboxRunResult>((resolve, reject) => {
@@ -38,5 +34,3 @@ export class ChildProcessSandbox implements VerificationSandbox {
     });
   }
 }
-
-export class CommandRunner extends ChildProcessSandbox {}

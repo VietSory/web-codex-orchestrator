@@ -7,11 +7,13 @@ validation commands through a sandbox, and requires independent Terra and Sol
 reviews for the same digest.
 
 The normal test suite injects `FakeAgentClient` and
-`FakeVerificationSandbox`. `CodexSdkAgentClient` and
-`CodexVerificationSandbox` fail closed unless a supported runtime is injected;
-the agent client performs a credential-free runtime/auth preflight and the
-sandbox is checked before the first model turn. No Phase 4 operation commits,
-pushes, invokes GitHub, executes payload files, or automates a browser.
+`FakeVerificationSandbox`. Production `execute` resolves the trusted
+`runtime.codex_executable`, constructs the official
+`@openai/codex-sdk@0.145.0` client, and performs bounded `codex --version` and
+`codex login status` preflight. `CodexVerificationSandbox` performs a smoke
+test and runs validation as `codex sandbox <platform> -- <executable> <args>`.
+There is no direct-host fallback. No Phase 4 operation commits, pushes,
+invokes GitHub, executes payload files, or automates a browser.
 
 Execution artifacts are stored below
 `runs/<task-id>/<archive-sha256>/execution/` using atomic JSON writes and an
@@ -20,5 +22,8 @@ append-only state journal. `execution-status` is read-only.
 Trusted verification configuration caps changed files, diff lines, file size,
 command duration, and command output. Bundle limits are always reduced to the
 trusted cap. Model prompts contain only bounded, redacted request/plan,
-change-set, and verification evidence; complete transcripts and environment
-values are never persisted.
+change-set, and verification evidence; complete transcripts, public reasoning,
+and environment values are never persisted. Required verifier failures are
+bounded and redacted before being persisted and included in Terra's next
+correction prompt alongside validated reviewer findings. The accepted bundle
+is never supplied as an SDK writable directory.

@@ -60,3 +60,11 @@ The remaining matrix behavior is enforced by the same shared validators and
 service gates and is named above so coverage cannot silently drift. The
 optional `tests/codex-integration.test.ts` suite is opt-in and skips in normal
 CI; it never supplies credentials or enables network access.
+
+The production wiring regressions are covered by
+`tests/codex-sdk-client.test.ts` for new/resumed SDK threads, restrictions,
+structured output, cancellation, bounded events, and environment filtering;
+`tests/codex-sandbox.test.ts` for platform argv, bounded process options, and
+fail-closed startup; and `tests/verifier-fix-evidence.test.ts` for redacted
+verifier feedback in Terra's next correction prompt and persisted artifacts.
+The real integration test consumes Codex usage only when explicitly enabled.

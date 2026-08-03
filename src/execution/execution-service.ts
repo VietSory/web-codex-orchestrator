@@ -5,11 +5,10 @@ import type { AgentClient, AgentTurnRequest, AgentTurnResponse } from "../agent/
 import { assessWithTerra, implementWithTerra } from "../agent/terra-implementer.js";
 import { reviewWithTerra } from "../agent/terra-reviewer.js";
 import { reviewWithSol } from "../agent/sol-reviewer.js";
-import type { ReviewFinding, ReviewResult } from "./contracts.js";
-import type { ExecutionReceipt, ExecutionState, ChangeSet, VerificationCommandResult } from "./contracts.js";
+import type { ReviewResult, ReviewFinding, ExecutionReceipt, ExecutionState, ChangeSet, VerificationCommandResult, VerificationFailureEvidence } from "./contracts.js";
 import { ExecutionError, isExecutionError } from "./errors.js";
 import { assertPhase4ExecutionContract } from "./execution-validator.js";
-import { loadPhase4Config, readBundleJson, effectiveLimit, type Phase4Config } from "./execution-config.js";
+import { loadPhase4Config, readBundleJson, effectiveLimit } from "./execution-config.js";
 import { acquireExecutionLock } from "./execution-lock.js";
 import { appendAgentEvent, appendExecutionEvent, ensureExecutionDirectory, executionPaths, readExecutionReceipt, readPreparationForExecution, writeExecutionArtifact, writeExecutionReceipt, writeExecutionText } from "./execution-store.js";
 import { assertTransition } from "./state-machine.js";
@@ -23,11 +22,13 @@ import { verifyDeterministically } from "../verifier/verifier.js";
 import type { VerificationSandbox } from "../verifier/contracts.js";
 import { verifyBundleChecksums } from "../intake/checksum-verifier.js";
 import { redact } from "../evidence/log-redaction.js";
+import type { Phase4Config } from "./execution-config.js";
 
 export interface ExecutionOptions {
   runId: string;
   stateDirectory: string;
   configPath: string;
+  config?: Phase4Config;
   agentClient?: AgentClient;
   sandbox?: VerificationSandbox;
   runner?: GitRunner;
@@ -90,26 +91,6 @@ function withAgentTimeout(client: AgentClient, timeoutSeconds: number): AgentCli
         ]);
       } finally { if (timer) clearTimeout(timer); }
     },
-    async startThread(request) {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      let abortHandler: (() => void) | undefined;
-      try {
-        const cancelled = new Promise<never>((_, reject) => {
-          abortHandler = () => reject(new ExecutionError("INTERRUPTED", "Execution was cancelled."));
-          if (request.signal?.aborted) abortHandler();
-          else request.signal?.addEventListener("abort", abortHandler, { once: true });
-        });
-        return await Promise.race([
-          client.startThread(request),
-          cancelled,
-          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new ExecutionError("CODEX_TURN_TIMEOUT", "Codex thread creation timed out.")), timeoutSeconds * 1000); }),
-        ]);
-      } finally {
-        if (timer) clearTimeout(timer);
-        if (abortHandler) request.signal?.removeEventListener("abort", abortHandler);
-      }
-    },
-    resumeThread: (threadId) => client.resumeThread(threadId),
     async turn(request: AgentTurnRequest): Promise<AgentTurnResponse> {
       let timer: ReturnType<typeof setTimeout> | undefined;
       let cancelHandler: (() => void) | undefined;
@@ -173,7 +154,7 @@ export class ExecutionService {
     const now = this.now;
     let execution: ExecutionReceipt | undefined;
     try {
-      const config = await loadPhase4Config(this.options.configPath);
+      const config = this.options.config ?? await loadPhase4Config(this.options.configPath);
       const paths = executionPaths(this.options.stateDirectory, taskId, archiveSha256); await ensureExecutionDirectory(paths);
       execution = await readExecutionReceipt(this.options.stateDirectory, taskId, archiveSha256);
       if (execution) {
@@ -229,7 +210,8 @@ export class ExecutionService {
       };
       let changeSet: ChangeSet = await calculateChangeSet({ worktreePath: execution.worktree_path, baseCommit: execution.base_commit, branchName: execution.branch_name, runner, allowedGeneratedPaths: config.verification.allowed_generated_paths });
       execution.change_set_sha256 = changeSet.change_set_sha256;
-      let pendingFixes: ReviewFinding[] = [];
+      let pendingReviewerFindings: ReviewFinding[] = [];
+      let pendingVerificationFailure: VerificationFailureEvidence | null = execution.pending_verification_failure ?? null;
 
       if (["POLICY_CHECKING", "VERIFYING", "TERRA_REVIEWING", "SOL_REVIEWING", "VERIFICATION_FAILED", "AGENT_FAILED"].includes(execution.state)) {
         invalidateReviews(execution);
@@ -241,28 +223,25 @@ export class ExecutionService {
       if (execution.state === "CODEX_PREFLIGHT" || execution.state === "TERRA_ASSESSING") {
         throwIfAborted(this.options.signal);
         if (execution.state === "CODEX_PREFLIGHT") await this.transition(execution, "TERRA_ASSESSING");
-        const assessmentThread = execution.implementer.thread_id
-          ? await client.resumeThread(execution.implementer.thread_id)
-          : await client.startThread({ role: "implementer", model: execution.implementer.model, reasoning_effort: execution.implementer.reasoning_effort, prompt: "assessment", read_only: true, approval_policy: "never", sandbox_mode: "read-only", network_access: false, live_web_search: false, cached_web_search: false, workspace_path: execution.worktree_path, accepted_bundle_path: preparation.accepted_bundle_path, signal: this.options.signal });
-        execution.implementer.thread_id = assessmentThread.thread_id;
         await syncBudget();
         const before = await calculateChangeSet({ worktreePath: execution.worktree_path, baseCommit: execution.base_commit, branchName: execution.branch_name, runner, allowedGeneratedPaths: config.verification.allowed_generated_paths });
         await assertBundleUnchanged(preparation.accepted_bundle_path, bundleSnapshot);
         let assessed: Awaited<ReturnType<typeof assessWithTerra>>;
         try {
           budget.beginAssessment(); await syncBudget();
-          assessed = await assessWithTerra(client, { model: execution.implementer.model, reasoning_effort: execution.implementer.reasoning_effort, threadId: execution.implementer.thread_id, workspacePath: execution.worktree_path, acceptedBundlePath: preparation.accepted_bundle_path, prompt: `${boundedPromptText(bundleData.request)}\n\nPlan:\n${boundedPromptText(bundleData.plan)}\n\nRules:\n${boundedPromptText(bundleData.rules)}\n\nAcceptance:\n${boundedPromptJson(bundleData.acceptance)}\n\nTest matrix:\n${boundedPromptJson(bundleData.testMatrix)}\n\nValidation contract:\n${boundedPromptJson(bundleData.validation)}\n\nRisk policy:\n${boundedPromptJson(bundleData.riskPolicy)}`, signal: this.options.signal });
+          assessed = await assessWithTerra(client, { model: execution.implementer.model, reasoning_effort: execution.implementer.reasoning_effort, threadId: execution.implementer.thread_id || undefined, workspacePath: execution.worktree_path, acceptedBundlePath: preparation.accepted_bundle_path, prompt: `${boundedPromptText(bundleData.request)}\n\nPlan:\n${boundedPromptText(bundleData.plan)}\n\nRules:\n${boundedPromptText(bundleData.rules)}\n\nAcceptance:\n${boundedPromptJson(bundleData.acceptance)}\n\nTest matrix:\n${boundedPromptJson(bundleData.testMatrix)}\n\nValidation contract:\n${boundedPromptJson(bundleData.validation)}\n\nRisk policy:\n${boundedPromptJson(bundleData.riskPolicy)}`, ...(this.options.signal ? { signal: this.options.signal } : {}) });
         } catch (error) {
           if (!isExecutionError(error) || error.code !== "AGENT_OUTPUT_INVALID") throw error;
           await assertBundleUnchanged(preparation.accepted_bundle_path, bundleSnapshot);
           budget.beginRepair(); await syncBudget();
-          const repair = await assessWithTerra(client, { model: execution.implementer.model, reasoning_effort: execution.implementer.reasoning_effort, threadId: execution.implementer.thread_id, workspacePath: execution.worktree_path, acceptedBundlePath: preparation.accepted_bundle_path, prompt: "Your previous response was invalid. Return exactly the required assessment JSON and no other fields.", signal: this.options.signal });
+          const repair = await assessWithTerra(client, { model: execution.implementer.model, reasoning_effort: execution.implementer.reasoning_effort, threadId: execution.implementer.thread_id, workspacePath: execution.worktree_path, acceptedBundlePath: preparation.accepted_bundle_path, prompt: "Your previous response was invalid. Return exactly the required assessment JSON and no other fields.", ...(this.options.signal ? { signal: this.options.signal } : {}) });
           assessed = repair;
         }
         await assertBundleUnchanged(preparation.accepted_bundle_path, bundleSnapshot);
         const after = await calculateChangeSet({ worktreePath: execution.worktree_path, baseCommit: execution.base_commit, branchName: execution.branch_name, runner, allowedGeneratedPaths: config.verification.allowed_generated_paths });
         if (before.change_set_sha256 !== after.change_set_sha256) throw new ExecutionError("AGENT_ASSESSMENT_MUTATED_WORKTREE", "Terra assessment changed the worktree.");
         execution.implementer.thread_id = assessed.response.thread_id;
+        await writeExecutionReceipt(this.options.stateDirectory, execution);
         await writeExecutionArtifact(this.options.stateDirectory, taskId, archiveSha256, "implementation", assessed.assessment, "assessment.json");
         await appendAgentEvent(this.options.stateDirectory, taskId, archiveSha256, { event_version: "1.0", role: "implementer", phase: "assessment", thread_id: assessed.response.thread_id, prompt_sha256: "redacted", usage: assessed.response.usage ?? {} });
         execution.usage.input_tokens += assessed.response.usage?.input_tokens ?? 0; execution.usage.cached_input_tokens += assessed.response.usage?.cached_input_tokens ?? 0; execution.usage.output_tokens += assessed.response.usage?.output_tokens ?? 0;
@@ -282,13 +261,12 @@ export class ExecutionService {
         await assertBundleUnchanged(preparation.accepted_bundle_path, bundleSnapshot);
         let implemented: Awaited<ReturnType<typeof implementWithTerra>>;
         try {
-          implemented = await implementWithTerra(client, { model: execution.implementer.model, reasoning_effort: execution.implementer.reasoning_effort, threadId: execution.implementer.thread_id, workspacePath: execution.worktree_path, acceptedBundlePath: preparation.accepted_bundle_path, prompt: `${boundedPromptText(bundleData.request)}\n\nPlan:\n${boundedPromptText(bundleData.plan)}\n\nRules:\n${boundedPromptText(bundleData.rules)}\n\nAcceptance:\n${boundedPromptJson(bundleData.acceptance)}\n\nTest matrix:\n${boundedPromptJson(bundleData.testMatrix)}\n\nValidation contract:\n${boundedPromptJson(bundleData.validation)}\n\nRisk policy:\n${boundedPromptJson(bundleData.riskPolicy)}\n\nValidated reviewer findings to fix:\n${boundedPromptJson(pendingFixes)}\n\nCurrent exact change-set digest: ${execution.change_set_sha256 ?? ""}`, signal: this.options.signal });
-          pendingFixes = [];
+          implemented = await implementWithTerra(client, { model: execution.implementer.model, reasoning_effort: execution.implementer.reasoning_effort, threadId: execution.implementer.thread_id, workspacePath: execution.worktree_path, acceptedBundlePath: preparation.accepted_bundle_path, prompt: `${boundedPromptText(bundleData.request)}\n\nPlan:\n${boundedPromptText(bundleData.plan)}\n\nRules:\n${boundedPromptText(bundleData.rules)}\n\nAcceptance:\n${boundedPromptJson(bundleData.acceptance)}\n\nTest matrix:\n${boundedPromptJson(bundleData.testMatrix)}\n\nValidation contract:\n${boundedPromptJson(bundleData.validation)}\n\nRisk policy:\n${boundedPromptJson(bundleData.riskPolicy)}\n\nValidated reviewer findings to fix:\n${boundedPromptJson(pendingReviewerFindings)}\n\nDeterministic verifier failure evidence to fix:\n${boundedPromptJson(pendingVerificationFailure)}\n\nCurrent exact change-set digest: ${execution.change_set_sha256 ?? ""}`, ...(this.options.signal ? { signal: this.options.signal } : {}) });
         } catch (error) {
           if (!isExecutionError(error) || error.code !== "AGENT_OUTPUT_INVALID") throw error;
           await assertBundleUnchanged(preparation.accepted_bundle_path, bundleSnapshot);
           budget.beginRepair(); await syncBudget();
-          implemented = await implementWithTerra(client, { model: execution.implementer.model, reasoning_effort: execution.implementer.reasoning_effort, threadId: execution.implementer.thread_id, workspacePath: execution.worktree_path, acceptedBundlePath: preparation.accepted_bundle_path, prompt: "Your previous implementation response was invalid. Return exactly the required implementation JSON and no other fields.", signal: this.options.signal });
+          implemented = await implementWithTerra(client, { model: execution.implementer.model, reasoning_effort: execution.implementer.reasoning_effort, threadId: execution.implementer.thread_id, workspacePath: execution.worktree_path, acceptedBundlePath: preparation.accepted_bundle_path, prompt: "Your previous implementation response was invalid. Return exactly the required implementation JSON and no other fields.", ...(this.options.signal ? { signal: this.options.signal } : {}) });
         }
         await assertBundleUnchanged(preparation.accepted_bundle_path, bundleSnapshot);
         execution.implementer.thread_id = implemented.response.thread_id;
@@ -300,6 +278,10 @@ export class ExecutionService {
         if (implemented.implementation.status === "REPLAN_REQUIRED") { await this.transition(execution, "REPLAN_REQUIRED"); execution.errors.push({ code: "REPLAN_REQUIRED", message: redact(implemented.implementation.summary).slice(0, 16_384) }); await writeExecutionReceipt(this.options.stateDirectory, execution); return execution; }
         if (implemented.implementation.status === "HUMAN_REQUIRED") { await this.transition(execution, "HUMAN_REQUIRED"); execution.errors.push({ code: "HUMAN_REQUIRED", message: redact(implemented.implementation.summary).slice(0, 16_384) }); await writeExecutionReceipt(this.options.stateDirectory, execution); return execution; }
         if (implemented.implementation.status === "BLOCKED") { await this.transition(execution, "POLICY_BLOCKED"); execution.errors.push({ code: "POLICY_BLOCKED", message: redact(implemented.implementation.summary).slice(0, 16_384) }); await writeExecutionReceipt(this.options.stateDirectory, execution); return execution; }
+        pendingReviewerFindings = [];
+        pendingVerificationFailure = null;
+        execution.pending_verification_failure = null;
+        await writeExecutionReceipt(this.options.stateDirectory, execution);
         changeSet = await calculateChangeSet({ worktreePath: execution.worktree_path, baseCommit: execution.base_commit, branchName: execution.branch_name, runner, allowedGeneratedPaths: config.verification.allowed_generated_paths });
         const trustedMaximumChangedFiles = config.verification.maximum_changed_files ?? 100;
         const trustedMaximumDiffLines = config.verification.maximum_diff_lines ?? 10_000;
@@ -319,34 +301,60 @@ export class ExecutionService {
           await writeExecutionText(this.options.stateDirectory, taskId, archiveSha256, "verification", command.stderr ?? "", `${verificationDirectory}/${safeId}.stderr.log`);
         }
         await writeExecutionArtifact(this.options.stateDirectory, taskId, archiveSha256, "verification", verification, `${verificationDirectory}/summary.json`);
-        if (!verification.required_commands_passed) { await this.transition(execution, "VERIFICATION_FAILED"); invalidateReviews(execution); if (execution.implementer.iterations >= budget.usage.implementationIterations && budget.usage.implementationIterations >= limits.maximum_implementation_iterations) { await this.transition(execution, "BUDGET_EXHAUSTED"); return execution; } await this.transition(execution, "TERRA_FIXING"); continue; }
+        if (!verification.required_commands_passed) {
+          const failed = verification.commands.filter((command) => command.required && command.status !== "PASS");
+          pendingVerificationFailure = {
+            verification_round: execution.verification.rounds,
+            failed_command_ids: failed.map((command) => command.command_id),
+            commands: failed.map((command) => ({
+              command_id: command.command_id,
+              status: command.timed_out ? "TIMEOUT" as const : "FAIL" as const,
+              exit_code: command.exit_code,
+              signal: command.signal,
+              timed_out: command.timed_out,
+              stdout_tail: redact(command.stdout ?? "").slice(-8_192),
+              stderr_tail: redact(command.stderr ?? "").slice(-8_192),
+            })),
+            remaining_implementation_iterations: Math.max(0, limits.maximum_implementation_iterations - execution.implementer.iterations),
+          };
+          execution.pending_verification_failure = pendingVerificationFailure;
+          await writeExecutionArtifact(this.options.stateDirectory, taskId, archiveSha256, "verification", pendingVerificationFailure, `${verificationDirectory}/fix-evidence.json`);
+          await writeExecutionReceipt(this.options.stateDirectory, execution);
+          await this.transition(execution, "VERIFICATION_FAILED");
+          invalidateReviews(execution);
+          if (execution.implementer.iterations >= budget.usage.implementationIterations && budget.usage.implementationIterations >= limits.maximum_implementation_iterations) { await this.transition(execution, "BUDGET_EXHAUSTED"); return execution; }
+          await this.transition(execution, "TERRA_FIXING");
+          continue;
+        }
         await this.transition(execution, "TERRA_REVIEWING");
         throwIfAborted(this.options.signal);
         budget.beginInternalReview();
-        await syncBudget();
-        const terraThread = await client.startThread({ role: "internal_reviewer", model: execution.internal_reviewer.model, reasoning_effort: execution.internal_reviewer.reasoning_effort, prompt: "review", read_only: true, approval_policy: "never", sandbox_mode: "read-only", network_access: false, live_web_search: false, cached_web_search: false, workspace_path: execution.worktree_path, accepted_bundle_path: preparation.accepted_bundle_path, signal: this.options.signal });
-        if (!terraThread.thread_id || terraThread.thread_id === execution.implementer.thread_id || execution.internal_reviewer.thread_ids?.includes(terraThread.thread_id)) throw new ExecutionError("TERRA_REVIEW_OUTPUT_INVALID", "Terra reviewer must start a fresh independent thread.");
-        execution.internal_reviewer.latest_thread_id = terraThread.thread_id;
-        execution.internal_reviewer.thread_ids ??= [];
-        execution.internal_reviewer.thread_ids.push(terraThread.thread_id);
         await syncBudget();
         const terraBefore = await calculateChangeSet({ worktreePath: execution.worktree_path, baseCommit: execution.base_commit, branchName: execution.branch_name, runner, allowedGeneratedPaths: config.verification.allowed_generated_paths });
         const trackedDiff = await boundedTrackedDiff(runner, execution.base_commit, execution.worktree_path);
         await assertBundleUnchanged(preparation.accepted_bundle_path, bundleSnapshot);
         let terra: Awaited<ReturnType<typeof reviewWithTerra>>;
         try {
-          terra = await reviewWithTerra(client, { model: execution.internal_reviewer.model, reasoning_effort: execution.internal_reviewer.reasoning_effort, threadId: terraThread.thread_id, workspacePath: execution.worktree_path, acceptedBundlePath: preparation.accepted_bundle_path, prompt: `${boundedPromptText(bundleData.request)}\n\nPlan:\n${boundedPromptText(bundleData.plan)}\n\nRules:\n${boundedPromptText(bundleData.rules)}\n\nAcceptance:\n${boundedPromptJson(bundleData.acceptance)}\n\nTest matrix:\n${boundedPromptJson(bundleData.testMatrix)}\n\nValidation contract:\n${boundedPromptJson(bundleData.validation)}\n\nRisk policy:\n${boundedPromptJson(bundleData.riskPolicy)}\n\nImplementation evidence:\n${boundedPromptJson(implemented.implementation)}\n\nBase commit: ${execution.base_commit}\nBranch: ${execution.branch_name}\nChange-set digest: ${execution.change_set_sha256}\nActual changed paths and hashes: ${boundedPromptJson(changeSet.entries)}\nChange-set metadata: ${boundedPromptJson({ tracked_diff_sha256: changeSet.tracked_diff_sha256, refs_sha256: changeSet.refs_sha256, diff_lines: changeSet.diff_lines })}\nBounded tracked diff:\n${trackedDiff}\nDeterministic verification evidence: ${boundedVerificationEvidence(verification.commands)}\nThe verifier passed. Review only.`, signal: this.options.signal });
+          terra = await reviewWithTerra(client, { model: execution.internal_reviewer.model, reasoning_effort: execution.internal_reviewer.reasoning_effort, threadId: undefined, workspacePath: execution.worktree_path, acceptedBundlePath: preparation.accepted_bundle_path, prompt: `${boundedPromptText(bundleData.request)}\n\nPlan:\n${boundedPromptText(bundleData.plan)}\n\nRules:\n${boundedPromptText(bundleData.rules)}\n\nAcceptance:\n${boundedPromptJson(bundleData.acceptance)}\n\nTest matrix:\n${boundedPromptJson(bundleData.testMatrix)}\n\nValidation contract:\n${boundedPromptJson(bundleData.validation)}\n\nRisk policy:\n${boundedPromptJson(bundleData.riskPolicy)}\n\nImplementation evidence:\n${boundedPromptJson(implemented.implementation)}\n\nBase commit: ${execution.base_commit}\nBranch: ${execution.branch_name}\nChange-set digest: ${execution.change_set_sha256}\nActual changed paths and hashes: ${boundedPromptJson(changeSet.entries)}\nChange-set metadata: ${boundedPromptJson({ tracked_diff_sha256: changeSet.tracked_diff_sha256, refs_sha256: changeSet.refs_sha256, diff_lines: changeSet.diff_lines })}\nBounded tracked diff:\n${trackedDiff}\nDeterministic verification evidence: ${boundedVerificationEvidence(verification.commands)}\nThe verifier passed. Review only.`, ...(this.options.signal ? { signal: this.options.signal } : {}) });
         } catch (error) {
           if (!isExecutionError(error) || error.code !== "REVIEW_OUTPUT_INVALID") throw error;
           await assertBundleUnchanged(preparation.accepted_bundle_path, bundleSnapshot);
           budget.beginRepair(); await syncBudget();
-          terra = await reviewWithTerra(client, { model: execution.internal_reviewer.model, reasoning_effort: execution.internal_reviewer.reasoning_effort, threadId: terraThread.thread_id, workspacePath: execution.worktree_path, acceptedBundlePath: preparation.accepted_bundle_path, prompt: "Your previous review output was invalid. Return exactly the required reviewer JSON and no other fields.", signal: this.options.signal });
+          terra = await reviewWithTerra(client, { model: execution.internal_reviewer.model, reasoning_effort: execution.internal_reviewer.reasoning_effort, threadId: undefined, workspacePath: execution.worktree_path, acceptedBundlePath: preparation.accepted_bundle_path, prompt: "Your previous review output was invalid. Return exactly the required reviewer JSON and no other fields.", ...(this.options.signal ? { signal: this.options.signal } : {}) });
         }
         await assertBundleUnchanged(preparation.accepted_bundle_path, bundleSnapshot);
         const terraAfter = await calculateChangeSet({ worktreePath: execution.worktree_path, baseCommit: execution.base_commit, branchName: execution.branch_name, runner, allowedGeneratedPaths: config.verification.allowed_generated_paths });
         if (terraBefore.change_set_sha256 !== terraAfter.change_set_sha256) throw new ExecutionError("TERRA_REVIEW_MUTATED_WORKTREE", "Terra reviewer changed the worktree.");
         if (terraAfter.change_set_sha256 !== execution.change_set_sha256) throw new ExecutionError("TERRA_REVIEW_STALE", "The worktree changed while Terra reviewed it.");
-        const terraReview = terra.review; execution.internal_reviewer.rounds += 1; execution.internal_reviewer.latest_thread_id = terra.threadId; execution.internal_reviewer.verdict = terraReview.verdict; execution.internal_reviewer.reviewed_change_set_sha256 = terraReview.reviewed_change_set_sha256;
+        const terraReview = terra.review;
+        const existingTerraThreads = execution.internal_reviewer.thread_ids ?? (execution.internal_reviewer.latest_thread_id ? [execution.internal_reviewer.latest_thread_id] : []);
+        const existingSolThreadsForTerra = execution.final_reviewer.thread_ids ?? (execution.final_reviewer.latest_thread_id ? [execution.final_reviewer.latest_thread_id] : []);
+        if (!terra.threadId || terra.threadId === execution.implementer.thread_id || existingTerraThreads.includes(terra.threadId) || existingSolThreadsForTerra.includes(terra.threadId)) throw new ExecutionError("TERRA_REVIEW_OUTPUT_INVALID", "Terra reviewer must return a fresh independent thread.");
+        execution.internal_reviewer.thread_ids = [...existingTerraThreads, terra.threadId];
+        execution.internal_reviewer.latest_thread_id = terra.threadId;
+        execution.internal_reviewer.rounds += 1;
+        execution.internal_reviewer.verdict = terraReview.verdict;
+        execution.internal_reviewer.reviewed_change_set_sha256 = terraReview.reviewed_change_set_sha256;
         execution.usage.input_tokens += terra.response.usage?.input_tokens ?? 0; execution.usage.cached_input_tokens += terra.response.usage?.cached_input_tokens ?? 0; execution.usage.output_tokens += terra.response.usage?.output_tokens ?? 0;
         budget.recordTokens(terra.response.usage?.input_tokens, terra.response.usage?.output_tokens, terra.response.usage?.cached_input_tokens ?? 0);
         await syncBudget();
@@ -354,9 +362,8 @@ export class ExecutionService {
         await validateReviewFindings(terraReview, execution.worktree_path, "TERRA_REVIEW_OUTPUT_INVALID");
         await writeExecutionArtifact(this.options.stateDirectory, taskId, archiveSha256, "terra-review", terraReview, `round-${String(execution.internal_reviewer.rounds).padStart(3, "0")}/verdict.json`);
         await appendAgentEvent(this.options.stateDirectory, taskId, archiveSha256, { event_version: "1.0", role: "internal_reviewer", phase: "review", thread_id: terra.threadId, prompt_sha256: "redacted", usage: terra.response?.usage ?? {} });
-        if (terra.threadId === execution.implementer.thread_id) throw new ExecutionError("TERRA_REVIEW_OUTPUT_INVALID", "Terra reviewer must use a fresh thread.");
         if (terraReview.reviewed_change_set_sha256 !== execution.change_set_sha256) throw new ExecutionError("TERRA_REVIEW_STALE", "Terra review digest is stale.");
-        if (terraReview.verdict === "REVISE") { pendingFixes = [...terraReview.blocking_findings]; invalidateReviews(execution); await this.transition(execution, "TERRA_FIXING"); continue; }
+        if (terraReview.verdict === "REVISE") { pendingReviewerFindings = [...terraReview.blocking_findings]; pendingVerificationFailure = null; execution.pending_verification_failure = null; invalidateReviews(execution); await writeExecutionReceipt(this.options.stateDirectory, execution); await this.transition(execution, "TERRA_FIXING"); continue; }
         if (terraReview.verdict === "REPLAN") { await this.transition(execution, "WEB_REVIEW_REQUIRED"); return execution; }
         if (terraReview.verdict === "ESCALATE") { await this.transition(execution, "HUMAN_REQUIRED"); return execution; }
         assertTerraCanStart(execution, terraReview, requiredAcceptanceIds);
@@ -365,30 +372,31 @@ export class ExecutionService {
         budget.beginSolReview();
         await syncBudget();
         assertSolCanStart(execution, terraReview, requiredAcceptanceIds);
-        const solThread = await client.startThread({ role: "final_reviewer", model: execution.final_reviewer.model, reasoning_effort: execution.final_reviewer.reasoning_effort, prompt: "review", read_only: true, approval_policy: "never", sandbox_mode: "read-only", network_access: false, live_web_search: false, cached_web_search: false, workspace_path: execution.worktree_path, accepted_bundle_path: preparation.accepted_bundle_path, signal: this.options.signal });
         const terraThreadIds = execution.internal_reviewer.thread_ids ?? (execution.internal_reviewer.latest_thread_id ? [execution.internal_reviewer.latest_thread_id] : []);
-        if (!solThread.thread_id || solThread.thread_id === execution.implementer.thread_id || terraThreadIds.includes(solThread.thread_id) || execution.final_reviewer.thread_ids?.includes(solThread.thread_id)) throw new ExecutionError("SOL_REVIEW_NOT_ALLOWED", "Sol reviewer must start a fresh thread independent of every Terra thread.");
-        execution.final_reviewer.latest_thread_id = solThread.thread_id;
-        execution.final_reviewer.thread_ids ??= [];
-        execution.final_reviewer.thread_ids.push(solThread.thread_id);
-        await syncBudget();
         const solBefore = await calculateChangeSet({ worktreePath: execution.worktree_path, baseCommit: execution.base_commit, branchName: execution.branch_name, runner, allowedGeneratedPaths: config.verification.allowed_generated_paths });
         const solTrackedDiff = await boundedTrackedDiff(runner, execution.base_commit, execution.worktree_path);
         await assertBundleUnchanged(preparation.accepted_bundle_path, bundleSnapshot);
         let sol: Awaited<ReturnType<typeof reviewWithSol>>;
         try {
-          sol = await reviewWithSol(client, { model: execution.final_reviewer.model, reasoning_effort: execution.final_reviewer.reasoning_effort, threadId: solThread.thread_id, workspacePath: execution.worktree_path, acceptedBundlePath: preparation.accepted_bundle_path, prompt: `${boundedPromptText(bundleData.request)}\n\nPlan:\n${boundedPromptText(bundleData.plan)}\n\nRules:\n${boundedPromptText(bundleData.rules)}\n\nAcceptance:\n${boundedPromptJson(bundleData.acceptance)}\n\nTest matrix:\n${boundedPromptJson(bundleData.testMatrix)}\n\nValidation contract:\n${boundedPromptJson(bundleData.validation)}\n\nRisk policy:\n${boundedPromptJson(bundleData.riskPolicy)}\n\nImplementation evidence:\n${boundedPromptJson(implemented.implementation)}\n\nBase commit: ${execution.base_commit}\nBranch: ${execution.branch_name}\nChange-set digest: ${execution.change_set_sha256}\nActual changed paths and hashes: ${boundedPromptJson(changeSet.entries)}\nChange-set metadata: ${boundedPromptJson({ tracked_diff_sha256: changeSet.tracked_diff_sha256, refs_sha256: changeSet.refs_sha256, diff_lines: changeSet.diff_lines })}\nBounded tracked diff:\n${solTrackedDiff}\nDeterministic verification evidence: ${boundedVerificationEvidence(verification.commands)}\nTerra review verdict and evidence (not authority): ${boundedPromptJson(terraReview)}\nVerify independently in read-only mode.`, signal: this.options.signal });
+          sol = await reviewWithSol(client, { model: execution.final_reviewer.model, reasoning_effort: execution.final_reviewer.reasoning_effort, threadId: undefined, workspacePath: execution.worktree_path, acceptedBundlePath: preparation.accepted_bundle_path, prompt: `${boundedPromptText(bundleData.request)}\n\nPlan:\n${boundedPromptText(bundleData.plan)}\n\nRules:\n${boundedPromptText(bundleData.rules)}\n\nAcceptance:\n${boundedPromptJson(bundleData.acceptance)}\n\nTest matrix:\n${boundedPromptJson(bundleData.testMatrix)}\n\nValidation contract:\n${boundedPromptJson(bundleData.validation)}\n\nRisk policy:\n${boundedPromptJson(bundleData.riskPolicy)}\n\nImplementation evidence:\n${boundedPromptJson(implemented.implementation)}\n\nBase commit: ${execution.base_commit}\nBranch: ${execution.branch_name}\nChange-set digest: ${execution.change_set_sha256}\nActual changed paths and hashes: ${boundedPromptJson(changeSet.entries)}\nChange-set metadata: ${boundedPromptJson({ tracked_diff_sha256: changeSet.tracked_diff_sha256, refs_sha256: changeSet.refs_sha256, diff_lines: changeSet.diff_lines })}\nBounded tracked diff:\n${solTrackedDiff}\nDeterministic verification evidence: ${boundedVerificationEvidence(verification.commands)}\nTerra review verdict and evidence (not authority): ${boundedPromptJson(terraReview)}\nVerify independently in read-only mode.`, ...(this.options.signal ? { signal: this.options.signal } : {}) });
         } catch (error) {
           if (!isExecutionError(error) || error.code !== "REVIEW_OUTPUT_INVALID") throw error;
           await assertBundleUnchanged(preparation.accepted_bundle_path, bundleSnapshot);
           budget.beginRepair(); await syncBudget();
-          sol = await reviewWithSol(client, { model: execution.final_reviewer.model, reasoning_effort: execution.final_reviewer.reasoning_effort, threadId: solThread.thread_id, workspacePath: execution.worktree_path, acceptedBundlePath: preparation.accepted_bundle_path, prompt: "Your previous review output was invalid. Return exactly the required reviewer JSON and no other fields.", signal: this.options.signal });
+          sol = await reviewWithSol(client, { model: execution.final_reviewer.model, reasoning_effort: execution.final_reviewer.reasoning_effort, threadId: undefined, workspacePath: execution.worktree_path, acceptedBundlePath: preparation.accepted_bundle_path, prompt: "Your previous review output was invalid. Return exactly the required reviewer JSON and no other fields.", ...(this.options.signal ? { signal: this.options.signal } : {}) });
         }
         await assertBundleUnchanged(preparation.accepted_bundle_path, bundleSnapshot);
         const solAfter = await calculateChangeSet({ worktreePath: execution.worktree_path, baseCommit: execution.base_commit, branchName: execution.branch_name, runner, allowedGeneratedPaths: config.verification.allowed_generated_paths });
         if (solBefore.change_set_sha256 !== solAfter.change_set_sha256) throw new ExecutionError("REVIEW_MUTATED_WORKTREE", "Sol reviewer changed the worktree.");
         if (solAfter.change_set_sha256 !== execution.change_set_sha256) throw new ExecutionError("REVIEW_STALE", "The worktree changed while Sol reviewed it.");
-        const solReview = sol.review; execution.final_reviewer.rounds += 1; execution.final_reviewer.latest_thread_id = sol.threadId; execution.final_reviewer.verdict = solReview.verdict; execution.final_reviewer.reviewed_change_set_sha256 = solReview.reviewed_change_set_sha256;
+        const solReview = sol.review;
+        const existingSolThreads = execution.final_reviewer.thread_ids ?? (execution.final_reviewer.latest_thread_id ? [execution.final_reviewer.latest_thread_id] : []);
+        if (!sol.threadId || sol.threadId === execution.implementer.thread_id || terraThreadIds.includes(sol.threadId) || existingSolThreads.includes(sol.threadId)) throw new ExecutionError("SOL_REVIEW_NOT_ALLOWED", "Sol reviewer must return a fresh independent thread.");
+        execution.final_reviewer.thread_ids = [...existingSolThreads, sol.threadId];
+        execution.final_reviewer.latest_thread_id = sol.threadId;
+        execution.final_reviewer.rounds += 1;
+        execution.final_reviewer.verdict = solReview.verdict;
+        execution.final_reviewer.reviewed_change_set_sha256 = solReview.reviewed_change_set_sha256;
         execution.usage.input_tokens += sol.response.usage?.input_tokens ?? 0; execution.usage.cached_input_tokens += sol.response.usage?.cached_input_tokens ?? 0; execution.usage.output_tokens += sol.response.usage?.output_tokens ?? 0;
         budget.recordTokens(sol.response.usage?.input_tokens, sol.response.usage?.output_tokens, sol.response.usage?.cached_input_tokens ?? 0);
         await syncBudget();
@@ -396,9 +404,8 @@ export class ExecutionService {
         await validateReviewFindings(solReview, execution.worktree_path, "REVIEW_OUTPUT_INVALID");
         await writeExecutionArtifact(this.options.stateDirectory, taskId, archiveSha256, "sol-review", solReview, `round-${String(execution.final_reviewer.rounds).padStart(3, "0")}/verdict.json`);
         await appendAgentEvent(this.options.stateDirectory, taskId, archiveSha256, { event_version: "1.0", role: "final_reviewer", phase: "review", thread_id: sol.threadId, prompt_sha256: "redacted", usage: sol.response?.usage ?? {} });
-        if (sol.threadId === execution.implementer.thread_id || sol.threadId === execution.internal_reviewer.latest_thread_id) throw new ExecutionError("REVIEW_OUTPUT_INVALID", "Sol reviewer must use an independent thread.");
         if (solReview.reviewed_change_set_sha256 !== execution.change_set_sha256) throw new ExecutionError("REVIEW_STALE", "Sol review digest is stale.");
-        if (solReview.verdict === "REVISE") { pendingFixes = [...solReview.blocking_findings]; invalidateReviews(execution); await this.transition(execution, "TERRA_FIXING"); continue; }
+        if (solReview.verdict === "REVISE") { pendingReviewerFindings = [...solReview.blocking_findings]; pendingVerificationFailure = null; execution.pending_verification_failure = null; invalidateReviews(execution); await writeExecutionReceipt(this.options.stateDirectory, execution); await this.transition(execution, "TERRA_FIXING"); continue; }
         if (solReview.verdict === "REPLAN") { await this.transition(execution, "WEB_REVIEW_REQUIRED"); return execution; }
         if (solReview.verdict === "ESCALATE") { await this.transition(execution, "HUMAN_REQUIRED"); return execution; }
         assertReadyForPublish(execution, terraReview, solReview, requiredAcceptanceIds);
@@ -423,6 +430,22 @@ export class ExecutionService {
           execution.verification.commands = completedCommands;
           execution.verification.required_commands_passed = false;
           execution.verification.verified_change_set_sha256 = null;
+          const failed = completedCommands.filter((command) => command.required && command.status !== "PASS");
+          execution.pending_verification_failure = {
+            verification_round: execution.verification.rounds,
+            failed_command_ids: failed.map((command) => command.command_id),
+            commands: failed.map((command) => ({
+              command_id: command.command_id,
+              status: command.timed_out ? "TIMEOUT" as const : "FAIL" as const,
+              exit_code: command.exit_code,
+              signal: command.signal,
+              timed_out: command.timed_out,
+              stdout_tail: redact(command.stdout ?? "").slice(-8_192),
+              stderr_tail: redact(command.stderr ?? "").slice(-8_192),
+            })),
+            remaining_implementation_iterations: 0,
+          };
+          await writeExecutionArtifact(this.options.stateDirectory, taskId, archiveSha256, "verification", execution.pending_verification_failure, `${roundDirectory}/fix-evidence.json`).catch(() => undefined);
           for (const command of completedCommands) {
             const safeId = command.command_id.replace(/[^A-Za-z0-9._-]/g, "_");
             await writeExecutionArtifact(this.options.stateDirectory, taskId, archiveSha256, "verification", command, `${roundDirectory}/${safeId}.json`).catch(() => undefined);

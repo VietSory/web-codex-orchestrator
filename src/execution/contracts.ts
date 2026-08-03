@@ -1,4 +1,5 @@
 import type { BundleManifest } from "../bundle/contracts.js";
+import type { ReasoningEffort } from "../config/contracts.js";
 
 export type ExecutionErrorCode =
   | "EXECUTION_CONTRACT_REQUIRED"
@@ -132,6 +133,7 @@ export interface ReviewResult {
 export interface VerificationCommandResult {
   result_version: "1.0";
   command_id: string;
+  required: boolean;
   specification_sha256: string;
   executable: string;
   args: string[];
@@ -153,6 +155,21 @@ export interface VerificationCommandResult {
   stderr_log_path?: string;
   generated_paths: string[];
   status: "PASS" | "FAIL" | "TIMEOUT" | "DENIED" | "MUTATED";
+}
+
+export interface VerificationFailureEvidence {
+  verification_round: number;
+  failed_command_ids: string[];
+  commands: Array<{
+    command_id: string;
+    status: "FAIL" | "TIMEOUT";
+    exit_code: number | null;
+    signal: string | null;
+    timed_out: boolean;
+    stdout_tail: string;
+    stderr_tail: string;
+  }>;
+  remaining_implementation_iterations: number;
 }
 
 export interface ChangeEntry {
@@ -187,10 +204,11 @@ export interface ExecutionReceipt {
   worktree_path: string;
   accepted_bundle_path: string;
   repository_refs_sha256?: string | null;
-  implementer: { model: string; reasoning_effort: string; thread_id: string; iterations: number };
-  internal_reviewer: { model: string; reasoning_effort: string; rounds: number; latest_thread_id: string | null; thread_ids?: string[]; verdict: ReviewVerdict | null; reviewed_change_set_sha256: string | null };
-  final_reviewer: { model: string; reasoning_effort: string; rounds: number; latest_thread_id: string | null; thread_ids?: string[]; verdict: ReviewVerdict | null; reviewed_change_set_sha256: string | null };
+  implementer: { model: string; reasoning_effort: ReasoningEffort; thread_id: string; iterations: number };
+  internal_reviewer: { model: string; reasoning_effort: ReasoningEffort; rounds: number; latest_thread_id: string | null; thread_ids?: string[]; verdict: ReviewVerdict | null; reviewed_change_set_sha256: string | null };
+  final_reviewer: { model: string; reasoning_effort: ReasoningEffort; rounds: number; latest_thread_id: string | null; thread_ids?: string[]; verdict: ReviewVerdict | null; reviewed_change_set_sha256: string | null };
   verification: { rounds: number; required_commands_passed: boolean; verified_change_set_sha256: string | null; commands: VerificationCommandResult[] };
+  pending_verification_failure?: VerificationFailureEvidence | null;
   change_set_sha256: string | null;
   usage: { input_tokens: number; cached_input_tokens: number; output_tokens: number; total_turns?: number; started_at?: string };
   errors: Array<{ code: string; message: string }>;

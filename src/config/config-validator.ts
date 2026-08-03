@@ -2,7 +2,7 @@ import path from "node:path";
 import type { ConfigIssue, ConfigValidationReport, TrustedConfig } from "./contracts.js";
 import { hasSensitiveHttpUserInfo } from "./remote-url.js";
 
-const TOP_LEVEL = new Set(["config_version", "inbox", "repositories", "agents", "verification"]);
+const TOP_LEVEL = new Set(["config_version", "inbox", "repositories", "runtime", "agents", "verification"]);
 const INBOX_FIELDS = new Set(["poll_interval_ms", "stable_age_ms", "stable_observations", "maximum_candidates_per_scan"]);
 const REPOSITORY_FIELDS = new Set(["path", "remote", "expected_remote_urls", "fetch_policy"]);
 const REPOSITORY_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -11,6 +11,7 @@ const AGENT_FIELDS = new Set(["implementer", "internal_reviewer", "final_reviewe
 const AGENT_PROFILE_FIELDS = new Set(["model", "reasoning_effort"]);
 const AGENT_LIMIT_FIELDS = new Set(["maximum_implementation_iterations", "maximum_internal_review_rounds", "maximum_sol_review_rounds", "maximum_total_agent_turns", "maximum_turn_seconds", "maximum_total_seconds", "maximum_total_input_tokens", "maximum_total_output_tokens"]);
 const VERIFICATION_FIELDS = new Set(["allowed_executables", "allowed_environment_keys", "maximum_command_seconds", "maximum_output_bytes", "maximum_file_bytes", "maximum_changed_files", "maximum_diff_lines", "allowed_generated_paths"]);
+const RUNTIME_FIELDS = new Set(["codex_executable", "codex_home"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -66,6 +67,15 @@ export function validateConfig(value: unknown): ConfigValidationReport {
       if (raw.fetch_policy !== "never" && raw.fetch_policy !== "if-missing" && raw.fetch_policy !== "always") add(issues, `Repository ${id}.fetch_policy is invalid.`);
     }
   }
+  const runtime = value.runtime;
+  if (runtime !== undefined) {
+    if (!isRecord(runtime)) add(issues, "runtime must be an object.");
+    else {
+      for (const key of unknownFields(runtime, RUNTIME_FIELDS)) add(issues, `Unknown runtime configuration field: ${key}`);
+      if (typeof runtime.codex_executable !== "string" || !path.isAbsolute(runtime.codex_executable) || runtime.codex_executable.includes("\u0000") || /\r|\n/.test(runtime.codex_executable) || /\s/.test(path.basename(runtime.codex_executable))) add(issues, "runtime.codex_executable must be an absolute path to a trusted executable.");
+      if (runtime.codex_home !== undefined && (typeof runtime.codex_home !== "string" || !path.isAbsolute(runtime.codex_home) || runtime.codex_home.includes("\u0000") || /\r|\n/.test(runtime.codex_home))) add(issues, "runtime.codex_home must be an absolute path.");
+    }
+  }
   const agents = value.agents;
   if (agents !== undefined) {
     if (!isRecord(agents)) add(issues, "agents must be an object.");
@@ -76,7 +86,7 @@ export function validateConfig(value: unknown): ConfigValidationReport {
         if (!isRecord(profile)) { add(issues, `agents.${key} must be an object.`); continue; }
         for (const field of unknownFields(profile, AGENT_PROFILE_FIELDS)) add(issues, `Unknown agents.${key} field: ${field}`);
         if (typeof profile.model !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(profile.model)) add(issues, `agents.${key}.model is invalid.`);
-        if (profile.reasoning_effort !== "low" && profile.reasoning_effort !== "medium" && profile.reasoning_effort !== "high" && profile.reasoning_effort !== "xhigh") add(issues, `agents.${key}.reasoning_effort is invalid.`);
+        if (profile.reasoning_effort !== "minimal" && profile.reasoning_effort !== "low" && profile.reasoning_effort !== "medium" && profile.reasoning_effort !== "high" && profile.reasoning_effort !== "xhigh") add(issues, `agents.${key}.reasoning_effort is invalid.`);
       }
       const limits = agents.limits;
       if (!isRecord(limits)) add(issues, "agents.limits must be an object.");

@@ -1,4 +1,5 @@
 export type FetchPolicy = "never" | "if-missing" | "always";
+import type { TrustedCodexRuntimeConfig } from "../runtime/codex-runtime.js";
 
 export interface InboxConfig {
   poll_interval_ms: number;
@@ -18,11 +19,12 @@ export interface TrustedConfig {
   config_version: "1.0";
   inbox: InboxConfig;
   repositories: Record<string, RepositoryConfig>;
+  runtime?: TrustedCodexRuntimeConfig;
   agents?: AgentConfig;
   verification?: VerificationConfig;
 }
 
-export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
+export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export interface AgentProfile {
   model: string;

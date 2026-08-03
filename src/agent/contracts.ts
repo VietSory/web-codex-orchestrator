@@ -6,30 +6,34 @@ export type AgentOutput = AgentAssessment | AgentImplementationResult | ReviewRe
 export interface AgentTurnRequest {
   role: AgentRole;
   model: string;
-  reasoning_effort: string;
-  thread_id?: string | undefined;
+  reasoning_effort: "minimal" | "low" | "medium" | "high" | "xhigh";
+
+  /**
+   * Undefined means create a new SDK thread.
+   * A value means reconstruct that thread through resumeThread().
+   */
+  thread_id?: string;
   prompt: string;
+  output_schema: Record<string, unknown>;
+
   read_only: boolean;
-  approval_policy?: "never";
-  sandbox_mode?: "read-only" | "workspace-write";
-  network_access?: false;
-  live_web_search?: false;
-  cached_web_search?: false;
+  approval_policy: "never";
+  sandbox_mode: "read-only" | "workspace-write";
+  network_access: false;
+  live_web_search: false;
+  cached_web_search: false;
   /** Canonical project root granted to the agent by the trusted orchestrator. */
-  workspace_path?: string | undefined;
+  workspace_path: string;
   /** Accepted bundle is read-only context and is never a writable root. */
-  accepted_bundle_path?: string | undefined;
-  signal?: AbortSignal | undefined;
+  accepted_bundle_path: string;
+  signal?: AbortSignal;
 }
 
 export interface AgentTurnResponse {
   thread_id: string;
   output: unknown;
   usage?: { input_tokens?: number; cached_input_tokens?: number; output_tokens?: number };
-}
-
-export interface AgentThread {
-  thread_id: string;
+  public_events?: Array<{ type: string; timestamp: string }>;
 }
 
 /**
@@ -40,7 +44,5 @@ export interface AgentClient {
   /** Resolve the configured runtime and perform a credential-free auth
    * preflight before any model thread is started. */
   checkAvailability(): Promise<void>;
-  startThread(request: Omit<AgentTurnRequest, "thread_id">): Promise<AgentThread>;
-  resumeThread(threadId: string): Promise<AgentThread>;
   turn(request: AgentTurnRequest): Promise<AgentTurnResponse>;
 }

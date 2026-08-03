@@ -9,11 +9,13 @@ import { CandidatePolicyError } from "../inbox/candidate-policy.js";
 import { scanInbox } from "../inbox/scanner.js";
 import { watchInbox } from "../inbox/watcher.js";
 import { executeRun } from "../execution/execution-service.js";
+import { loadExecutionConfig } from "../execution/execution-config.js";
 import { executionPaths, readExecutionReceipt } from "../execution/execution-store.js";
 import { isExecutionError } from "../execution/errors.js";
 import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
 import { CodexVerificationSandbox } from "../verifier/codex-sandbox.js";
 import { redact } from "../evidence/log-redaction.js";
+import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
 
 function printUsage(): void {
   console.log("Usage:");
@@ -255,7 +257,9 @@ async function runExecute(args: string[]): Promise<void> {
   const onSigInt = () => { signalCode = 130; controller.abort(); }; const onSigTerm = () => { signalCode = 143; controller.abort(); };
   process.once("SIGINT", onSigInt); process.once("SIGTERM", onSigTerm);
   try {
-    const receipt = await executeRun({ runId: parsed.runId, stateDirectory: parsed.stateDirectory, configPath: parsed.configPath, agentClient: new CodexSdkAgentClient(), sandbox: new CodexVerificationSandbox(), signal: controller.signal });
+    const executionConfig = await loadExecutionConfig(parsed.configPath);
+    const runtime = await resolveCodexRuntime(executionConfig.runtime, parsed.stateDirectory);
+    const receipt = await executeRun({ runId: parsed.runId, stateDirectory: parsed.stateDirectory, configPath: parsed.configPath, config: executionConfig, agentClient: new CodexSdkAgentClient(runtime), sandbox: new CodexVerificationSandbox(runtime), signal: controller.signal });
     if (parsed.json) process.stdout.write(`${JSON.stringify(receipt)}\n`);
     else { console.log(`State: ${receipt.state}`); console.log(`Iterations: ${receipt.implementer.iterations}`); console.log(`Verification rounds: ${receipt.verification.rounds}`); console.log(`Terra reviews: ${receipt.internal_reviewer.rounds} (${receipt.internal_reviewer.verdict ?? "none"})`); console.log(`Sol reviews: ${receipt.final_reviewer.rounds} (${receipt.final_reviewer.verdict ?? "none"})`); console.log(`Artifacts: ${executionPaths(parsed.stateDirectory, receipt.run_id.slice(0, receipt.run_id.lastIndexOf(":")), receipt.run_id.slice(receipt.run_id.lastIndexOf(":") + 1)).directory}`); console.log(receipt.worktree_path); }
     if (receipt.state !== "READY_FOR_PUBLISH") process.exitCode = signalCode ?? executionExitCode(receipt.errors[0]?.code ?? receipt.state);

@@ -23,6 +23,7 @@ import type { ExecutionReceipt, ReviewResult } from "../src/execution/contracts.
 import type { AgentTurnRequest } from "../src/agent/contracts.js";
 import { updateChecksums } from "./helpers/zip-fixture.js";
 import { executeRun } from "../src/execution/execution-service.js";
+import { resolveCodexRuntime } from "../src/runtime/codex-runtime.js";
 
 function expectCode(action: () => unknown | Promise<unknown>, code: string): Promise<void> {
   return assert.rejects(async () => await action(), (error: unknown) => error instanceof Error && "code" in error && (error as { code: unknown }).code === code) as Promise<void>;
@@ -77,9 +78,9 @@ test("P4-013 and P4-084: state transitions are explicit", () => {
   assert.throws(() => assertTransition("SOL_REVIEWING", "TERRA_REVIEWING"), (error: unknown) => error instanceof ExecutionError && error.code === "EXECUTION_STATE_INVALID");
 });
 
-test("P4-018/P4-019: absent runtime and sandbox fail closed", async () => {
-  await expectCode(() => new CodexSdkAgentClient().turn({ role: "implementer", model: "x", reasoning_effort: "high", prompt: "{}", read_only: true }), "CODEX_RUNTIME_NOT_FOUND");
-  await expectCode(() => new CodexVerificationSandbox().run("node", [], { cwd: ".", env: {}, timeoutMs: 10, maximumOutputBytes: 10 }), "VERIFIER_SANDBOX_UNAVAILABLE");
+test("P4-018/P4-019: runtime and sandbox fail closed", async () => {
+  await expectCode(() => resolveCodexRuntime(undefined), "CODEX_RUNTIME_NOT_FOUND");
+  await expectCode(() => new CodexVerificationSandbox({ executable: process.execPath, environment: {} }).run("node", [], { cwd: ".", env: {}, timeoutMs: 10, maximumOutputBytes: 10, network_access: true, writable_root: ".", credential_directories: [] }), "VERIFIER_SANDBOX_UNAVAILABLE");
   assert.ok(new FakeAgentClient().calls.length === 0);
   assert.ok(new FakeVerificationSandbox().calls.length === 0);
 });
