@@ -2,21 +2,33 @@
   "commands": [
     {
       "id": "typecheck",
-      "command": "npm run typecheck",
+      "executable": "npm",
+      "args": ["run", "typecheck"],
+      "cwd": ".",
+      "environment": { "CI": "1" },
       "required": true,
-      "timeout_seconds": 180
+      "timeout_seconds": 180,
+      "maximum_output_bytes": 1048576
     },
     {
       "id": "test",
-      "command": "npm test",
+      "executable": "npm",
+      "args": ["test"],
+      "cwd": ".",
+      "environment": { "CI": "1" },
       "required": true,
-      "timeout_seconds": 600
+      "timeout_seconds": 600,
+      "maximum_output_bytes": 4194304
     },
     {
       "id": "build",
-      "command": "npm run build",
+      "executable": "npm",
+      "args": ["run", "build"],
+      "cwd": ".",
+      "environment": { "CI": "1" },
       "required": true,
-      "timeout_seconds": 300
+      "timeout_seconds": 300,
+      "maximum_output_bytes": 4194304
     }
   ]
 }

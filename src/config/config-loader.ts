@@ -1,4 +1,5 @@
-import { lstat, readFile } from "node:fs/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
+import path from "node:path";
 import type { ConfigErrorCode, TrustedConfig } from "./contracts.js";
 import { validateConfig } from "./config-validator.js";
 
@@ -72,6 +73,13 @@ export async function loadTrustedConfig(configPath: string): Promise<TrustedConf
   }
   if (info.isSymbolicLink()) throw new ConfigError("CONFIG_SYMLINK", "Config file must not be a symbolic link.");
   if (!info.isFile()) throw new ConfigError("CONFIG_NOT_REGULAR_FILE", "Config path must be a regular file.");
+  try {
+    const canonical = await realpath(configPath);
+    if (canonical !== path.resolve(configPath)) throw new ConfigError("CONFIG_SYMLINK", "Config path resolves through a symbolic link.");
+  } catch (error) {
+    if (error instanceof ConfigError) throw error;
+    throw new ConfigError("CONFIG_INVALID", "Config file could not be resolved safely.");
+  }
   let source: string;
   let parsed: unknown;
   try {

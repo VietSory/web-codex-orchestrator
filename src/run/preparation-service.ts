@@ -69,16 +69,24 @@ export interface PreparationOptions {
 }
 
 async function ensureRealDirectory(directory: string): Promise<void> {
-  try {
-    const info = await lstat(directory);
-    if (info.isSymbolicLink() || !info.isDirectory()) throw new PreparationError("OPERATIONAL_ERROR", `Lifecycle path is not a real directory: ${directory}`);
-  } catch (error) {
-    if (error instanceof PreparationError) throw error;
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    await mkdir(directory, { recursive: true, mode: 0o700 });
-    const created = await lstat(directory);
-    if (created.isSymbolicLink() || !created.isDirectory()) throw new PreparationError("OPERATIONAL_ERROR", `Lifecycle path is unsafe: ${directory}`);
+  const resolved = path.resolve(directory);
+  const parsed = path.parse(resolved);
+  let current = parsed.root;
+  for (const segment of path.relative(parsed.root, resolved).split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    try {
+      const info = await lstat(current);
+      if (info.isSymbolicLink() || !info.isDirectory()) throw new PreparationError("OPERATIONAL_ERROR", `Lifecycle path is not a real directory: ${current}`);
+    } catch (error) {
+      if (error instanceof PreparationError) throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      await mkdir(current, { mode: 0o700 });
+      const created = await lstat(current);
+      if (created.isSymbolicLink() || !created.isDirectory()) throw new PreparationError("OPERATIONAL_ERROR", `Lifecycle path is unsafe: ${current}`);
+    }
   }
+  const canonical = await realpath(resolved).catch(() => "");
+  if (canonical !== resolved) throw new PreparationError("OPERATIONAL_ERROR", `Lifecycle path resolves through a symbolic link: ${resolved}`);
 }
 
 async function ensurePhaseState(stateDirectory: string): Promise<void> {
@@ -184,7 +192,7 @@ function newReceipt(
     status: "ACCEPTED",
     task_id: accepted.task_id,
     archive_sha256: accepted.archive_sha256,
-    bundle_schema_version: "1.2",
+    bundle_schema_version: accepted.bundle_schema_version === "1.3" ? "1.3" : "1.2",
     repository_id: "",
     repository_path: "",
     remote: "",
@@ -218,7 +226,7 @@ export async function prepareTask(options: PreparationOptions): Promise<Preparat
     const issue = intake.errors[0];
     throw new PreparationError(issue?.code ?? "OPERATIONAL_ERROR", issue?.message ?? "Bundle intake was rejected.", intake);
   }
-  if (intake.bundle_schema_version !== "1.2") throw new PreparationError("EXECUTION_CONTRACT_REQUIRED", "Only schema 1.2 bundles may be prepared.", intake);
+  if (intake.bundle_schema_version !== "1.2" && intake.bundle_schema_version !== "1.3") throw new PreparationError("EXECUTION_CONTRACT_REQUIRED", "Only schema 1.2 or 1.3 bundles may be prepared.", intake);
 
   const lock: LockHandle = await acquireExclusiveLock(runLockPath(stateDirectory, intake.archive_sha256), "RUN_LOCKED");
   let worktree: CreatedWorktree | undefined;

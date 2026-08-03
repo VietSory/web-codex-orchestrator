@@ -16,5 +16,43 @@
       ],
       "fetch_policy": "if-missing"
     }
+  },
+  "runtime": {
+    "source": "bundled",
+    "codex_home": "/absolute/path/to/.codex"
+  },
+  "agents": {
+    "implementer": {
+      "model": "gpt-5.6-terra",
+      "reasoning_effort": "high"
+    },
+    "internal_reviewer": {
+      "model": "gpt-5.6-terra",
+      "reasoning_effort": "high"
+    },
+    "final_reviewer": {
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "high"
+    },
+    "limits": {
+      "maximum_implementation_iterations": 8,
+      "maximum_internal_review_rounds": 4,
+      "maximum_sol_review_rounds": 3,
+      "maximum_total_agent_turns": 18,
+      "maximum_turn_seconds": 1800,
+      "maximum_total_seconds": 7200,
+      "maximum_total_input_tokens": 2000000,
+      "maximum_total_output_tokens": 300000
+    }
+  },
+  "verification": {
+    "allowed_executables": ["node", "npm", "python", "python3", "go", "cargo", "dotnet", "git"],
+    "allowed_environment_keys": ["CI", "NODE_ENV", "CGO_ENABLED", "RUST_BACKTRACE", "DOTNET_NOLOGO"],
+    "maximum_command_seconds": 1800,
+    "maximum_output_bytes": 4194304,
+    "maximum_file_bytes": 52428800,
+    "maximum_changed_files": 50,
+    "maximum_diff_lines": 8000,
+    "allowed_generated_paths": ["coverage/**", "dist/**", "build/**", "target/**", ".pytest_cache/**"]
   }
 }

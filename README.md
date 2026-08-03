@@ -9,7 +9,7 @@ commands, calls Codex, accesses the network, or changes Git remotes.
 ## Commands
 
 ```bash
-npm install
+npm ci
 npm run validate -- ./templates/task-bundle
 npm run typecheck
 npm test
@@ -40,6 +40,16 @@ node dist/cli/index.js watch \
   --state-dir ~/.local/state/web-codex-orchestrator \
   --config ~/.config/web-codex-orchestrator/config.json \
   --jsonl
+
+node dist/cli/index.js execute \
+  --run-id TASK-2026-003:<archive-sha256> \
+  --state-dir ~/.local/state/web-codex-orchestrator \
+  --config ~/.config/web-codex-orchestrator/config.json \
+  --json
+
+node dist/cli/index.js execution-status \
+  --run-id TASK-2026-003:<archive-sha256> \
+  --state-dir ~/.local/state/web-codex-orchestrator --json
 ```
 
 Add `--json` to `scan` for one machine-readable result object. Without it,
@@ -52,8 +62,10 @@ after every operation.
 
 Schema 1.0 directory bundles remain supported. Schema 1.1 ZIP bundles use the
 canonical uppercase documentation files and require `checksums.json`.
-Schema 1.2 adds the execution, delivery, and Git policy contract. Intake still
-accepts 1.0 and 1.1, but only 1.2 can be prepared.
+Schema 1.2 adds the execution, delivery, and Git policy contract. Schema 1.3
+adds structured validation commands and the Phase 4 execution boundary.
+Intake accepts 1.0 through 1.3; Phase 3 prepares 1.2/1.3, while Phase 4
+executes only 1.3.
 
 Phase 3 stores run receipts and isolated worktrees below the configured state
 directory. The registry in `examples/config.example.json` is trusted local
@@ -67,3 +79,39 @@ configuration and hooks), rejects repositories with external smudge/process
 filters, and creates the worktree detached before attaching its validated local
 branch. Credential-bearing HTTP(S) registry URLs are rejected and persisted
 remote URLs are sanitized.
+
+Phase 4 uses injected fake agents and verification sandboxes in normal tests.
+Production uses the pinned `@openai/codex@0.145.0` and
+`@openai/codex-sdk@0.145.0` packages. WCO launches the bundled CLI launcher;
+the user's global `codex` installation and its version are irrelevant. The
+bundled runtime performs bounded `--version` and `login status` preflight
+before any real turn. Authentication is read from the configured `CODEX_HOME`,
+or from inherited HOME behavior when `codex_home` is omitted. The verifier runs
+through the pinned sandbox contract:
+`codex -c sandbox_workspace_write.network_access=false sandbox
+--permission-profile :workspace --cd <canonical-cwd> -- <executable> <args>`.
+There is no unsandboxed fallback. The accepted bundle is prompt context, never
+an additional writable SDK directory. Normal CI uses fakes and consumes no
+Codex usage. The optional real sandbox gate is
+`WCO_RUN_SANDBOX_INTEGRATION=1 npm run test:sandbox-integration`; the optional
+real Phase 4 integration consumes Codex usage only when
+`WCO_RUN_CODEX_INTEGRATION=1` is set. Phase 4 never commits, pushes, creates a
+product PR, executes a payload, or contacts the public network.
+
+Production configuration is trusted local input:
+
+```json
+{
+  "runtime": {
+    "source": "bundled",
+    "codex_home": "/home/user/.codex"
+  }
+}
+
+The global `codex` executable is not used, and no executable override
+environment variable is required. For a local release gate:
+
+```bash
+WCO_CODEX_HOME="$HOME/.codex" npm run phase4:release-gate
+```
+```

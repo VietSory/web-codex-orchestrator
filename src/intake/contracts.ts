@@ -32,7 +32,7 @@ export interface AcceptedIntakeReceipt {
   receipt_version: "1.0";
   status: "accepted";
   task_id: string;
-  bundle_schema_version: "1.0" | "1.1" | "1.2";
+  bundle_schema_version: "1.0" | "1.1" | "1.2" | "1.3";
   archive_sha256: string;
   archive_bytes: number;
   entry_count: number;

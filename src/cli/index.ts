@@ -8,6 +8,14 @@ import { PreparationError, prepareTask } from "../run/preparation-service.js";
 import { CandidatePolicyError } from "../inbox/candidate-policy.js";
 import { scanInbox } from "../inbox/scanner.js";
 import { watchInbox } from "../inbox/watcher.js";
+import { executeRun } from "../execution/execution-service.js";
+import { loadExecutionConfig } from "../execution/execution-config.js";
+import { executionPaths, readExecutionReceipt } from "../execution/execution-store.js";
+import { isExecutionError } from "../execution/errors.js";
+import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
+import { CodexVerificationSandbox } from "../verifier/codex-sandbox.js";
+import { redact } from "../evidence/log-redaction.js";
+import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
 
 function printUsage(): void {
   console.log("Usage:");
@@ -16,6 +24,8 @@ function printUsage(): void {
   console.log("  wco prepare <task-bundle.zip> --state-dir <directory> --config <config.json> [--json]");
   console.log("  wco scan --inbox <directory> --state-dir <directory> --config <config.json> [--json]");
   console.log("  wco watch --inbox <directory> --state-dir <directory> --config <config.json> [--jsonl]");
+  console.log("  wco execute --run-id <task-id:archive-sha256> --state-dir <directory> --config <config.json> [--json]");
+  console.log("  wco execution-status --run-id <task-id:archive-sha256> --state-dir <directory> [--json]");
 }
 
 function parseIntakeArguments(args: string[]): { archivePath: string; stateDirectory: string; json: boolean } | null {
@@ -215,6 +225,62 @@ async function runWatch(args: string[]): Promise<void> {
   }
 }
 
+function parseExecutionArguments(args: string[], requireConfig: boolean): { runId: string; stateDirectory: string; configPath?: string | undefined; json: boolean } | null {
+  let runId: string | undefined; let stateDirectory: string | undefined; let configPath: string | undefined; let json = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument === "--json") { if (json) return null; json = true; continue; }
+    if (argument === "--run-id" || argument === "--state-dir" || argument === "--config") {
+      const value = args[index + 1]; if (!value || value.startsWith("--")) return null;
+      if (argument === "--run-id" && runId === undefined) runId = value;
+      else if (argument === "--state-dir" && stateDirectory === undefined) stateDirectory = value;
+      else if (argument === "--config" && configPath === undefined) configPath = value;
+      else return null;
+      index += 1; continue;
+    }
+    return null;
+  }
+  if (!runId || !stateDirectory || requireConfig && !configPath) return null;
+  return { runId, stateDirectory, configPath, json };
+}
+
+function executionExitCode(code: string): number {
+  if (["EXECUTION_SCHEMA_UPGRADE_REQUIRED", "EXECUTION_CONFIG_INVALID", "EXECUTION_STATE_INVALID", "POLICY_BLOCKED", "REPLAN_REQUIRED", "WEB_REVIEW_REQUIRED", "HUMAN_REQUIRED", "VERIFICATION_FAILED", "BUDGET_EXHAUSTED"].includes(code)) return 1;
+  if (code === "EXECUTION_LOCKED") return 3;
+  return 3;
+}
+
+async function runExecute(args: string[]): Promise<void> {
+  const parsed = parseExecutionArguments(args, true);
+  if (!parsed || !parsed.configPath) { printUsage(); process.exitCode = 2; return; }
+  const controller = new AbortController(); let signalCode: 130 | 143 | undefined;
+  const onSigInt = () => { signalCode = 130; controller.abort(); }; const onSigTerm = () => { signalCode = 143; controller.abort(); };
+  process.once("SIGINT", onSigInt); process.once("SIGTERM", onSigTerm);
+  try {
+    const executionConfig = await loadExecutionConfig(parsed.configPath);
+    const runtime = await resolveCodexRuntime(executionConfig.runtime, parsed.stateDirectory);
+    const receipt = await executeRun({ runId: parsed.runId, stateDirectory: parsed.stateDirectory, configPath: parsed.configPath, config: executionConfig, agentClient: new CodexSdkAgentClient(runtime), sandbox: new CodexVerificationSandbox(runtime), signal: controller.signal });
+    if (parsed.json) process.stdout.write(`${JSON.stringify(receipt)}\n`);
+    else { console.log(`State: ${receipt.state}`); console.log(`Iterations: ${receipt.implementer.iterations}`); console.log(`Verification rounds: ${receipt.verification.rounds}`); console.log(`Terra reviews: ${receipt.internal_reviewer.rounds} (${receipt.internal_reviewer.verdict ?? "none"})`); console.log(`Sol reviews: ${receipt.final_reviewer.rounds} (${receipt.final_reviewer.verdict ?? "none"})`); console.log(`Artifacts: ${executionPaths(parsed.stateDirectory, receipt.run_id.slice(0, receipt.run_id.lastIndexOf(":")), receipt.run_id.slice(receipt.run_id.lastIndexOf(":") + 1)).directory}`); console.log(receipt.worktree_path); }
+    if (receipt.state !== "READY_FOR_PUBLISH") process.exitCode = signalCode ?? executionExitCode(receipt.errors[0]?.code ?? receipt.state);
+  } catch (error) {
+    const code = isExecutionError(error) ? error.code : "OPERATIONAL_ERROR"; const message = redact(error instanceof Error ? error.message : String(error));
+    if (parsed.json) process.stdout.write(`${JSON.stringify({ state: "FAILED", error: { code, message } })}\n`); else process.stderr.write(`${code}: ${message}\n`);
+    process.exitCode = signalCode ?? executionExitCode(code);
+  } finally { process.removeListener("SIGINT", onSigInt); process.removeListener("SIGTERM", onSigTerm); }
+}
+
+async function runExecutionStatus(args: string[]): Promise<void> {
+  const parsed = parseExecutionArguments(args, false);
+  if (!parsed) { printUsage(); process.exitCode = 2; return; }
+  try {
+    const separator = parsed.runId.lastIndexOf(":"); if (separator <= 0) throw new Error("Invalid run ID.");
+    const receipt = await readExecutionReceipt(parsed.stateDirectory, parsed.runId.slice(0, separator), parsed.runId.slice(separator + 1));
+    if (!receipt) { process.exitCode = 3; if (parsed.json) process.stdout.write(`${JSON.stringify({ status: "NOT_FOUND" })}\n`); else process.stderr.write("EXECUTION_RECEIPT_INCONSISTENT: execution receipt not found\n"); return; }
+    if (parsed.json) process.stdout.write(`${JSON.stringify(receipt)}\n`); else console.log(`State: ${receipt.state}\nIterations: ${receipt.implementer.iterations}\nVerification rounds: ${receipt.verification.rounds}\nTerra reviews: ${receipt.internal_reviewer.rounds} (${receipt.internal_reviewer.verdict ?? "none"})\nSol reviews: ${receipt.final_reviewer.rounds} (${receipt.final_reviewer.verdict ?? "none"})\nArtifacts: ${executionPaths(parsed.stateDirectory, parsed.runId.slice(0, separator), parsed.runId.slice(separator + 1)).directory}`);
+  } catch (error) { const code = isExecutionError(error) ? error.code : "OPERATIONAL_ERROR"; const message = redact(error instanceof Error ? error.message : String(error)); if (parsed.json) process.stdout.write(`${JSON.stringify({ status: "FAILED", error: { code, message } })}\n`); else process.stderr.write(`${code}: ${message}\n`); process.exitCode = 3; }
+}
+
 async function main(): Promise<void> {
   const [, , command, ...args] = process.argv;
   if (command === "validate") return runValidate(args[0]);
@@ -222,6 +288,8 @@ async function main(): Promise<void> {
   if (command === "prepare") return runPrepare(args);
   if (command === "scan") return runScan(args);
   if (command === "watch") return runWatch(args);
+  if (command === "execute") return runExecute(args);
+  if (command === "execution-status") return runExecutionStatus(args);
   printUsage();
   process.exitCode = 2;
 }

@@ -21,7 +21,7 @@ export interface RunReceipt {
   status: RunState;
   task_id: string;
   archive_sha256: string;
-  bundle_schema_version: "1.2";
+  bundle_schema_version: "1.2" | "1.3";
   repository_id: string;
   repository_path: string;
   remote: string;
