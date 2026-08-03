@@ -6,7 +6,7 @@ import { minimalCodexEnvironment, type ResolvedCodexRuntime } from "../runtime/c
 import type { CommandRunOptions, SandboxRunResult, VerificationSandbox } from "./contracts.js";
 
 export function sandboxCommandArgs(workingDirectory: string, executable: string, args: readonly string[]): string[] {
-  return ["sandbox", "--permission-profile", ":workspace", "--cd", workingDirectory, "--", executable, ...args];
+  return ["-c", "sandbox_workspace_write.network_access=false", "sandbox", "--permission-profile", ":workspace", "--cd", workingDirectory, "--", executable, ...args];
 }
 
 function assertNulFree(executable: string, args: readonly string[]): void {

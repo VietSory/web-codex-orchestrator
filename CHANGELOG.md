@@ -22,3 +22,5 @@
 - Corrected the verifier invocation to the Codex 0.145.0 sandbox CLI contract,
   using `--permission-profile :workspace --cd <canonical-cwd> --` and rejecting
   incompatible Codex CLI versions during preflight.
+- Added a trusted root-level `sandbox_workspace_write.network_access=false`
+  override to every Codex sandbox invocation, with loopback-denial coverage.

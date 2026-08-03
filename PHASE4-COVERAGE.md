@@ -68,4 +68,6 @@ structured output, cancellation, bounded events, and environment filtering;
 process options, and fail-closed startup; `tests/codex-runtime.test.ts` for
 the exact CLI version guard; and `tests/verifier-fix-evidence.test.ts` for redacted
 verifier feedback in Terra's next correction prompt and persisted artifacts.
+The sandbox suite also covers P4-109's CODEX_HOME network override and P4-110's
+real loopback-denial check when `WCO_CODEX_EXECUTABLE` is supplied.
 The real integration test consumes Codex usage only when explicitly enabled.
