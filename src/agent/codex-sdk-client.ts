@@ -2,6 +2,8 @@ import { Codex } from "@openai/codex-sdk";
 import type { ThreadEvent, ThreadOptions } from "@openai/codex-sdk";
 import path from "node:path";
 import { ExecutionError, isExecutionError } from "../execution/errors.js";
+import { redact } from "../evidence/log-redaction.js";
+import { assertStructuredOutputSchema } from "./structured-output-schema.js";
 import { defaultSpawnBounded, type SpawnBoundedResult } from "../runtime/spawn-bounded.js";
 import { assertCompatibleCodexCliVersion, codexCliArgs, minimalCodexEnvironment, type ResolvedCodexRuntime } from "../runtime/codex-runtime.js";
 import type { AgentClient, AgentTurnRequest, AgentTurnResponse } from "./contracts.js";
@@ -62,6 +64,7 @@ export class CodexSdkAgentClient implements AgentClient {
     if (!isRecord(request.output_schema)) {
       throw new ExecutionError("AGENT_OUTPUT_INVALID", "Codex output schema is required.");
     }
+    assertStructuredOutputSchema(request.output_schema);
     const workspace = path.resolve(request.workspace_path);
     const bundle = path.resolve(request.accepted_bundle_path);
     if (workspace === bundle || workspace.startsWith(`${bundle}${path.sep}`) || bundle.startsWith(`${workspace}${path.sep}`)) {
@@ -71,12 +74,78 @@ export class CodexSdkAgentClient implements AgentClient {
     if (!request.read_only && request.sandbox_mode !== "workspace-write") throw new ExecutionError("CODEX_SANDBOX_UNAVAILABLE", "Implementation turns require workspace-write sandbox mode.");
   }
 
-  private mapSdkError(error: unknown, request: AgentTurnRequest): ExecutionError {
-    if (isExecutionError(error)) return error;
-    if (request.signal?.aborted) return new ExecutionError("INTERRUPTED", "Execution was cancelled.");
-    if (error instanceof Error && /timed?\s*out|timeout/i.test(error.message)) return new ExecutionError("CODEX_TURN_TIMEOUT", "The Codex turn timed out.");
-    if (error instanceof Error && /auth|login|unauthori[sz]ed|forbidden|\b401\b/i.test(error.message)) return new ExecutionError("CODEX_AUTH_UNAVAILABLE", "Codex authentication is unavailable.");
-    return new ExecutionError("CODEX_TURN_FAILED", "The Codex turn failed.");
+    private mapSdkError(
+    error: unknown,
+    request: AgentTurnRequest,
+  ): ExecutionError {
+    if (isExecutionError(error)) {
+      return error;
+    }
+
+    if (request.signal?.aborted) {
+      return new ExecutionError(
+        "INTERRUPTED",
+        "Execution was cancelled.",
+      );
+    }
+
+    const rawMessage =
+      error instanceof Error ? error.message : String(error);
+
+    const safeMessage =
+      redact(rawMessage)
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 4_096) ||
+      "Unknown Codex SDK failure.";
+
+    const details = {
+      role: request.role,
+      sdk_message: safeMessage,
+    };
+
+    if (/timed?\s*out|timeout/i.test(safeMessage)) {
+      return new ExecutionError(
+        "CODEX_TURN_TIMEOUT",
+        `The Codex ${request.role} turn timed out: ${safeMessage}`,
+        details,
+      );
+    }
+
+    if (
+      /auth|login|unauthori[sz]ed|forbidden|\b401\b/i.test(
+        safeMessage,
+      )
+    ) {
+      return new ExecutionError(
+        "CODEX_AUTH_UNAVAILABLE",
+        `Codex authentication is unavailable: ${safeMessage}`,
+        details,
+      );
+    }
+
+    if (
+      /invalid.*(?:json )?schema|json schema|output schema|response[_ -]?format|schema.*required/i.test(
+        safeMessage,
+      )
+    ) {
+      const code =
+        request.role === "implementer"
+          ? "AGENT_OUTPUT_INVALID"
+          : "REVIEW_OUTPUT_INVALID";
+
+      return new ExecutionError(
+        code,
+        `Codex rejected the ${request.role} structured-output schema: ${safeMessage}`,
+        details,
+      );
+    }
+
+    return new ExecutionError(
+      "CODEX_TURN_FAILED",
+      `The Codex ${request.role} turn failed: ${safeMessage}`,
+      details,
+    );
   }
 
   async turn(request: AgentTurnRequest): Promise<AgentTurnResponse> {

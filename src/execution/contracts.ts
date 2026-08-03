@@ -126,7 +126,6 @@ export interface ReviewResult {
   non_blocking_findings: ReviewFinding[];
   scope_violations: string[];
   unverified_acceptance: string[];
-  recommended_next_state?: ExecutionState;
   human_action: HumanAction;
 }
 

@@ -227,7 +227,7 @@ function implementation(): unknown {
 
 function reviewFor(request: { prompt: string }, verdict: "APPROVE" | "REVISE" | "REPLAN" | "ESCALATE" = "APPROVE"): unknown {
   const digest = /Change-set digest: ([0-9a-f]{64})/.exec(request.prompt)?.[1] ?? "0".repeat(64);
-  const result: Record<string, unknown> = { verdict, reviewed_change_set_sha256: digest, summary: verdict, acceptance_results: [{ acceptance_id: "AC-001", status: "PASS", evidence: ["fixture"] }, { acceptance_id: "AC-002", status: "PASS", evidence: ["fixture"] }], blocking_findings: [], non_blocking_findings: [], scope_violations: [], unverified_acceptance: [], recommended_next_state: "SOL_REVIEWING", human_action: null };
+  const result: Record<string, unknown> = { verdict, reviewed_change_set_sha256: digest, summary: verdict, acceptance_results: [{ acceptance_id: "AC-001", status: "PASS", evidence: ["fixture"] }, { acceptance_id: "AC-002", status: "PASS", evidence: ["fixture"] }], blocking_findings: [], non_blocking_findings: [], scope_violations: [], unverified_acceptance: [], human_action: null };
   if (verdict === "REVISE") result.blocking_findings = [{ id: "FIX-001", severity: "high", category: "correctness", file: "README.md", line_start: 1, line_end: 1, acceptance_ids: ["AC-001"], problem: "fixture finding", evidence: "fixture", required_fix: "fix" }];
   return result;
 }

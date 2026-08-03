@@ -175,3 +175,126 @@ test("an explicit SDK native override is forwarded only when trusted runtime sup
     config: { show_raw_agent_reasoning: false },
   });
 });
+
+
+test(
+  "P4-120: invalid output schema fails before an SDK thread is created",
+  async () => {
+    const { harness: state, factory } =
+      harness(JSON.stringify({ ok: true }));
+
+    const invalidSchema = {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        value: {
+          type: "string",
+        },
+      },
+      required: [],
+    };
+
+    await assert.rejects(
+      () =>
+        new CodexSdkAgentClient(
+          fakeResolvedCodexRuntime(),
+          factory,
+        ).turn(
+          request({
+            output_schema: invalidSchema,
+          }),
+        ),
+      (error: unknown) =>
+        error instanceof ExecutionError &&
+        error.code === "AGENT_OUTPUT_INVALID",
+    );
+
+    assert.equal(state.startOptions, undefined);
+    assert.equal(state.resumeOptions, undefined);
+    assert.equal(state.runOptions, undefined);
+  },
+);
+
+test(
+  "P4-121: reviewer schema rejection keeps a redacted bounded diagnostic",
+  async () => {
+    const failed = harness(
+      JSON.stringify({ ok: true }),
+    );
+
+    failed.harness.thread.runStreamed = async () => {
+      async function* events(): AsyncGenerator<ThreadEvent> {
+        failed.harness.thread.id = "review-thread";
+
+        yield {
+          type: "thread.started",
+          thread_id: "review-thread",
+        } as ThreadEvent;
+
+        yield {
+          type: "turn.started",
+        } as ThreadEvent;
+
+        yield {
+          type: "turn.failed",
+          error: {
+            message:
+              "Invalid JSON schema for response_format: " +
+              "a property is not required; token: fake-secret-value",
+          },
+        } as ThreadEvent;
+      }
+
+      return {
+        events: events(),
+      };
+    };
+
+    await assert.rejects(
+      () =>
+        new CodexSdkAgentClient(
+          fakeResolvedCodexRuntime(),
+          failed.factory,
+        ).turn(
+          request({
+            role: "internal_reviewer",
+            output_schema: REVIEW_OUTPUT_SCHEMA,
+            read_only: true,
+            sandbox_mode: "read-only",
+          }),
+        ),
+      (error: unknown) => {
+        assert.ok(error instanceof ExecutionError);
+        assert.equal(
+          error.code,
+          "REVIEW_OUTPUT_INVALID",
+        );
+        assert.equal(
+          error.details?.role,
+          "internal_reviewer",
+        );
+
+        const safeMessage = String(
+          error.details?.sdk_message ?? "",
+        );
+
+        assert.match(
+          safeMessage,
+          /Invalid JSON schema/,
+        );
+
+        assert.doesNotMatch(
+          safeMessage,
+          /fake-secret-value/,
+        );
+
+        assert.match(
+          safeMessage,
+          /\[REDACTED\]/,
+        );
+
+        return true;
+      },
+    );
+  },
+);

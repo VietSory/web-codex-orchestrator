@@ -84,3 +84,15 @@ Additional release-gate coverage:
 - `P4-115` → `tests/codex-runtime.test.ts` → launcher-prefix CLI arguments.
 
 The real integration test consumes Codex usage only when explicitly enabled.
+
+## Strict structured-output schema hardening
+
+- `P4-116` — all production schemas satisfy the strict required-field rule.
+- `P4-117` — a root property omitted from `required` is rejected locally.
+- `P4-118` — nested object properties must also all be required.
+- `P4-119` — duplicate `required` entries are rejected.
+- `P4-120` — invalid schemas fail before an SDK thread starts.
+- `P4-121` — reviewer schema failures retain only bounded redacted diagnostics.
+
+Workflow state transitions are selected by the orchestrator from a validated
+review verdict. Review models do not provide a `recommended_next_state`.

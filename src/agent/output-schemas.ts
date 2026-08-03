@@ -1,5 +1,3 @@
-import { EXECUTION_STATES } from "../execution/contracts.js";
-
 type JsonSchema = Record<string, unknown>;
 
 const boundedString = (maxLength: number): JsonSchema => ({ type: "string", maxLength });
@@ -122,7 +120,6 @@ export const REVIEW_OUTPUT_SCHEMA: JsonSchema = {
     non_blocking_findings: { type: "array", maxItems: 256, items: reviewFinding },
     scope_violations: boundedStringArray(256, 4_096),
     unverified_acceptance: boundedStringArray(256, 4_096),
-    recommended_next_state: { type: "string", enum: [...EXECUTION_STATES] },
     human_action: humanAction,
   },
   required: ["verdict", "reviewed_change_set_sha256", "summary", "acceptance_results", "blocking_findings", "non_blocking_findings", "scope_violations", "unverified_acceptance", "human_action"],

@@ -33,6 +33,7 @@ test(
     }
 
     const fixture = await createPhase4Fixture();
+    let completed = false;
     try {
       const manifestPath = `${fixture.bundle}/manifest.json`;
       const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, unknown>;
@@ -132,7 +133,19 @@ test(
       }
       throw error;
     } finally {
-      await fixture.cleanup();
+      if (
+        completed ||
+        process.env.WCO_KEEP_FAILED_INTEGRATION !== "1"
+      ) {
+        await fixture.cleanup();
+      } else {
+        console.error(
+          `WCO_FAILED_INTEGRATION_ROOT=${fixture.root}`,
+        );
+        console.error(
+          `WCO_FAILED_INTEGRATION_STATE=${fixture.state}`,
+        );
+      }
     }
   },
 );
