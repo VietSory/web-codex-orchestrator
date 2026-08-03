@@ -18,7 +18,7 @@ function implementation(): unknown {
 
 function review(request: AgentTurnRequest): unknown {
   const digest = /Change-set digest: ([0-9a-f]{64})/.exec(request.prompt)?.[1] ?? "0".repeat(64);
-  return { verdict: "APPROVE", reviewed_change_set_sha256: digest, summary: "fixture", acceptance_results: [{ acceptance_id: "AC-001", status: "PASS", evidence: ["fixture"] }, { acceptance_id: "AC-002", status: "PASS", evidence: ["fixture"] }], blocking_findings: [], non_blocking_findings: [], scope_violations: [], unverified_acceptance: [], recommended_next_state: "SOL_REVIEWING", human_action: null };
+  return { verdict: "APPROVE", reviewed_change_set_sha256: digest, summary: "fixture", acceptance_results: [{ acceptance_id: "AC-001", status: "PASS", evidence: ["fixture"] }, { acceptance_id: "AC-002", status: "PASS", evidence: ["fixture"] }], blocking_findings: [], non_blocking_findings: [], scope_violations: [], unverified_acceptance: [], human_action: null };
 }
 
 class FailingTestSandbox implements VerificationSandbox {
