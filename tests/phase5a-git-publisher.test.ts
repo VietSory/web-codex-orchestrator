@@ -867,8 +867,16 @@ test("P5A-021: dry-run preflight blocking bad authentication early", async () =>
     };
     await writeFile(path.join(fixture.worktree, "feature.txt"), "test\\n", "utf8");
     const changeSet = await inspectFixtureChangeSet(fixture.runner, fixture.worktree, ["feature.txt"]);
-    const publisher = new GitPublisher({ runner: fixture.runner, inspectVerifiedChangeSet: async () => changeSet, persistReceipt: async () => {} });
+    let savedReceipt: any = null;
+    const publisher = new GitPublisher({ runner: fixture.runner, inspectVerifiedChangeSet: async () => changeSet, persistReceipt: async (r) => { savedReceipt = r; } });
     await assert.rejects(publisher.publish(request(fixture, changeSet)), { code: "PUBLISH_AUTH_FAILED" });
+    
+    // Assert 1: The receipt was saved in READY_FOR_COMMIT state before preflight failed
+    assert.equal(savedReceipt?.state, "READY_FOR_COMMIT");
+    
+    // Assert 2: Preflight runs BEFORE staging, so worktree is untouched (file is untracked, not staged)
+    const status = await originalRun(["status", "--porcelain"], fixture.worktree);
+    assert.match(status.stdout, /^\?\? feature\.txt/);
   } finally {
     await fixture.cleanup();
   }
@@ -887,8 +895,15 @@ test("P5A-022: racing remote branch creation detected before real push", async (
     };
     await writeFile(path.join(fixture.worktree, "feature.txt"), "test\\n", "utf8");
     const changeSet = await inspectFixtureChangeSet(fixture.runner, fixture.worktree, ["feature.txt"]);
-    const publisher = new GitPublisher({ runner: fixture.runner, inspectVerifiedChangeSet: async () => changeSet, persistReceipt: async () => {} });
+    let savedReceipt: any = null;
+    const publisher = new GitPublisher({ runner: fixture.runner, inspectVerifiedChangeSet: async () => changeSet, persistReceipt: async (r) => { savedReceipt = r; } });
+    
     await assert.rejects(publisher.publish(request(fixture, changeSet)), { code: "PUBLISH_REMOTE_BRANCH_EXISTS" });
+    
+    // Assert: The local commit was still created safely because the race happened during real push.
+    assert.equal(savedReceipt?.state, "COMMITTED");
+    const log = await originalRun(["log", "-1", "--format=%s"], fixture.worktree);
+    assert.equal(log.stdout.trim(), "Publish verified Phase 5A fixture");
   } finally {
     await fixture.cleanup();
   }
@@ -910,8 +925,11 @@ test("P5A-023: real push failing then recovering correctly via lease", async () 
     await writeFile(path.join(fixture.worktree, "feature.txt"), "test\\n", "utf8");
     const changeSet = await inspectFixtureChangeSet(fixture.runner, fixture.worktree, ["feature.txt"]);
     const publisher = new GitPublisher({ runner: fixture.runner, inspectVerifiedChangeSet: async () => changeSet, persistReceipt: async () => {} });
+    
     const receipt = await publisher.publish(request(fixture, changeSet));
+    // Assert: it recovered via recheck and transitioned to PUSHED.
     assert.equal(receipt.state, "PUSHED");
+    assert.equal(failedOnce, true);
   } finally {
     await fixture.cleanup();
   }
@@ -923,25 +941,25 @@ test("P5A-025: READY_FOR_COMMIT retry properly repeats the preflight check", asy
     await writeFile(path.join(fixture.worktree, "feature.txt"), "test\\n", "utf8");
     const changeSet = await inspectFixtureChangeSet(fixture.runner, fixture.worktree, ["feature.txt"]);
     
-    const publisher = new GitPublisher({ runner: fixture.runner, inspectVerifiedChangeSet: async () => changeSet, persistReceipt: async () => {} });
+    let savedReceipt: any = null;
+    const publisher = new GitPublisher({ runner: fixture.runner, inspectVerifiedChangeSet: async () => changeSet, persistReceipt: async (r) => { savedReceipt = r; } });
     
-    // Create a mock receipt in READY_FOR_COMMIT state
-    const req = request(fixture, changeSet);
-    const receipt = {
-      publish_version: "1.1",
-      run_id: req.run_id,
-      base_commit: req.base_commit,
-      branch_name: req.branch_name,
-      remote_name: req.remote_name,
-      allowed_remote_url: req.allowed_remote_url,
-      change_set_sha256: req.expected_change_set_sha256,
-      expected_paths: req.expected_paths,
-      state: "READY_FOR_COMMIT",
-      approved_snapshot_sha256: "0000000000000000000000000000000000000000000000000000000000000000",
-    } as any;
-    
-    // We just want to ensure it calls preflight which we mock to fail
     const originalRun = fixture.runner.run.bind(fixture.runner);
+    
+    // 1st run: succeed at preflight, but throw at commit
+    fixture.runner.run = async (args, cwd) => {
+      if (args[0] === "commit") {
+        return { exitCode: 1, stdout: "", stderr: "Simulated commit failure", executable: "git", args, cwd, duration_ms: 10 };
+      }
+      return originalRun(args, cwd);
+    };
+    await assert.rejects(publisher.publish(request(fixture, changeSet)), { code: "PUBLISH_COMMIT_FAILED" });
+    
+    // Assert we got a real READY_FOR_COMMIT receipt from 1st run
+    assert.ok(savedReceipt !== null);
+    assert.equal(savedReceipt.state, "READY_FOR_COMMIT");
+
+    // 2nd run: resume with the saved receipt, but mock preflight to fail this time
     fixture.runner.run = async (args, cwd) => {
       if (args.includes("--dry-run")) {
         return { exitCode: 1, stdout: "", stderr: "403 Forbidden", executable: "git", args, cwd, duration_ms: 10 };
@@ -949,7 +967,8 @@ test("P5A-025: READY_FOR_COMMIT retry properly repeats the preflight check", asy
       return originalRun(args, cwd);
     };
 
-    await assert.rejects(publisher.publish(request(fixture, changeSet), receipt), { code: "PUBLISH_AUTH_FAILED" });
+    // Assert that the preflight STILL runs on the retry branch and blocks it correctly!
+    await assert.rejects(publisher.publish(request(fixture, changeSet), savedReceipt), { code: "PUBLISH_AUTH_FAILED" });
   } finally {
     await fixture.cleanup();
   }

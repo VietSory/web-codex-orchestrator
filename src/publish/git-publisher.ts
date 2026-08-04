@@ -1043,9 +1043,6 @@ export class GitPublisher {
         );
       }
 
-      await this.preflightRemoteBranchCreation(request, cwd);
-
-
       const approvedSnapshot = await this.attestCurrentWorktree(request, cwd);
       receipt = initialReceipt(request, approvedSnapshot, this.now);
 
@@ -1072,9 +1069,6 @@ export class GitPublisher {
           );
         }
 
-        await this.preflightRemoteBranchCreation(request, cwd);
-
-
         let stagedPaths = await this.stagedPaths(cwd);
 
         if (stagedPaths.length === 0) {
@@ -1086,6 +1080,8 @@ export class GitPublisher {
             );
           }
 
+          await this.preflightRemoteBranchCreation(request, cwd);
+
           await requireSuccess(
             this.options.runner,
             ["--literal-pathspecs", "add", "-A", "--", ...expectedPaths],
@@ -1095,21 +1091,38 @@ export class GitPublisher {
           );
 
           stagedPaths = await this.stagedPaths(cwd);
-        }
+          
+          if (!equalStringArrays(stagedPaths, expectedPaths)) {
+            throw new GitPublishError(
+              "PUBLISH_STAGE_MISMATCH",
+              "The staged path set does not equal the Phase 4 approved path set.",
+            );
+          }
+  
+          const stagedSnapshot = await this.indexSnapshot(cwd, expectedPaths);
+          if (stagedSnapshot !== receipt.approved_snapshot_sha256) {
+            throw new GitPublishError(
+              "PUBLISH_INDEX_MISMATCH",
+              "The staged index content differs from the approved pre-stage snapshot.",
+            );
+          }
+        } else {
+          if (!equalStringArrays(stagedPaths, expectedPaths)) {
+            throw new GitPublishError(
+              "PUBLISH_STAGE_MISMATCH",
+              "The staged path set does not equal the Phase 4 approved path set.",
+            );
+          }
+  
+          const stagedSnapshot = await this.indexSnapshot(cwd, expectedPaths);
+          if (stagedSnapshot !== receipt.approved_snapshot_sha256) {
+            throw new GitPublishError(
+              "PUBLISH_INDEX_MISMATCH",
+              "The staged index content differs from the approved pre-stage snapshot.",
+            );
+          }
 
-        if (!equalStringArrays(stagedPaths, expectedPaths)) {
-          throw new GitPublishError(
-            "PUBLISH_STAGE_MISMATCH",
-            "The staged path set does not equal the Phase 4 approved path set.",
-          );
-        }
-
-        const stagedSnapshot = await this.indexSnapshot(cwd, expectedPaths);
-        if (stagedSnapshot !== receipt.approved_snapshot_sha256) {
-          throw new GitPublishError(
-            "PUBLISH_INDEX_MISMATCH",
-            "The staged index content differs from the approved pre-stage snapshot.",
-          );
+          await this.preflightRemoteBranchCreation(request, cwd);
         }
 
         const commit = await this.options.runner.run(

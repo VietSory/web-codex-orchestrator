@@ -245,7 +245,14 @@ async function createTheExistingPhase4Fixture(options: {
     executionDirectory: path.join(fixture.state, "runs", "task", fixture.runId.split(":")[1]!, "execution"),
     git: (cwd: string, args: string[]) => git(runner, cwd, args),
     productCommitCount: async () => parseInt(await git(runner, fixture.worktree, ["rev-list", "--count", `${fixture.base}..HEAD`]), 10),
-    payloadMarkerExists: async () => false
+    payloadMarkerExists: async () => {
+      try {
+        await import("node:fs/promises").then(fs => fs.stat(path.join(fixture.state, "runs", "task", fixture.runId.split(":")[1]!, "execution", "payload-executed")));
+        return true;
+      } catch {
+        return false;
+      }
+    }
   };
 }
 
