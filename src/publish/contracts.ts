@@ -16,7 +16,7 @@ export type GitPublishErrorCode =
 
 export class GitPublishError extends Error {
   readonly code: GitPublishErrorCode;
-  readonly details?: Record<string, unknown> | undefined;
+  readonly details?: Record<string, unknown>;
 
   constructor(
     code: GitPublishErrorCode,
