@@ -757,3 +757,100 @@ test("P5A-014: a READY receipt resumes from an exact staged index after a pre-co
     await fixture.cleanup();
   }
 });
+
+test(
+  "P5A-015: core.fileMode=false ignores unreliable executable filesystem bits",
+  async () => {
+    const fixture = await createFixture();
+
+    try {
+      await requireGit(
+        fixture.runner,
+        fixture.worktree,
+        ["config", "core.fileMode", "false"],
+      );
+
+      const featurePath = path.join(
+        fixture.worktree,
+        "feature.txt",
+      );
+
+      await writeFile(
+        featurePath,
+        "verified on a filesystem with unreliable modes\n",
+        "utf8",
+      );
+
+      await chmod(featurePath, 0o777);
+
+      const fileInfo = await import(
+        "node:fs/promises"
+      ).then(({ stat }) => stat(featurePath));
+
+      assert.notEqual(
+        fileInfo.mode & 0o111,
+        0,
+        "The fixture must have executable bits on the filesystem.",
+      );
+
+      const changeSet = await inspectFixtureChangeSet(
+        fixture.runner,
+        fixture.worktree,
+        ["feature.txt"],
+      );
+
+      const publisher = new GitPublisher({
+        runner: fixture.runner,
+        inspectVerifiedChangeSet: () =>
+          inspectFixtureChangeSet(
+            fixture.runner,
+            fixture.worktree,
+            ["feature.txt"],
+          ),
+        persistReceipt: (receipt) =>
+          writeGitPublishReceipt(
+            fixture.receiptPath,
+            receipt,
+          ),
+      });
+
+      const receipt = await publisher.publish(
+        request(fixture, changeSet),
+      );
+
+      assert.equal(receipt.state, "PUSHED");
+
+      const treeEntry = await requireGit(
+        fixture.runner,
+        fixture.worktree,
+        [
+          "ls-tree",
+          "HEAD",
+          "--",
+          "feature.txt",
+        ],
+      );
+
+      assert.match(
+        treeEntry,
+        /^100644 blob [0-9a-f]{40,64}\tfeature\.txt$/,
+      );
+
+      assert.equal(
+        await requireGit(
+          fixture.runner,
+          fixture.worktree,
+          [
+            "ls-remote",
+            "--heads",
+            "origin",
+            `refs/heads/${fixture.branchName}`,
+          ],
+        ).then((line) => line.split(/\s+/)[0]),
+        receipt.commit_sha,
+      );
+    } finally {
+      await fixture.cleanup();
+    }
+  },
+);

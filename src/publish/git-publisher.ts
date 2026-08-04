@@ -27,10 +27,12 @@ interface RepositoryBoundary {
   remoteUrl: string;
 }
 
+type RegularFileMode = "100644" | "100755";
+
 interface SnapshotEntry {
   path: string;
   state: "file" | "deleted";
-  mode: "100644" | "100755" | null;
+  mode: RegularFileMode | null;
   blobOid: string | null;
 }
 
@@ -459,11 +461,119 @@ export class GitPublisher {
     return current;
   }
 
+  private async honorsFilesystemExecutableBit(
+    cwd: string,
+  ): Promise<boolean> {
+    const result = await this.options.runner.run(
+      ["config", "--bool", "--get", "core.fileMode"],
+      cwd,
+    );
+
+    /*
+     * An unset value uses Git's normal default behavior. Treat it as true.
+     * A normal repository created or cloned by Git normally has this value.
+     */
+    if (
+      result.exitCode === 1 &&
+      result.stdout.trim().length === 0 &&
+      result.stderr.trim().length === 0
+    ) {
+      return true;
+    }
+
+    if (result.exitCode !== 0) {
+      failCommand(
+        "PUBLISH_COMMIT_FAILED",
+        "The repository file-mode policy could not be read.",
+        result,
+      );
+    }
+
+    const value = result.stdout.trim().toLowerCase();
+
+    if (value === "true") return true;
+    if (value === "false") return false;
+
+    throw new GitPublishError(
+      "PUBLISH_COMMIT_FAILED",
+      "The repository returned an invalid core.fileMode value.",
+    );
+  }
+
+  private async existingIndexMode(
+    cwd: string,
+    relativePath: string,
+  ): Promise<RegularFileMode | null> {
+    const listed = await requireSuccess(
+      this.options.runner,
+      [
+        "--literal-pathspecs",
+        "ls-files",
+        "--stage",
+        "-z",
+        "--",
+        relativePath,
+      ],
+      cwd,
+      "PUBLISH_COMMIT_FAILED",
+      "The existing Git index mode could not be inspected.",
+    );
+
+    const records = listed.stdout
+      .split("\u0000")
+      .filter((entry) => entry.length > 0);
+
+    if (records.length === 0) {
+      return null;
+    }
+
+    if (records.length !== 1) {
+      throw new GitPublishError(
+        "PUBLISH_INDEX_MISMATCH",
+        "The Git index contains multiple entries for one approved path.",
+        { path: relativePath },
+      );
+    }
+
+    const match =
+      /^(\d{6}) ([0-9a-f]{40,64}) ([0-3])\t([\s\S]+)$/.exec(
+        records[0]!,
+      );
+
+    if (!match) {
+      throw new GitPublishError(
+        "PUBLISH_INDEX_MISMATCH",
+        "The Git index returned an unparseable mode record.",
+        { path: relativePath },
+      );
+    }
+
+    const [, mode, blobOid, stage, rawPath] = match;
+    const normalizedPath = normalizeRelativePath(rawPath!);
+
+    if (
+      normalizedPath !== relativePath ||
+      stage !== "0" ||
+      (mode !== "100644" && mode !== "100755") ||
+      !GIT_OBJECT_ID.test(blobOid!)
+    ) {
+      throw new GitPublishError(
+        "PUBLISH_INDEX_MISMATCH",
+        "The Git index returned an unsupported mode record.",
+        { path: relativePath },
+      );
+    }
+
+    return mode as RegularFileMode;
+  }
+
   private async workingTreeSnapshot(
     cwd: string,
     expectedPaths: readonly string[],
   ): Promise<string> {
     const entries: SnapshotEntry[] = [];
+    const honorsExecutableBit =
+      await this.honorsFilesystemExecutableBit(cwd);
 
     for (const relativePath of expectedPaths) {
       const absolutePath = path.join(cwd, ...relativePath.split("/"));
@@ -513,10 +623,23 @@ export class GitPublisher {
         );
       }
 
+      let projectedMode: RegularFileMode;
+
+      if (honorsExecutableBit) {
+        projectedMode =
+          (info.mode & 0o111) === 0 ? "100644" : "100755";
+      } else {
+        projectedMode =
+          (await this.existingIndexMode(
+            cwd,
+            relativePath,
+          )) ?? "100644";
+      }
+
       entries.push({
         path: relativePath,
         state: "file",
-        mode: (info.mode & 0o111) === 0 ? "100644" : "100755",
+        mode: projectedMode,
         blobOid: blobOid!,
       });
     }
