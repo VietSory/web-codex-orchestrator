@@ -442,6 +442,45 @@ export class GitPublisher {
     return sha;
   }
 
+  private async preflightRemoteBranchCreation(
+    request: GitPublishRequest,
+    cwd: string,
+  ): Promise<void> {
+    const preflight = await this.options.runner.run(
+      [
+        "push",
+        "--dry-run",
+        "--porcelain",
+        "--force-with-lease=refs/heads/" + request.branch_name + ":",
+        request.remote_name,
+        request.base_commit + ":refs/heads/" + request.branch_name,
+      ],
+      cwd,
+    );
+
+    if (preflight.exitCode !== 0) {
+      const recheckRemoteSha = await this.readRemoteBranch(request, cwd);
+      if (recheckRemoteSha !== null) {
+        throw new GitPublishError(
+          "PUBLISH_REMOTE_BRANCH_EXISTS",
+          "The delivery branch was created remotely during preflight.",
+          { remote_branch_sha: recheckRemoteSha },
+        );
+      }
+      
+      const stderr = preflight.stderr.toLowerCase();
+      if (stderr.includes("403") || stderr.includes("authentication failed") || stderr.includes("could not read username") || stderr.includes("could not read password")) {
+        throw new GitPublishError("PUBLISH_AUTH_FAILED", "Authentication failed during push preflight.");
+      }
+
+      failCommand(
+        "PUBLISH_PUSH_PREFLIGHT_FAILED",
+        "Git push preflight failed.",
+        preflight,
+      );
+    }
+  }
+
   private async assertVerifiedChangeSet(
     request: GitPublishRequest,
   ): Promise<VerifiedChangeSet> {
@@ -1004,39 +1043,8 @@ export class GitPublisher {
         );
       }
 
-      const preflight = await this.options.runner.run(
-        [
-          "push",
-          "--dry-run",
-          "--porcelain",
-          "--force-with-lease=refs/heads/" + request.branch_name + ":",
-          request.remote_name,
-          request.base_commit + ":refs/heads/" + request.branch_name,
-        ],
-        cwd,
-      );
+      await this.preflightRemoteBranchCreation(request, cwd);
 
-      if (preflight.exitCode !== 0) {
-        const recheckRemoteSha = await this.readRemoteBranch(request, cwd);
-        if (recheckRemoteSha !== null) {
-          throw new GitPublishError(
-            "PUBLISH_REMOTE_BRANCH_EXISTS",
-            "The delivery branch was created remotely during preflight.",
-            { remote_branch_sha: recheckRemoteSha },
-          );
-        }
-        
-        const stderr = preflight.stderr.toLowerCase();
-        if (stderr.includes("403") || stderr.includes("authentication failed") || stderr.includes("could not read username") || stderr.includes("could not read password")) {
-          throw new GitPublishError("PUBLISH_AUTH_FAILED", "Authentication failed during push preflight.");
-        }
-
-        failCommand(
-          "PUBLISH_PUSH_PREFLIGHT_FAILED",
-          "Git push preflight failed.",
-          preflight,
-        );
-      }
 
       const approvedSnapshot = await this.attestCurrentWorktree(request, cwd);
       receipt = initialReceipt(request, approvedSnapshot, this.now);
@@ -1063,6 +1071,9 @@ export class GitPublisher {
             { remote_branch_sha: existingRemoteSha },
           );
         }
+
+        await this.preflightRemoteBranchCreation(request, cwd);
+
 
         let stagedPaths = await this.stagedPaths(cwd);
 

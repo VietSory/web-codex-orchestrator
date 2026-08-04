@@ -27,10 +27,6 @@ export type PublishAuthenticationConfig =
   | {
       mode: "https_token";
       token_environment_key: string;
-    }
-  | {
-      mode: "ssh_agent";
-      socket_environment_key: "SSH_AUTH_SOCK";
     };
 
 export interface PublishConfig {

@@ -916,3 +916,41 @@ test("P5A-023: real push failing then recovering correctly via lease", async () 
     await fixture.cleanup();
   }
 });
+
+test("P5A-025: READY_FOR_COMMIT retry properly repeats the preflight check", async () => {
+  const fixture = await createFixture();
+  try {
+    await writeFile(path.join(fixture.worktree, "feature.txt"), "test\\n", "utf8");
+    const changeSet = await inspectFixtureChangeSet(fixture.runner, fixture.worktree, ["feature.txt"]);
+    
+    const publisher = new GitPublisher({ runner: fixture.runner, inspectVerifiedChangeSet: async () => changeSet, persistReceipt: async () => {} });
+    
+    // Create a mock receipt in READY_FOR_COMMIT state
+    const req = request(fixture, changeSet);
+    const receipt = {
+      publish_version: "1.1",
+      run_id: req.run_id,
+      base_commit: req.base_commit,
+      branch_name: req.branch_name,
+      remote_name: req.remote_name,
+      allowed_remote_url: req.allowed_remote_url,
+      change_set_sha256: req.expected_change_set_sha256,
+      expected_paths: req.expected_paths,
+      state: "READY_FOR_COMMIT",
+      approved_snapshot_sha256: "0000000000000000000000000000000000000000000000000000000000000000",
+    } as any;
+    
+    // We just want to ensure it calls preflight which we mock to fail
+    const originalRun = fixture.runner.run.bind(fixture.runner);
+    fixture.runner.run = async (args, cwd) => {
+      if (args.includes("--dry-run")) {
+        return { exitCode: 1, stdout: "", stderr: "403 Forbidden", executable: "git", args, cwd, duration_ms: 10 };
+      }
+      return originalRun(args, cwd);
+    };
+
+    await assert.rejects(publisher.publish(request(fixture, changeSet), receipt), { code: "PUBLISH_AUTH_FAILED" });
+  } finally {
+    await fixture.cleanup();
+  }
+});

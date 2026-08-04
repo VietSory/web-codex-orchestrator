@@ -31,7 +31,6 @@ export interface Phase4PublishOptions {
   runId: string;
   stateDirectory: string;
   configPath: string;
-  runner?: GitRunner;
   now?: () => Date;
 }
 
@@ -227,45 +226,44 @@ export async function publishPhase4Run(
       );
     }
 
-    let runner = options.runner;
-    if (!runner) {
-      const runtimeDirectory = path.join(stateDirectory, "git-runtime");
-      const auth = await preparePublishGitSecurity(
-        config.publish,
-        preparation.receipt.remote_url,
-        runtimeDirectory,
-        process.env,
-      );
-      runner = new GitRunner(process.env, runtimeDirectory, {
-        ...(config.publish?.identity ? { identity: config.publish.identity } : {}),
-        auth,
-      });
-
-      // Preflight Identity Checks
-      if (!config.publish?.identity) {
-        throw new GitPublishError("PUBLISH_IDENTITY_UNAVAILABLE", "Publish identity configuration is missing.");
-      }
-
-      const cwd = execution.worktree_path;
-      const expectedName = config.publish.identity.name;
-      const expectedEmail = config.publish.identity.email;
-
-      const verifyIdentity = async (envVar: string) => {
-        const result = await runner!.run(["var", envVar], cwd);
-        if (result.exitCode !== 0) {
-          throw new GitPublishError("PUBLISH_IDENTITY_UNAVAILABLE", `Failed to verify ${envVar}.`);
-        }
-        // format is "Name <email> timestamp tz"
-        const output = result.stdout.trim();
-        const match = /^(.*)\s+<([^>]+)>\s+\d+\s+[+-]\d+$/.exec(output);
-        if (!match || match[1] !== expectedName || match[2] !== expectedEmail) {
-          throw new GitPublishError("PUBLISH_IDENTITY_UNAVAILABLE", `Git identity mismatch for ${envVar}.`);
-        }
-      };
-
-      await verifyIdentity("GIT_AUTHOR_IDENT");
-      await verifyIdentity("GIT_COMMITTER_IDENT");
+    const runtimeDirectory = path.join(stateDirectory, "git-runtime");
+    
+    // Preflight Identity Checks
+    if (!config.publish?.identity) {
+      throw new GitPublishError("PUBLISH_IDENTITY_UNAVAILABLE", "Publish identity configuration is missing.");
     }
+
+    const auth = await preparePublishGitSecurity(
+      config.publish,
+      preparation.receipt.remote_url,
+      runtimeDirectory,
+      process.env,
+    );
+
+    const runner = new GitRunner(process.env, runtimeDirectory, {
+      identity: config.publish.identity,
+      auth,
+    });
+
+    const cwd = execution.worktree_path;
+    const expectedName = config.publish.identity.name;
+    const expectedEmail = config.publish.identity.email;
+
+    const verifyIdentity = async (envVar: string) => {
+      const result = await runner.run(["var", envVar], cwd);
+      if (result.exitCode !== 0) {
+        throw new GitPublishError("PUBLISH_IDENTITY_UNAVAILABLE", `Failed to verify ${envVar}.`);
+      }
+      // format is "Name <email> timestamp tz"
+      const output = result.stdout.trim();
+      const match = /^(.*)\s+<([^>]+)>\s+\d+\s+[+-]\d+$/.exec(output);
+      if (!match || match[1] !== expectedName || match[2] !== expectedEmail) {
+        throw new GitPublishError("PUBLISH_IDENTITY_UNAVAILABLE", `Git identity mismatch for ${envVar}.`);
+      }
+    };
+
+    await verifyIdentity("GIT_AUTHOR_IDENT");
+    await verifyIdentity("GIT_COMMITTER_IDENT");
 
     const executionDirectory = executionPaths(
       stateDirectory,

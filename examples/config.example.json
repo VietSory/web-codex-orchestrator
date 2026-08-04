@@ -11,8 +11,7 @@
       "path": "/absolute/path/to/web-codex-orchestrator",
       "remote": "origin",
       "expected_remote_urls": [
-        "https://github.com/VietSory/web-codex-orchestrator.git",
-        "git@github.com:VietSory/web-codex-orchestrator.git"
+        "https://github.com/VietSory/web-codex-orchestrator.git"
       ],
       "fetch_policy": "if-missing"
     }

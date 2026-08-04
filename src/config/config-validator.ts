@@ -125,23 +125,22 @@ export function validateConfig(value: unknown): ConfigValidationReport {
       if (!isRecord(identity)) add(issues, "publish.identity must be an object.");
       else {
         for (const key of unknownFields(identity, new Set(["name", "email"]))) add(issues, `Unknown publish.identity field: ${key}`);
-        if (typeof identity.name !== "string" || identity.name.trim().length < 1 || identity.name.trim().length > 128 || identity.name.includes("\u0000") || identity.name.includes("\r") || identity.name.includes("\n")) add(issues, "publish.identity.name is invalid.");
-        if (typeof identity.email !== "string" || identity.email.trim().length < 3 || identity.email.trim().length > 320 || identity.email.includes("\u0000") || identity.email.includes("\r") || identity.email.includes("\n") || identity.email.includes("<") || identity.email.includes(">")) add(issues, "publish.identity.email is invalid.");
+        if (typeof identity.name !== "string" || identity.name !== identity.name.trim() || identity.name.length < 1 || identity.name.length > 128 || /[\x00-\x1F\x7F<>]/.test(identity.name)) add(issues, "publish.identity.name is invalid.");
+        if (typeof identity.email !== "string" || identity.email !== identity.email.trim() || identity.email.length < 3 || identity.email.length > 320 || /[\x00-\x1F\x7F]/.test(identity.email) || !/^[^@\s<>]+@[^@\s<>]+$/.test(identity.email)) add(issues, "publish.identity.email is invalid.");
       }
       
       const authentication = publish.authentication;
       if (!isRecord(authentication)) add(issues, "publish.authentication must be an object.");
       else {
+        if ("token" in authentication) add(issues, "publish.authentication cannot have token field directly.");
         if (authentication.mode === "none") {
-          if ("token_environment_key" in authentication || "socket_environment_key" in authentication) add(issues, "publish.authentication.mode none cannot have token or socket fields.");
+          if ("token_environment_key" in authentication) add(issues, "publish.authentication.mode none cannot have token field.");
         } else if (authentication.mode === "https_token") {
           if (typeof authentication.token_environment_key !== "string" || !/^WCO_GIT_[A-Z0-9_]{1,48}$/.test(authentication.token_environment_key)) add(issues, "publish.authentication.token_environment_key is invalid.");
-        } else if (authentication.mode === "ssh_agent") {
-          if (authentication.socket_environment_key !== "SSH_AUTH_SOCK") add(issues, "publish.authentication.socket_environment_key must be SSH_AUTH_SOCK.");
         } else {
           add(issues, "publish.authentication.mode is invalid.");
         }
-        const allowedAuthFields = new Set(["mode", "token_environment_key", "socket_environment_key"]);
+        const allowedAuthFields = new Set(["mode", "token_environment_key"]);
         for (const key of unknownFields(authentication, allowedAuthFields)) add(issues, `Unknown publish.authentication field: ${key}`);
       }
     }
