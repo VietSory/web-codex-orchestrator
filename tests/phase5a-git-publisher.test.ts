@@ -362,7 +362,7 @@ test("P5A-006: a persisted COMMITTED receipt resumes with one non-force push", a
     let failPush = true;
     const failOnceRunner: GitCommandRunner = {
       run: async (args, cwd) => {
-        if (args[0] === "push" && failPush) {
+        if (args[0] === "push" && !args.includes("--dry-run") && failPush) {
           failPush = false;
           return {
             exitCode: 1,
@@ -854,3 +854,65 @@ test(
     }
   },
 );
+
+test("P5A-021: dry-run preflight blocking bad authentication early", async () => {
+  const fixture = await createFixture();
+  try {
+    const originalRun = fixture.runner.run.bind(fixture.runner);
+    fixture.runner.run = async (args, cwd) => {
+      if (args.includes("--dry-run")) {
+        return { exitCode: 1, stdout: "", stderr: "403 Forbidden", executable: "git", args, cwd, duration_ms: 10 };
+      }
+      return originalRun(args, cwd);
+    };
+    await writeFile(path.join(fixture.worktree, "feature.txt"), "test\\n", "utf8");
+    const changeSet = await inspectFixtureChangeSet(fixture.runner, fixture.worktree, ["feature.txt"]);
+    const publisher = new GitPublisher({ runner: fixture.runner, inspectVerifiedChangeSet: async () => changeSet, persistReceipt: async () => {} });
+    await assert.rejects(publisher.publish(request(fixture, changeSet)), { code: "PUBLISH_AUTH_FAILED" });
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("P5A-022: racing remote branch creation detected before real push", async () => {
+  const fixture = await createFixture();
+  try {
+    const originalRun = fixture.runner.run.bind(fixture.runner);
+    fixture.runner.run = async (args, cwd) => {
+      if (args[0] === "push" && args.includes("--porcelain") && !args.includes("--dry-run")) {
+        const tempBranch = "refs/heads/" + fixture.branchName;
+        await originalRun(["push", "origin", fixture.baseCommit + ":" + tempBranch], cwd);
+      }
+      return originalRun(args, cwd);
+    };
+    await writeFile(path.join(fixture.worktree, "feature.txt"), "test\\n", "utf8");
+    const changeSet = await inspectFixtureChangeSet(fixture.runner, fixture.worktree, ["feature.txt"]);
+    const publisher = new GitPublisher({ runner: fixture.runner, inspectVerifiedChangeSet: async () => changeSet, persistReceipt: async () => {} });
+    await assert.rejects(publisher.publish(request(fixture, changeSet)), { code: "PUBLISH_REMOTE_BRANCH_EXISTS" });
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("P5A-023: real push failing then recovering correctly via lease", async () => {
+  const fixture = await createFixture();
+  try {
+    const originalRun = fixture.runner.run.bind(fixture.runner);
+    let failedOnce = false;
+    fixture.runner.run = async (args, cwd) => {
+      if (args[0] === "push" && args.includes("--porcelain") && !args.includes("--dry-run") && !failedOnce) {
+        failedOnce = true;
+        await originalRun(args, cwd);
+        return { exitCode: 1, stdout: "", stderr: "Connection dropped", executable: "git", args, cwd, duration_ms: 10 };
+      }
+      return originalRun(args, cwd);
+    };
+    await writeFile(path.join(fixture.worktree, "feature.txt"), "test\\n", "utf8");
+    const changeSet = await inspectFixtureChangeSet(fixture.runner, fixture.worktree, ["feature.txt"]);
+    const publisher = new GitPublisher({ runner: fixture.runner, inspectVerifiedChangeSet: async () => changeSet, persistReceipt: async () => {} });
+    const receipt = await publisher.publish(request(fixture, changeSet));
+    assert.equal(receipt.state, "PUSHED");
+  } finally {
+    await fixture.cleanup();
+  }
+});

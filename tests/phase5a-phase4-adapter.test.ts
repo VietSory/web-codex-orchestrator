@@ -193,6 +193,10 @@ async function createTheExistingPhase4Fixture(options: {
     const configPath = fixture.configPath;
     const config = JSON.parse(await readFile(configPath, "utf8"));
     config.repositories.repo.expected_remote_urls = [remoteDir];
+    config.publish = {
+      identity: { name: "WCO Phase 5A Adapter Test", email: "wco-phase5a-adapter@example.invalid" },
+      authentication: { mode: "none" }
+    };
     await writeFile(configPath, JSON.stringify(config, null, 2));
     
     const manifestPath = path.join(fixture.bundle, "manifest.json");

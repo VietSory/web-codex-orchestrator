@@ -25,6 +25,7 @@ import {
   readGitPublishReceipt,
   writeGitPublishReceipt,
 } from "./publish-store.js";
+import { preparePublishGitSecurity } from "./publish-auth.js";
 
 export interface Phase4PublishOptions {
   runId: string;
@@ -226,12 +227,45 @@ export async function publishPhase4Run(
       );
     }
 
-    const runner =
-      options.runner ??
-      new GitRunner(
+    let runner = options.runner;
+    if (!runner) {
+      const runtimeDirectory = path.join(stateDirectory, "git-runtime");
+      const auth = await preparePublishGitSecurity(
+        config.publish,
+        preparation.receipt.remote_url,
+        runtimeDirectory,
         process.env,
-        path.join(stateDirectory, "git-runtime"),
       );
+      runner = new GitRunner(process.env, runtimeDirectory, {
+        ...(config.publish?.identity ? { identity: config.publish.identity } : {}),
+        auth,
+      });
+
+      // Preflight Identity Checks
+      if (!config.publish?.identity) {
+        throw new GitPublishError("PUBLISH_IDENTITY_UNAVAILABLE", "Publish identity configuration is missing.");
+      }
+
+      const cwd = execution.worktree_path;
+      const expectedName = config.publish.identity.name;
+      const expectedEmail = config.publish.identity.email;
+
+      const verifyIdentity = async (envVar: string) => {
+        const result = await runner!.run(["var", envVar], cwd);
+        if (result.exitCode !== 0) {
+          throw new GitPublishError("PUBLISH_IDENTITY_UNAVAILABLE", `Failed to verify ${envVar}.`);
+        }
+        // format is "Name <email> timestamp tz"
+        const output = result.stdout.trim();
+        const match = /^(.*)\s+<([^>]+)>\s+\d+\s+[+-]\d+$/.exec(output);
+        if (!match || match[1] !== expectedName || match[2] !== expectedEmail) {
+          throw new GitPublishError("PUBLISH_IDENTITY_UNAVAILABLE", `Git identity mismatch for ${envVar}.`);
+        }
+      };
+
+      await verifyIdentity("GIT_AUTHOR_IDENT");
+      await verifyIdentity("GIT_COMMITTER_IDENT");
+    }
 
     const executionDirectory = executionPaths(
       stateDirectory,

@@ -68,6 +68,8 @@ function publishExitCode(code: string): number {
       "PUBLISH_COMMIT_MISMATCH",
       "PUBLISH_RECOVERY_FAILED",
       "PUBLISH_REMOTE_BRANCH_EXISTS",
+      "PUBLISH_IDENTITY_UNAVAILABLE",
+      "PUBLISH_AUTH_UNAVAILABLE",
     ].includes(code)
   ) {
     return 1;

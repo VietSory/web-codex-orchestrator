@@ -19,6 +19,7 @@ const MAX_PATHS = 2_000;
 type CommandFailureCode =
   | "PUBLISH_COMMIT_FAILED"
   | "PUBLISH_PUSH_FAILED"
+  | "PUBLISH_PUSH_PREFLIGHT_FAILED"
   | "PUBLISH_REMOTE_VERIFICATION_FAILED";
 
 interface RepositoryBoundary {
@@ -1003,6 +1004,40 @@ export class GitPublisher {
         );
       }
 
+      const preflight = await this.options.runner.run(
+        [
+          "push",
+          "--dry-run",
+          "--porcelain",
+          "--force-with-lease=refs/heads/" + request.branch_name + ":",
+          request.remote_name,
+          request.base_commit + ":refs/heads/" + request.branch_name,
+        ],
+        cwd,
+      );
+
+      if (preflight.exitCode !== 0) {
+        const recheckRemoteSha = await this.readRemoteBranch(request, cwd);
+        if (recheckRemoteSha !== null) {
+          throw new GitPublishError(
+            "PUBLISH_REMOTE_BRANCH_EXISTS",
+            "The delivery branch was created remotely during preflight.",
+            { remote_branch_sha: recheckRemoteSha },
+          );
+        }
+        
+        const stderr = preflight.stderr.toLowerCase();
+        if (stderr.includes("403") || stderr.includes("authentication failed") || stderr.includes("could not read username") || stderr.includes("could not read password")) {
+          throw new GitPublishError("PUBLISH_AUTH_FAILED", "Authentication failed during push preflight.");
+        }
+
+        failCommand(
+          "PUBLISH_PUSH_PREFLIGHT_FAILED",
+          "Git push preflight failed.",
+          preflight,
+        );
+      }
+
       const approvedSnapshot = await this.attestCurrentWorktree(request, cwd);
       receipt = initialReceipt(request, approvedSnapshot, this.now);
 
@@ -1151,18 +1186,36 @@ export class GitPublisher {
         [
           "push",
           "--porcelain",
+          "--force-with-lease=refs/heads/" + request.branch_name + ":",
           request.remote_name,
-          `${receipt.commit_sha}:refs/heads/${request.branch_name}`,
+          receipt.commit_sha + ":refs/heads/" + request.branch_name,
         ],
         cwd,
       );
 
       if (push.exitCode !== 0) {
-        failCommand(
-          "PUBLISH_PUSH_FAILED",
-          "Git could not push the approved delivery branch.",
-          push,
-        );
+        const recheckRemoteSha = await this.readRemoteBranch(request, cwd);
+        
+        if (recheckRemoteSha === receipt.commit_sha) {
+          // It actually succeeded before failing on the client side (e.g. connection drop)
+        } else if (recheckRemoteSha !== null) {
+          throw new GitPublishError(
+            "PUBLISH_REMOTE_BRANCH_EXISTS",
+            "The remote delivery branch was created by a racing process.",
+            { remote_branch_sha: recheckRemoteSha },
+          );
+        } else {
+          const stderr = push.stderr.toLowerCase();
+          if (stderr.includes("403") || stderr.includes("authentication failed") || stderr.includes("could not read username") || stderr.includes("could not read password")) {
+            throw new GitPublishError("PUBLISH_AUTH_FAILED", "Authentication failed during push.");
+          }
+
+          failCommand(
+            "PUBLISH_PUSH_FAILED",
+            "Git could not push the approved delivery branch.",
+            push,
+          );
+        }
       }
     }
 

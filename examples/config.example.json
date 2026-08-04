@@ -45,6 +45,16 @@
       "maximum_total_output_tokens": 300000
     }
   },
+  "publish": {
+    "identity": {
+      "name": "WCO Publisher",
+      "email": "wco-publisher@example.invalid"
+    },
+    "authentication": {
+      "mode": "https_token",
+      "token_environment_key": "WCO_GIT_TOKEN"
+    }
+  },
   "verification": {
     "allowed_executables": ["node", "npm", "python", "python3", "go", "cargo", "dotnet", "git"],
     "allowed_environment_keys": ["CI", "NODE_ENV", "CGO_ENABLED", "RUST_BACKTRACE", "DOTNET_NOLOGO"],
