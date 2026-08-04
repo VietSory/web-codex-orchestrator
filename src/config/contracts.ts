@@ -15,6 +15,25 @@ export interface RepositoryConfig {
   fetch_policy: FetchPolicy;
 }
 
+export interface PublishIdentityConfig {
+  name: string;
+  email: string;
+}
+
+export type PublishAuthenticationConfig =
+  | {
+      mode: "none";
+    }
+  | {
+      mode: "https_token";
+      token_environment_key: string;
+    };
+
+export interface PublishConfig {
+  identity: PublishIdentityConfig;
+  authentication: PublishAuthenticationConfig;
+}
+
 export interface TrustedConfig {
   config_version: "1.0";
   inbox: InboxConfig;
@@ -22,6 +41,7 @@ export interface TrustedConfig {
   runtime?: TrustedCodexRuntimeConfig;
   agents?: AgentConfig;
   verification?: VerificationConfig;
+  publish?: PublishConfig;
 }
 
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";

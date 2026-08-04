@@ -2,7 +2,7 @@ import path from "node:path";
 import type { ConfigIssue, ConfigValidationReport, TrustedConfig } from "./contracts.js";
 import { hasSensitiveHttpUserInfo } from "./remote-url.js";
 
-const TOP_LEVEL = new Set(["config_version", "inbox", "repositories", "runtime", "agents", "verification"]);
+const TOP_LEVEL = new Set(["config_version", "inbox", "repositories", "runtime", "agents", "verification", "publish"]);
 const INBOX_FIELDS = new Set(["poll_interval_ms", "stable_age_ms", "stable_observations", "maximum_candidates_per_scan"]);
 const REPOSITORY_FIELDS = new Set(["path", "remote", "expected_remote_urls", "fetch_policy"]);
 const REPOSITORY_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -115,6 +115,37 @@ export function validateConfig(value: unknown): ConfigValidationReport {
       if (verification.maximum_diff_lines !== undefined && (!positiveInteger(verification.maximum_diff_lines) || verification.maximum_diff_lines > 10_000_000)) add(issues, "verification.maximum_diff_lines is invalid.");
     }
   }
+  const publish = value.publish;
+  if (publish !== undefined) {
+    if (!isRecord(publish)) add(issues, "publish must be an object.");
+    else {
+      for (const key of unknownFields(publish, new Set(["identity", "authentication"]))) add(issues, `Unknown publish field: ${key}`);
+      
+      const identity = publish.identity;
+      if (!isRecord(identity)) add(issues, "publish.identity must be an object.");
+      else {
+        for (const key of unknownFields(identity, new Set(["name", "email"]))) add(issues, `Unknown publish.identity field: ${key}`);
+        if (typeof identity.name !== "string" || identity.name !== identity.name.trim() || identity.name.length < 1 || identity.name.length > 128 || /[\x00-\x1F\x7F<>]/.test(identity.name)) add(issues, "publish.identity.name is invalid.");
+        if (typeof identity.email !== "string" || identity.email !== identity.email.trim() || identity.email.length < 3 || identity.email.length > 320 || /[\x00-\x1F\x7F]/.test(identity.email) || !/^[^@\s<>]+@[^@\s<>]+$/.test(identity.email)) add(issues, "publish.identity.email is invalid.");
+      }
+      
+      const authentication = publish.authentication;
+      if (!isRecord(authentication)) add(issues, "publish.authentication must be an object.");
+      else {
+        if ("token" in authentication) add(issues, "publish.authentication cannot have token field directly.");
+        if (authentication.mode === "none") {
+          if ("token_environment_key" in authentication) add(issues, "publish.authentication.mode none cannot have token field.");
+        } else if (authentication.mode === "https_token") {
+          if (typeof authentication.token_environment_key !== "string" || !/^WCO_GIT_[A-Z0-9_]{1,48}$/.test(authentication.token_environment_key)) add(issues, "publish.authentication.token_environment_key is invalid.");
+        } else {
+          add(issues, "publish.authentication.mode is invalid.");
+        }
+        const allowedAuthFields = new Set(["mode", "token_environment_key"]);
+        for (const key of unknownFields(authentication, allowedAuthFields)) add(issues, `Unknown publish.authentication field: ${key}`);
+      }
+    }
+  }
+
   if (issues.length > 0) return { ok: false, issues };
   return {
     ok: true,

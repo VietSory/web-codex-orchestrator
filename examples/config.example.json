@@ -11,8 +11,7 @@
       "path": "/absolute/path/to/web-codex-orchestrator",
       "remote": "origin",
       "expected_remote_urls": [
-        "https://github.com/VietSory/web-codex-orchestrator.git",
-        "git@github.com:VietSory/web-codex-orchestrator.git"
+        "https://github.com/VietSory/web-codex-orchestrator.git"
       ],
       "fetch_policy": "if-missing"
     }
@@ -43,6 +42,16 @@
       "maximum_total_seconds": 7200,
       "maximum_total_input_tokens": 2000000,
       "maximum_total_output_tokens": 300000
+    }
+  },
+  "publish": {
+    "identity": {
+      "name": "WCO Publisher",
+      "email": "wco-publisher@example.invalid"
+    },
+    "authentication": {
+      "mode": "https_token",
+      "token_environment_key": "WCO_GIT_TOKEN"
     }
   },
   "verification": {
