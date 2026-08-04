@@ -57,23 +57,44 @@ test("P5A-020: GitRunner environment redacts output and scopes identity/token st
     assert.equal(commitData.env.GIT_AUTHOR_EMAIL, "test@example.com");
     assert.equal(commitData.env.GIT_COMMITTER_NAME, "Test User");
     assert.equal(commitData.env.GIT_COMMITTER_EMAIL, "test@example.com");
+    assert.equal(commitData.env.GIT_ASKPASS, undefined);
     assert.equal(commitData.env.WCO_GIT_ASKPASS_TOKEN, undefined);
 
-    // Test 2: push receives token but NOT identity
-    const resPush = await runner.run(["push", "origin"], tempBase);
-    const pushData = JSON.parse(resPush.stdout);
-    assert.equal(pushData.env.GIT_AUTHOR_NAME, undefined);
-    assert.equal(pushData.env.WCO_GIT_ASKPASS_TOKEN, "[REDACTED]");
+    // Test: var GIT_AUTHOR_IDENT / GIT_COMMITTER_IDENT
+    const resVarAuth = await runner.run(["var", "GIT_AUTHOR_IDENT"], tempBase);
+    const varAuthData = JSON.parse(resVarAuth.stdout);
+    assert.equal(varAuthData.env.GIT_AUTHOR_NAME, "Test User");
+    assert.equal(varAuthData.env.GIT_ASKPASS, undefined);
+    
+    const resVarComm = await runner.run(["var", "GIT_COMMITTER_IDENT"], tempBase);
+    const varCommData = JSON.parse(resVarComm.stdout);
+    assert.equal(varCommData.env.GIT_AUTHOR_NAME, "Test User");
+    assert.equal(varCommData.env.GIT_ASKPASS, undefined);
 
-    // Test 3: status/add/diff receives neither
-    const resStatus = await runner.run(["status"], tempBase);
-    const statusData = JSON.parse(resStatus.stdout);
-    assert.equal(statusData.env.GIT_AUTHOR_NAME, undefined);
-    assert.equal(statusData.env.WCO_GIT_ASKPASS_TOKEN, undefined);
-
-    // var -l should not receive identity
+    // Test: var -l should not receive identity and auth absent
     const resVar = await runner.run(["var", "-l"], tempBase);
-    assert.doesNotMatch(resVar.stdout, /Test User/);
+    const varData = JSON.parse(resVar.stdout);
+    assert.equal(varData.env.GIT_AUTHOR_NAME, undefined);
+    assert.equal(varData.env.GIT_ASKPASS, undefined);
+
+    // Test: status, add, diff
+    for (const cmd of ["status", "add", "diff"]) {
+      const res = await runner.run([cmd], tempBase);
+      const data = JSON.parse(res.stdout);
+      assert.equal(data.env.GIT_AUTHOR_NAME, undefined);
+      assert.equal(data.env.GIT_ASKPASS, undefined);
+      assert.equal(data.env.WCO_GIT_ASKPASS_TOKEN, undefined);
+    }
+
+    // Test: ls-remote and push
+    for (const cmd of ["push", "ls-remote"]) {
+      const res = await runner.run([cmd, "origin"], tempBase);
+      const data = JSON.parse(res.stdout);
+      assert.equal(data.env.GIT_AUTHOR_NAME, undefined);
+      assert.ok(data.env.GIT_ASKPASS);
+      assert.equal(data.env.GIT_ASKPASS_REQUIRE, "force");
+      assert.equal(data.env.WCO_GIT_ASKPASS_TOKEN, "[REDACTED]");
+    }
 
     // Test 4: stdout/stderr redaction
     if (os.platform() === "win32") {
@@ -119,39 +140,43 @@ test("P5A-024: preparePublishGitSecurity handles askpass symlink/permission chec
 
     // 2. Real directory should pass and generate a script
     const security = await preparePublishGitSecurity(config, "https://github.com", tempDir, { WCO_GIT_TEST_TOKEN: "secret123" });
+    if (security.mode !== "https_token") {
+      assert.fail("Expected HTTPS token security.");
+    }
+    const askpassScriptPath = security.askpassScriptPath;
     
     // 3. Verify permissions (must be 0o700 for directories and the file)
     if (os.platform() !== "win32") {
       const { stat, lstat } = await import("node:fs/promises");
-      const authDirStat = await stat(path.dirname(security.askpassScriptPath));
+      const authDirStat = await stat(path.dirname(askpassScriptPath));
       assert.equal(authDirStat.mode & 0o777, 0o700);
       
-      const fileStat = await stat(security.askpassScriptPath);
+      const fileStat = await stat(askpassScriptPath);
       assert.equal(fileStat.mode & 0o777, 0o700);
       
-      const lStat = await lstat(security.askpassScriptPath);
+      const lStat = await lstat(askpassScriptPath);
       assert.ok(lStat.isFile(), "Helper must be a regular file, not a symlink");
     }
     
     // 4. Assert no token inside the source file
-    const helperSource = await import("node:fs/promises").then(fs => fs.readFile(security.askpassScriptPath, "utf8"));
+    const helperSource = await import("node:fs/promises").then(fs => fs.readFile(askpassScriptPath, "utf8"));
     assert.doesNotMatch(helperSource, /secret123/);
     
     // 5. Actually execute the script and check its output
-    const resUsername = spawnSync(process.execPath, [security.askpassScriptPath, "Username for..."], {
+    const resUsername = spawnSync(process.execPath, [askpassScriptPath, "Username for..."], {
       env: { ...process.env, WCO_GIT_ASKPASS_TOKEN: "secret123" }
     });
     assert.equal(resUsername.stdout.toString(), "x-access-token\n");
     assert.equal(resUsername.status, 0);
 
-    const resPassword = spawnSync(process.execPath, [security.askpassScriptPath, "Password for..."], {
+    const resPassword = spawnSync(process.execPath, [askpassScriptPath, "Password for..."], {
       env: { ...process.env, WCO_GIT_ASKPASS_TOKEN: "secret123" }
     });
     assert.equal(resPassword.stdout.toString(), "secret123\n");
     assert.equal(resPassword.status, 0);
     
     // 6. Unknown prompt must exit non-zero
-    const resUnknown = spawnSync(process.execPath, [security.askpassScriptPath, "What is the matrix?"], {
+    const resUnknown = spawnSync(process.execPath, [askpassScriptPath, "What is the matrix?"], {
       env: { ...process.env, WCO_GIT_ASKPASS_TOKEN: "secret123" }
     });
     assert.notEqual(resUnknown.status, 0);

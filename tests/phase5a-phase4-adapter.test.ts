@@ -594,6 +594,19 @@ test("P5A-018: production publishPhase4Run throws PUBLISH_IDENTITY_UNAVAILABLE a
     assert.equal(await fixture.productCommitCount(), 0);
     const diff = await fixture.git(fixture.worktree, ["diff", "--cached", "--name-only"]);
     assert.equal(diff, "");
+    
+    // P5A-018: no COMMITTED/PUSHED receipt
+    const executionDirectory = path.join(fixture.stateDirectory, "execution", fixture.runId);
+    const receiptPath = path.join(executionDirectory, "publish", "git-publish.json");
+    try {
+      const { readFile } = await import("node:fs/promises");
+      const receiptRaw = await readFile(receiptPath, "utf8");
+      const receipt = JSON.parse(receiptRaw);
+      assert.notEqual(receipt.state, "COMMITTED");
+      assert.notEqual(receipt.state, "PUSHED");
+    } catch (err: any) {
+      if (err.code !== "ENOENT") throw err; // ENOENT is acceptable
+    }
     const remoteHeads = await fixture.git(fixture.worktree, ["ls-remote", "--heads", "origin"]);
     assert.doesNotMatch(remoteHeads, /codex\/phase-5a-p5a-018/);
   } finally {
@@ -608,7 +621,20 @@ test("P5A-019: trusted identity is used as author and committer", async () => {
     approvedProductChange: { path: "src/feature.txt", contents: "test identity" },
     deliveryBranch: "codex/phase-5a-p5a-019",
   });
+  
+  const previousEnv = {
+    authorName: process.env.GIT_AUTHOR_NAME,
+    authorEmail: process.env.GIT_AUTHOR_EMAIL,
+    committerName: process.env.GIT_COMMITTER_NAME,
+    committerEmail: process.env.GIT_COMMITTER_EMAIL,
+  };
+
   try {
+    process.env.GIT_AUTHOR_NAME = "Ambient Wrong Author";
+    process.env.GIT_AUTHOR_EMAIL = "ambient-author@example.invalid";
+    process.env.GIT_COMMITTER_NAME = "Ambient Wrong Committer";
+    process.env.GIT_COMMITTER_EMAIL = "ambient-committer@example.invalid";
+
     await publishPhase4Run({ runId: fixture.runId, stateDirectory: fixture.stateDirectory, configPath: fixture.configPath });
     
     // Verify commit author and committer
@@ -622,6 +648,10 @@ test("P5A-019: trusted identity is used as author and committer", async () => {
     assert.equal(committerName, "WCO Phase 5A Adapter Test");
     assert.equal(committerEmail, "wco-phase5a-adapter@example.invalid");
   } finally {
+    if (previousEnv.authorName !== undefined) process.env.GIT_AUTHOR_NAME = previousEnv.authorName; else delete process.env.GIT_AUTHOR_NAME;
+    if (previousEnv.authorEmail !== undefined) process.env.GIT_AUTHOR_EMAIL = previousEnv.authorEmail; else delete process.env.GIT_AUTHOR_EMAIL;
+    if (previousEnv.committerName !== undefined) process.env.GIT_COMMITTER_NAME = previousEnv.committerName; else delete process.env.GIT_COMMITTER_NAME;
+    if (previousEnv.committerEmail !== undefined) process.env.GIT_COMMITTER_EMAIL = previousEnv.committerEmail; else delete process.env.GIT_COMMITTER_EMAIL;
     await fixture.cleanup();
   }
 });

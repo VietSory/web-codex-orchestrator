@@ -913,7 +913,9 @@ test("P5A-022: racing remote branch creation detected before real push", async (
     assert.ok(realPush);
     assert.ok(!realPush.includes("--force"), "Must not use plain --force");
     assert.ok(!realPush.some(a => a.startsWith("+")), "Must not use +refspec");
-    assert.ok(realPush.some(a => a.startsWith("--force-with-lease")), "Must use lease");
+    assert.ok(realPush.includes(`--force-with-lease=refs/heads/${fixture.branchName}:`), "Must use exact empty lease");
+    const commitCount = await originalRun(["rev-list", "--count", `${fixture.baseCommit}..HEAD`], fixture.worktree);
+    assert.equal(commitCount.stdout.trim(), "1", "Exactly one product commit");
   } finally {
     await fixture.cleanup();
   }
@@ -943,9 +945,14 @@ test("P5A-023: real push failing then recovering correctly via lease", async () 
     const receipt = await publisher.publish(request(fixture, changeSet));
     assert.equal(receipt.state, "PUSHED");
     assert.equal(failedOnce, true);
+    
+    // retry
+    const repeated = await publisher.publish(request(fixture, changeSet), receipt);
+    assert.deepEqual(repeated, receipt);
     assert.equal(pushCount, 1, "Should not retry push internally, should recover by checking remote state");
-    const commits = await originalRun(["rev-list", "--count", "HEAD"], fixture.worktree);
-    assert.equal(commits.stdout.trim(), "2", "Exactly one commit should be created");
+    
+    const commits = await originalRun(["rev-list", "--count", `${fixture.baseCommit}..HEAD`], fixture.worktree);
+    assert.equal(commits.stdout.trim(), "1", "Exactly one commit should be created");
   } finally {
     await fixture.cleanup();
   }
