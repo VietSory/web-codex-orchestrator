@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { lstat, realpath as defaultRealpath } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -11,41 +10,25 @@ import {
 } from "./contracts.js";
 
 const SHA256 = /^[0-9a-f]{64}$/;
-const GIT_OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+const GIT_OBJECT_ID = /^[0-9a-f]{40,64}$/;
 const SAFE_REMOTE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const MAX_COMMIT_MESSAGE = 4_096;
 const MAX_PATHS = 2_000;
-
-type CommandFailureCode =
-  | "PUBLISH_COMMIT_FAILED"
-  | "PUBLISH_PUSH_FAILED"
-  | "PUBLISH_REMOTE_VERIFICATION_FAILED";
-
-interface RepositoryBoundary {
-  head: string;
-  branch: string;
-  remoteUrl: string;
-}
-
-interface SnapshotEntry {
-  path: string;
-  state: "file" | "deleted";
-  mode: "100644" | "100755" | null;
-  blobOid: string | null;
-}
 
 function bounded(value: string, maximum = 4_096): string {
   return value.replace(/[\r\n\t]+/g, " ").trim().slice(0, maximum);
 }
 
 function failCommand(
-  code: CommandFailureCode,
+  code:
+    | "PUBLISH_COMMIT_FAILED"
+    | "PUBLISH_PUSH_FAILED"
+    | "PUBLISH_REMOTE_VERIFICATION_FAILED",
   message: string,
   result: GitCommandResult,
 ): never {
   throw new GitPublishError(code, message, {
     exit_code: result.exitCode,
-    signal: result.signal ?? null,
     stderr_tail: bounded(result.stderr.slice(-4_096)),
   });
 }
@@ -53,14 +36,13 @@ function failCommand(
 function normalizeRelativePath(value: string): string {
   if (
     value.length === 0 ||
-    value.length > 4_096 ||
     value.includes("\u0000") ||
     path.isAbsolute(value) ||
     /^[A-Za-z]:[\\/]/.test(value)
   ) {
     throw new GitPublishError(
       "PUBLISH_REQUEST_INVALID",
-      "Publish paths must be bounded relative NUL-free paths.",
+      "Publish paths must be non-empty relative NUL-free paths.",
     );
   }
 
@@ -69,8 +51,7 @@ function normalizeRelativePath(value: string): string {
 
   if (
     segments.some(
-      (segment) =>
-        segment.length === 0 || segment === "." || segment === "..",
+      (segment) => segment.length === 0 || segment === "." || segment === "..",
     )
   ) {
     throw new GitPublishError(
@@ -102,42 +83,11 @@ function normalizedPathSet(paths: readonly string[]): string[] {
   return normalized.sort((left, right) => left.localeCompare(right));
 }
 
-function equalStringArrays(
-  left: readonly string[],
-  right: readonly string[],
-): boolean {
+function equalStringArrays(left: readonly string[], right: readonly string[]): boolean {
   return (
     left.length === right.length &&
     left.every((value, index) => value === right[index])
   );
-}
-
-function parseNulList(value: string): string[] {
-  if (value.length === 0) return [];
-  return value
-    .split("\u0000")
-    .filter((entry) => entry.length > 0)
-    .map(normalizeRelativePath)
-    .sort((left, right) => left.localeCompare(right));
-}
-
-function snapshotDigest(entries: readonly SnapshotEntry[]): string {
-  const digest = createHash("sha256");
-
-  for (const entry of [...entries].sort((left, right) =>
-    left.path.localeCompare(right.path),
-  )) {
-    digest.update(entry.path);
-    digest.update("\u0000");
-    digest.update(entry.state);
-    digest.update("\u0000");
-    digest.update(entry.mode ?? "");
-    digest.update("\u0000");
-    digest.update(entry.blobOid ?? "");
-    digest.update("\u0000");
-  }
-
-  return digest.digest("hex");
 }
 
 function assertRequest(request: GitPublishRequest): void {
@@ -152,10 +102,7 @@ function assertRequest(request: GitPublishRequest): void {
     );
   }
 
-  if (
-    !path.isAbsolute(request.worktree_path) ||
-    request.worktree_path.includes("\u0000")
-  ) {
+  if (!path.isAbsolute(request.worktree_path) || request.worktree_path.includes("\u0000")) {
     throw new GitPublishError(
       "PUBLISH_REQUEST_INVALID",
       "The publish worktree path must be absolute and NUL-free.",
@@ -171,7 +118,6 @@ function assertRequest(request: GitPublishRequest): void {
 
   if (
     request.branch_name.length === 0 ||
-    request.branch_name.length > 1_024 ||
     request.branch_name.includes("\u0000") ||
     request.branch_name.startsWith("-") ||
     request.branch_name.includes("..") ||
@@ -204,7 +150,6 @@ function assertRequest(request: GitPublishRequest): void {
 
   if (
     request.allowed_remote_url.length === 0 ||
-    request.allowed_remote_url.length > 8_192 ||
     request.allowed_remote_url.includes("\u0000") ||
     /https?:\/\/[^/@\s]+@/i.test(request.allowed_remote_url)
   ) {
@@ -247,13 +192,12 @@ function assertRequest(request: GitPublishRequest): void {
 
 function initialReceipt(
   request: GitPublishRequest,
-  approvedSnapshotSha256: string,
   now: () => Date,
 ): GitPublishReceipt {
   const timestamp = now().toISOString();
 
   return {
-    publish_version: "1.1",
+    publish_version: "1.0",
     run_id: request.run_id,
     state: "READY_FOR_COMMIT",
     base_commit: request.base_commit,
@@ -261,8 +205,6 @@ function initialReceipt(
     remote_name: request.remote_name,
     allowed_remote_url: request.allowed_remote_url,
     change_set_sha256: request.expected_change_set_sha256,
-    expected_paths: normalizedPathSet(request.expected_paths),
-    approved_snapshot_sha256: approvedSnapshotSha256,
     commit_sha: null,
     remote_branch_sha: null,
     created_at: timestamp,
@@ -276,18 +218,14 @@ function assertReceiptMatches(
   receipt: GitPublishReceipt,
   request: GitPublishRequest,
 ): void {
-  const expectedPaths = normalizedPathSet(request.expected_paths);
-
   if (
-    receipt.publish_version !== "1.1" ||
+    receipt.publish_version !== "1.0" ||
     receipt.run_id !== request.run_id ||
     receipt.base_commit !== request.base_commit ||
     receipt.branch_name !== request.branch_name ||
     receipt.remote_name !== request.remote_name ||
     receipt.allowed_remote_url !== request.allowed_remote_url ||
-    receipt.change_set_sha256 !== request.expected_change_set_sha256 ||
-    !equalStringArrays(receipt.expected_paths, expectedPaths) ||
-    !SHA256.test(receipt.approved_snapshot_sha256)
+    receipt.change_set_sha256 !== request.expected_change_set_sha256
   ) {
     throw new GitPublishError(
       "PUBLISH_RECEIPT_INCONSISTENT",
@@ -296,11 +234,19 @@ function assertReceiptMatches(
   }
 }
 
+function parseNulList(value: string): string[] {
+  if (value.length === 0) return [];
+  return value.split("\u0000").filter((entry) => entry.length > 0).sort();
+}
+
 async function requireSuccess(
   runner: GitPublisherOptions["runner"],
   args: readonly string[],
   cwd: string,
-  code: CommandFailureCode,
+  code:
+    | "PUBLISH_COMMIT_FAILED"
+    | "PUBLISH_PUSH_FAILED"
+    | "PUBLISH_REMOTE_VERIFICATION_FAILED",
   message: string,
 ): Promise<GitCommandResult> {
   const result = await runner.run(args, cwd);
@@ -344,64 +290,6 @@ export class GitPublisher {
     return resolved;
   }
 
-  private async readRepositoryBoundary(
-    request: GitPublishRequest,
-    cwd: string,
-  ): Promise<RepositoryBoundary> {
-    const [head, branch, remoteUrl] = await Promise.all([
-      requireSuccess(
-        this.options.runner,
-        ["rev-parse", "HEAD"],
-        cwd,
-        "PUBLISH_COMMIT_FAILED",
-        "The worktree HEAD could not be read.",
-      ),
-      requireSuccess(
-        this.options.runner,
-        ["branch", "--show-current"],
-        cwd,
-        "PUBLISH_COMMIT_FAILED",
-        "The current worktree branch could not be read.",
-      ),
-      requireSuccess(
-        this.options.runner,
-        ["remote", "get-url", "--push", request.remote_name],
-        cwd,
-        "PUBLISH_REMOTE_VERIFICATION_FAILED",
-        "The configured push remote could not be read.",
-      ),
-    ]);
-
-    const boundary = {
-      head: head.stdout.trim(),
-      branch: branch.stdout.trim(),
-      remoteUrl: remoteUrl.stdout.trim(),
-    };
-
-    if (!GIT_OBJECT_ID.test(boundary.head)) {
-      throw new GitPublishError(
-        "PUBLISH_BASE_MISMATCH",
-        "The worktree HEAD is not a full Git object ID.",
-      );
-    }
-
-    if (boundary.branch !== request.branch_name) {
-      throw new GitPublishError(
-        "PUBLISH_BRANCH_POLICY_VIOLATION",
-        "The current worktree branch does not match the approved delivery branch.",
-      );
-    }
-
-    if (boundary.remoteUrl !== request.allowed_remote_url) {
-      throw new GitPublishError(
-        "PUBLISH_REMOTE_MISMATCH",
-        "The configured push URL does not match the trusted delivery remote.",
-      );
-    }
-
-    return boundary;
-  }
-
   private async readRemoteBranch(
     request: GitPublishRequest,
     cwd: string,
@@ -439,6 +327,57 @@ export class GitPublisher {
     return sha;
   }
 
+  private async assertRepositoryBoundary(
+    request: GitPublishRequest,
+    cwd: string,
+    expectedHead: string,
+  ): Promise<void> {
+    const [head, branch, remoteUrl] = await Promise.all([
+      requireSuccess(
+        this.options.runner,
+        ["rev-parse", "HEAD"],
+        cwd,
+        "PUBLISH_COMMIT_FAILED",
+        "The worktree HEAD could not be read.",
+      ),
+      requireSuccess(
+        this.options.runner,
+        ["branch", "--show-current"],
+        cwd,
+        "PUBLISH_COMMIT_FAILED",
+        "The current worktree branch could not be read.",
+      ),
+      requireSuccess(
+        this.options.runner,
+        ["remote", "get-url", "--push", request.remote_name],
+        cwd,
+        "PUBLISH_REMOTE_VERIFICATION_FAILED",
+        "The configured push remote could not be read.",
+      ),
+    ]);
+
+    if (head.stdout.trim() !== expectedHead) {
+      throw new GitPublishError(
+        "PUBLISH_BASE_MISMATCH",
+        "The worktree HEAD no longer matches the expected publish boundary.",
+      );
+    }
+
+    if (branch.stdout.trim() !== request.branch_name) {
+      throw new GitPublishError(
+        "PUBLISH_BRANCH_POLICY_VIOLATION",
+        "The current worktree branch does not match the approved delivery branch.",
+      );
+    }
+
+    if (remoteUrl.stdout.trim() !== request.allowed_remote_url) {
+      throw new GitPublishError(
+        "PUBLISH_REMOTE_MISMATCH",
+        "The configured push URL does not match the trusted delivery remote.",
+      );
+    }
+  }
+
   private async assertVerifiedChangeSet(
     request: GitPublishRequest,
   ): Promise<VerifiedChangeSet> {
@@ -459,357 +398,16 @@ export class GitPublisher {
     return current;
   }
 
-  private async workingTreeSnapshot(
-    cwd: string,
-    expectedPaths: readonly string[],
-  ): Promise<string> {
-    const entries: SnapshotEntry[] = [];
-
-    for (const relativePath of expectedPaths) {
-      const absolutePath = path.join(cwd, ...relativePath.split("/"));
-      let info;
-
-      try {
-        info = await lstat(absolutePath);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-          entries.push({
-            path: relativePath,
-            state: "deleted",
-            mode: null,
-            blobOid: null,
-          });
-          continue;
-        }
-
-        throw new GitPublishError(
-          "PUBLISH_CHANGE_SET_STALE",
-          "An approved worktree path could not be inspected.",
-        );
-      }
-
-      if (info.isSymbolicLink() || !info.isFile()) {
-        throw new GitPublishError(
-          "PUBLISH_CHANGE_SET_STALE",
-          "Approved publish paths must resolve to regular files or deletions.",
-          { path: relativePath },
-        );
-      }
-
-      const hashed = await requireSuccess(
-        this.options.runner,
-        ["hash-object", `--path=${relativePath}`, "--", relativePath],
-        cwd,
-        "PUBLISH_COMMIT_FAILED",
-        "An approved worktree file could not be hashed by Git.",
-      );
-      const blobOid = hashed.stdout.trim();
-
-      if (!GIT_OBJECT_ID.test(blobOid)) {
-        throw new GitPublishError(
-          "PUBLISH_CHANGE_SET_STALE",
-          "Git returned an invalid worktree blob object ID.",
-          { path: relativePath },
-        );
-      }
-
-      entries.push({
-        path: relativePath,
-        state: "file",
-        mode: (info.mode & 0o111) === 0 ? "100644" : "100755",
-        blobOid: blobOid!,
-      });
-    }
-
-    return snapshotDigest(entries);
-  }
-
-  private async indexSnapshot(
-    cwd: string,
-    expectedPaths: readonly string[],
-  ): Promise<string> {
-    const listed = await requireSuccess(
-      this.options.runner,
-      [
-        "--literal-pathspecs",
-        "ls-files",
-        "--stage",
-        "-z",
-        "--",
-        ...expectedPaths,
-      ],
-      cwd,
-      "PUBLISH_COMMIT_FAILED",
-      "The staged index entries could not be inspected.",
-    );
-
-    const records = new Map<string, SnapshotEntry>();
-
-    for (const rawRecord of listed.stdout.split("\u0000").filter(Boolean)) {
-      const match = /^(\d{6}) ([0-9a-f]{40,64}) ([0-3])\t([\s\S]+)$/.exec(
-        rawRecord,
-      );
-
-      if (!match) {
-        throw new GitPublishError(
-          "PUBLISH_INDEX_MISMATCH",
-          "The Git index returned an unparseable stage record.",
-        );
-      }
-
-      const [, mode, blobOid, stage, rawPath] = match;
-      const relativePath = normalizeRelativePath(rawPath!);
-
-      if (
-        stage !== "0" ||
-        (mode !== "100644" && mode !== "100755") ||
-        !GIT_OBJECT_ID.test(blobOid!) ||
-        records.has(relativePath)
-      ) {
-        throw new GitPublishError(
-          "PUBLISH_INDEX_MISMATCH",
-          "The Git index contains an unsupported or conflicting entry.",
-          { path: relativePath },
-        );
-      }
-
-      records.set(relativePath, {
-        path: relativePath,
-        state: "file",
-        mode,
-        blobOid: blobOid!,
-      });
-    }
-
-    return snapshotDigest(
-      expectedPaths.map(
-        (relativePath): SnapshotEntry =>
-          records.get(relativePath) ?? {
-            path: relativePath,
-            state: "deleted",
-            mode: null,
-            blobOid: null,
-          },
-      ),
-    );
-  }
-
-  private async commitSnapshot(
-    cwd: string,
-    commitSha: string,
-    expectedPaths: readonly string[],
-  ): Promise<string> {
-    const listed = await requireSuccess(
-      this.options.runner,
-      [
-        "--literal-pathspecs",
-        "ls-tree",
-        "-r",
-        "-z",
-        "--full-tree",
-        commitSha,
-        "--",
-        ...expectedPaths,
-      ],
-      cwd,
-      "PUBLISH_COMMIT_FAILED",
-      "The created commit tree could not be inspected.",
-    );
-
-    const records = new Map<string, SnapshotEntry>();
-
-    for (const rawRecord of listed.stdout.split("\u0000").filter(Boolean)) {
-      const match = /^(\d{6}) ([^ ]+) ([0-9a-f]{40,64})\t([\s\S]+)$/.exec(
-        rawRecord,
-      );
-
-      if (!match) {
-        throw new GitPublishError(
-          "PUBLISH_COMMIT_MISMATCH",
-          "The created commit returned an unparseable tree record.",
-        );
-      }
-
-      const [, mode, objectType, blobOid, rawPath] = match;
-      const relativePath = normalizeRelativePath(rawPath!);
-
-      if (
-        objectType !== "blob" ||
-        (mode !== "100644" && mode !== "100755") ||
-        !GIT_OBJECT_ID.test(blobOid!) ||
-        records.has(relativePath)
-      ) {
-        throw new GitPublishError(
-          "PUBLISH_COMMIT_MISMATCH",
-          "The created commit contains an unsupported publish entry.",
-          { path: relativePath },
-        );
-      }
-
-      records.set(relativePath, {
-        path: relativePath,
-        state: "file",
-        mode,
-        blobOid: blobOid!,
-      });
-    }
-
-    return snapshotDigest(
-      expectedPaths.map(
-        (relativePath): SnapshotEntry =>
-          records.get(relativePath) ?? {
-            path: relativePath,
-            state: "deleted",
-            mode: null,
-            blobOid: null,
-          },
-      ),
-    );
-  }
-
-  private async attestCurrentWorktree(
-    request: GitPublishRequest,
-    cwd: string,
-  ): Promise<string> {
-    const expectedPaths = normalizedPathSet(request.expected_paths);
-
-    await this.assertVerifiedChangeSet(request);
-    const firstSnapshot = await this.workingTreeSnapshot(cwd, expectedPaths);
-    await this.assertVerifiedChangeSet(request);
-    const secondSnapshot = await this.workingTreeSnapshot(cwd, expectedPaths);
-
-    if (firstSnapshot !== secondSnapshot) {
-      throw new GitPublishError(
-        "PUBLISH_CHANGE_SET_STALE",
-        "The approved worktree changed while the publish boundary was being attested.",
-      );
-    }
-
-    return firstSnapshot;
-  }
-
-  private async assertCommitAttestation(
-    request: GitPublishRequest,
-    receipt: GitPublishReceipt,
-    cwd: string,
-    commitSha: string,
-  ): Promise<void> {
-    const expectedPaths = normalizedPathSet(request.expected_paths);
-    const [parents, changedPaths, message] = await Promise.all([
-      requireSuccess(
-        this.options.runner,
-        ["rev-list", "--parents", "-n", "1", commitSha],
-        cwd,
-        "PUBLISH_COMMIT_FAILED",
-        "The created commit parents could not be inspected.",
-      ),
-      requireSuccess(
-        this.options.runner,
-        [
-          "diff",
-          "--name-only",
-          "--no-renames",
-          "-z",
-          request.base_commit,
-          commitSha,
-          "--",
-        ],
-        cwd,
-        "PUBLISH_COMMIT_FAILED",
-        "The created commit paths could not be inspected.",
-      ),
-      requireSuccess(
-        this.options.runner,
-        ["log", "-1", "--format=%B", commitSha],
-        cwd,
-        "PUBLISH_COMMIT_FAILED",
-        "The created commit message could not be inspected.",
-      ),
-    ]);
-
-    const parentTokens = parents.stdout.trim().split(/\s+/);
-    if (
-      parentTokens.length !== 2 ||
-      parentTokens[0] !== commitSha ||
-      parentTokens[1] !== request.base_commit
-    ) {
-      throw new GitPublishError(
-        "PUBLISH_COMMIT_MISMATCH",
-        "The product commit must have exactly the approved base commit as its parent.",
-      );
-    }
-
-    if (!equalStringArrays(parseNulList(changedPaths.stdout), expectedPaths)) {
-      throw new GitPublishError(
-        "PUBLISH_COMMIT_MISMATCH",
-        "The created commit path set differs from the approved path set.",
-      );
-    }
-
-    if (message.stdout.trimEnd() !== request.commit_message.trimEnd()) {
-      throw new GitPublishError(
-        "PUBLISH_COMMIT_MISMATCH",
-        "The created commit message differs from the approved message.",
-      );
-    }
-
-    const committedSnapshot = await this.commitSnapshot(
-      cwd,
-      commitSha,
-      expectedPaths,
-    );
-
-    if (committedSnapshot !== receipt.approved_snapshot_sha256) {
-      throw new GitPublishError(
-        "PUBLISH_COMMIT_MISMATCH",
-        "The created commit tree differs from the pre-commit approved snapshot.",
-      );
-    }
-  }
-
-  private async recoverCommittedReceipt(
-    request: GitPublishRequest,
-    receipt: GitPublishReceipt,
-    cwd: string,
-    head: string,
-  ): Promise<void> {
-    try {
-      await this.assertCommitAttestation(request, receipt, cwd, head);
-    } catch (error) {
-      if (error instanceof GitPublishError) {
-        throw new GitPublishError(
-          "PUBLISH_RECOVERY_FAILED",
-          "A commit exists without a COMMITTED receipt, but it does not match the approved snapshot.",
-          { cause_code: error.code },
-        );
-      }
-
-      throw error;
-    }
-
-    const timestamp = this.now().toISOString();
-    receipt.state = "COMMITTED";
-    receipt.commit_sha = head;
-    receipt.committed_at = timestamp;
-    receipt.updated_at = timestamp;
-    await this.options.persistReceipt(receipt);
-  }
-
   async publish(
     request: GitPublishRequest,
     previousReceipt: GitPublishReceipt | null = null,
   ): Promise<GitPublishReceipt> {
     assertRequest(request);
     const cwd = await this.assertCanonicalWorktree(request.worktree_path);
-    const expectedPaths = normalizedPathSet(request.expected_paths);
-    let receipt = previousReceipt;
-    let boundary = await this.readRepositoryBoundary(request, cwd);
+    const receipt = previousReceipt ?? initialReceipt(request, this.now);
+    assertReceiptMatches(receipt, request);
 
-    if (receipt !== null) {
-      assertReceiptMatches(receipt, request);
-    }
-
-    if (receipt?.state === "PUSHED") {
+    if (receipt.state === "PUSHED") {
       if (!receipt.commit_sha || !receipt.remote_branch_sha) {
         throw new GitPublishError(
           "PUBLISH_RECEIPT_INCONSISTENT",
@@ -817,25 +415,10 @@ export class GitPublisher {
         );
       }
 
-      if (boundary.head !== receipt.commit_sha) {
-        throw new GitPublishError(
-          "PUBLISH_BASE_MISMATCH",
-          "The worktree HEAD no longer equals the persisted product commit.",
-        );
-      }
-
-      await this.assertCommitAttestation(
-        request,
-        receipt,
-        cwd,
-        receipt.commit_sha,
-      );
+      await this.assertRepositoryBoundary(request, cwd, receipt.commit_sha);
       const remoteSha = await this.readRemoteBranch(request, cwd);
 
-      if (
-        remoteSha !== receipt.commit_sha ||
-        remoteSha !== receipt.remote_branch_sha
-      ) {
+      if (remoteSha !== receipt.commit_sha || remoteSha !== receipt.remote_branch_sha) {
         throw new GitPublishError(
           "PUBLISH_REMOTE_VERIFICATION_FAILED",
           "The pushed branch no longer points to the persisted commit.",
@@ -845,137 +428,88 @@ export class GitPublisher {
       return receipt;
     }
 
-    if (receipt === null) {
-      if (boundary.head !== request.base_commit) {
-        throw new GitPublishError(
-          "PUBLISH_BASE_MISMATCH",
-          "The first publish attempt must start at the exact approved base commit.",
-        );
-      }
+    if (receipt.state === "READY_FOR_COMMIT") {
+      await this.assertRepositoryBoundary(request, cwd, request.base_commit);
 
       const existingRemoteSha = await this.readRemoteBranch(request, cwd);
       if (existingRemoteSha !== null) {
         throw new GitPublishError(
           "PUBLISH_REMOTE_BRANCH_EXISTS",
-          "The delivery branch already exists remotely before a publish intent was persisted.",
+          "The delivery branch already exists remotely before the approved commit was created.",
           { remote_branch_sha: existingRemoteSha },
         );
       }
 
-      const approvedSnapshot = await this.attestCurrentWorktree(request, cwd);
-      receipt = initialReceipt(request, approvedSnapshot, this.now);
+      await this.assertVerifiedChangeSet(request);
+      const expectedPaths = normalizedPathSet(request.expected_paths);
 
-      // The durable READY receipt is written before staging or commit. This is
-      // the recovery anchor for a crash after Git creates the commit.
-      await this.options.persistReceipt(receipt);
-    }
+      await requireSuccess(
+        this.options.runner,
+        ["--literal-pathspecs", "add", "-A", "--", ...expectedPaths],
+        cwd,
+        "PUBLISH_COMMIT_FAILED",
+        "The approved change paths could not be staged.",
+      );
 
-    if (receipt.state === "READY_FOR_COMMIT") {
-      if (boundary.head !== request.base_commit) {
-        await this.recoverCommittedReceipt(
-          request,
-          receipt,
-          cwd,
-          boundary.head,
+      const staged = await requireSuccess(
+        this.options.runner,
+        ["diff", "--cached", "--name-only", "-z", "--diff-filter=ACDMRTUXB"],
+        cwd,
+        "PUBLISH_COMMIT_FAILED",
+        "The staged change paths could not be inspected.",
+      );
+
+      if (!equalStringArrays(parseNulList(staged.stdout), expectedPaths)) {
+        throw new GitPublishError(
+          "PUBLISH_STAGE_MISMATCH",
+          "The staged path set does not equal the Phase 4 approved path set.",
         );
-      } else {
-        const existingRemoteSha = await this.readRemoteBranch(request, cwd);
-        if (existingRemoteSha !== null) {
-          throw new GitPublishError(
-            "PUBLISH_REMOTE_BRANCH_EXISTS",
-            "The delivery branch already exists remotely before the approved commit was created.",
-            { remote_branch_sha: existingRemoteSha },
-          );
-        }
+      }
 
-        const approvedSnapshot = await this.attestCurrentWorktree(request, cwd);
-        if (approvedSnapshot !== receipt.approved_snapshot_sha256) {
-          throw new GitPublishError(
-            "PUBLISH_CHANGE_SET_STALE",
-            "The current approved worktree snapshot differs from the persisted publish intent.",
-          );
-        }
+      const commit = await this.options.runner.run(
+        ["commit", "--no-gpg-sign", "-m", request.commit_message],
+        cwd,
+      );
 
-        await requireSuccess(
-          this.options.runner,
-          ["--literal-pathspecs", "add", "-A", "--", ...expectedPaths],
-          cwd,
+      if (commit.exitCode !== 0) {
+        failCommand(
           "PUBLISH_COMMIT_FAILED",
-          "The approved change paths could not be staged.",
+          "Git could not create the approved product commit.",
+          commit,
         );
+      }
 
-        const staged = await requireSuccess(
-          this.options.runner,
-          [
-            "diff",
-            "--cached",
-            "--name-only",
-            "-z",
-            "--diff-filter=ACDMRTUXB",
-          ],
-          cwd,
-          "PUBLISH_COMMIT_FAILED",
-          "The staged change paths could not be inspected.",
-        );
-
-        if (!equalStringArrays(parseNulList(staged.stdout), expectedPaths)) {
-          throw new GitPublishError(
-            "PUBLISH_STAGE_MISMATCH",
-            "The staged path set does not equal the Phase 4 approved path set.",
-          );
-        }
-
-        const stagedSnapshot = await this.indexSnapshot(cwd, expectedPaths);
-        if (stagedSnapshot !== receipt.approved_snapshot_sha256) {
-          throw new GitPublishError(
-            "PUBLISH_INDEX_MISMATCH",
-            "The staged index content differs from the approved pre-stage snapshot.",
-          );
-        }
-
-        const commit = await this.options.runner.run(
-          ["commit", "--no-gpg-sign", "-m", request.commit_message],
-          cwd,
-        );
-
-        if (commit.exitCode !== 0) {
-          failCommand(
-            "PUBLISH_COMMIT_FAILED",
-            "Git could not create the approved product commit.",
-            commit,
-          );
-        }
-
-        const commitShaResult = await requireSuccess(
+      const [commitShaResult, parentShaResult] = await Promise.all([
+        requireSuccess(
           this.options.runner,
           ["rev-parse", "HEAD"],
           cwd,
           "PUBLISH_COMMIT_FAILED",
           "The created commit SHA could not be read.",
-        );
-        const commitSha = commitShaResult.stdout.trim();
-
-        if (!GIT_OBJECT_ID.test(commitSha)) {
-          throw new GitPublishError(
-            "PUBLISH_COMMIT_FAILED",
-            "Git returned an invalid product commit SHA.",
-          );
-        }
-
-        await this.assertCommitAttestation(
-          request,
-          receipt,
+        ),
+        requireSuccess(
+          this.options.runner,
+          ["rev-parse", "HEAD^"],
           cwd,
-          commitSha,
-        );
+          "PUBLISH_COMMIT_FAILED",
+          "The created commit parent could not be read.",
+        ),
+      ]);
 
-        const timestamp = this.now().toISOString();
-        receipt.state = "COMMITTED";
-        receipt.commit_sha = commitSha;
-        receipt.committed_at = timestamp;
-        receipt.updated_at = timestamp;
-        await this.options.persistReceipt(receipt);
+      const commitSha = commitShaResult.stdout.trim();
+      if (!GIT_OBJECT_ID.test(commitSha) || parentShaResult.stdout.trim() !== request.base_commit) {
+        throw new GitPublishError(
+          "PUBLISH_COMMIT_FAILED",
+          "The created commit does not have the approved base commit as its single parent.",
+        );
       }
+
+      const timestamp = this.now().toISOString();
+      receipt.state = "COMMITTED";
+      receipt.commit_sha = commitSha;
+      receipt.committed_at = timestamp;
+      receipt.updated_at = timestamp;
+      await this.options.persistReceipt(receipt);
     }
 
     if (receipt.state !== "COMMITTED" || !receipt.commit_sha) {
@@ -985,27 +519,10 @@ export class GitPublisher {
       );
     }
 
-    boundary = await this.readRepositoryBoundary(request, cwd);
-    if (boundary.head !== receipt.commit_sha) {
-      throw new GitPublishError(
-        "PUBLISH_BASE_MISMATCH",
-        "The worktree HEAD differs from the persisted product commit.",
-      );
-    }
-
-    await this.assertCommitAttestation(
-      request,
-      receipt,
-      cwd,
-      receipt.commit_sha,
-    );
-
+    await this.assertRepositoryBoundary(request, cwd, receipt.commit_sha);
     const remoteBeforePush = await this.readRemoteBranch(request, cwd);
 
-    if (
-      remoteBeforePush !== null &&
-      remoteBeforePush !== receipt.commit_sha
-    ) {
+    if (remoteBeforePush !== null && remoteBeforePush !== receipt.commit_sha) {
       throw new GitPublishError(
         "PUBLISH_REMOTE_BRANCH_EXISTS",
         "The remote delivery branch exists at a different commit.",

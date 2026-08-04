@@ -15,7 +15,6 @@ import { isExecutionError } from "../execution/errors.js";
 import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
 import { CodexVerificationSandbox } from "../verifier/codex-sandbox.js";
 import { redact } from "../evidence/log-redaction.js";
-import { PUBLISH_USAGE, runPublishCommand } from "../publish/publish-cli.js";
 import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
 
 function printUsage(): void {
@@ -27,7 +26,6 @@ function printUsage(): void {
   console.log("  wco watch --inbox <directory> --state-dir <directory> --config <config.json> [--jsonl]");
   console.log("  wco execute --run-id <task-id:archive-sha256> --state-dir <directory> --config <config.json> [--json]");
   console.log("  wco execution-status --run-id <task-id:archive-sha256> --state-dir <directory> [--json]");
-  console.log(PUBLISH_USAGE);
 }
 
 function parseIntakeArguments(args: string[]): { archivePath: string; stateDirectory: string; json: boolean } | null {
@@ -292,7 +290,6 @@ async function main(): Promise<void> {
   if (command === "watch") return runWatch(args);
   if (command === "execute") return runExecute(args);
   if (command === "execution-status") return runExecutionStatus(args);
-  if (command === "publish") return runPublishCommand(args, printUsage);
   printUsage();
   process.exitCode = 2;
 }
