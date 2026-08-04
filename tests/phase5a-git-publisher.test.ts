@@ -859,24 +859,26 @@ test("P5A-021: dry-run preflight blocking bad authentication early", async () =>
   const fixture = await createFixture();
   try {
     const originalRun = fixture.runner.run.bind(fixture.runner);
+    let realPushCount = 0;
     fixture.runner.run = async (args, cwd) => {
+      if (args[0] === "push" && !args.includes("--dry-run")) realPushCount++;
       if (args.includes("--dry-run")) {
         return { exitCode: 1, stdout: "", stderr: "403 Forbidden", executable: "git", args, cwd, duration_ms: 10 };
       }
       return originalRun(args, cwd);
     };
-    await writeFile(path.join(fixture.worktree, "feature.txt"), "test\\n", "utf8");
+    await writeFile(path.join(fixture.worktree, "feature.txt"), "test\n", "utf8");
     const changeSet = await inspectFixtureChangeSet(fixture.runner, fixture.worktree, ["feature.txt"]);
     let savedReceipt: any = null;
     const publisher = new GitPublisher({ runner: fixture.runner, inspectVerifiedChangeSet: async () => changeSet, persistReceipt: async (r) => { savedReceipt = r; } });
     await assert.rejects(publisher.publish(request(fixture, changeSet)), { code: "PUBLISH_AUTH_FAILED" });
     
-    // Assert 1: The receipt was saved in READY_FOR_COMMIT state before preflight failed
     assert.equal(savedReceipt?.state, "READY_FOR_COMMIT");
-    
-    // Assert 2: Preflight runs BEFORE staging, so worktree is untouched (file is untracked, not staged)
-    const status = await originalRun(["status", "--porcelain"], fixture.worktree);
-    assert.match(status.stdout, /^\?\? feature\.txt/);
+    assert.equal(realPushCount, 0, "Should not reach real push");
+    const head = await originalRun(["rev-parse", "HEAD"], fixture.worktree);
+    assert.equal(head.stdout.trim(), fixture.baseCommit, "HEAD should remain at base");
+    const commits = await originalRun(["rev-list", "--count", "HEAD"], fixture.worktree);
+    assert.equal(commits.stdout.trim(), "1", "No product commit should be created");
   } finally {
     await fixture.cleanup();
   }
@@ -886,10 +888,14 @@ test("P5A-022: racing remote branch creation detected before real push", async (
   const fixture = await createFixture();
   try {
     const originalRun = fixture.runner.run.bind(fixture.runner);
+    const pushArgv: string[][] = [];
     fixture.runner.run = async (args, cwd) => {
-      if (args[0] === "push" && args.includes("--porcelain") && !args.includes("--dry-run")) {
-        const tempBranch = "refs/heads/" + fixture.branchName;
-        await originalRun(["push", "origin", fixture.baseCommit + ":" + tempBranch], cwd);
+      if (args[0] === "push" && !args.includes("--dry-run")) {
+        pushArgv.push(Array.from(args));
+        if (args.includes("--porcelain")) {
+          const tempBranch = "refs/heads/" + fixture.branchName;
+          await originalRun(["push", "origin", fixture.baseCommit + ":" + tempBranch], cwd);
+        }
       }
       return originalRun(args, cwd);
     };
@@ -900,10 +906,14 @@ test("P5A-022: racing remote branch creation detected before real push", async (
     
     await assert.rejects(publisher.publish(request(fixture, changeSet)), { code: "PUBLISH_REMOTE_BRANCH_EXISTS" });
     
-    // Assert: The local commit was still created safely because the race happened during real push.
     assert.equal(savedReceipt?.state, "COMMITTED");
-    const log = await originalRun(["log", "-1", "--format=%s"], fixture.worktree);
-    assert.equal(log.stdout.trim(), "Publish verified Phase 5A fixture");
+    const remoteRef = await originalRun(["ls-remote", "--heads", "origin", "refs/heads/" + fixture.branchName], fixture.worktree);
+    assert.equal(remoteRef.stdout.trim().split(/\s+/)[0], fixture.baseCommit, "Remote should still be at base");
+    const realPush = pushArgv.find(args => args.includes("--porcelain"));
+    assert.ok(realPush);
+    assert.ok(!realPush.includes("--force"), "Must not use plain --force");
+    assert.ok(!realPush.some(a => a.startsWith("+")), "Must not use +refspec");
+    assert.ok(realPush.some(a => a.startsWith("--force-with-lease")), "Must use lease");
   } finally {
     await fixture.cleanup();
   }
@@ -914,11 +924,15 @@ test("P5A-023: real push failing then recovering correctly via lease", async () 
   try {
     const originalRun = fixture.runner.run.bind(fixture.runner);
     let failedOnce = false;
+    let pushCount = 0;
     fixture.runner.run = async (args, cwd) => {
-      if (args[0] === "push" && args.includes("--porcelain") && !args.includes("--dry-run") && !failedOnce) {
-        failedOnce = true;
-        await originalRun(args, cwd);
-        return { exitCode: 1, stdout: "", stderr: "Connection dropped", executable: "git", args, cwd, duration_ms: 10 };
+      if (args[0] === "push" && args.includes("--porcelain") && !args.includes("--dry-run")) {
+        pushCount++;
+        if (!failedOnce) {
+          failedOnce = true;
+          await originalRun(args, cwd);
+          return { exitCode: 1, stdout: "", stderr: "Connection dropped", executable: "git", args, cwd, duration_ms: 10 };
+        }
       }
       return originalRun(args, cwd);
     };
@@ -927,9 +941,11 @@ test("P5A-023: real push failing then recovering correctly via lease", async () 
     const publisher = new GitPublisher({ runner: fixture.runner, inspectVerifiedChangeSet: async () => changeSet, persistReceipt: async () => {} });
     
     const receipt = await publisher.publish(request(fixture, changeSet));
-    // Assert: it recovered via recheck and transitioned to PUSHED.
     assert.equal(receipt.state, "PUSHED");
     assert.equal(failedOnce, true);
+    assert.equal(pushCount, 1, "Should not retry push internally, should recover by checking remote state");
+    const commits = await originalRun(["rev-list", "--count", "HEAD"], fixture.worktree);
+    assert.equal(commits.stdout.trim(), "2", "Exactly one commit should be created");
   } finally {
     await fixture.cleanup();
   }
@@ -946,7 +962,6 @@ test("P5A-025: READY_FOR_COMMIT retry properly repeats the preflight check", asy
     
     const originalRun = fixture.runner.run.bind(fixture.runner);
     
-    // 1st run: succeed at preflight, but throw at commit
     fixture.runner.run = async (args, cwd) => {
       if (args[0] === "commit") {
         return { exitCode: 1, stdout: "", stderr: "Simulated commit failure", executable: "git", args, cwd, duration_ms: 10 };
@@ -955,20 +970,27 @@ test("P5A-025: READY_FOR_COMMIT retry properly repeats the preflight check", asy
     };
     await assert.rejects(publisher.publish(request(fixture, changeSet)), { code: "PUBLISH_COMMIT_FAILED" });
     
-    // Assert we got a real READY_FOR_COMMIT receipt from 1st run
     assert.ok(savedReceipt !== null);
     assert.equal(savedReceipt.state, "READY_FOR_COMMIT");
+    const headAfterFail = await originalRun(["rev-parse", "HEAD"], fixture.worktree);
+    assert.equal(headAfterFail.stdout.trim(), fixture.baseCommit);
 
-    // 2nd run: resume with the saved receipt, but mock preflight to fail this time
+    let pushCount = 0;
     fixture.runner.run = async (args, cwd) => {
+      if (args[0] === "push" && !args.includes("--dry-run")) pushCount++;
       if (args.includes("--dry-run")) {
         return { exitCode: 1, stdout: "", stderr: "403 Forbidden", executable: "git", args, cwd, duration_ms: 10 };
       }
       return originalRun(args, cwd);
     };
 
-    // Assert that the preflight STILL runs on the retry branch and blocks it correctly!
     await assert.rejects(publisher.publish(request(fixture, changeSet), savedReceipt), { code: "PUBLISH_AUTH_FAILED" });
+    assert.equal(savedReceipt.state, "READY_FOR_COMMIT", "Receipt remains READY_FOR_COMMIT");
+    assert.equal(pushCount, 0, "Should not reach real push on retry");
+    const headAfterRetry = await originalRun(["rev-parse", "HEAD"], fixture.worktree);
+    assert.equal(headAfterRetry.stdout.trim(), fixture.baseCommit, "HEAD remains at base after retry fails");
+    const status = await originalRun(["status", "--porcelain"], fixture.worktree);
+    assert.match(status.stdout, /^A\s+feature\.txt/, "Staged paths unchanged (it was staged in the first run)");
   } finally {
     await fixture.cleanup();
   }

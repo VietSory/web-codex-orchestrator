@@ -569,3 +569,59 @@ test(
     }
   },
 );
+
+test("P5A-018: production publishPhase4Run throws PUBLISH_IDENTITY_UNAVAILABLE and does not modify worktree if identity is missing", async () => {
+  const fixture = await createTheExistingPhase4Fixture({
+    state: "READY_FOR_PUBLISH",
+    localBareRemote: true,
+    approvedProductChange: { path: "src/feature.txt", contents: "test" },
+    deliveryBranch: "codex/phase-5a-p5a-018",
+  });
+  try {
+    const configPath = fixture.configPath;
+    const { readFile, writeFile } = await import("node:fs/promises");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    delete config.publish;
+    await writeFile(configPath, JSON.stringify(config));
+
+    const baseHead = await fixture.git(fixture.worktree, ["rev-parse", "HEAD"]);
+    await assert.rejects(
+      publishPhase4Run({ runId: fixture.runId, stateDirectory: fixture.stateDirectory, configPath: fixture.configPath }),
+      { code: "PUBLISH_IDENTITY_UNAVAILABLE" }
+    );
+
+    assert.equal(await fixture.git(fixture.worktree, ["rev-parse", "HEAD"]), baseHead);
+    assert.equal(await fixture.productCommitCount(), 0);
+    const diff = await fixture.git(fixture.worktree, ["diff", "--cached", "--name-only"]);
+    assert.equal(diff, "");
+    const remoteHeads = await fixture.git(fixture.worktree, ["ls-remote", "--heads", "origin"]);
+    assert.doesNotMatch(remoteHeads, /codex\/phase-5a-p5a-018/);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("P5A-019: trusted identity is used as author and committer", async () => {
+  const fixture = await createTheExistingPhase4Fixture({
+    state: "READY_FOR_PUBLISH",
+    localBareRemote: true,
+    approvedProductChange: { path: "src/feature.txt", contents: "test identity" },
+    deliveryBranch: "codex/phase-5a-p5a-019",
+  });
+  try {
+    await publishPhase4Run({ runId: fixture.runId, stateDirectory: fixture.stateDirectory, configPath: fixture.configPath });
+    
+    // Verify commit author and committer
+    const authorName = await fixture.git(fixture.worktree, ["log", "-1", "--format=%an"]);
+    const authorEmail = await fixture.git(fixture.worktree, ["log", "-1", "--format=%ae"]);
+    const committerName = await fixture.git(fixture.worktree, ["log", "-1", "--format=%cn"]);
+    const committerEmail = await fixture.git(fixture.worktree, ["log", "-1", "--format=%ce"]);
+    
+    assert.equal(authorName, "WCO Phase 5A Adapter Test");
+    assert.equal(authorEmail, "wco-phase5a-adapter@example.invalid");
+    assert.equal(committerName, "WCO Phase 5A Adapter Test");
+    assert.equal(committerEmail, "wco-phase5a-adapter@example.invalid");
+  } finally {
+    await fixture.cleanup();
+  }
+});

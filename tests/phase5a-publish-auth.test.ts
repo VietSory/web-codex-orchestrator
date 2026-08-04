@@ -29,50 +29,67 @@ import os from "node:os";
 import { mkdtemp, rm, symlink, chmod, mkdir } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 
-test("P5A-018: preparePublishGitSecurity throws PUBLISH_AUTH_UNAVAILABLE if config is missing", async () => {
-  await assert.rejects(
-    preparePublishGitSecurity(undefined, "https://github.com", "/tmp", {}),
-    { code: "PUBLISH_AUTH_UNAVAILABLE" }
-  );
-});
 
-test("P5A-019: missing HTTPS token throws PUBLISH_AUTH_UNAVAILABLE", async () => {
-  const config = {
-    identity: { name: "Test", email: "test@example.com" },
-    authentication: { mode: "https_token" as const, token_environment_key: "WCO_GIT_TEST_TOKEN" }
-  };
-  await assert.rejects(
-    preparePublishGitSecurity(config, "https://github.com", "/tmp", {}),
-    { code: "PUBLISH_AUTH_UNAVAILABLE" }
-  );
-  await assert.rejects(
-    preparePublishGitSecurity(config, "https://github.com", "/tmp", { WCO_GIT_TEST_TOKEN: "tok\nen" }),
-    { code: "PUBLISH_AUTH_UNAVAILABLE" }
-  );
-  await assert.rejects(
-    preparePublishGitSecurity(config, "https://github.com", "/tmp", { WCO_GIT_TEST_TOKEN: " tok en " }),
-    { code: "PUBLISH_AUTH_UNAVAILABLE" }
-  );
-});
-
-test("P5A-020: GitRunner environment scoping scopes vars based on subcommand in child process", async () => {
+test("P5A-020: GitRunner environment redacts output and scopes identity/token strictly", async () => {
   const security = {
     identity: { name: "Test User", email: "test@example.com" },
     auth: { mode: "https_token" as const, askpassScriptPath: "/askpass", askpassToken: "secret123" }
   };
 
-  const runner = new GitRunner(process.env, undefined, security);
-  const cwd = process.cwd();
+  const tempBase = await mkdtemp(path.join(os.tmpdir(), "wco-test-fake-git-"));
+  try {
+    const fakeGitPath = path.join(tempBase, "git" + (os.platform() === "win32" ? ".cmd" : ""));
+    if (os.platform() === "win32") {
+      await import("node:fs/promises").then(fs => fs.writeFile(fakeGitPath, `@echo off\nnode -e "console.log(JSON.stringify({args: process.argv.slice(1), env: process.env}))" %*`));
+    } else {
+      await import("node:fs/promises").then(fs => fs.writeFile(fakeGitPath, `#!/usr/bin/env node\nconsole.log(JSON.stringify({args: process.argv.slice(2), env: process.env}));`));
+      await import("node:fs/promises").then(fs => fs.chmod(fakeGitPath, 0o755));
+    }
 
-  // Test commit var scoping (identity should be set)
-  const resultVar = await runner.run(["var", "GIT_AUTHOR_IDENT"], cwd);
-  assert.equal(resultVar.exitCode, 0);
-  assert.match(resultVar.stdout, /^Test User <test@example\.com> /);
+    const runnerEnv = { ...process.env, PATH: tempBase + path.delimiter + (process.env.PATH || "") };
+    const runner = new GitRunner(runnerEnv, undefined, security);
 
-  // But for non-commit commands (like status), identity shouldn't leak to child process env
-  // However, git var is a special case handled in runner. Wait, how to test git didn't get identity?
-  // We can just rely on the test that for push, we DO NOT inject identity, only askpass.
-  // We can't easily introspect env inside git without custom binary, but we proved it passes via git var!
+    // Test 1: commit receives identity but NOT token
+    const resCommit = await runner.run(["commit", "-m", "msg"], tempBase);
+    if (resCommit.exitCode !== 0) throw new Error("Commit failed: " + resCommit.stderr + " | stdout: " + resCommit.stdout);
+    const commitData = JSON.parse(resCommit.stdout);
+    assert.equal(commitData.env.GIT_AUTHOR_NAME, "Test User");
+    assert.equal(commitData.env.GIT_AUTHOR_EMAIL, "test@example.com");
+    assert.equal(commitData.env.GIT_COMMITTER_NAME, "Test User");
+    assert.equal(commitData.env.GIT_COMMITTER_EMAIL, "test@example.com");
+    assert.equal(commitData.env.WCO_GIT_ASKPASS_TOKEN, undefined);
+
+    // Test 2: push receives token but NOT identity
+    const resPush = await runner.run(["push", "origin"], tempBase);
+    const pushData = JSON.parse(resPush.stdout);
+    assert.equal(pushData.env.GIT_AUTHOR_NAME, undefined);
+    assert.equal(pushData.env.WCO_GIT_ASKPASS_TOKEN, "[REDACTED]");
+
+    // Test 3: status/add/diff receives neither
+    const resStatus = await runner.run(["status"], tempBase);
+    const statusData = JSON.parse(resStatus.stdout);
+    assert.equal(statusData.env.GIT_AUTHOR_NAME, undefined);
+    assert.equal(statusData.env.WCO_GIT_ASKPASS_TOKEN, undefined);
+
+    // var -l should not receive identity
+    const resVar = await runner.run(["var", "-l"], tempBase);
+    assert.doesNotMatch(resVar.stdout, /Test User/);
+
+    // Test 4: stdout/stderr redaction
+    if (os.platform() === "win32") {
+      await import("node:fs/promises").then(fs => fs.writeFile(fakeGitPath, `@echo off\necho Leaking token secret123 and secret123!\n>&2 echo Error secret123 leak`));
+    } else {
+      await import("node:fs/promises").then(fs => fs.writeFile(fakeGitPath, `#!/usr/bin/env node\nconsole.log("Leaking token secret123 and secret123!");\nconsole.error("Error secret123 leak");`));
+    }
+    const resLeak = await runner.run(["push", "origin"], tempBase);
+    assert.doesNotMatch(resLeak.stdout, /secret123/);
+    assert.match(resLeak.stdout, /\[REDACTED\]/);
+    assert.doesNotMatch(resLeak.stderr, /secret123/);
+    assert.match(resLeak.stderr, /\[REDACTED\]/);
+
+  } finally {
+    await rm(tempBase, { recursive: true, force: true });
+  }
 });
 
 test("P5A-024: preparePublishGitSecurity handles askpass symlink/permission checks safely", async () => {
@@ -84,9 +101,11 @@ test("P5A-024: preparePublishGitSecurity handles askpass symlink/permission chec
   const tempBase = await mkdtemp(path.join(os.tmpdir(), "wco-test-"));
   const tempDir = path.join(tempBase, "real-dir");
   const symlinkDir = path.join(tempBase, "symlink-dir");
+  const externalSentinel = path.join(tempBase, "sentinel.txt");
   
   try {
     await mkdir(tempDir, { recursive: true });
+    await import("node:fs/promises").then(fs => fs.writeFile(externalSentinel, "untouched"));
     await symlink(tempDir, symlinkDir, "dir");
 
     // 1. Symlink directory should be rejected
@@ -94,25 +113,31 @@ test("P5A-024: preparePublishGitSecurity handles askpass symlink/permission chec
       preparePublishGitSecurity(config, "https://github.com", symlinkDir, { WCO_GIT_TEST_TOKEN: "secret123" }),
       { code: "PUBLISH_AUTH_UNAVAILABLE", message: /symlink/i }
     );
+    
+    // verify sentinel unchanged
+    assert.equal(await import("node:fs/promises").then(fs => fs.readFile(externalSentinel, "utf8")), "untouched");
 
     // 2. Real directory should pass and generate a script
     const security = await preparePublishGitSecurity(config, "https://github.com", tempDir, { WCO_GIT_TEST_TOKEN: "secret123" });
-    assert.equal(security.mode, "https_token");
-    if (security.mode !== "https_token") throw new Error("Expected https_token mode");
-
-    assert.equal(security.askpassToken, "secret123");
     
     // 3. Verify permissions (must be 0o700 for directories and the file)
     if (os.platform() !== "win32") {
-      const { stat } = await import("node:fs/promises");
+      const { stat, lstat } = await import("node:fs/promises");
       const authDirStat = await stat(path.dirname(security.askpassScriptPath));
       assert.equal(authDirStat.mode & 0o777, 0o700);
       
       const fileStat = await stat(security.askpassScriptPath);
       assert.equal(fileStat.mode & 0o777, 0o700);
+      
+      const lStat = await lstat(security.askpassScriptPath);
+      assert.ok(lStat.isFile(), "Helper must be a regular file, not a symlink");
     }
     
-    // 4. Actually execute the script and check its output
+    // 4. Assert no token inside the source file
+    const helperSource = await import("node:fs/promises").then(fs => fs.readFile(security.askpassScriptPath, "utf8"));
+    assert.doesNotMatch(helperSource, /secret123/);
+    
+    // 5. Actually execute the script and check its output
     const resUsername = spawnSync(process.execPath, [security.askpassScriptPath, "Username for..."], {
       env: { ...process.env, WCO_GIT_ASKPASS_TOKEN: "secret123" }
     });
@@ -124,6 +149,12 @@ test("P5A-024: preparePublishGitSecurity handles askpass symlink/permission chec
     });
     assert.equal(resPassword.stdout.toString(), "secret123\n");
     assert.equal(resPassword.status, 0);
+    
+    // 6. Unknown prompt must exit non-zero
+    const resUnknown = spawnSync(process.execPath, [security.askpassScriptPath, "What is the matrix?"], {
+      env: { ...process.env, WCO_GIT_ASKPASS_TOKEN: "secret123" }
+    });
+    assert.notEqual(resUnknown.status, 0);
 
   } finally {
     await rm(tempBase, { recursive: true, force: true });
