@@ -156,8 +156,31 @@ export async function buildDeterministicZip(
           return;
         }
 
-        // Atomic rename
-        await fs.promises.rename(tmpPath, finalPath);
+        // Exclusive creation / adoption
+        try {
+          await fs.promises.link(tmpPath, finalPath);
+        } catch (linkErr) {
+          if ((linkErr as NodeJS.ErrnoException).code === "EEXIST") {
+            const existingStat = await fs.promises.stat(finalPath);
+            if (existingStat.size !== sizeBytes) {
+              throw new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", "Existing archive has a different size.");
+            }
+            const existingHash = crypto.createHash("sha256");
+            await new Promise<void>((res, rej) => {
+              const stream = fs.createReadStream(finalPath);
+              stream.on("data", (c: Buffer) => existingHash.update(c));
+              stream.on("end", () => res());
+              stream.on("error", rej);
+            });
+            if (existingHash.digest("hex") !== sha256) {
+              throw new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", "Existing archive has a different SHA-256.");
+            }
+          } else {
+            throw linkErr;
+          }
+        } finally {
+          await fs.promises.unlink(tmpPath).catch(() => undefined);
+        }
 
         resolve({
           archivePath: finalPath,

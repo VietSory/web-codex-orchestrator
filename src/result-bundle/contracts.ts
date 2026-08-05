@@ -161,12 +161,12 @@ export interface ResultBundleReceipt {
   published_commit_sha: string;
   remote_branch_sha: string;
   pull_request: PullRequestAttestation;
-  archive_relative_path: string;
-  archive_sha256: string;
-  archive_size_bytes: number;
-  entry_count: number;
-  uncompressed_size_bytes: number;
-  manifest_sha256: string;
+  archive_relative_path: string | null;
+  archive_sha256: string | null;
+  archive_size_bytes: number | null;
+  entry_count: number | null;
+  uncompressed_size_bytes: number | null;
+  manifest_sha256: string | null;
   warnings: string[];
   created_at: string;
   updated_at: string;
@@ -176,15 +176,15 @@ export interface ResultBundleReceipt {
   /** The strict timestamp when the receipt state transitioned to READY_FOR_WEB_REVIEW */
   ready_at: string | null;
   /** SHA256 of the generated task/spec-lock.json authoritative file set */
-  spec_set_sha256: string;
+  spec_set_sha256: string | null;
   /** SHA256 of the review/WEB-REVIEW-CONTRACT.md */
-  review_contract_sha256: string;
+  review_contract_sha256: string | null;
   /** SHA256 of the review/web-review-policy.json */
-  review_policy_sha256: string;
+  review_policy_sha256: string | null;
   /** SHA256 of the review/web-review-verdict.schema.json */
-  verdict_schema_sha256: string;
+  verdict_schema_sha256: string | null;
   /** SHA256 of the review/revision-request.schema.json */
-  revision_request_schema_sha256: string;
+  revision_request_schema_sha256: string | null;
 }
 
 /** Per-entry in zip manifest */

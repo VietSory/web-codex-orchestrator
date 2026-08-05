@@ -83,7 +83,8 @@ export function projectGitPublishEvidence(receipt: Record<string, unknown>): Pub
 /** Project draft PR receipt to public evidence DTO */
 export function projectDraftPrEvidence(
   receipt: Record<string, unknown>,
-  gitPublishReceiptSha256: string
+  gitPublishReceiptSha256: string,
+  changeSetSha256: string
 ): PublicDraftPrEvidence {
   const prNumber = Number(receipt.pull_number ?? 0);
   const prUrl = String(receipt.pull_url ?? "");
@@ -93,7 +94,7 @@ export function projectDraftPrEvidence(
     state: String(receipt.state ?? ""),
     pull_request_number: prNumber,
     pull_request_url: prUrl,
-    change_set_sha256: String(receipt.change_set_sha256 ?? ""),
+    change_set_sha256: changeSetSha256,
     git_publish_receipt_sha256: gitPublishReceiptSha256,
     created_at: String(receipt.created_at ?? ""),
     opened_at: receipt.opened_at != null ? String(receipt.opened_at) : null,

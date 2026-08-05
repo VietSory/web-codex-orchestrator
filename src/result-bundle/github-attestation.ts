@@ -126,7 +126,8 @@ export class GitHubRestAttestationClient implements GitHubAttestationClient {
   ) {}
 
   async getPullRequest(owner: string, repo: string, prNumber: number): Promise<unknown> {
-    const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${prNumber}`;
+    const baseUrl = process.env.GITHUB_API_URL || "https://api.github.com";
+    const url = `${baseUrl.replace(/\/$/, "")}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${prNumber}`;
     let response: Response;
     try {
       response = await fetch(url, {

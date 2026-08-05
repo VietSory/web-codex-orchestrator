@@ -13,6 +13,9 @@ import type {
 import { DEFAULT_RESULT_BUNDLE_LIMITS } from "./contracts.js";
 import { resultBundlePaths, resultBundleArchiveFilename, REQUIRED_RESULT_BUNDLE_ENTRIES, SOURCE_ENTRY_PREFIX } from "./result-bundle-paths.js";
 import { readResultBundleReceipt, writeResultBundleReceipt } from "./result-bundle-store.js";
+import { executionPaths, readExecutionReceipt } from "../execution/execution-store.js";
+import { readGitPublishReceipt } from "../publish/publish-store.js";
+import { readDraftPullRequestReceipt } from "../pull-request/draft-pr-store.js";
 import { acquireResultBundleLock } from "./result-bundle-lock.js";
 import type { GitHubAttestationClient } from "./github-attestation.js";
 import { attestGitHubPullRequest } from "./github-attestation.js";
@@ -26,7 +29,6 @@ import { canonicalJsonBuffer } from "./canonical-json.js";
 import type { ZipEntry } from "./deterministic-zip.js";
 import { buildDeterministicZip } from "./deterministic-zip.js";
 import { verifyResultBundleZip } from "./zip-verifier.js";
-import { executionPaths } from "../execution/execution-store.js";
 import { verifyBundleChecksums } from "../intake/checksum-verifier.js";
 import { validateWebVerdict } from "./web-verdict-validator.js";
 
@@ -144,6 +146,13 @@ export async function packageResultBundle(options: Phase6Options): Promise<Resul
   const taskId = runId.slice(0, sep);
   const archiveSha = runId.slice(sep + 1);
 
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(taskId)) {
+    throw new ResultBundleError("RESULT_REQUEST_INVALID", "Invalid taskId format.");
+  }
+  if (!/^[0-9a-f]{64}$/.test(archiveSha)) {
+    throw new ResultBundleError("RESULT_REQUEST_INVALID", "Invalid archiveSha format.");
+  }
+
   const paths = resultBundlePaths(resolvedStateDir, taskId, archiveSha);
 
   // Ensure output directory exists
@@ -153,34 +162,38 @@ export async function packageResultBundle(options: Phase6Options): Promise<Resul
   const existingReceipt = await readResultBundleReceipt(paths.receiptPath);
   if (existingReceipt?.run_id === runId && existingReceipt.state === "READY_FOR_WEB_REVIEW") {
     // Idempotent return - verify archive still matches
-    const archiveFilename = path.basename(existingReceipt.archive_relative_path);
-    const archivePath = paths.archivePath(archiveFilename);
-    try {
-      const stat = await fs.promises.stat(archivePath);
-      if (stat.size === existingReceipt.archive_size_bytes) {
-        // Re-hash verify
-        const verified = await verifyResultBundleZip(archivePath);
-        if (verified.sha256 === existingReceipt.archive_sha256) {
-          return existingReceipt;
+    const archiveFilename = existingReceipt.archive_relative_path ? path.basename(existingReceipt.archive_relative_path) : "";
+    const archivePath = archiveFilename ? paths.archivePath(archiveFilename) : "";
+    if (archivePath) {
+      try {
+        const stat = await fs.promises.stat(archivePath);
+        if (stat.size === existingReceipt.archive_size_bytes) {
+          // Re-hash verify
+          const verified = await verifyResultBundleZip(archivePath);
+          if (verified.sha256 === existingReceipt.archive_sha256) {
+            return existingReceipt;
+          }
         }
+        throw new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", "Existing archive mismatch. Cannot overwrite.");
+      } catch (err) {
+        if (err instanceof ResultBundleError) throw err;
+        // Archive missing - will rebuild
       }
-      throw new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", "Existing archive mismatch. Cannot overwrite.");
-    } catch (err) {
-      if (err instanceof ResultBundleError) throw err;
-      // Archive missing - will rebuild
     }
   }
   if (existingReceipt?.run_id === runId && existingReceipt.state === "BUILT") {
     // Try to promote to VERIFIED/READY_FOR_WEB_REVIEW via verification
-    const archiveFilename = path.basename(existingReceipt.archive_relative_path);
-    const archivePath = paths.archivePath(archiveFilename);
-    try {
-      const manifestEntries = existingReceipt.archive_sha256
-        ? [] // We'll re-verify directly
-        : [];
-      void archivePath; void manifestEntries;
-    } catch {
-      // Will rebuild
+    const archiveFilename = existingReceipt.archive_relative_path ? path.basename(existingReceipt.archive_relative_path) : "";
+    const archivePath = archiveFilename ? paths.archivePath(archiveFilename) : "";
+    if (archivePath) {
+      try {
+        const manifestEntries = existingReceipt.archive_sha256
+          ? [] // We'll re-verify directly
+          : [];
+        void archivePath; void manifestEntries;
+      } catch {
+        // Will rebuild
+      }
     }
   }
 
@@ -209,17 +222,26 @@ async function _buildResultBundle(ctx: {
   const { limits, secrets, resolvedStateDir, paths, runId, githubClient, gitRunner, now } = ctx;
   const warnings: string[] = [];
   const createdAt = currentIso(now);
+  const sep = runId.lastIndexOf(":");
+  if (sep <= 0) throw new ResultBundleError("RESULT_REQUEST_INVALID", "Invalid run ID format.");
+  const taskId = runId.slice(0, sep);
+  const archiveSha = runId.slice(sep + 1);
 
   // ── Step 1: Load and validate all upstream receipts ──────────────────────
 
   // Phase 4 execution receipt
-  const { filePath: executionFilePath, receipt: executionRaw, taskId, archiveSha, paths: execPaths } = await findExecutionReceipt(resolvedStateDir, runId);
+  const executionRaw = await readExecutionReceipt(resolvedStateDir, taskId, archiveSha);
+  if (!executionRaw) {
+    throw new ResultBundleError("RESULT_EXECUTION_RECEIPT_INVALID", "Execution receipt not found.");
+  }
   if (executionRaw.run_id !== runId) {
     throw new ResultBundleError("RESULT_EXECUTION_RECEIPT_INCONSISTENT", "Execution receipt run_id mismatch.");
   }
   if (executionRaw.state !== "READY_FOR_PUBLISH") {
     throw new ResultBundleError("RESULT_EXECUTION_NOT_READY", `Execution state is '${String(executionRaw.state)}', expected READY_FOR_PUBLISH.`);
   }
+  const execPaths = executionPaths(resolvedStateDir, taskId, archiveSha);
+  const executionFilePath = execPaths.execution;
   const executionReceiptSha256 = sha256Hex(await fs.promises.readFile(executionFilePath));
 
   const bundlePath = String(executionRaw.accepted_bundle_path ?? path.join(resolvedStateDir, "runs", taskId, archiveSha, "bundle"));
@@ -228,8 +250,11 @@ async function _buildResultBundle(ctx: {
   const changeSetSha256 = String(executionRaw.change_set_sha256 ?? "");
 
   // Phase 5A publish receipt
-  const p5aPath = path.join(execPaths.directory, "publish", "git-publish.json");
-  const p5aRaw = await readJsonFile(p5aPath, "RESULT_PUBLISH_RECEIPT_INVALID");
+  const p5aPath = path.join(resolvedStateDir, "runs", taskId, archiveSha, "execution", "publish", "git-publish.json");
+  const p5aRaw = await readGitPublishReceipt(p5aPath);
+  if (!p5aRaw) {
+    throw new ResultBundleError("RESULT_PUBLISH_RECEIPT_INVALID", "Phase 5A receipt not found.");
+  }
   if (p5aRaw.state !== "PUSHED") {
     throw new ResultBundleError("RESULT_PUBLISH_NOT_PUSHED", `Phase 5A state is '${String(p5aRaw.state)}', expected PUSHED.`);
   }
@@ -251,7 +276,10 @@ async function _buildResultBundle(ctx: {
 
   // Phase 5B draft PR receipt
   const p5bPath = path.join(resolvedStateDir, "publish", "github-draft-pr.json");
-  const p5bRaw = await readJsonFile(p5bPath, "RESULT_PR_RECEIPT_INVALID");
+  const p5bRaw = await readDraftPullRequestReceipt(p5bPath);
+  if (!p5bRaw) {
+    throw new ResultBundleError("RESULT_PR_RECEIPT_INVALID", "Phase 5B receipt not found.");
+  }
   if (p5bRaw.state !== "OPEN") {
     throw new ResultBundleError("RESULT_PR_NOT_OPEN", `Phase 5B state is '${String(p5bRaw.state)}', expected OPEN.`);
   }
@@ -285,8 +313,8 @@ async function _buildResultBundle(ctx: {
     throw new ResultBundleError("RESULT_PR_RECEIPT_INCONSISTENT", `Cannot parse GitHub owner/repo from remote URL: ${remoteUrl}`);
   }
   const [, repoOwner, repoName] = repoMatch;
-  const headBranch = String(p5aRaw.branch_name ?? "");
-  const baseBranch = String(executionRaw.base_branch ?? p5aRaw.base_commit ?? "main");
+  const headBranch = String((p5aRaw as unknown as Record<string, unknown>).branch_name ?? "");
+  const baseBranch = String((executionRaw as unknown as Record<string, unknown>).base_branch ?? p5aRaw.base_commit ?? "main");
 
   const prAttestation: PullRequestAttestation = await attestGitHubPullRequest(
     githubClient,
@@ -308,9 +336,9 @@ async function _buildResultBundle(ctx: {
   warnings.push(...gitEvidence.warnings);
 
   // ── Step 5: Build public evidence DTOs ────────────────────────────────────
-  const publicExecution = projectExecutionEvidence(executionRaw);
-  const publicGitPublish = projectGitPublishEvidence(p5aRaw);
-  const publicDraftPr = projectDraftPrEvidence(p5bRaw, gitPublishReceiptSha256);
+  const publicExecution = projectExecutionEvidence(executionRaw as unknown as Record<string, unknown>);
+  const publicGitPublish = projectGitPublishEvidence(p5aRaw as unknown as Record<string, unknown>);
+  const publicDraftPr = projectDraftPrEvidence(p5bRaw as unknown as Record<string, unknown>, gitPublishReceiptSha256, changeSetSha256);
   const verificationRaw = executionRaw.verification as Record<string, unknown> | undefined ?? {};
   const publicVerification = projectVerificationEvidence(verificationRaw, limits.maximum_public_output_bytes_per_command);
 
@@ -515,6 +543,51 @@ async function _buildResultBundle(ctx: {
     throw new ResultBundleError("RESULT_ARCHIVE_ENTRY_LIMIT", `Too many entries: ${finalEntries.length}`);
   }
 
+  const input_digest_sha256 = sha256Hex(
+    Buffer.from(executionReceiptSha256 + gitPublishReceiptSha256 + draftPrReceiptSha256, "utf8")
+  );
+
+  const baseReceipt: ResultBundleReceipt = {
+    result_bundle_version: "1.1",
+    run_id: runId,
+    state: "READY_TO_BUILD",
+    input_digest_sha256,
+    execution_receipt_sha256: executionReceiptSha256,
+    git_publish_receipt_sha256: gitPublishReceiptSha256,
+    draft_pr_receipt_sha256: draftPrReceiptSha256,
+    accepted_bundle_tree_sha256: acceptedBundleTreeSha256,
+    change_set_sha256: changeSetSha256,
+    base_commit: baseCommit,
+    published_commit_sha: publishedCommitSha,
+    remote_branch_sha: remoteBranchSha,
+    pull_request: prAttestation,
+    archive_relative_path: null,
+    archive_sha256: null,
+    archive_size_bytes: null,
+    entry_count: null,
+    uncompressed_size_bytes: null,
+    manifest_sha256: manifestSha256,
+    warnings,
+    created_at: createdAt,
+    updated_at: currentIso(now),
+    built_at: null,
+    verified_at: null,
+    ready_at: null,
+    spec_set_sha256: specSetSha256,
+    review_contract_sha256: review_contract_sha256,
+    review_policy_sha256: review_policy_sha256,
+    verdict_schema_sha256: verdict_schema_sha256,
+    revision_request_schema_sha256: revision_request_schema_sha256,
+  };
+
+  // Persist READY_TO_BUILD
+  await writeResultBundleReceipt(paths.receiptPath, baseReceipt);
+
+  // Persist BUILDING
+  baseReceipt.state = "BUILDING";
+  baseReceipt.updated_at = currentIso(now);
+  await writeResultBundleReceipt(paths.receiptPath, baseReceipt);
+
   // ── Step 8: Build the deterministic ZIP ───────────────────────────────────
   const builtArchive = await buildDeterministicZip(
     finalEntries,
@@ -529,52 +602,34 @@ async function _buildResultBundle(ctx: {
 
   const builtAt = String(executionRaw.created_at ?? currentIso(now));
 
-  // ── Step 9: Independent reopen and verification ────────────────────────────
+  // Persist BUILT
+  baseReceipt.state = "BUILT";
+  baseReceipt.updated_at = currentIso(now);
+  baseReceipt.built_at = builtAt;
+  baseReceipt.archive_relative_path = path.relative(resolvedStateDir, builtArchive.archivePath).replace(/\\/g, "/");
+  baseReceipt.archive_sha256 = builtArchive.sha256;
+  baseReceipt.archive_size_bytes = builtArchive.sizeBytes;
+  baseReceipt.entry_count = builtArchive.entries.length;
+  baseReceipt.uncompressed_size_bytes = builtArchive.uncompressedBytes;
+  await writeResultBundleReceipt(paths.receiptPath, baseReceipt);
 
+  // ── Step 9: Independent reopen and verification ────────────────────────────
   const verified = await verifyResultBundleZip(builtArchive.archivePath);
   const verifiedAt = String(executionRaw.created_at ?? currentIso(now));
 
+  // Persist VERIFIED
+  baseReceipt.state = "VERIFIED";
+  baseReceipt.updated_at = currentIso(now);
+  baseReceipt.verified_at = verifiedAt;
+  await writeResultBundleReceipt(paths.receiptPath, baseReceipt);
+
   // ── Step 10: Persist READY_FOR_WEB_REVIEW receipt atomically ──────────────
-  const archiveRelativePath = path.relative(resolvedStateDir, builtArchive.archivePath).replace(/\\/g, "/");
-  const input_digest_sha256 = sha256Hex(
-    Buffer.from(executionReceiptSha256 + gitPublishReceiptSha256 + draftPrReceiptSha256, "utf8")
-  );
+  baseReceipt.state = "READY_FOR_WEB_REVIEW";
+  baseReceipt.updated_at = currentIso(now);
+  baseReceipt.ready_at = currentIso(now);
+  await writeResultBundleReceipt(paths.receiptPath, baseReceipt);
 
-  const finalReceipt: ResultBundleReceipt = {
-    result_bundle_version: "1.1",
-    run_id: runId,
-    state: "READY_FOR_WEB_REVIEW",
-    input_digest_sha256,
-    execution_receipt_sha256: executionReceiptSha256,
-    git_publish_receipt_sha256: gitPublishReceiptSha256,
-    draft_pr_receipt_sha256: draftPrReceiptSha256,
-    accepted_bundle_tree_sha256: acceptedBundleTreeSha256,
-    change_set_sha256: changeSetSha256,
-    base_commit: baseCommit,
-    published_commit_sha: publishedCommitSha,
-    remote_branch_sha: remoteBranchSha,
-    pull_request: prAttestation,
-    archive_relative_path: archiveRelativePath,
-    archive_sha256: verified.sha256,
-    archive_size_bytes: verified.sizeBytes,
-    entry_count: verified.entryCount,
-    uncompressed_size_bytes: verified.uncompressedBytes,
-    manifest_sha256: manifestSha256,
-    warnings,
-    created_at: createdAt,
-    updated_at: currentIso(now),
-    built_at: builtAt,
-    verified_at: verifiedAt,
-    ready_at: currentIso(now),
-    spec_set_sha256: specSetSha256,
-    review_contract_sha256: review_contract_sha256,
-    review_policy_sha256: review_policy_sha256,
-    verdict_schema_sha256: verdict_schema_sha256,
-    revision_request_schema_sha256: revision_request_schema_sha256,
-  };
-
-  await writeResultBundleReceipt(paths.receiptPath, finalReceipt);
-  return finalReceipt;
+  return baseReceipt;
 }
 
 /** Status query - returns existing receipt without building */

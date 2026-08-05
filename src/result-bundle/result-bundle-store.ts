@@ -4,7 +4,7 @@ import path from "node:path";
 import { ResultBundleError } from "./contracts.js";
 import type { ResultBundleReceipt, ResultBundleState } from "./contracts.js";
 
-const RECEIPT_VERSION = "1.0";
+const RECEIPT_VERSION = "1.1";
 
 /** Required top-level fields for a receipt */
 const REQUIRED_RECEIPT_FIELDS: ReadonlyArray<keyof ResultBundleReceipt> = [
@@ -59,9 +59,16 @@ function assertReceipt(value: unknown): asserts value is ResultBundleReceipt {
   for (const shaField of [
     "input_digest_sha256", "execution_receipt_sha256", "git_publish_receipt_sha256",
     "draft_pr_receipt_sha256", "accepted_bundle_tree_sha256", "change_set_sha256",
-    "archive_sha256", "manifest_sha256",
+    "archive_sha256", "manifest_sha256", "spec_set_sha256", "review_contract_sha256",
+    "review_policy_sha256", "verdict_schema_sha256", "revision_request_schema_sha256"
   ] as const) {
     const v = obj[shaField];
+    if (v === null) {
+      if (obj.state === "VERIFIED" || obj.state === "READY_FOR_WEB_REVIEW") {
+        throw new ResultBundleError("RESULT_RECEIPT_INVALID", `${shaField} cannot be null in state ${String(obj.state)}`);
+      }
+      continue;
+    }
     if (typeof v !== "string" || !/^[a-f0-9]{64}$/.test(v)) {
       throw new ResultBundleError("RESULT_RECEIPT_INVALID", `${shaField} must be a 64-hex SHA-256.`);
     }

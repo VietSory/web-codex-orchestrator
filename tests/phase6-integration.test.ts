@@ -35,7 +35,8 @@ class FakeGitHubAttestationClient implements GitHubAttestationClient {
 }
 
 test("Phase 6 Integration: full deterministic result bundle packaging", async (t) => {
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "wco-phase6-test-"));
+  let tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "wco-phase6-test-"));
+  tmpDir = await fs.realpath(tmpDir);
   
   try {
     const worktreePath = path.join(tmpDir, "repo");
@@ -100,15 +101,16 @@ test("Phase 6 Integration: full deterministic result bundle packaging", async (t
       run_id: runId,
       state: "READY_FOR_PUBLISH",
       base_commit: baseCommit,
-      base_branch: "main",
+      branch_name: "codex/task",
       worktree_path: worktreePath,
       accepted_bundle_path: bundlePath,
       change_set_sha256: changeSetSha256,
-      implementer: { model: "test", reasoning_effort: "low", iterations: 1 },
-      internal_reviewer: { model: "test", reasoning_effort: "low", rounds: 1, verdict: "APPROVE", reviewed_change_set_sha256: changeSetSha256 },
-      final_reviewer: { model: "test", reasoning_effort: "low", rounds: 0, verdict: "APPROVE", reviewed_change_set_sha256: changeSetSha256 },
-      verification: { rounds: 1, required_commands_passed: true },
-      usage: { input_tokens: 10, output_tokens: 10 },
+      implementer: { model: "test", reasoning_effort: "low", thread_id: "test", iterations: 1 },
+      internal_reviewer: { model: "test", reasoning_effort: "low", rounds: 1, latest_thread_id: null, verdict: "APPROVE", reviewed_change_set_sha256: changeSetSha256 },
+      final_reviewer: { model: "test", reasoning_effort: "low", rounds: 0, latest_thread_id: null, verdict: "APPROVE", reviewed_change_set_sha256: changeSetSha256 },
+      verification: { rounds: 1, required_commands_passed: true, verified_change_set_sha256: changeSetSha256, commands: [] },
+      usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 10 },
+      errors: [],
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z"
     }));
@@ -199,15 +201,15 @@ test("Phase 6 Integration: full deterministic result bundle packaging", async (t
     assert.equal(receipt.run_id, runId);
     console.log("ACTUAL ARCHIVE PATH:", receipt.archive_relative_path);
     console.log("EXPECTED PREFIX:", `handoff/runs/${taskId}/${archiveSha}`.replace(/\\/g, "/"));
-    assert.ok(receipt.archive_relative_path.startsWith(`handoff/runs/${taskId}/${archiveSha}`.replace(/\\/g, "/")));
-    assert.ok(receipt.spec_set_sha256.length === 64, "Should have spec_set_sha256");
-    assert.ok(receipt.review_contract_sha256.length === 64, "Should have review_contract_sha256");
-    assert.ok(receipt.review_policy_sha256.length === 64, "Should have review_policy_sha256");
-    assert.ok(receipt.verdict_schema_sha256.length === 64, "Should have verdict_schema_sha256");
-    assert.ok(receipt.revision_request_schema_sha256.length === 64, "Should have revision_request_schema_sha256");
+    assert.ok(receipt.archive_relative_path!.startsWith(`handoff/runs/${taskId}/${archiveSha}`.replace(/\\/g, "/")));
+    assert.ok(receipt.spec_set_sha256!.length === 64, "Should have spec_set_sha256");
+    assert.ok(receipt.review_contract_sha256!.length === 64, "Should have review_contract_sha256");
+    assert.ok(receipt.review_policy_sha256!.length === 64, "Should have review_policy_sha256");
+    assert.ok(receipt.verdict_schema_sha256!.length === 64, "Should have verdict_schema_sha256");
+    assert.ok(receipt.revision_request_schema_sha256!.length === 64, "Should have revision_request_schema_sha256");
     
     // Verify Zip manually via verifier
-    const absoluteZipPath = path.join(stateDirectory, receipt.archive_relative_path);
+    const absoluteZipPath = path.join(stateDirectory, receipt.archive_relative_path!);
     const stat = await fs.stat(absoluteZipPath);
     assert.equal(stat.size, receipt.archive_size_bytes);
 
@@ -250,6 +252,42 @@ test("Phase 6 Integration: full deterministic result bundle packaging", async (t
     assert.equal(draftPrJson.pull_request_url, "https://github.com/owner/repo/pull/123");
     
     // Ensure manifest is intact.
+
+    // === BUILD 2 (Determinism check) ===
+    const archive1Bytes = await fs.readFile(absoluteZipPath);
+    await fs.rm(path.join(stateDirectory, "handoff", "runs", taskId, archiveSha, "result-bundle.json"));
+    await fs.rm(absoluteZipPath);
+
+    const receipt2 = await packageResultBundle({
+      runId,
+      stateDirectory,
+      configPath: "dummy.json", // Not used locally
+      githubClient,
+      gitRunner,
+      now: () => new Date("2026-02-15T08:30:00.000Z") // different time
+    });
+
+    const archive2Path = path.join(stateDirectory, receipt2.archive_relative_path!);
+    const archive2Bytes = await fs.readFile(archive2Path);
+
+    assert.strictEqual(
+      archive1Bytes.byteLength,
+      archive2Bytes.byteLength,
+      "Archives must have the exact same size"
+    );
+
+    assert.strictEqual(
+      sha256Hex(archive1Bytes),
+      sha256Hex(archive2Bytes),
+      "Archives must be byte-for-byte identical despite different build times"
+    );
+
+    assert.strictEqual(
+      receipt.archive_sha256,
+      receipt2.archive_sha256,
+      "Archive SHA-256 in receipts must match"
+    );
+
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }

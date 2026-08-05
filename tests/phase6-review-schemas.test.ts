@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert";
 import fs from "node:fs/promises";
 import path from "node:path";
-import Ajv from "ajv/dist/2020.js";
+import Ajv2020 from "ajv/dist/2020.js";
+const Ajv = (Ajv2020 as any).default || Ajv2020 as any;
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -13,7 +14,7 @@ async function loadSchema(name: string) {
   return JSON.parse(content);
 }
 
-function createValidBaseVerdict() {
+function createValidBaseVerdict(): any {
   return {
     schema_version: "1.1",
     verdict: "APPROVE",
