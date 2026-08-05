@@ -18,6 +18,7 @@ import { redact } from "../evidence/log-redaction.js";
 import { PUBLISH_USAGE, runPublishCommand } from "../publish/publish-cli.js";
 import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
 import { runDraftPrCommand, DRAFT_PR_USAGE } from "../pull-request/draft-pr-cli.js";
+import { runPackageResultCommand, runResultBundleStatusCommand, PACKAGE_RESULT_USAGE } from "../result-bundle/result-bundle-cli.js";
 
 function printUsage(): void {
   console.log("Usage:");
@@ -30,6 +31,7 @@ function printUsage(): void {
   console.log("  wco execution-status --run-id <task-id:archive-sha256> --state-dir <directory> [--json]");
   console.log(PUBLISH_USAGE);
   console.log(DRAFT_PR_USAGE.trim());
+  console.log(PACKAGE_RESULT_USAGE.trim());
 }
 
 function parseIntakeArguments(args: string[]): { archivePath: string; stateDirectory: string; json: boolean } | null {
@@ -296,6 +298,8 @@ async function main(): Promise<void> {
   if (command === "execution-status") return runExecutionStatus(args);
   if (command === "publish") return runPublishCommand(args, printUsage);
   if (command === "create-draft-pr") { process.exitCode = await runDraftPrCommand(args); return; }
+  if (command === "package-result") { process.exitCode = await runPackageResultCommand(args); return; }
+  if (command === "result-bundle-status") { process.exitCode = await runResultBundleStatusCommand(args); return; }
   printUsage();
   process.exitCode = 2;
 }

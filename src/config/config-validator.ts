@@ -2,7 +2,7 @@ import path from "node:path";
 import type { ConfigIssue, ConfigValidationReport, TrustedConfig } from "./contracts.js";
 import { hasSensitiveHttpUserInfo } from "./remote-url.js";
 
-const TOP_LEVEL = new Set(["config_version", "inbox", "repositories", "runtime", "agents", "verification", "publish", "github_pull_request"]);
+const TOP_LEVEL = new Set(["config_version", "inbox", "repositories", "runtime", "agents", "verification", "publish", "github_pull_request", "result_bundle"]);
 const INBOX_FIELDS = new Set(["poll_interval_ms", "stable_age_ms", "stable_observations", "maximum_candidates_per_scan"]);
 const REPOSITORY_FIELDS = new Set(["path", "remote", "expected_remote_urls", "fetch_policy"]);
 const REPOSITORY_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -162,6 +162,28 @@ export function validateConfig(value: unknown): ConfigValidationReport {
         else {
           if (typeof auth.token_environment_key !== "string" || !/^WCO_GITHUB_[A-Z0-9_]{1,48}$/.test(auth.token_environment_key)) add(issues, "github_pull_request.authentication.token_environment_key is invalid.");
         }
+      }
+    }
+  }
+
+  const resultBundle = value.result_bundle;
+  if (resultBundle !== undefined) {
+    if (!isRecord(resultBundle)) add(issues, "result_bundle must be an object.");
+    else {
+      const allowedFields = new Set([
+        "maximum_entries", "maximum_entry_bytes", "maximum_source_file_bytes",
+        "maximum_diff_bytes", "maximum_total_uncompressed_bytes", "maximum_archive_bytes",
+        "maximum_public_output_bytes_per_command", "maximum_github_response_bytes",
+        "github_attestation"
+      ]);
+      for (const key of unknownFields(resultBundle, allowedFields)) add(issues, `Unknown result_bundle field: ${key}`);
+      for (const field of allowedFields) {
+        if (field !== "github_attestation" && resultBundle[field] !== undefined && !positiveInteger(resultBundle[field])) {
+          add(issues, `result_bundle.${field} must be a positive integer.`);
+        }
+      }
+      if (resultBundle.github_attestation !== undefined && resultBundle.github_attestation !== "required" && resultBundle.github_attestation !== "optional") {
+        add(issues, "result_bundle.github_attestation must be 'required' or 'optional'.");
       }
     }
   }

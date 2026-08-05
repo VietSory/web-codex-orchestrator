@@ -1,0 +1,216 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wco:web-review-verdict:1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "verdict",
+    "run_id",
+    "result_bundle_sha256",
+    "manifest_sha256",
+    "published_commit_sha",
+    "pull_request_number",
+    "observed_head_sha",
+    "review_contract_version",
+    "blocking_findings",
+    "non_blocking_backlog"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "verdict": {
+      "enum": [
+        "APPROVE",
+        "REVISE",
+        "ESCALATE"
+      ]
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "result_bundle_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "manifest_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "published_commit_sha": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{40}$"
+    },
+    "pull_request_number": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "observed_head_sha": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{40}$"
+    },
+    "review_contract_version": {
+      "const": "1.0"
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 8192
+    },
+    "blocking_findings": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "finding_id",
+          "classification",
+          "locked_reference_ids",
+          "artifact_paths",
+          "line_or_json_pointer",
+          "expected_behavior",
+          "observed_behavior",
+          "evidence",
+          "minimal_required_fix"
+        ],
+        "properties": {
+          "finding_id": {
+            "type": "string",
+            "pattern": "^WEB-FIND-[0-9]{3,}$"
+          },
+          "classification": {
+            "enum": [
+              "SPEC_VIOLATION",
+              "IMPLEMENTATION_DEFECT",
+              "EVIDENCE_GAP",
+              "REPOSITORY_DRIFT",
+              "SPEC_CONTRADICTION",
+              "HUMAN_REQUIRED"
+            ]
+          },
+          "locked_reference_ids": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "artifact_paths": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "line_or_json_pointer": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expected_behavior": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "observed_behavior": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "evidence": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16384
+          },
+          "minimal_required_fix": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          }
+        }
+      }
+    },
+    "non_blocking_backlog": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "description"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "verdict": {
+            "const": "APPROVE"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "blocking_findings": {
+            "maxItems": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "verdict": {
+            "const": "REVISE"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "blocking_findings": {
+            "minItems": 1
+          },
+          "classification": {
+            "not": {
+              "const": "SPEC_CONTRADICTION"
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "verdict": {
+            "const": "ESCALATE"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "blocking_findings": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
+}

@@ -44,6 +44,18 @@ export interface GitHubPullRequestConfig {
   authentication: GitHubPullRequestAuthenticationConfig;
 }
 
+export interface ResultBundleConfig {
+  maximum_entries?: number;
+  maximum_entry_bytes?: number;
+  maximum_source_file_bytes?: number;
+  maximum_diff_bytes?: number;
+  maximum_total_uncompressed_bytes?: number;
+  maximum_archive_bytes?: number;
+  maximum_public_output_bytes_per_command?: number;
+  maximum_github_response_bytes?: number;
+  github_attestation?: "required" | "optional";
+}
+
 export interface TrustedConfig {
   config_version: "1.0";
   inbox: InboxConfig;
@@ -53,6 +65,7 @@ export interface TrustedConfig {
   verification?: VerificationConfig;
   publish?: PublishConfig;
   github_pull_request?: GitHubPullRequestConfig;
+  result_bundle?: ResultBundleConfig;
 }
 
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
