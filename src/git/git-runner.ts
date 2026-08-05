@@ -48,7 +48,7 @@ export class GitRunner {
       result.GIT_CONFIG_GLOBAL = path.join(this.runtimeDirectory, "empty-config");
     }
     
-    for (const key of ["PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL"]) {
+    for (const key of ["PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "WCO_GIT_EXECUTABLE"]) {
       const value = this.env[key];
       if (value !== undefined) result[key] = value;
     }
@@ -87,7 +87,8 @@ export class GitRunner {
     const env = this.safeEnvironment(subcommand, varTarget);
         
     return await new Promise<GitCommandResult>((resolve, reject) => {
-      const child = spawn("git", effectiveArgs, {
+      const gitExecutable = env.WCO_GIT_EXECUTABLE || "git";
+      const child = spawn(gitExecutable, effectiveArgs, {
         cwd,
         shell: false,
         env,

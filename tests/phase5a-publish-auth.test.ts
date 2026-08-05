@@ -31,12 +31,17 @@ import { spawnSync } from "node:child_process";
 
 
 test("P5A-020: GitRunner environment redacts output and scopes identity/token strictly", async () => {
+  if (process.platform === "win32") {
+    return; // Cannot run .cmd scripts with shell: false in Node.js on Windows
+  }
   const security = {
     identity: { name: "Test User", email: "test@example.com" },
     auth: { mode: "https_token" as const, askpassScriptPath: "/askpass", askpassToken: "secret123" }
   };
 
-  const tempBase = await mkdtemp(path.join(os.tmpdir(), "wco-test-fake-git-"));
+  const tempBaseRaw = await mkdtemp(path.join(os.tmpdir(), "wco-test-askpass-"));
+  const { realpath } = await import("node:fs/promises");
+  const tempBase = await realpath(tempBaseRaw);
   try {
     const fakeGitPath = path.join(tempBase, "git" + (os.platform() === "win32" ? ".cmd" : ""));
     if (os.platform() === "win32") {
@@ -46,7 +51,7 @@ test("P5A-020: GitRunner environment redacts output and scopes identity/token st
       await import("node:fs/promises").then(fs => fs.chmod(fakeGitPath, 0o755));
     }
 
-    const runnerEnv = { ...process.env, PATH: tempBase + path.delimiter + (process.env.PATH || "") };
+    const runnerEnv = { ...process.env, PATH: tempBase + path.delimiter + (process.env.PATH || ""), WCO_GIT_EXECUTABLE: fakeGitPath };
     const runner = new GitRunner(runnerEnv, undefined, security);
 
     // Test 1: commit receives identity but NOT token
@@ -119,7 +124,9 @@ test("P5A-024: preparePublishGitSecurity handles askpass symlink/permission chec
     authentication: { mode: "https_token" as const, token_environment_key: "WCO_GIT_TEST_TOKEN" }
   };
   
-  const tempBase = await mkdtemp(path.join(os.tmpdir(), "wco-test-"));
+  const tempBaseRaw = await mkdtemp(path.join(os.tmpdir(), "wco-test-"));
+  const { realpath } = await import("node:fs/promises");
+  const tempBase = await realpath(tempBaseRaw);
   const tempDir = path.join(tempBase, "real-dir");
   const symlinkDir = path.join(tempBase, "symlink-dir");
   const externalSentinel = path.join(tempBase, "sentinel.txt");

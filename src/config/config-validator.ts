@@ -2,7 +2,7 @@ import path from "node:path";
 import type { ConfigIssue, ConfigValidationReport, TrustedConfig } from "./contracts.js";
 import { hasSensitiveHttpUserInfo } from "./remote-url.js";
 
-const TOP_LEVEL = new Set(["config_version", "inbox", "repositories", "runtime", "agents", "verification", "publish"]);
+const TOP_LEVEL = new Set(["config_version", "inbox", "repositories", "runtime", "agents", "verification", "publish", "github_pull_request"]);
 const INBOX_FIELDS = new Set(["poll_interval_ms", "stable_age_ms", "stable_observations", "maximum_candidates_per_scan"]);
 const REPOSITORY_FIELDS = new Set(["path", "remote", "expected_remote_urls", "fetch_policy"]);
 const REPOSITORY_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -142,6 +142,26 @@ export function validateConfig(value: unknown): ConfigValidationReport {
         }
         const allowedAuthFields = new Set(["mode", "token_environment_key"]);
         for (const key of unknownFields(authentication, allowedAuthFields)) add(issues, `Unknown publish.authentication field: ${key}`);
+      }
+    }
+  }
+
+  const githubPullRequest = value.github_pull_request;
+  if (githubPullRequest !== undefined) {
+    if (!isRecord(githubPullRequest)) add(issues, "github_pull_request must be an object.");
+    else {
+      for (const key of unknownFields(githubPullRequest, new Set(["provider", "authentication"]))) add(issues, `Unknown github_pull_request field: ${key}`);
+      if (githubPullRequest.provider !== "github.com") add(issues, "github_pull_request.provider must be github.com.");
+      
+      const auth = githubPullRequest.authentication;
+      if (!isRecord(auth)) add(issues, "github_pull_request.authentication must be an object.");
+      else {
+        for (const key of unknownFields(auth, new Set(["mode", "token_environment_key"]))) add(issues, `Unknown github_pull_request.authentication field: ${key}`);
+        if ("token" in auth) add(issues, "github_pull_request.authentication cannot have token field directly.");
+        if (auth.mode !== "https_token") add(issues, "github_pull_request.authentication.mode must be https_token.");
+        else {
+          if (typeof auth.token_environment_key !== "string" || !/^WCO_GITHUB_[A-Z0-9_]{1,48}$/.test(auth.token_environment_key)) add(issues, "github_pull_request.authentication.token_environment_key is invalid.");
+        }
       }
     }
   }

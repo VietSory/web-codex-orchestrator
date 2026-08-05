@@ -161,7 +161,7 @@ export async function createIsolatedWorktree(options: WorktreeOptions): Promise<
     const canonicalWorktree = await realpath(worktreePath);
     if (!contained(worktreesRoot, canonicalWorktree)) throw failed("WORKTREE_VERIFY_FAILED", "Resolved worktree path escapes state-dir/worktrees.");
     const owned = await runner.run(safeGitArguments(runner, hooksDirectory, ["worktree", "list", "--porcelain"]), options.repository.path);
-    if (owned.exitCode !== 0 || !owned.stdout.split(/\r?\n/).some((line) => line === `worktree ${canonicalWorktree}`)) {
+    if (owned.exitCode !== 0 || !owned.stdout.split(/\r?\n/).some((line) => line === `worktree ${canonicalWorktree}` || line === `worktree ${canonicalWorktree.replace(/\\/g, "/")}`)) {
       throw failed("WORKTREE_VERIFY_FAILED", "New worktree ownership could not be verified.", owned);
     }
 
@@ -202,7 +202,7 @@ export async function createIsolatedWorktree(options: WorktreeOptions): Promise<
     const status = await runner.run(safeGitArguments(runner, hooksDirectory, ["status", "--porcelain"]), canonicalWorktree);
     if (status.exitCode !== 0 || status.stdout.trim() !== "") throw failed("WORKTREE_VERIFY_FAILED", "New worktree is not clean.", status);
     const listed = await runner.run(safeGitArguments(runner, hooksDirectory, ["worktree", "list", "--porcelain"]), options.repository.path);
-    if (listed.exitCode !== 0 || !listed.stdout.split(/\r?\n/).some((line) => line === `worktree ${canonicalWorktree}`)) throw failed("WORKTREE_VERIFY_FAILED", "New worktree is not present in git worktree list.", listed);
+    if (listed.exitCode !== 0 || !listed.stdout.split(/\r?\n/).some((line) => line === `worktree ${canonicalWorktree}` || line === `worktree ${canonicalWorktree.replace(/\\/g, "/")}`)) throw failed("WORKTREE_VERIFY_FAILED", "New worktree is not present in git worktree list.", listed);
     return { path: canonicalWorktree, branch_name: options.branchName, base_commit: options.baseCommit, created: true, ...(branchTip ? { branch_tip: branchTip } : {}) };
   } catch (error) {
     const cleanupErrors = await cleanupCreatedResources(options, runner, worktreePath, branchCreated, branchTip, worktreeAdded);

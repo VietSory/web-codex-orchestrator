@@ -142,8 +142,13 @@ export async function makeV10Bundle(root: string): Promise<string> {
     ["VALIDATION.md", "validation.md"],
   ];
   for (const [from, to] of renames) {
-    await cp(path.join(bundle, from), path.join(bundle, to));
-    await rm(path.join(bundle, from));
+    const fromPath = path.join(bundle, from);
+    const toPath = path.join(bundle, to);
+    const tempPath = toPath + ".tmp";
+    await cp(fromPath, tempPath);
+    await rm(fromPath);
+    await cp(tempPath, toPath);
+    await rm(tempPath);
   }
   await rm(path.join(bundle, "checksums.json"));
   return bundle;

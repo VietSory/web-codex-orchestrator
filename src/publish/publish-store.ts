@@ -206,7 +206,7 @@ async function syncDirectory(directory: string): Promise<void> {
     await handle.sync();
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "EINVAL" && code !== "ENOTSUP" && code !== "EISDIR") {
+    if (code !== "EINVAL" && code !== "ENOTSUP" && code !== "EISDIR" && code !== "EPERM" && code !== "EBADF") {
       throw error;
     }
   } finally {

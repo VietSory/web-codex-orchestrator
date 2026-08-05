@@ -58,7 +58,9 @@ function runCli(args: string[]): Promise<CommandResult> {
 }
 
 async function fixture(): Promise<{ root: string; repo: string; remote: string; state: string; config: string; archive: string; commit: string; inbox: string }> {
-  const root = await mkdtemp(path.join(tmpdir(), "wco-phase3-test-"));
+  const rootRaw = await mkdtemp(path.join(tmpdir(), "wco-phase3-test-"));
+  const { realpath } = await import("node:fs/promises");
+  const root = await realpath(rootRaw);
   const repo = path.join(root, "repo"); const remote = path.join(root, "remote.git");
   const state = path.join(root, "state"); const inbox = path.join(root, "inbox");
   await command(["git", "init", "--bare", remote], root);

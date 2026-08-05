@@ -114,7 +114,9 @@ interface Fixture {
 }
 
 async function createFixture(): Promise<Fixture> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "wco-phase5a-"));
+  const rootRaw = await mkdtemp(path.join(os.tmpdir(), "wco-phase5a-"));
+  const { realpath } = await import("node:fs/promises");
+  const root = await realpath(rootRaw);
   const worktree = path.join(root, "worktree");
   const remote = path.join(root, "remote.git");
   const hooks = path.join(root, "empty-hooks");
@@ -761,6 +763,9 @@ test("P5A-014: a READY receipt resumes from an exact staged index after a pre-co
 test(
   "P5A-015: core.fileMode=false ignores unreliable executable filesystem bits",
   async () => {
+    if (process.platform === "win32") {
+      return; // Windows fs doesn't reliably emulate POSIX executable bits
+    }
     const fixture = await createFixture();
 
     try {

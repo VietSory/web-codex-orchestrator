@@ -34,6 +34,16 @@ export interface PublishConfig {
   authentication: PublishAuthenticationConfig;
 }
 
+export interface GitHubPullRequestAuthenticationConfig {
+  mode: "https_token";
+  token_environment_key: string;
+}
+
+export interface GitHubPullRequestConfig {
+  provider: "github.com";
+  authentication: GitHubPullRequestAuthenticationConfig;
+}
+
 export interface TrustedConfig {
   config_version: "1.0";
   inbox: InboxConfig;
@@ -42,6 +52,7 @@ export interface TrustedConfig {
   agents?: AgentConfig;
   verification?: VerificationConfig;
   publish?: PublishConfig;
+  github_pull_request?: GitHubPullRequestConfig;
 }
 
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
