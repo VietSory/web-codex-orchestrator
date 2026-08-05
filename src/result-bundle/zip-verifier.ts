@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import { ResultBundleError } from "./contracts.js";
 import type { ManifestEntry } from "./contracts.js";
 import { FIXED_FILE_MODE } from "./result-bundle-paths.js";
+import { validateEntryPath } from "./deterministic-zip.js";
 
 export interface VerificationResult {
   sha256: string;
@@ -24,7 +25,7 @@ export const GPB_ENCRYPTION_BIT = 0x0001;
 /**
  * Reopen and independently verify the ZIP archive.
  * Checks: entry presence, order, sha256 checksums, timestamps, modes,
- * encryption, archive comment, no extra entries.
+ * encryption, archive comment, path safety, no extra entries.
  */
 export async function verifyResultBundleZip(
   archivePath: string
@@ -48,6 +49,7 @@ export async function verifyResultBundleZip(
       }
 
       const seenPaths = new Set<string>();
+      const seenNormalized = new Set<string>();
       const seen: Map<string, { sha256: string; sizeBytes: number }> = new Map();
       let uncompressedBytes = 0;
       let entryCount = 0;
@@ -58,6 +60,22 @@ export async function verifyResultBundleZip(
 
       zipfile.on("entry", (entry: yauzl.Entry) => {
         const entryPath: string = entry.fileName;
+
+        // Path safety validation using canonical validateEntryPath
+        try {
+          validateEntryPath(entryPath);
+        } catch (err) {
+          zipfile.close();
+          return reject(err instanceof ResultBundleError ? err : new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", String(err)));
+        }
+
+        // Case-fold & NFC collision check
+        const normalizedKey = entryPath.normalize("NFC").toLowerCase();
+        if (seenNormalized.has(normalizedKey)) {
+          zipfile.close();
+          return reject(new ResultBundleError("RESULT_ARCHIVE_PATH_COLLISION", `Path collision (case/NFC): '${entryPath}'`));
+        }
+        seenNormalized.add(normalizedKey);
 
         // No directory entries
         if (entryPath.endsWith("/")) {
@@ -254,6 +272,10 @@ export async function verifyResultBundleZip(
       });
 
       zipfile.on("error", (err: Error) => {
+        const msg = err.message.toLowerCase();
+        if (msg.includes("relative path") || msg.includes("absolute path")) {
+          return reject(new ResultBundleError("RESULT_SOURCE_PATH_UNSAFE", `Unsafe ZIP entry path: ${err.message}`));
+        }
         reject(new ResultBundleError(
           "RESULT_ARCHIVE_VERIFY_FAILED",
           `ZIP error: ${err.message}`

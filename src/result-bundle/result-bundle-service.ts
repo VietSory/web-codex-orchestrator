@@ -413,17 +413,17 @@ async function _buildResultBundle(ctx: {
     addBuffer(`task/${name}`, buf);
   }
 
-  // task/README.md — generated (authoritative task readme)
+  // task/README.md — generated task readme overview
   const taskReadmeText = [
-    "# Task Specification",
+    "# Task Specification Overview",
     "",
     `Task ID: \`${taskId}\``,
     `Run ID: \`${runId}\``,
     `Archive SHA-256: \`${archiveSha}\``,
     "",
-    "This directory contains the complete, authoritative task specification.",
-    "All files are included verbatim from the accepted task bundle.",
-    "The spec_set_sha256 in task/spec-lock.json covers every file in this directory.",
+    "This directory contains the task specification and spec-lock.",
+    "Files copied from the accepted task bundle are preserved verbatim.",
+    "The spec_set_sha256 recorded in task/spec-lock.json covers the authoritative files listed in spec-lock, excluding spec-lock.json itself.",
   ].join("\n") + "\n";
   const taskReadmeBuf = Buffer.from(taskReadmeText, "utf8");
   taskFiles.push({ name: "README.md", buffer: taskReadmeBuf });

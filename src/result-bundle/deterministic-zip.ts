@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 import path from "node:path";
 import { ResultBundleError } from "./contracts.js";
 import type { ManifestEntry } from "./contracts.js";
-import { FIXED_ZIP_TIMESTAMP, FIXED_FILE_MODE } from "./result-bundle-paths.js";
+import { FIXED_ZIP_TIMESTAMP, FIXED_FILE_MODE, FORBIDDEN_ENTRY_PREFIXES } from "./result-bundle-paths.js";
 
 export interface ZipEntry {
   /** ZIP entry path (forward slashes, no leading slash) */
@@ -41,6 +41,11 @@ export function validateEntryPath(entryPath: string): void {
     entryPath.startsWith("\\\\")
   ) {
     throw new ResultBundleError("RESULT_SOURCE_PATH_UNSAFE", `Invalid entry path: '${entryPath}'`);
+  }
+  for (const prefix of FORBIDDEN_ENTRY_PREFIXES) {
+    if (entryPath.startsWith(prefix) || entryPath.includes(`/${prefix}`)) {
+      throw new ResultBundleError("RESULT_SOURCE_PATH_UNSAFE", `Forbidden path prefix in: '${entryPath}'`);
+    }
   }
   // Windows device names
   const last = entryPath.split("/").pop() ?? "";

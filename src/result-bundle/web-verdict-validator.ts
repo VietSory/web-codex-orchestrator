@@ -13,9 +13,33 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 /** Criterion result per schema 1.1 */
 export interface VerdictCriterionResult {
   criterion_id: string;
-  status: "PASS" | "FAIL" | "NOT_APPLICABLE" | "UNVERIFIED";
-  reviewer_comments: string;
+  required: true;
+  status: "PASS" | "FAIL" | "UNVERIFIED";
   evidence_refs: string[];
+  notes: string;
+}
+
+/** Blocking finding per schema 1.1 */
+export interface VerdictBlockingFinding {
+  finding_id: string;
+  classification:
+    | "SPEC_VIOLATION"
+    | "IMPLEMENTATION_DEFECT"
+    | "EVIDENCE_GAP"
+    | "REPOSITORY_DRIFT"
+    | "SPEC_CONTRADICTION"
+    | "HUMAN_REQUIRED"
+    | "SECURITY_RISK";
+  finding_origin: "INITIAL_DISCOVERY" | "PREVIOUS_UNRESOLVED" | "REVISION_REGRESSION";
+  previous_finding_id: string | null;
+  locked_reference_ids: string[];
+  artifact_paths: string[];
+  line_or_json_pointer: string;
+  expected_behavior: string;
+  observed_behavior: string;
+  evidence: string;
+  minimal_required_fix: string;
+  revision_changed_paths: string[];
 }
 
 /** Web review verdict per schema 1.1 */
@@ -32,15 +56,15 @@ export interface WebReviewVerdict {
   published_commit_sha: string;
   pull_request_number: number;
   observed_head_sha: string;
-  review_contract_version: string;
-  review_policy_version: string;
+  review_contract_version: "1.1";
+  review_policy_version: "1.0";
   previous_result_bundle_sha256: string | null;
   previous_verdict_sha256: string | null;
   revision_request_sha256: string | null;
   previous_published_commit_sha: string | null;
   comprehensive_review_complete: boolean;
   criterion_results: VerdictCriterionResult[];
-  blocking_findings: string[];
+  blocking_findings: VerdictBlockingFinding[];
   non_blocking_backlog: string[];
   summary: string;
 }
@@ -48,15 +72,19 @@ export interface WebReviewVerdict {
 /**
  * Validate a web review verdict against:
  * 1. The embedded JSON schema (schema 1.1)
- * 2. Binding hash comparisons against the sealed receipt
+ * 2. Binding comparisons against the sealed receipt (run_id, result_bundle_sha256,
+ *    manifest_sha256, spec_set_sha256, pull_request_number, published_commit_sha,
+ *    observed_head_sha, reviewed_entry_set_sha256)
  * 3. Criterion set equality against locked acceptance.json IDs
+ * 4. Exact evidence-entry existence in bundle archive
  *
  * Throws ResultBundleError("RESULT_WEB_VERDICT_INVALID", ...) on any violation.
  */
 export function validateWebVerdict(
   verdictData: unknown,
   acceptanceData: unknown,
-  receipt: ResultBundleReceipt
+  receipt: ResultBundleReceipt,
+  bundleEntries?: Set<string> | string[]
 ): void {
   // 1. JSON Schema validation against embedded schema 1.1 (JSON Schema draft 2020-12)
   const ajv = new Ajv2020({ strict: false, allErrors: true });
@@ -72,7 +100,7 @@ export function validateWebVerdict(
 
   const verdict = verdictData as WebReviewVerdict;
 
-  // 2. Binding hash comparisons
+  // 2. Receipt binding validations
   if (verdict.run_id !== receipt.run_id) {
     throw new ResultBundleError(
       "RESULT_WEB_VERDICT_INVALID",
@@ -103,8 +131,32 @@ export function validateWebVerdict(
       `pull_request_number mismatch. Expected ${receipt.pull_request?.number}, got ${verdict.pull_request_number}`
     );
   }
+  if (verdict.published_commit_sha !== receipt.published_commit_sha) {
+    throw new ResultBundleError(
+      "RESULT_WEB_VERDICT_INVALID",
+      `published_commit_sha mismatch. Expected ${receipt.published_commit_sha}, got ${verdict.published_commit_sha}`
+    );
+  }
+  if (verdict.observed_head_sha !== receipt.pull_request?.head_sha) {
+    throw new ResultBundleError(
+      "RESULT_WEB_VERDICT_INVALID",
+      `observed_head_sha mismatch. Expected ${receipt.pull_request?.head_sha}, got ${verdict.observed_head_sha}`
+    );
+  }
+  if (verdict.reviewed_entry_set_sha256 !== receipt.accepted_bundle_tree_sha256) {
+    throw new ResultBundleError(
+      "RESULT_WEB_VERDICT_INVALID",
+      `reviewed_entry_set_sha256 mismatch. Expected ${receipt.accepted_bundle_tree_sha256}, got ${verdict.reviewed_entry_set_sha256}`
+    );
+  }
 
-  // 3. Criterion set equality vs locked acceptance.json IDs
+  // 3. Criterion set equality & exact evidence-entry existence
+  const entrySet = bundleEntries
+    ? bundleEntries instanceof Set
+      ? bundleEntries
+      : new Set(bundleEntries)
+    : null;
+
   const acceptance = acceptanceData as { criteria?: { id: string }[] };
   const lockedIds = new Set<string>();
   if (Array.isArray(acceptance.criteria)) {
@@ -120,14 +172,29 @@ export function validateWebVerdict(
     }
     providedIds.add(c.criterion_id);
 
-    if (!lockedIds.has(c.criterion_id)) {
+    if (lockedIds.size > 0 && !lockedIds.has(c.criterion_id)) {
       throw new ResultBundleError("RESULT_WEB_VERDICT_INVALID", `Unknown criterion_id: ${c.criterion_id}`);
     }
 
-    // Evidence reference prefix validation
+    // Evidence reference prefix validation & exact entry existence
     for (const ref of c.evidence_refs) {
-      if (!ref.startsWith("evidence/") && !ref.startsWith("repository/") && !ref.startsWith("task/")) {
+      if (
+        !ref.startsWith("evidence/") &&
+        !ref.startsWith("repository/") &&
+        !ref.startsWith("task/") &&
+        !ref.startsWith("review/") &&
+        ref !== "RESULT.md" &&
+        ref !== "REVIEW.md" &&
+        ref !== "checksums.json" &&
+        ref !== "manifest.json"
+      ) {
         throw new ResultBundleError("RESULT_WEB_VERDICT_INVALID", `Invalid evidence reference prefix: ${ref}`);
+      }
+      if (entrySet && !entrySet.has(ref)) {
+        throw new ResultBundleError(
+          "RESULT_WEB_VERDICT_INVALID",
+          `Evidence reference not found in bundle entries: '${ref}'`
+        );
       }
     }
   }
@@ -135,6 +202,22 @@ export function validateWebVerdict(
   for (const id of lockedIds) {
     if (!providedIds.has(id)) {
       throw new ResultBundleError("RESULT_WEB_VERDICT_INVALID", `Missing criterion_result for locked ID: ${id}`);
+    }
+  }
+
+  // Exact entry existence check for blocking findings artifact_paths
+  if (Array.isArray(verdict.blocking_findings)) {
+    for (const finding of verdict.blocking_findings) {
+      if (Array.isArray(finding.artifact_paths)) {
+        for (const artPath of finding.artifact_paths) {
+          if (entrySet && !entrySet.has(artPath)) {
+            throw new ResultBundleError(
+              "RESULT_WEB_VERDICT_INVALID",
+              `Artifact path in finding not found in bundle entries: '${artPath}'`
+            );
+          }
+        }
+      }
     }
   }
 }
