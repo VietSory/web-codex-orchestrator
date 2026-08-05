@@ -207,6 +207,7 @@ test("Phase 6 Integration: full deterministic result bundle packaging", async (t
     assert.ok(receipt.review_policy_sha256!.length === 64, "Should have review_policy_sha256");
     assert.ok(receipt.verdict_schema_sha256!.length === 64, "Should have verdict_schema_sha256");
     assert.ok(receipt.revision_request_schema_sha256!.length === 64, "Should have revision_request_schema_sha256");
+    assert.ok(receipt.reviewed_entry_set_sha256!.length === 64, "Should have reviewed_entry_set_sha256");
     
     // Verify Zip manually via verifier
     const absoluteZipPath = path.join(stateDirectory, receipt.archive_relative_path!);

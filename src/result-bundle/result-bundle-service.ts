@@ -534,6 +534,8 @@ async function _buildResultBundle(ctx: {
   // Sort manifest entries lexically too
   manifestEntryList.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 
+  const reviewedEntrySetSha256 = sha256Hex(canonicalJsonBuffer(manifestEntryList));
+
   const manifest: ResultBundleManifest = {
     schema_version: "1.1",
     kind: "wco-result-bundle",
@@ -550,6 +552,7 @@ async function _buildResultBundle(ctx: {
     review_policy_sha256: review_policy_sha256,
     verdict_schema_sha256: verdict_schema_sha256,
     revision_request_schema_sha256: revision_request_schema_sha256,
+    reviewed_entry_set_sha256: reviewedEntrySetSha256,
     entries: manifestEntryList,
   };
   const manifestBuffer = canonicalJsonBuffer(manifest);
@@ -582,6 +585,7 @@ async function _buildResultBundle(ctx: {
     git_publish_receipt_sha256: gitPublishReceiptSha256,
     draft_pr_receipt_sha256: draftPrReceiptSha256,
     accepted_bundle_tree_sha256: acceptedBundleTreeSha256,
+    reviewed_entry_set_sha256: reviewedEntrySetSha256,
     change_set_sha256: changeSetSha256,
     base_commit: baseCommit,
     published_commit_sha: publishedCommitSha,

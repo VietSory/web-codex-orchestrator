@@ -53,7 +53,8 @@ async function buildMinimalValidZip(outputDir: string): Promise<string> {
     review_contract_sha256: "0".repeat(64),
     review_policy_sha256: "0".repeat(64),
     verdict_schema_sha256: "0".repeat(64),
-    revision_request_sha256: "0".repeat(64),
+    revision_request_schema_sha256: "0".repeat(64),
+    reviewed_entry_set_sha256: "0".repeat(64),
     entries: manifestEntryList,
   });
 
@@ -224,7 +225,7 @@ test("ZIP-V-PS-04: verifier rejects forbidden prefix (payload/file.txt)", async 
   }
 });
 
-test("ZIP-V-PS-05: verifier rejects Windows device name (CON.txt)", async () => {
+test("ZIP-V-PS-05: verifier rejects Windows device name in basename (CON.txt)", async () => {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "wco-zip-verify-"));
   try {
     const tmpRealDir = await fs.realpath(tmpDir);
@@ -243,12 +244,50 @@ test("ZIP-V-PS-05: verifier rejects Windows device name (CON.txt)", async () => 
   }
 });
 
-test("ZIP-V-PS-06: verifier rejects trailing dot/space (file. / file )", async () => {
+test("ZIP-V-PS-05b: verifier rejects Windows device name in middle segment (task/CON/file.txt)", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "wco-zip-verify-"));
+  try {
+    const tmpRealDir = await fs.realpath(tmpDir);
+    const zipPath = path.join(tmpRealDir, "windevice-mid.zip");
+    await buildZipWithCustomEntry(zipPath, "task/CON/file.txt");
+    await assert.rejects(
+      () => verifyResultBundleZip(zipPath),
+      (err: unknown) => {
+        assert.ok(err instanceof ResultBundleError);
+        assert.equal((err as ResultBundleError).code, "RESULT_SOURCE_PATH_UNSAFE");
+        return true;
+      }
+    );
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("ZIP-V-PS-06: verifier rejects trailing dot/space in basename (task/file.)", async () => {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "wco-zip-verify-"));
   try {
     const tmpRealDir = await fs.realpath(tmpDir);
     const zipPath = path.join(tmpRealDir, "trailing.zip");
     await buildZipWithCustomEntry(zipPath, "task/file.");
+    await assert.rejects(
+      () => verifyResultBundleZip(zipPath),
+      (err: unknown) => {
+        assert.ok(err instanceof ResultBundleError);
+        assert.equal((err as ResultBundleError).code, "RESULT_SOURCE_PATH_UNSAFE");
+        return true;
+      }
+    );
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("ZIP-V-PS-06b: verifier rejects trailing dot/space in middle segment (task/folder./file.txt)", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "wco-zip-verify-"));
+  try {
+    const tmpRealDir = await fs.realpath(tmpDir);
+    const zipPath = path.join(tmpRealDir, "trailing-mid.zip");
+    await buildZipWithCustomEntry(zipPath, "task/folder./file.txt");
     await assert.rejects(
       () => verifyResultBundleZip(zipPath),
       (err: unknown) => {
@@ -315,6 +354,12 @@ test("ZIP-V-008: required entry list includes task/README.md and review/web-revi
 
 // ── 2. Web Review Verdict Validator Tests ────────────────────────────────────
 
+const dummyManifestEntries = [
+  { path: "evidence/verification.json", sha256: "a".repeat(64), size_bytes: 100 },
+  { path: "manifest.json", sha256: "b".repeat(64), size_bytes: 200 },
+];
+const canonicalReviewedEntrySetSha = sha256Hex(canonicalJsonBuffer(dummyManifestEntries));
+
 function createValidReceipt(): ResultBundleReceipt {
   return {
     result_bundle_version: "1.1",
@@ -325,6 +370,7 @@ function createValidReceipt(): ResultBundleReceipt {
     git_publish_receipt_sha256: "3".repeat(64),
     draft_pr_receipt_sha256: "4".repeat(64),
     accepted_bundle_tree_sha256: "5".repeat(64),
+    reviewed_entry_set_sha256: canonicalReviewedEntrySetSha,
     change_set_sha256: "6".repeat(64),
     base_commit: "a".repeat(40),
     published_commit_sha: "b".repeat(40),
@@ -369,7 +415,7 @@ function createValidVerdict(receipt: ResultBundleReceipt): WebReviewVerdict {
     spec_set_sha256: receipt.spec_set_sha256!,
     result_bundle_sha256: receipt.archive_sha256!,
     manifest_sha256: receipt.manifest_sha256!,
-    reviewed_entry_set_sha256: receipt.accepted_bundle_tree_sha256,
+    reviewed_entry_set_sha256: receipt.reviewed_entry_set_sha256!,
     published_commit_sha: receipt.published_commit_sha,
     pull_request_number: receipt.pull_request.number,
     observed_head_sha: receipt.pull_request.head_sha,
@@ -395,13 +441,14 @@ function createValidVerdict(receipt: ResultBundleReceipt): WebReviewVerdict {
   };
 }
 
+const validBundleEntries = new Set(["evidence/verification.json", "manifest.json"]);
+
 test("WV-001: valid web review verdict passes validateWebVerdict", () => {
   const receipt = createValidReceipt();
   const verdict = createValidVerdict(receipt);
   const acceptance = { criteria: [{ id: "AC-1" }] };
-  const bundleEntries = new Set(["evidence/verification.json", "manifest.json"]);
 
-  assert.doesNotThrow(() => validateWebVerdict(verdict, acceptance, receipt, bundleEntries));
+  assert.doesNotThrow(() => validateWebVerdict(verdict, acceptance, receipt, validBundleEntries));
 });
 
 test("WV-002: validateWebVerdict rejects run_id mismatch", () => {
@@ -410,7 +457,7 @@ test("WV-002: validateWebVerdict rejects run_id mismatch", () => {
   verdict.run_id = "RUN-MISMATCH:0000000000000000000000000000000000000000000000000000000000000000";
 
   assert.throws(
-    () => validateWebVerdict(verdict, { criteria: [{ id: "AC-1" }] }, receipt),
+    () => validateWebVerdict(verdict, { criteria: [{ id: "AC-1" }] }, receipt, validBundleEntries),
     (err: unknown) => {
       assert.ok(err instanceof ResultBundleError);
       assert.equal((err as ResultBundleError).code, "RESULT_WEB_VERDICT_INVALID");
@@ -426,7 +473,7 @@ test("WV-003: validateWebVerdict rejects result_bundle_sha256 mismatch", () => {
   verdict.result_bundle_sha256 = "0".repeat(64);
 
   assert.throws(
-    () => validateWebVerdict(verdict, { criteria: [{ id: "AC-1" }] }, receipt),
+    () => validateWebVerdict(verdict, { criteria: [{ id: "AC-1" }] }, receipt, validBundleEntries),
     (err: unknown) => {
       assert.ok(err instanceof ResultBundleError);
       assert.equal((err as ResultBundleError).code, "RESULT_WEB_VERDICT_INVALID");
@@ -442,7 +489,7 @@ test("WV-004: validateWebVerdict rejects manifest_sha256 mismatch", () => {
   verdict.manifest_sha256 = "0".repeat(64);
 
   assert.throws(
-    () => validateWebVerdict(verdict, { criteria: [{ id: "AC-1" }] }, receipt),
+    () => validateWebVerdict(verdict, { criteria: [{ id: "AC-1" }] }, receipt, validBundleEntries),
     (err: unknown) => {
       assert.ok(err instanceof ResultBundleError);
       assert.equal((err as ResultBundleError).code, "RESULT_WEB_VERDICT_INVALID");
@@ -458,7 +505,7 @@ test("WV-005: validateWebVerdict rejects spec_set_sha256 mismatch", () => {
   verdict.spec_set_sha256 = "0".repeat(64);
 
   assert.throws(
-    () => validateWebVerdict(verdict, { criteria: [{ id: "AC-1" }] }, receipt),
+    () => validateWebVerdict(verdict, { criteria: [{ id: "AC-1" }] }, receipt, validBundleEntries),
     (err: unknown) => {
       assert.ok(err instanceof ResultBundleError);
       assert.equal((err as ResultBundleError).code, "RESULT_WEB_VERDICT_INVALID");
@@ -474,7 +521,7 @@ test("WV-006: validateWebVerdict rejects pull_request_number mismatch", () => {
   verdict.pull_request_number = 999;
 
   assert.throws(
-    () => validateWebVerdict(verdict, { criteria: [{ id: "AC-1" }] }, receipt),
+    () => validateWebVerdict(verdict, { criteria: [{ id: "AC-1" }] }, receipt, validBundleEntries),
     (err: unknown) => {
       assert.ok(err instanceof ResultBundleError);
       assert.equal((err as ResultBundleError).code, "RESULT_WEB_VERDICT_INVALID");
@@ -490,7 +537,7 @@ test("WV-007: validateWebVerdict rejects published_commit_sha mismatch", () => {
   verdict.published_commit_sha = "f".repeat(40);
 
   assert.throws(
-    () => validateWebVerdict(verdict, { criteria: [{ id: "AC-1" }] }, receipt),
+    () => validateWebVerdict(verdict, { criteria: [{ id: "AC-1" }] }, receipt, validBundleEntries),
     (err: unknown) => {
       assert.ok(err instanceof ResultBundleError);
       assert.equal((err as ResultBundleError).code, "RESULT_WEB_VERDICT_INVALID");
@@ -506,7 +553,7 @@ test("WV-008: validateWebVerdict rejects observed_head_sha mismatch", () => {
   verdict.observed_head_sha = "f".repeat(40);
 
   assert.throws(
-    () => validateWebVerdict(verdict, { criteria: [{ id: "AC-1" }] }, receipt),
+    () => validateWebVerdict(verdict, { criteria: [{ id: "AC-1" }] }, receipt, validBundleEntries),
     (err: unknown) => {
       assert.ok(err instanceof ResultBundleError);
       assert.equal((err as ResultBundleError).code, "RESULT_WEB_VERDICT_INVALID");
@@ -516,13 +563,17 @@ test("WV-008: validateWebVerdict rejects observed_head_sha mismatch", () => {
   );
 });
 
-test("WV-009: validateWebVerdict rejects reviewed_entry_set_sha256 mismatch", () => {
+test("WV-009: validateWebVerdict rejects reviewed_entry_set_sha256 mismatch (proves distinct from accepted_bundle_tree_sha256)", () => {
   const receipt = createValidReceipt();
+  // Prove that reviewed_entry_set_sha256 is distinct from accepted_bundle_tree_sha256
+  assert.notEqual(receipt.reviewed_entry_set_sha256, receipt.accepted_bundle_tree_sha256);
+
   const verdict = createValidVerdict(receipt);
-  verdict.reviewed_entry_set_sha256 = "0".repeat(64);
+  // Setting verdict to accepted_bundle_tree_sha256 (old wrong behavior) must be rejected
+  verdict.reviewed_entry_set_sha256 = receipt.accepted_bundle_tree_sha256;
 
   assert.throws(
-    () => validateWebVerdict(verdict, { criteria: [{ id: "AC-1" }] }, receipt),
+    () => validateWebVerdict(verdict, { criteria: [{ id: "AC-1" }] }, receipt, validBundleEntries),
     (err: unknown) => {
       assert.ok(err instanceof ResultBundleError);
       assert.equal((err as ResultBundleError).code, "RESULT_WEB_VERDICT_INVALID");
@@ -537,10 +588,8 @@ test("WV-010: validateWebVerdict rejects missing evidence reference in bundle en
   const verdict = createValidVerdict(receipt);
   verdict.criterion_results[0]!.evidence_refs = ["evidence/nonexistent.json"];
 
-  const bundleEntries = new Set(["evidence/verification.json", "manifest.json"]);
-
   assert.throws(
-    () => validateWebVerdict(verdict, { criteria: [{ id: "AC-1" }] }, receipt, bundleEntries),
+    () => validateWebVerdict(verdict, { criteria: [{ id: "AC-1" }] }, receipt, validBundleEntries),
     (err: unknown) => {
       assert.ok(err instanceof ResultBundleError);
       assert.equal((err as ResultBundleError).code, "RESULT_WEB_VERDICT_INVALID");
@@ -572,10 +621,8 @@ test("WV-011: validateWebVerdict rejects missing artifact path in blocking findi
     },
   ];
 
-  const bundleEntries = new Set(["evidence/verification.json", "manifest.json"]);
-
   assert.throws(
-    () => validateWebVerdict(verdict, { criteria: [{ id: "AC-1" }] }, receipt, bundleEntries),
+    () => validateWebVerdict(verdict, { criteria: [{ id: "AC-1" }] }, receipt, validBundleEntries),
     (err: unknown) => {
       assert.ok(err instanceof ResultBundleError);
       assert.equal((err as ResultBundleError).code, "RESULT_WEB_VERDICT_INVALID");

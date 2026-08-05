@@ -47,18 +47,21 @@ export function validateEntryPath(entryPath: string): void {
       throw new ResultBundleError("RESULT_SOURCE_PATH_UNSAFE", `Forbidden path prefix in: '${entryPath}'`);
     }
   }
-  // Windows device names
-  const last = entryPath.split("/").pop() ?? "";
-  const baseName = last.split(".")[0]?.toUpperCase() ?? "";
-  const winDevices = new Set(["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4",
+  // Windows device names and trailing dot/space policy on ALL path segments
+  const winDevices = new Set([
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4",
     "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4",
-    "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"]);
-  if (winDevices.has(baseName)) {
-    throw new ResultBundleError("RESULT_SOURCE_PATH_UNSAFE", `Windows device name in path: '${entryPath}'`);
-  }
-  // Trailing dot or space
-  if (last.endsWith(".") || last.endsWith(" ")) {
-    throw new ResultBundleError("RESULT_SOURCE_PATH_UNSAFE", `Path segment has trailing dot/space: '${entryPath}'`);
+    "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+  ]);
+  const segments = entryPath.split("/");
+  for (const segment of segments) {
+    const baseName = segment.split(".")[0]?.toUpperCase() ?? "";
+    if (winDevices.has(baseName)) {
+      throw new ResultBundleError("RESULT_SOURCE_PATH_UNSAFE", `Windows device name in path segment: '${entryPath}'`);
+    }
+    if (segment.endsWith(".") || segment.endsWith(" ")) {
+      throw new ResultBundleError("RESULT_SOURCE_PATH_UNSAFE", `Path segment has trailing dot/space: '${entryPath}'`);
+    }
   }
 }
 

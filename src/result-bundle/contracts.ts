@@ -185,6 +185,8 @@ export interface ResultBundleReceipt {
   verdict_schema_sha256: string | null;
   /** SHA256 of the review/revision-request.schema.json */
   revision_request_schema_sha256: string | null;
+  /** SHA256 of the sorted manifest entry descriptors (canonical JSON) */
+  reviewed_entry_set_sha256: string | null;
 }
 
 /** Per-entry in zip manifest */
@@ -211,6 +213,7 @@ export interface ResultBundleManifest {
   review_policy_sha256: string;
   verdict_schema_sha256: string;
   revision_request_schema_sha256: string;
+  reviewed_entry_set_sha256: string;
   entries: ManifestEntry[];
 }
 
