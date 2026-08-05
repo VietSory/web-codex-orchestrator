@@ -1,0 +1,25 @@
+{
+  "policy_version": "1.0",
+  "review_model": "closed-world-comprehensive",
+  "maximum_revision_rounds": 3,
+  "initial_review": {
+    "requires_complete_required_criterion_matrix": true,
+    "requires_all_current_blockers_in_one_verdict": true,
+    "may_stop_after_first_blocker": false
+  },
+  "revision_review": {
+    "allowed_revise_finding_origins": [
+      "PREVIOUS_UNRESOLVED",
+      "REVISION_REGRESSION",
+      "REVISION_EVIDENCE_INVALIDATION"
+    ],
+    "forbid_new_blocker_on_unchanged_previous_pass": true,
+    "unchanged_critical_security_behavior": "ESCALATE"
+  },
+  "notifications": {
+    "approve": "ASK_USER_TO_MERGE",
+    "revise": "NO_USER_MERGE_PROMPT",
+    "escalate": "NOTIFY_USER_EXCEPTION"
+  },
+  "outside_lock_observations": "NON_BLOCKING_BACKLOG"
+}

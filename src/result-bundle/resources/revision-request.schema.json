@@ -1,30 +1,43 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "wco:revision-request:1.0",
+  "$id": "wco:revision-request:1.1",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema_version",
     "run_id",
+    "revision_round",
     "spec_set_sha256",
     "previous_result_bundle_sha256",
+    "previous_verdict_sha256",
     "previous_published_commit_sha",
     "previous_pr_head_sha",
+    "pull_request_number",
     "findings"
   ],
   "properties": {
     "schema_version": {
-      "const": "1.0"
+      "const": "1.1"
     },
     "run_id": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "revision_round": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3
     },
     "spec_set_sha256": {
       "type": "string",
       "pattern": "^[a-f0-9]{64}$"
     },
     "previous_result_bundle_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "previous_verdict_sha256": {
       "type": "string",
       "pattern": "^[a-f0-9]{64}$"
     },
@@ -36,6 +49,10 @@
       "type": "string",
       "pattern": "^[a-f0-9]{40}$"
     },
+    "pull_request_number": {
+      "type": "integer",
+      "minimum": 1
+    },
     "findings": {
       "type": "array",
       "minItems": 1,
@@ -46,7 +63,11 @@
         "required": [
           "finding_id",
           "classification",
+          "finding_origin",
           "locked_reference_ids",
+          "artifact_paths",
+          "line_or_json_pointer",
+          "evidence",
           "minimal_required_fix"
         ],
         "properties": {
@@ -62,13 +83,40 @@
               "REPOSITORY_DRIFT"
             ]
           },
+          "finding_origin": {
+            "enum": [
+              "INITIAL_DISCOVERY",
+              "PREVIOUS_UNRESOLVED",
+              "REVISION_REGRESSION",
+              "REVISION_EVIDENCE_INVALIDATION"
+            ]
+          },
           "locked_reference_ids": {
             "type": "array",
             "minItems": 1,
+            "uniqueItems": true,
             "items": {
               "type": "string",
               "minLength": 1
             }
+          },
+          "artifact_paths": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "line_or_json_pointer": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16384
           },
           "minimal_required_fix": {
             "type": "string",

@@ -1,21 +1,24 @@
-# WEB REVIEW CONTRACT — CLOSED-WORLD REVIEW
+# WEB REVIEW CONTRACT — CLOSED-WORLD, COMPREHENSIVE REVIEW
 
-## Purpose
+## 1. Role
 
 The Web reviewer is the final independent reviewer of one exact Result Bundle.
-It is not a second product manager and may not expand the locked implementation
-scope after the agent has implemented it.
+It is not a second product manager. It may verify the frozen specification but
+must not expand it after implementation.
 
-The review universe is closed by:
+The closed review universe is:
 
-1. the original task bundle;
-2. `SPEC-LOCK.json`;
-3. the locked acceptance criteria;
-4. the locked test matrix;
-5. the locked security invariants and non-goals;
-6. the exact Result Bundle SHA-256.
+1. `task/spec-lock.json` and its `spec_set_sha256`;
+2. the exact authoritative task files covered by that lock;
+3. the locked required acceptance criteria and test matrix;
+4. the locked security invariants, risk policy and non-goals;
+5. the exact Result Bundle SHA-256 and manifest SHA-256;
+6. the exact published commit and observed Pull Request head SHA;
+7. this review contract and `review/web-review-policy.json`.
 
-## Allowed verdicts
+No requirement outside that universe can become a normal blocking finding.
+
+## 2. Verdicts
 
 ```text
 APPROVE
@@ -25,103 +28,105 @@ ESCALATE
 
 ### APPROVE
 
-Required when all locked required acceptance criteria are supported by valid
-evidence, no locked invariant is violated, and no permitted blocking finding
-exists.
+The reviewer MUST return `APPROVE` when:
 
-`APPROVE` is the only normal verdict that creates a user notification asking:
+- exactly one result exists for every locked required acceptance criterion;
+- every required criterion is `PASS` with concrete artifact evidence;
+- every locked invariant passes;
+- there are zero valid blocking findings;
+- artifact identity and integrity bindings are valid.
 
-```text
-The implementation has passed all locked gates.
-Do you want to merge the Pull Request?
-```
-
-The Web reviewer does not merge.
+Only `APPROVE` emits the normal user notification asking whether to merge. The
+reviewer never merges.
 
 ### REVISE
 
-Allowed only when at least one concrete finding is mapped to:
-
-- a locked acceptance criterion ID;
-- a locked rule or invariant;
-- exact file/line or artifact evidence;
-- a required observable fix.
-
-`REVISE` must not notify the user with a merge decision. It creates a structured
-revision request and returns the task to the automated implementation,
-verification, Terra review, Sol review, publication and Result Bundle process.
-
-A revision request may correct only:
+`REVISE` is allowed only for concrete, fixable deviations from the frozen lock:
 
 - `SPEC_VIOLATION`;
 - `IMPLEMENTATION_DEFECT`;
 - `EVIDENCE_GAP`;
 - `REPOSITORY_DRIFT`.
 
-It may not add a feature, preference, architecture goal, delivery channel,
-security model, acceptance criterion or non-goal that was absent from the lock.
+Every finding must identify locked references, exact artifact evidence and the
+minimal observable fix. `REVISE` emits no merge prompt and returns a
+machine-readable revision request to the automated implementation loop.
 
 ### ESCALATE
 
-Allowed only when automation cannot safely continue, for example:
+`ESCALATE` is reserved for cases automation cannot safely resolve under the
+frozen lock:
 
-- an unavoidable contradiction inside the locked specification;
-- human credentials or destructive approval are required;
-- an external system changed in a way that invalidates the frozen assumptions;
-- the Result Bundle is incomplete or cannot be trusted;
-- a severe security fact has concrete evidence but cannot be expressed as a
-  correction to an existing locked invariant.
+- `SPEC_CONTRADICTION`;
+- `HUMAN_REQUIRED`;
+- `CRITICAL_SECURITY_EXCEPTION`;
+- `ARTIFACT_UNTRUSTED`;
+- `REVISION_BUDGET_EXHAUSTED`.
 
-`ESCALATE` may notify the user, but it is an exception notification, not a merge
-prompt.
+It may notify the user as an exception, never as a merge prompt.
 
-## Mandatory closed-world rule
+## 3. Mandatory full review on the first Result Bundle
 
-If the implementation satisfies every locked required criterion and invariant,
-the Web reviewer MUST return `APPROVE`.
+The first Web review is a comprehensive review, not an incremental issue hunt.
+It must:
 
-The Web reviewer MUST NOT return `REVISE` because of:
+1. validate artifact identity and checksums;
+2. evaluate every locked required criterion;
+3. emit exactly one criterion result per required criterion;
+4. inspect every changed/deleted path and all supplied source/diff evidence;
+5. return all currently known valid blockers in one verdict;
+6. set `comprehensive_review_complete: true` before returning `APPROVE` or
+   `REVISE`.
 
-- stylistic preference;
-- a different architecture it would have chosen;
-- an optional optimization;
-- an additional feature;
-- a newly imagined edge case outside the frozen threat model;
-- a non-blocking maintainability suggestion;
-- an undocumented personal standard.
+The reviewer may not intentionally stop after finding the first issue.
 
-Such observations may be recorded only as `NON_BLOCKING_BACKLOG` and must not
-prevent approval.
+## 4. Anti-drip rule for later revision reviews
 
-## Blocking finding schema
+A later revision review receives the previous Result Bundle, previous verdict,
+revision request and the exact revision delta.
 
-Every blocking finding must include:
+A normal new `REVISE` finding is valid only when its origin is one of:
 
-```text
-finding_id
-classification
-locked_reference_ids[]
-artifact_paths[]
-line_or_json_pointer
-expected_behavior
-observed_behavior
-evidence
-minimal_required_fix
-```
+- `PREVIOUS_UNRESOLVED`: a prior blocker is still present;
+- `REVISION_REGRESSION`: the requested fix introduced or exposed a defect in a
+  path changed by the revision;
+- `REVISION_EVIDENCE_INVALIDATION`: revision changes made previously valid
+  evidence stale or false.
 
-A finding without locked references and concrete evidence is invalid and cannot
-produce `REVISE`.
+The reviewer MUST NOT introduce a normal blocker against an unchanged artifact
+or criterion that was `PASS` in the previous comprehensive verdict.
 
-## Artifact binding
+A newly discovered critical security fact in unchanged content cannot be hidden,
+but it must use `ESCALATE` with `CRITICAL_SECURITY_EXCEPTION`; it may not silently
+restart an unbounded `REVISE` loop.
 
-The verdict must bind:
+## 5. Non-blocking observations
+
+These cannot prevent approval:
+
+- style preferences;
+- alternative architecture preferences;
+- optional refactors or optimizations;
+- additional features;
+- edge cases outside the frozen threat model;
+- undocumented personal standards;
+- maintainability suggestions with no locked violation.
+
+They may appear only in `non_blocking_backlog`.
+
+## 6. Binding and completeness
+
+Every verdict binds:
 
 - run ID;
+- `spec_set_sha256`;
 - Result Bundle SHA-256;
-- manifest SHA-256;
+- Result Bundle manifest SHA-256;
+- reviewed entry-set SHA-256;
 - published commit SHA;
-- Pull Request number;
-- observed Pull Request head SHA;
-- review contract version.
+- Pull Request number and observed head SHA;
+- review contract version and policy version;
+- previous bundle/verdict/revision-request hashes for revision reviews.
 
-A verdict for another archive or commit is stale and must be rejected.
+The verdict validator must reject missing, duplicated or unknown criterion IDs,
+stale artifact bindings and invalid verdict/finding combinations.

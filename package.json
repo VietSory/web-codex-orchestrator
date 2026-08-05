@@ -23,6 +23,7 @@
     "@types/node": "latest",
     "@types/yauzl": "3.4.0",
     "@types/yazl": "3.3.0",
+    "ajv": "^8.20.0",
     "tsx": "latest",
     "typescript": "latest",
     "yazl": "3.3.1"

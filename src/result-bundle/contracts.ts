@@ -167,8 +167,20 @@ export interface ResultBundleReceipt {
   created_at: string;
   updated_at: string;
   built_at: string | null;
+  /** The strict timestamp when the bundle successfully passed ZIP verification and became immutable */
   verified_at: string | null;
+  /** The strict timestamp when the receipt state transitioned to READY_FOR_WEB_REVIEW */
   ready_at: string | null;
+  /** SHA256 of the generated task/spec-lock.json authoritative file set */
+  spec_set_sha256: string;
+  /** SHA256 of the review/WEB-REVIEW-CONTRACT.md */
+  review_contract_sha256: string;
+  /** SHA256 of the review/web-review-policy.json */
+  review_policy_sha256: string;
+  /** SHA256 of the review/web-review-verdict.schema.json */
+  verdict_schema_sha256: string;
+  /** SHA256 of the review/revision-request.schema.json */
+  revision_request_schema_sha256: string;
 }
 
 /** Per-entry in zip manifest */
@@ -180,7 +192,7 @@ export interface ManifestEntry {
 
 /** Zip manifest.json content */
 export interface ResultBundleManifest {
-  schema_version: "1.0";
+  schema_version: "1.1";
   kind: "wco-result-bundle";
   run_id: string;
   archive_filename: string;
@@ -190,6 +202,11 @@ export interface ResultBundleManifest {
   pull_request_number: number;
   task_id: string;
   created_at: string;
+  spec_set_sha256: string;
+  review_contract_sha256: string;
+  review_policy_sha256: string;
+  verdict_schema_sha256: string;
+  revision_request_schema_sha256: string;
   entries: ManifestEntry[];
 }
 

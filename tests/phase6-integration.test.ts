@@ -68,6 +68,7 @@ test("Phase 6 Integration: full deterministic result bundle packaging", async (t
     const headCommit = headCommitOut.trim();
 
     // Setup fake task bundle
+    await fs.writeFile(path.join(bundlePath, "manifest.json"), JSON.stringify({ version: "1.0" }));
     await fs.writeFile(path.join(bundlePath, "REQUEST.md"), "Request");
     await fs.writeFile(path.join(bundlePath, "PLAN.md"), "Plan");
     await fs.writeFile(path.join(bundlePath, "RULES.md"), "Rules");
@@ -75,6 +76,7 @@ test("Phase 6 Integration: full deterministic result bundle packaging", async (t
     await fs.writeFile(path.join(bundlePath, "SOURCES.md"), "Sources");
     await fs.writeFile(path.join(bundlePath, "VALIDATION.md"), "Validation");
     await fs.writeFile(path.join(bundlePath, "acceptance.json"), "{}");
+    await fs.writeFile(path.join(bundlePath, "checksums.json"), "{}");
     await fs.writeFile(path.join(bundlePath, "test-matrix.json"), "{}");
     await fs.writeFile(path.join(bundlePath, "validation.json"), "{}");
     await fs.writeFile(path.join(bundlePath, "risk-policy.json"), "{}");
@@ -189,6 +191,11 @@ test("Phase 6 Integration: full deterministic result bundle packaging", async (t
     assert.equal(receipt.state, "READY_FOR_WEB_REVIEW");
     assert.equal(receipt.run_id, runId);
     assert.ok(receipt.archive_relative_path.startsWith("handoff/"));
+    assert.ok(receipt.spec_set_sha256.length === 64, "Should have spec_set_sha256");
+    assert.ok(receipt.review_contract_sha256.length === 64, "Should have review_contract_sha256");
+    assert.ok(receipt.review_policy_sha256.length === 64, "Should have review_policy_sha256");
+    assert.ok(receipt.verdict_schema_sha256.length === 64, "Should have verdict_schema_sha256");
+    assert.ok(receipt.revision_request_schema_sha256.length === 64, "Should have revision_request_schema_sha256");
     
     // Verify Zip manually via verifier
     const absoluteZipPath = path.join(stateDirectory, receipt.archive_relative_path);

@@ -361,16 +361,44 @@ async function _buildResultBundle(ctx: {
   ].join("\n") + "\n");
 
   // task/ files
-  addBuffer("task/REQUEST.md", await readBundleFile("REQUEST.md"));
+  const manifestJsonBuf = await readBundleFile("manifest.json");
+  const requestMdBuf = await readBundleFile("REQUEST.md");
+
+  addBuffer("task/manifest.json", manifestJsonBuf);
+  addBuffer("task/REQUEST.md", requestMdBuf);
   addBuffer("task/PLAN.md", await readBundleFile("PLAN.md"));
   addBuffer("task/RULES.md", await readBundleFile("RULES.md"));
   addBuffer("task/RESEARCH.md", await readBundleFile("RESEARCH.md"));
   addBuffer("task/SOURCES.md", await readBundleFile("SOURCES.md"));
   addBuffer("task/VALIDATION.md", await readBundleFile("VALIDATION.md"));
   addBuffer("task/acceptance.json", await readBundleFile("acceptance.json"));
+  addBuffer("task/checksums.json", await readBundleFile("checksums.json"));
   addBuffer("task/test-matrix.json", await readBundleFile("test-matrix.json"));
   addBuffer("task/validation.json", await readBundleFile("validation.json"));
   addBuffer("task/risk-policy.json", await readBundleFile("risk-policy.json"));
+
+  const specLockAuthoritativeFiles = [
+    {
+      path: "task/manifest.json",
+      sha256: sha256Hex(manifestJsonBuf),
+      size_bytes: manifestJsonBuf.byteLength,
+    },
+    {
+      path: "task/REQUEST.md",
+      sha256: sha256Hex(requestMdBuf),
+      size_bytes: requestMdBuf.byteLength,
+    }
+  ];
+  const specSetSha256 = sha256Hex(canonicalJsonBuffer(specLockAuthoritativeFiles));
+  const specLockJson = canonicalJsonBuffer({
+    lock_version: "1.0",
+    task_id: taskId,
+    task_archive_sha256: archiveSha,
+    accepted_bundle_tree_sha256: acceptedBundleTreeSha256,
+    authoritative_files: specLockAuthoritativeFiles,
+    spec_set_sha256: specSetSha256
+  });
+  addBuffer("task/spec-lock.json", specLockJson);
 
   // evidence/ files
   addJson("evidence/execution.json", publicExecution);
@@ -413,9 +441,20 @@ async function _buildResultBundle(ctx: {
   addJson("github/pull-request.json", prAttestation);
 
   // review/ files (frozen embedded resources)
-  addBuffer("review/WEB-REVIEW-CONTRACT.md", readResource("WEB-REVIEW-CONTRACT.md"));
-  addBuffer("review/revision-request.schema.json", readResource("revision-request.schema.json"));
-  addBuffer("review/web-review-verdict.schema.json", readResource("web-review-verdict.schema.json"));
+  const reviewContractBuf = readResource("WEB-REVIEW-CONTRACT.md");
+  const revisionRequestBuf = readResource("revision-request.schema.json");
+  const webReviewVerdictBuf = readResource("web-review-verdict.schema.json");
+  const webReviewPolicyBuf = readResource("web-review-policy.json");
+
+  addBuffer("review/WEB-REVIEW-CONTRACT.md", reviewContractBuf);
+  addBuffer("review/revision-request.schema.json", revisionRequestBuf);
+  addBuffer("review/web-review-verdict.schema.json", webReviewVerdictBuf);
+  addBuffer("review/web-review-policy.json", webReviewPolicyBuf);
+
+  const review_contract_sha256 = sha256Hex(reviewContractBuf);
+  const revision_request_schema_sha256 = sha256Hex(revisionRequestBuf);
+  const verdict_schema_sha256 = sha256Hex(webReviewVerdictBuf);
+  const review_policy_sha256 = sha256Hex(webReviewPolicyBuf);
 
   // repository/source/ files
   for (const [filePath, content] of gitEvidence.sourceFiles) {
@@ -445,7 +484,7 @@ async function _buildResultBundle(ctx: {
   manifestEntryList.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 
   const manifest: ResultBundleManifest = {
-    schema_version: "1.0",
+    schema_version: "1.1",
     kind: "wco-result-bundle",
     run_id: runId,
     archive_filename: archiveFilename,
@@ -455,6 +494,11 @@ async function _buildResultBundle(ctx: {
     pull_request_number: prNumber,
     task_id: taskId,
     created_at: createdAt,
+    spec_set_sha256: specSetSha256,
+    review_contract_sha256: review_contract_sha256,
+    review_policy_sha256: review_policy_sha256,
+    verdict_schema_sha256: verdict_schema_sha256,
+    revision_request_schema_sha256: revision_request_schema_sha256,
     entries: manifestEntryList,
   };
   const manifestBuffer = canonicalJsonBuffer(manifest);
@@ -506,7 +550,7 @@ async function _buildResultBundle(ctx: {
   );
 
   const finalReceipt: ResultBundleReceipt = {
-    result_bundle_version: "1.0",
+    result_bundle_version: "1.1",
     run_id: runId,
     state: "READY_FOR_WEB_REVIEW",
     input_digest_sha256,
@@ -531,6 +575,11 @@ async function _buildResultBundle(ctx: {
     built_at: builtAt,
     verified_at: verifiedAt,
     ready_at: currentIso(now),
+    spec_set_sha256: specSetSha256,
+    review_contract_sha256: review_contract_sha256,
+    review_policy_sha256: review_policy_sha256,
+    verdict_schema_sha256: verdict_schema_sha256,
+    revision_request_schema_sha256: revision_request_schema_sha256,
   };
 
   await writeResultBundleReceipt(paths.receiptPath, finalReceipt);
