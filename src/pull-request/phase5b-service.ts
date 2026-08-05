@@ -46,7 +46,8 @@ export async function createPreparedDraftPullRequest(context: PreparedDraftPullR
   const verifyRemoteHead = async () => {
     const headOutput = await context.gitRunner.run(["ls-remote", "--heads", context.remoteName, `refs/heads/${context.headBranch}`], context.worktreePath);
     const headLines = headOutput.stdout.trim().split("\n").filter(Boolean);
-    if (headLines.length !== 1 || !headLines[0].startsWith(context.expectedHeadSha)) {
+    const firstHead = headLines[0];
+    if (headLines.length !== 1 || !firstHead || !firstHead.startsWith(context.expectedHeadSha)) {
       throw new DraftPullRequestError("PR_REMOTE_BRANCH_MISMATCH", "Remote head branch does not exactly match the expected Phase 5A SHA.");
     }
 
@@ -197,7 +198,7 @@ export async function createDraftPullRequestForRun(options: Phase5BDraftPrOption
       gitRunner,
       worktreePath: execution.worktree_path,
       remoteName: p5aReceipt.remote_name,
-      now: options.now
+      ...(options.now ? { now: options.now } : {})
     });
 
   } finally {

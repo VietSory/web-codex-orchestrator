@@ -126,13 +126,22 @@ WCO will not mark it ready, merge it, delete the branch, or modify review metada
 
     // If multiple candidates are returned for the head -> CONFLICT MULTIPLE_CANDIDATES
     const headBranchCandidates = validCandidates.filter(c => c.head.ref === input.headBranch);
+    
     if (headBranchCandidates.length > 1) {
-      return { exact: null, conflict: "MULTIPLE_CANDIDATES" as const, pr: headBranchCandidates[0] };
+      const firstCandidate = headBranchCandidates[0];
+      if (firstCandidate) {
+        return { exact: null, conflict: "MULTIPLE_CANDIDATES" as const, pr: firstCandidate };
+      }
     }
 
     if (headBranchCandidates.length === 1) {
-      const c = headBranchCandidates[0];
-      if (matchingCandidates.length === 1 && matchingCandidates[0].number === c.number) {
+      const [c] = headBranchCandidates;
+      if (!c) {
+        throw new DraftPullRequestError("PR_REQUEST_INVALID", "Expected one pull request candidate.");
+      }
+
+      const [matchingCandidate] = matchingCandidates;
+      if (matchingCandidates.length === 1 && matchingCandidate && matchingCandidate.number === c.number) {
         return { exact: c, conflict: null, pr: c };
       }
       
