@@ -401,27 +401,53 @@ async function _buildResultBundle(ctx: {
     "Use `review/revision-request.schema.json` for revision requests.",
   ].join("\n") + "\n");
 
-  // task/ files
+  // task/ files from bundle disk
   const taskFiles: { name: string; buffer: Buffer }[] = [];
-  for (const name of ["manifest.json", "REQUEST.md", "PLAN.md", "RULES.md", "RESEARCH.md", "SOURCES.md", "VALIDATION.md", "acceptance.json", "checksums.json", "test-matrix.json", "validation.json", "risk-policy.json"]) {
+  for (const name of [
+    "manifest.json", "REQUEST.md", "PLAN.md", "RULES.md",
+    "RESEARCH.md", "SOURCES.md", "VALIDATION.md", "acceptance.json",
+    "checksums.json", "test-matrix.json", "validation.json", "risk-policy.json",
+  ]) {
     const buf = await readBundleFile(name);
     taskFiles.push({ name, buffer: buf });
     addBuffer(`task/${name}`, buf);
   }
 
-  const specLockAuthoritativeFiles = taskFiles.map(f => ({
-    path: `task/${f.name}`,
-    sha256: sha256Hex(f.buffer),
-    size_bytes: f.buffer.byteLength
-  }));
-  const specSetSha256 = sha256Hex(canonicalJsonBuffer(specLockAuthoritativeFiles));
+  // task/README.md — generated (authoritative task readme)
+  const taskReadmeText = [
+    "# Task Specification",
+    "",
+    `Task ID: \`${taskId}\``,
+    `Run ID: \`${runId}\``,
+    `Archive SHA-256: \`${archiveSha}\``,
+    "",
+    "This directory contains the complete, authoritative task specification.",
+    "All files are included verbatim from the accepted task bundle.",
+    "The spec_set_sha256 in task/spec-lock.json covers every file in this directory.",
+  ].join("\n") + "\n";
+  const taskReadmeBuf = Buffer.from(taskReadmeText, "utf8");
+  taskFiles.push({ name: "README.md", buffer: taskReadmeBuf });
+  addBuffer("task/README.md", taskReadmeBuf);
+
+  // Build spec_set from all task/ files (including README.md)
+  // Sorted lexically to ensure deterministic hashing
+  const specLockInputFiles = [...taskFiles]
+    .sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
+    .map(f => ({
+      path: `task/${f.name}`,
+      sha256: sha256Hex(f.buffer),
+      size_bytes: f.buffer.byteLength,
+    }));
+  const specSetSha256 = sha256Hex(canonicalJsonBuffer(specLockInputFiles));
+
+  // task/spec-lock.json — generated (also part of spec set per schema)
   const specLockJson = canonicalJsonBuffer({
     lock_version: "1.0",
     task_id: taskId,
     task_archive_sha256: archiveSha,
     accepted_bundle_tree_sha256: acceptedBundleTreeSha256,
-    authoritative_files: specLockAuthoritativeFiles,
-    spec_set_sha256: specSetSha256
+    authoritative_files: specLockInputFiles,
+    spec_set_sha256: specSetSha256,
   });
   addBuffer("task/spec-lock.json", specLockJson);
 

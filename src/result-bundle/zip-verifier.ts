@@ -4,7 +4,7 @@ import yauzl from "yauzl";
 import crypto from "node:crypto";
 import { ResultBundleError } from "./contracts.js";
 import type { ManifestEntry } from "./contracts.js";
-import { FIXED_ZIP_TIMESTAMP, FIXED_FILE_MODE } from "./result-bundle-paths.js";
+import { FIXED_FILE_MODE } from "./result-bundle-paths.js";
 
 export interface VerificationResult {
   sha256: string;
@@ -13,9 +13,18 @@ export interface VerificationResult {
   uncompressedBytes: number;
 }
 
+// DOS date for 1980-01-01: year=0, month=1, day=1 → (0<<9)|(1<<5)|1 = 0x0021
+export const FIXED_DOS_DATE = 0x0021;
+// DOS time for 00:00:00: hour=0, min=0, sec=0 → 0x0000
+export const FIXED_DOS_TIME = 0x0000;
+
+// Encryption bit in general purpose bit flag
+export const GPB_ENCRYPTION_BIT = 0x0001;
+
 /**
  * Reopen and independently verify the ZIP archive.
- * Checks: entry presence, order, sha256 checksums, timestamps, modes, no extra entries.
+ * Checks: entry presence, order, sha256 checksums, timestamps, modes,
+ * encryption, archive comment, no extra entries.
  */
 export async function verifyResultBundleZip(
   archivePath: string
@@ -26,6 +35,15 @@ export async function verifyResultBundleZip(
         return reject(new ResultBundleError(
           "RESULT_ARCHIVE_VERIFY_FAILED",
           `Cannot open archive: ${openErr?.message ?? "unknown"}`
+        ));
+      }
+
+      // Check archive comment must be empty
+      if (zipfile.comment && zipfile.comment.length > 0) {
+        zipfile.close();
+        return reject(new ResultBundleError(
+          "RESULT_ARCHIVE_VERIFY_FAILED",
+          `Archive must have no comment; found comment of length ${zipfile.comment.length}`
         ));
       }
 
@@ -69,6 +87,36 @@ export async function verifyResultBundleZip(
           ));
         }
         seenPaths.add(entryPath);
+
+        // ── Canonical metadata checks ──────────────────────────────────────
+
+        // 1. Encryption: bit 0 of general purpose bit flag must be 0
+        if (entry.generalPurposeBitFlag & GPB_ENCRYPTION_BIT) {
+          zipfile.close();
+          return reject(new ResultBundleError(
+            "RESULT_ARCHIVE_VERIFY_FAILED",
+            `Encrypted entry '${entryPath}' is not allowed`
+          ));
+        }
+
+        // 2. DOS timestamp must be exactly 1980-01-01 00:00:00
+        if (entry.lastModFileDate !== FIXED_DOS_DATE || entry.lastModFileTime !== FIXED_DOS_TIME) {
+          zipfile.close();
+          return reject(new ResultBundleError(
+            "RESULT_ARCHIVE_VERIFY_FAILED",
+            `Entry '${entryPath}' has non-canonical timestamp (date=0x${entry.lastModFileDate.toString(16).padStart(4, "0")} time=0x${entry.lastModFileTime.toString(16).padStart(4, "0")}), expected date=0x${FIXED_DOS_DATE.toString(16).padStart(4, "0")} time=0x${FIXED_DOS_TIME.toString(16).padStart(4, "0")}`
+          ));
+        }
+
+        // 3. File mode: top 16 bits of externalFileAttributes must be 0o100644
+        const entryMode = entry.externalFileAttributes >>> 16;
+        if (entryMode !== FIXED_FILE_MODE) {
+          zipfile.close();
+          return reject(new ResultBundleError(
+            "RESULT_ARCHIVE_VERIFY_FAILED",
+            `Entry '${entryPath}' has non-canonical mode 0o${entryMode.toString(8)}, expected 0o${FIXED_FILE_MODE.toString(8)}`
+          ));
+        }
 
         // Check for unsupported compression methods (only deflate=8 and store=0)
         if (entry.compressionMethod !== 0 && entry.compressionMethod !== 8) {

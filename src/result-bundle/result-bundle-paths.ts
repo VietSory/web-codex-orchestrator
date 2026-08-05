@@ -54,15 +54,20 @@ export const REQUIRED_RESULT_BUNDLE_ENTRIES = [
   "repository/diff.patch",
   "review/WEB-REVIEW-CONTRACT.md",
   "review/revision-request.schema.json",
+  "review/web-review-policy.json",
   "review/web-review-verdict.schema.json",
   "task/PLAN.md",
+  "task/README.md",
   "task/REQUEST.md",
   "task/RESEARCH.md",
   "task/RULES.md",
   "task/SOURCES.md",
   "task/VALIDATION.md",
   "task/acceptance.json",
+  "task/checksums.json",
+  "task/manifest.json",
   "task/risk-policy.json",
+  "task/spec-lock.json",
   "task/test-matrix.json",
   "task/validation.json",
 ] as const;
@@ -73,8 +78,8 @@ export const SOURCE_ENTRY_PREFIX = "repository/source/";
 /** Forbidden path prefixes in ZIP entries */
 export const FORBIDDEN_ENTRY_PREFIXES = ["payload/", ".git/"];
 
-/** Fixed DOS timestamp for canonical ZIP metadata: 1980-01-01T00:00:00Z */
-export const FIXED_ZIP_TIMESTAMP = new Date(Date.UTC(1980, 0, 1, 0, 0, 0));
+/** Fixed DOS timestamp for canonical ZIP metadata: 1980-01-01T00:00:00 (local midnight — yazl encodes using local time fields) */
+export const FIXED_ZIP_TIMESTAMP = new Date(1980, 0, 1, 0, 0, 0);
 
 /** Fixed file mode for ZIP entries: 0100644 */
 export const FIXED_FILE_MODE = 0o100644;
