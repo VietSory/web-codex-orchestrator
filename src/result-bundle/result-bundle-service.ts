@@ -645,6 +645,12 @@ async function _buildResultBundle(ctx: {
 
   // ── Step 9: Independent reopen and verification ────────────────────────────
   const verified = await verifyResultBundleZip(builtArchive.archivePath);
+  if (verified.reviewedEntrySetSha256 !== baseReceipt.reviewed_entry_set_sha256) {
+    throw new ResultBundleError(
+      "RESULT_ARCHIVE_VERIFY_FAILED",
+      `Independent verifier reviewed_entry_set_sha256 mismatch: got ${verified.reviewedEntrySetSha256}, expected ${baseReceipt.reviewed_entry_set_sha256}`
+    );
+  }
   const verifiedAt = String(executionRaw.created_at ?? currentIso(now));
 
   // Persist VERIFIED

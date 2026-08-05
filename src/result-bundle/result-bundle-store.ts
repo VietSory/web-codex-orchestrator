@@ -33,6 +33,7 @@ const REQUIRED_RECEIPT_FIELDS: ReadonlyArray<keyof ResultBundleReceipt> = [
   "built_at",
   "verified_at",
   "ready_at",
+  "reviewed_entry_set_sha256",
 ];
 
 const VALID_STATES = new Set<ResultBundleState>([
@@ -60,7 +61,8 @@ function assertReceipt(value: unknown): asserts value is ResultBundleReceipt {
     "input_digest_sha256", "execution_receipt_sha256", "git_publish_receipt_sha256",
     "draft_pr_receipt_sha256", "accepted_bundle_tree_sha256", "change_set_sha256",
     "archive_sha256", "manifest_sha256", "spec_set_sha256", "review_contract_sha256",
-    "review_policy_sha256", "verdict_schema_sha256", "revision_request_schema_sha256"
+    "review_policy_sha256", "verdict_schema_sha256", "revision_request_schema_sha256",
+    "reviewed_entry_set_sha256",
   ] as const) {
     const v = obj[shaField];
     if (v === null) {

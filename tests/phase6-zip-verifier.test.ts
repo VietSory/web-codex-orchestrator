@@ -37,6 +37,7 @@ async function buildMinimalValidZip(outputDir: string): Promise<string> {
     sha256: sha256Hex(e.content),
     size_bytes: e.content.byteLength,
   }));
+  const reviewedEntrySetSha256 = sha256Hex(canonicalJsonBuffer(manifestEntryList));
 
   const manifestContent = canonicalJsonBuffer({
     schema_version: "1.1",
@@ -54,7 +55,7 @@ async function buildMinimalValidZip(outputDir: string): Promise<string> {
     review_policy_sha256: "0".repeat(64),
     verdict_schema_sha256: "0".repeat(64),
     revision_request_schema_sha256: "0".repeat(64),
-    reviewed_entry_set_sha256: "0".repeat(64),
+    reviewed_entry_set_sha256: reviewedEntrySetSha256,
     entries: manifestEntryList,
   });
 
@@ -630,4 +631,131 @@ test("WV-011: validateWebVerdict rejects missing artifact path in blocking findi
       return true;
     }
   );
+});
+
+// ── 3. Persistence & Recomputed SHA-256 Verification Tests ─────────────────
+
+test("STORE-001: readResultBundleReceipt rejects receipt missing reviewed_entry_set_sha256", async () => {
+  const { readResultBundleReceipt } = await import("../src/result-bundle/result-bundle-store.js");
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "wco-receipt-test-"));
+  try {
+    const receiptPath = path.join(tmpDir, "result-bundle.json");
+    const receiptObj = createValidReceipt();
+    delete (receiptObj as any).reviewed_entry_set_sha256;
+    await fs.writeFile(receiptPath, JSON.stringify(receiptObj));
+
+    await assert.rejects(
+      () => readResultBundleReceipt(receiptPath),
+      (err: unknown) => {
+        assert.ok(err instanceof ResultBundleError);
+        assert.equal((err as ResultBundleError).code, "RESULT_RECEIPT_INVALID");
+        assert.ok((err as ResultBundleError).message.includes("Receipt missing field: reviewed_entry_set_sha256"));
+        return true;
+      }
+    );
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("STORE-002: readResultBundleReceipt rejects READY_FOR_WEB_REVIEW state with null or non-hex reviewed_entry_set_sha256", async () => {
+  const { readResultBundleReceipt } = await import("../src/result-bundle/result-bundle-store.js");
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "wco-receipt-test-"));
+  try {
+    const receiptPath = path.join(tmpDir, "result-bundle.json");
+
+    // Null check
+    const nullReceipt = createValidReceipt();
+    nullReceipt.reviewed_entry_set_sha256 = null;
+    await fs.writeFile(receiptPath, JSON.stringify(nullReceipt));
+    await assert.rejects(
+      () => readResultBundleReceipt(receiptPath),
+      (err: unknown) => {
+        assert.ok(err instanceof ResultBundleError);
+        assert.equal((err as ResultBundleError).code, "RESULT_RECEIPT_INVALID");
+        assert.ok((err as ResultBundleError).message.includes("reviewed_entry_set_sha256 cannot be null"));
+        return true;
+      }
+    );
+
+    // Non-hex check
+    const badHexReceipt = createValidReceipt();
+    badHexReceipt.reviewed_entry_set_sha256 = "not-a-valid-sha256-hex";
+    await fs.writeFile(receiptPath, JSON.stringify(badHexReceipt));
+    await assert.rejects(
+      () => readResultBundleReceipt(receiptPath),
+      (err: unknown) => {
+        assert.ok(err instanceof ResultBundleError);
+        assert.equal((err as ResultBundleError).code, "RESULT_RECEIPT_INVALID");
+        assert.ok((err as ResultBundleError).message.includes("reviewed_entry_set_sha256 must be a 64-hex SHA-256"));
+        return true;
+      }
+    );
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("ZIP-V-009: verifyResultBundleZip rejects manifest with wrong reviewed_entry_set_sha256", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "wco-zip-verify-"));
+  try {
+    const tmpRealDir = await fs.realpath(tmpDir);
+    const entries: { path: string; content: Buffer }[] = [];
+
+    for (const req of REQUIRED_RESULT_BUNDLE_ENTRIES) {
+      if (req === "manifest.json") continue;
+      entries.push({ path: req, content: Buffer.from(`content of ${req}`, "utf8") });
+    }
+    entries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+
+    const manifestEntryList = entries.map((e) => ({
+      path: e.path,
+      sha256: sha256Hex(e.content),
+      size_bytes: e.content.byteLength,
+    }));
+
+    // Tampered reviewed_entry_set_sha256 in manifest.json
+    const badManifestContent = canonicalJsonBuffer({
+      schema_version: "1.1",
+      kind: "wco-result-bundle",
+      run_id: "TEST:0000000000000000000000000000000000000000000000000000000000000000",
+      archive_filename: "test.zip",
+      published_commit_sha: "0".repeat(40),
+      base_commit: "0".repeat(40),
+      change_set_sha256: "0".repeat(64),
+      pull_request_number: 1,
+      task_id: "TEST",
+      created_at: "2026-01-01T00:00:00.000Z",
+      spec_set_sha256: "0".repeat(64),
+      review_contract_sha256: "0".repeat(64),
+      review_policy_sha256: "0".repeat(64),
+      verdict_schema_sha256: "0".repeat(64),
+      revision_request_schema_sha256: "0".repeat(64),
+      reviewed_entry_set_sha256: "0".repeat(64), // TAMPERED WRONG HASH
+      entries: manifestEntryList,
+    });
+
+    const allEntries = [
+      ...entries,
+      { path: "manifest.json", content: badManifestContent },
+    ].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+
+    const { archivePath } = await buildDeterministicZip(allEntries, tmpRealDir, "bad-reviewed-hash.zip", {
+      maximumEntries: 1000,
+      maximumArchiveBytes: 100_000_000,
+      maximumTotalUncompressedBytes: 100_000_000,
+    });
+
+    await assert.rejects(
+      () => verifyResultBundleZip(archivePath),
+      (err: unknown) => {
+        assert.ok(err instanceof ResultBundleError);
+        assert.equal((err as ResultBundleError).code, "RESULT_ARCHIVE_VERIFY_FAILED");
+        assert.ok((err as ResultBundleError).message.includes("reviewed_entry_set_sha256 mismatch in manifest"));
+        return true;
+      }
+    );
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
 });

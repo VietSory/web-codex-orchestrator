@@ -12,6 +12,7 @@ export interface VerificationResult {
   sizeBytes: number;
   entryCount: number;
   uncompressedBytes: number;
+  reviewedEntrySetSha256: string;
 }
 
 // DOS date for 1980-01-01: year=0, month=1, day=1 → (0<<9)|(1<<5)|1 = 0x0021
@@ -25,7 +26,8 @@ export const GPB_ENCRYPTION_BIT = 0x0001;
 /**
  * Reopen and independently verify the ZIP archive.
  * Checks: entry presence, order, sha256 checksums, timestamps, modes,
- * encryption, archive comment, path safety, no extra entries.
+ * encryption, archive comment, path safety, no extra entries,
+ * and recomputed reviewed_entry_set_sha256.
  */
 export async function verifyResultBundleZip(
   archivePath: string
@@ -205,6 +207,29 @@ export async function verifyResultBundleZip(
           }
           const expectedEntries = manifestObj.entries as ManifestEntry[];
 
+          // Recompute reviewed_entry_set_sha256 from manifest.entries
+          const sortedManifestEntries = [...expectedEntries].sort((a, b) =>
+            a.path < b.path ? -1 : a.path > b.path ? 1 : 0
+          );
+          const { canonicalJsonBuffer } = await import("./canonical-json.js");
+          const recomputedReviewedEntrySetSha256 = crypto
+            .createHash("sha256")
+            .update(canonicalJsonBuffer(sortedManifestEntries))
+            .digest("hex");
+
+          if (!manifestObj.reviewed_entry_set_sha256 || typeof manifestObj.reviewed_entry_set_sha256 !== "string") {
+            throw new ResultBundleError(
+              "RESULT_ARCHIVE_VERIFY_FAILED",
+              "Missing or invalid reviewed_entry_set_sha256 in manifest.json"
+            );
+          }
+          if (manifestObj.reviewed_entry_set_sha256 !== recomputedReviewedEntrySetSha256) {
+            throw new ResultBundleError(
+              "RESULT_ARCHIVE_VERIFY_FAILED",
+              `reviewed_entry_set_sha256 mismatch in manifest: got ${manifestObj.reviewed_entry_set_sha256}, expected ${recomputedReviewedEntrySetSha256}`
+            );
+          }
+
           seen.delete("manifest.json");
 
           // Compare against expected entries
@@ -262,6 +287,7 @@ export async function verifyResultBundleZip(
             sizeBytes: archiveStat.size,
             entryCount,
             uncompressedBytes,
+            reviewedEntrySetSha256: recomputedReviewedEntrySetSha256,
           });
         } catch (error) {
           reject(error instanceof ResultBundleError ? error : new ResultBundleError(

@@ -252,7 +252,19 @@ test("Phase 6 Integration: full deterministic result bundle packaging", async (t
     assert.equal(draftPrJson.pull_request_number, 123);
     assert.equal(draftPrJson.pull_request_url, "https://github.com/owner/repo/pull/123");
     
-    // Ensure manifest is intact.
+    // Ensure manifest is intact and recomputed reviewed_entry_set_sha256 matches receipt
+    const manifestBuf = zipEntries.get("manifest.json");
+    assert.ok(manifestBuf, "manifest.json should exist in archive");
+    const manifestObj = JSON.parse(manifestBuf.toString("utf8"));
+    assert.ok(manifestObj.reviewed_entry_set_sha256, "manifest.json should have reviewed_entry_set_sha256");
+    assert.equal(manifestObj.reviewed_entry_set_sha256, receipt.reviewed_entry_set_sha256);
+
+    const { canonicalJsonBuffer } = await import("../src/result-bundle/canonical-json.js");
+    const sortedManifestEntries = [...manifestObj.entries].sort((a: any, b: any) =>
+      a.path < b.path ? -1 : a.path > b.path ? 1 : 0
+    );
+    const recomputedHash = sha256Hex(canonicalJsonBuffer(sortedManifestEntries));
+    assert.equal(recomputedHash, receipt.reviewed_entry_set_sha256);
 
     // === BUILD 2 (Determinism check) ===
     const archive1Bytes = await fs.readFile(absoluteZipPath);
