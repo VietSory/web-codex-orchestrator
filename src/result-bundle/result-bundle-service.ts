@@ -26,6 +26,9 @@ import { canonicalJsonBuffer } from "./canonical-json.js";
 import type { ZipEntry } from "./deterministic-zip.js";
 import { buildDeterministicZip } from "./deterministic-zip.js";
 import { verifyResultBundleZip } from "./zip-verifier.js";
+import { executionPaths } from "../execution/execution-store.js";
+import { verifyBundleChecksums } from "../intake/checksum-verifier.js";
+import { validateWebVerdict } from "./web-verdict-validator.js";
 
 // Embedded review resources
 import { fileURLToPath } from "node:url";
@@ -79,12 +82,7 @@ async function readTextFile(filePath: string, errorCode: ResultBundleError["code
   try {
     return await fs.promises.readFile(filePath);
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") {
-      // Return empty buffer for optional files
-      return Buffer.alloc(0);
-    }
-    throw new ResultBundleError(errorCode, `Cannot read ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new ResultBundleError(errorCode, `Cannot read required file ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -120,14 +118,14 @@ function scanForSecrets(content: Buffer, secrets: string[]): string | null {
 async function findExecutionReceipt(
   stateDirectory: string,
   runId: string
-): Promise<{ filePath: string; receipt: Record<string, unknown> }> {
+): Promise<{ filePath: string; receipt: Record<string, unknown>; taskId: string; archiveSha: string; paths: ReturnType<typeof executionPaths> }> {
   const sep = runId.lastIndexOf(":");
   if (sep <= 0) throw new ResultBundleError("RESULT_REQUEST_INVALID", "Invalid run ID format.");
   const taskId = runId.slice(0, sep);
   const archiveSha = runId.slice(sep + 1);
-  const executionPath = path.join(stateDirectory, "runs", taskId, archiveSha, "execution", "execution.json");
-  const receipt = await readJsonFile(executionPath, "RESULT_EXECUTION_RECEIPT_INVALID");
-  return { filePath: executionPath, receipt };
+  const paths = executionPaths(stateDirectory, taskId, archiveSha);
+  const receipt = await readJsonFile(paths.execution, "RESULT_EXECUTION_RECEIPT_INVALID");
+  return { filePath: paths.execution, receipt, taskId, archiveSha, paths };
 }
 
 /**
@@ -139,7 +137,14 @@ export async function packageResultBundle(options: Phase6Options): Promise<Resul
   const limits = { ...DEFAULT_RESULT_BUNDLE_LIMITS, ...options.limits };
   const secrets = options.secrets ?? [];
   const resolvedStateDir = path.resolve(stateDirectory);
-  const paths = resultBundlePaths(resolvedStateDir);
+  
+  // Extract taskId and archiveSha to use for resultBundlePaths
+  const sep = runId.lastIndexOf(":");
+  if (sep <= 0) throw new ResultBundleError("RESULT_REQUEST_INVALID", "Invalid run ID format.");
+  const taskId = runId.slice(0, sep);
+  const archiveSha = runId.slice(sep + 1);
+
+  const paths = resultBundlePaths(resolvedStateDir, taskId, archiveSha);
 
   // Ensure output directory exists
   await fs.promises.mkdir(paths.directory, { recursive: true });
@@ -153,9 +158,15 @@ export async function packageResultBundle(options: Phase6Options): Promise<Resul
     try {
       const stat = await fs.promises.stat(archivePath);
       if (stat.size === existingReceipt.archive_size_bytes) {
-        return existingReceipt;
+        // Re-hash verify
+        const verified = await verifyResultBundleZip(archivePath);
+        if (verified.sha256 === existingReceipt.archive_sha256) {
+          return existingReceipt;
+        }
       }
-    } catch {
+      throw new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", "Existing archive mismatch. Cannot overwrite.");
+    } catch (err) {
+      if (err instanceof ResultBundleError) throw err;
       // Archive missing - will rebuild
     }
   }
@@ -202,7 +213,7 @@ async function _buildResultBundle(ctx: {
   // ── Step 1: Load and validate all upstream receipts ──────────────────────
 
   // Phase 4 execution receipt
-  const { filePath: executionFilePath, receipt: executionRaw } = await findExecutionReceipt(resolvedStateDir, runId);
+  const { filePath: executionFilePath, receipt: executionRaw, taskId, archiveSha, paths: execPaths } = await findExecutionReceipt(resolvedStateDir, runId);
   if (executionRaw.run_id !== runId) {
     throw new ResultBundleError("RESULT_EXECUTION_RECEIPT_INCONSISTENT", "Execution receipt run_id mismatch.");
   }
@@ -211,16 +222,13 @@ async function _buildResultBundle(ctx: {
   }
   const executionReceiptSha256 = sha256Hex(await fs.promises.readFile(executionFilePath));
 
-  const sep = runId.lastIndexOf(":");
-  const taskId = runId.slice(0, sep);
-  const archiveSha = runId.slice(sep + 1);
   const bundlePath = String(executionRaw.accepted_bundle_path ?? path.join(resolvedStateDir, "runs", taskId, archiveSha, "bundle"));
   const worktreePath = String(executionRaw.worktree_path ?? "");
   const baseCommit = String(executionRaw.base_commit ?? "");
   const changeSetSha256 = String(executionRaw.change_set_sha256 ?? "");
 
   // Phase 5A publish receipt
-  const p5aPath = path.join(resolvedStateDir, "publish", "git-publish.json");
+  const p5aPath = path.join(execPaths.directory, "publish", "git-publish.json");
   const p5aRaw = await readJsonFile(p5aPath, "RESULT_PUBLISH_RECEIPT_INVALID");
   if (p5aRaw.state !== "PUSHED") {
     throw new ResultBundleError("RESULT_PUBLISH_NOT_PUSHED", `Phase 5A state is '${String(p5aRaw.state)}', expected PUSHED.`);
@@ -263,6 +271,11 @@ async function _buildResultBundle(ctx: {
   }
 
   // ── Step 2: Verify bundle integrity ──────────────────────────────────────
+  try {
+    await verifyBundleChecksums(bundlePath);
+  } catch (error) {
+    throw new ResultBundleError("RESULT_BUNDLE_INVALID", `Bundle checksum verification failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
   const acceptedBundleTreeSha256 = await computeBundleTreeSha256(bundlePath);
 
   // ── Step 3: GitHub PR attestation (read-only) ─────────────────────────────
@@ -361,34 +374,18 @@ async function _buildResultBundle(ctx: {
   ].join("\n") + "\n");
 
   // task/ files
-  const manifestJsonBuf = await readBundleFile("manifest.json");
-  const requestMdBuf = await readBundleFile("REQUEST.md");
+  const taskFiles: { name: string; buffer: Buffer }[] = [];
+  for (const name of ["manifest.json", "REQUEST.md", "PLAN.md", "RULES.md", "RESEARCH.md", "SOURCES.md", "VALIDATION.md", "acceptance.json", "checksums.json", "test-matrix.json", "validation.json", "risk-policy.json"]) {
+    const buf = await readBundleFile(name);
+    taskFiles.push({ name, buffer: buf });
+    addBuffer(`task/${name}`, buf);
+  }
 
-  addBuffer("task/manifest.json", manifestJsonBuf);
-  addBuffer("task/REQUEST.md", requestMdBuf);
-  addBuffer("task/PLAN.md", await readBundleFile("PLAN.md"));
-  addBuffer("task/RULES.md", await readBundleFile("RULES.md"));
-  addBuffer("task/RESEARCH.md", await readBundleFile("RESEARCH.md"));
-  addBuffer("task/SOURCES.md", await readBundleFile("SOURCES.md"));
-  addBuffer("task/VALIDATION.md", await readBundleFile("VALIDATION.md"));
-  addBuffer("task/acceptance.json", await readBundleFile("acceptance.json"));
-  addBuffer("task/checksums.json", await readBundleFile("checksums.json"));
-  addBuffer("task/test-matrix.json", await readBundleFile("test-matrix.json"));
-  addBuffer("task/validation.json", await readBundleFile("validation.json"));
-  addBuffer("task/risk-policy.json", await readBundleFile("risk-policy.json"));
-
-  const specLockAuthoritativeFiles = [
-    {
-      path: "task/manifest.json",
-      sha256: sha256Hex(manifestJsonBuf),
-      size_bytes: manifestJsonBuf.byteLength,
-    },
-    {
-      path: "task/REQUEST.md",
-      sha256: sha256Hex(requestMdBuf),
-      size_bytes: requestMdBuf.byteLength,
-    }
-  ];
+  const specLockAuthoritativeFiles = taskFiles.map(f => ({
+    path: `task/${f.name}`,
+    sha256: sha256Hex(f.buffer),
+    size_bytes: f.buffer.byteLength
+  }));
   const specSetSha256 = sha256Hex(canonicalJsonBuffer(specLockAuthoritativeFiles));
   const specLockJson = canonicalJsonBuffer({
     lock_version: "1.0",
@@ -493,7 +490,7 @@ async function _buildResultBundle(ctx: {
     change_set_sha256: changeSetSha256,
     pull_request_number: prNumber,
     task_id: taskId,
-    created_at: createdAt,
+    created_at: String(executionRaw.created_at ?? createdAt),
     spec_set_sha256: specSetSha256,
     review_contract_sha256: review_contract_sha256,
     review_policy_sha256: review_policy_sha256,
@@ -530,21 +527,15 @@ async function _buildResultBundle(ctx: {
     }
   );
 
-  const builtAt = currentIso(now);
+  const builtAt = String(executionRaw.created_at ?? currentIso(now));
 
   // ── Step 9: Independent reopen and verification ────────────────────────────
-  // Build expected manifest entries from what we put in
-  const expectedEntries: ManifestEntry[] = finalEntries.map((e) => ({
-    path: e.path,
-    sha256: sha256Hex(e.content),
-    size_bytes: e.content.byteLength,
-  }));
 
-  const verified = await verifyResultBundleZip(builtArchive.archivePath, expectedEntries);
-  const verifiedAt = currentIso(now);
+  const verified = await verifyResultBundleZip(builtArchive.archivePath);
+  const verifiedAt = String(executionRaw.created_at ?? currentIso(now));
 
   // ── Step 10: Persist READY_FOR_WEB_REVIEW receipt atomically ──────────────
-  const archiveRelativePath = path.join("handoff", archiveFilename).replace(/\\/g, "/");
+  const archiveRelativePath = path.relative(resolvedStateDir, builtArchive.archivePath).replace(/\\/g, "/");
   const input_digest_sha256 = sha256Hex(
     Buffer.from(executionReceiptSha256 + gitPublishReceiptSha256 + draftPrReceiptSha256, "utf8")
   );
@@ -592,6 +583,10 @@ export async function getResultBundleStatus(options: {
   stateDirectory: string;
 }): Promise<ResultBundleReceipt | null> {
   const resolvedStateDir = path.resolve(options.stateDirectory);
-  const paths = resultBundlePaths(resolvedStateDir);
+  const sep = options.runId.lastIndexOf(":");
+  if (sep <= 0) return null;
+  const taskId = options.runId.slice(0, sep);
+  const archiveSha = options.runId.slice(sep + 1);
+  const paths = resultBundlePaths(resolvedStateDir, taskId, archiveSha);
   return readResultBundleReceipt(paths.receiptPath);
 }

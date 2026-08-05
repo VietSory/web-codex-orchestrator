@@ -13,7 +13,7 @@
   "scripts": {
     "validate": "tsx src/cli/index.ts validate",
     "typecheck": "tsc -p tsconfig.json",
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node -e \"require('fs').cpSync('src/result-bundle/resources', 'dist/result-bundle/resources', {recursive:true, force:true})\"",
     "test": "tsx --test --test-concurrency=1 --test-reporter=spec tests/*.test.ts",
     "test:sandbox-integration": "tsx --test tests/integration/codex-sandbox.integration.ts",
     "test:codex-integration": "tsx --test tests/integration/codex-execution.integration.ts",

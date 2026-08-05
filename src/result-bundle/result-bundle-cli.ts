@@ -127,13 +127,18 @@ export async function runPackageResultCommand(args: string[]): Promise<number> {
     const githubClient = new GitHubRestAttestationClient(token, maxResponseBytes);
     const gitRunner = createGitRunner();
 
-    const receipt = await packageResultBundle({
+    const opts: any = {
       runId: parsed.runId,
       stateDirectory: parsed.stateDirectory,
       configPath: parsed.configPath,
       githubClient,
       gitRunner,
-    });
+      secrets: [token],
+    };
+    if (resultBundleConfig) {
+      opts.limits = resultBundleConfig;
+    }
+    const receipt = await packageResultBundle(opts);
 
     if (parsed.json) {
       process.stdout.write(JSON.stringify(receipt) + "\n");

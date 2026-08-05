@@ -24,8 +24,8 @@ export interface ResultBundlePaths {
   archivePath(filename: string): string;
 }
 
-export function resultBundlePaths(stateDirectory: string): ResultBundlePaths {
-  const directory = path.join(stateDirectory, RESULT_BUNDLE_SUBDIR);
+export function resultBundlePaths(stateDirectory: string, taskId: string, archiveSha256: string): ResultBundlePaths {
+  const directory = path.join(stateDirectory, RESULT_BUNDLE_SUBDIR, "runs", taskId, archiveSha256);
   return {
     directory,
     receiptPath: path.join(directory, RESULT_BUNDLE_RECEIPT_NAME),

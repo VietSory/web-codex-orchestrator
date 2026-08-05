@@ -18,8 +18,7 @@ export interface VerificationResult {
  * Checks: entry presence, order, sha256 checksums, timestamps, modes, no extra entries.
  */
 export async function verifyResultBundleZip(
-  archivePath: string,
-  expectedEntries: ManifestEntry[]
+  archivePath: string
 ): Promise<VerificationResult> {
   return new Promise<VerificationResult>((resolve, reject) => {
     yauzl.open(archivePath, { lazyEntries: true, autoClose: false }, (openErr, zipfile) => {
@@ -34,6 +33,8 @@ export async function verifyResultBundleZip(
       const seen: Map<string, { sha256: string; sizeBytes: number }> = new Map();
       let uncompressedBytes = 0;
       let entryCount = 0;
+      let manifestBuffer: Buffer | null = null;
+      let previousPath = "";
 
       zipfile.readEntry();
 
@@ -48,6 +49,16 @@ export async function verifyResultBundleZip(
             `Unexpected directory entry: '${entryPath}'`
           ));
         }
+
+        // Check lexical order
+        if (previousPath && entryPath < previousPath) {
+          zipfile.close();
+          return reject(new ResultBundleError(
+            "RESULT_ARCHIVE_VERIFY_FAILED",
+            `Entries not in lexical order: '${entryPath}' came after '${previousPath}'`
+          ));
+        }
+        previousPath = entryPath;
 
         // Check for duplicates
         if (seenPaths.has(entryPath)) {
@@ -83,7 +94,9 @@ export async function verifyResultBundleZip(
 
           readStream.on("data", (chunk: Buffer) => {
             hash.update(chunk);
-            chunks.push(chunk);
+            if (entryPath === "manifest.json") {
+              chunks.push(chunk);
+            }
           });
 
           readStream.on("error", (err: Error) => {
@@ -95,9 +108,13 @@ export async function verifyResultBundleZip(
           });
 
           readStream.on("end", () => {
-            const entryBytes = chunks.reduce((sum, c) => sum + c.byteLength, 0);
+            const entryBytes = entry.uncompressedSize;
             uncompressedBytes += entryBytes;
             entryCount += 1;
+
+            if (entryPath === "manifest.json") {
+              manifestBuffer = Buffer.concat(chunks);
+            }
 
             seen.set(entryPath, {
               sha256: hash.digest("hex"),
@@ -113,6 +130,17 @@ export async function verifyResultBundleZip(
         zipfile.close();
 
         try {
+          if (!manifestBuffer) {
+            throw new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", "Missing manifest.json");
+          }
+          const manifestObj = JSON.parse(manifestBuffer.toString("utf8"));
+          if (!manifestObj || !Array.isArray(manifestObj.entries)) {
+            throw new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", "Invalid manifest.json schema");
+          }
+          const expectedEntries = manifestObj.entries as ManifestEntry[];
+
+          seen.delete("manifest.json");
+
           // Compare against expected entries
           if (seen.size !== expectedEntries.length) {
             throw new ResultBundleError(
@@ -140,6 +168,14 @@ export async function verifyResultBundleZip(
                 "RESULT_ARCHIVE_VERIFY_FAILED",
                 `Size mismatch for '${expected.path}': got ${actual.sizeBytes}, expected ${expected.size_bytes}`
               );
+            }
+          }
+
+          // Check required entries
+          const { REQUIRED_RESULT_BUNDLE_ENTRIES } = await import("./result-bundle-paths.js");
+          for (const req of REQUIRED_RESULT_BUNDLE_ENTRIES) {
+            if (!seenPaths.has(req)) {
+              throw new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", `Missing required entry: ${req}`);
             }
           }
 

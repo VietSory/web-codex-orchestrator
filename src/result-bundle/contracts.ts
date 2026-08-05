@@ -56,6 +56,8 @@ export type ResultBundleErrorCode =
   | "RESULT_LOCKED"
   | "RESULT_STALE_LOCK"
   | "RESULT_INTERRUPTED"
+  | "RESULT_BUNDLE_INVALID"
+  | "RESULT_WEB_VERDICT_INVALID"
   | "RESULT_OPERATIONAL_ERROR";
 
 export class ResultBundleError extends Error {
@@ -90,6 +92,8 @@ export function resultBundleExitCode(code: ResultBundleErrorCode): number {
     "RESULT_ARCHIVE_ENTRY_LIMIT",
     "RESULT_ARCHIVE_SIZE_LIMIT",
     "RESULT_ARCHIVE_PATH_COLLISION",
+    "RESULT_BUNDLE_INVALID",
+    "RESULT_WEB_VERDICT_INVALID",
     "RESULT_STALE_LOCK",
   ]);
   const integrity = new Set<ResultBundleErrorCode>([
@@ -141,9 +145,9 @@ export interface PullRequestAttestation {
   title_sha256: string; // hash of title, not raw title
 }
 
-/** Result bundle receipt (schema version "1.0") */
+/** Result bundle receipt (schema version "1.1") */
 export interface ResultBundleReceipt {
-  result_bundle_version: "1.0";
+  result_bundle_version: "1.1";
   run_id: string;
   state: ResultBundleState;
   /** Canonical sha256 of all input receipts digested together */

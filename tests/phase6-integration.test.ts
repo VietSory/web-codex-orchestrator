@@ -76,14 +76,20 @@ test("Phase 6 Integration: full deterministic result bundle packaging", async (t
     await fs.writeFile(path.join(bundlePath, "SOURCES.md"), "Sources");
     await fs.writeFile(path.join(bundlePath, "VALIDATION.md"), "Validation");
     await fs.writeFile(path.join(bundlePath, "acceptance.json"), "{}");
-    await fs.writeFile(path.join(bundlePath, "checksums.json"), "{}");
     await fs.writeFile(path.join(bundlePath, "test-matrix.json"), "{}");
     await fs.writeFile(path.join(bundlePath, "validation.json"), "{}");
     await fs.writeFile(path.join(bundlePath, "risk-policy.json"), "{}");
+    const specFiles = ["manifest.json", "REQUEST.md", "PLAN.md", "RULES.md", "RESEARCH.md", "SOURCES.md", "VALIDATION.md", "acceptance.json", "test-matrix.json", "validation.json", "risk-policy.json"];
+    const checksumsFiles: Record<string, string> = {};
+    for (const name of specFiles) {
+      const content = await fs.readFile(path.join(bundlePath, name));
+      checksumsFiles[name] = sha256Hex(content);
+    }
+    await fs.writeFile(path.join(bundlePath, "checksums.json"), JSON.stringify({ algorithm: "sha256", files: checksumsFiles }));
 
-    const runId = "TASK-1:abcdef1234567890";
+    const runId = "TASK-1:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
     const taskId = "TASK-1";
-    const archiveSha = "abcdef1234567890";
+    const archiveSha = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
     const changeSetSha256 = sha256Hex("dummy-change-set");
 
     // Setup P4 Receipt
@@ -108,7 +114,7 @@ test("Phase 6 Integration: full deterministic result bundle packaging", async (t
     }));
 
     // Setup P5A Receipt
-    const publishDir = path.join(stateDirectory, "publish");
+    const publishDir = path.join(executionDir, "publish");
     await fs.mkdir(publishDir, { recursive: true });
     await fs.writeFile(path.join(publishDir, "git-publish.json"), JSON.stringify({
       publish_version: "1.1",
@@ -130,7 +136,8 @@ test("Phase 6 Integration: full deterministic result bundle packaging", async (t
     }));
 
     // Setup P5B Receipt
-    await fs.writeFile(path.join(publishDir, "github-draft-pr.json"), JSON.stringify({
+    await fs.mkdir(path.join(stateDirectory, "publish"), { recursive: true });
+    await fs.writeFile(path.join(stateDirectory, "publish", "github-draft-pr.json"), JSON.stringify({
       receipt_version: "1.0",
       run_id: runId,
       state: "OPEN",
@@ -190,7 +197,9 @@ test("Phase 6 Integration: full deterministic result bundle packaging", async (t
 
     assert.equal(receipt.state, "READY_FOR_WEB_REVIEW");
     assert.equal(receipt.run_id, runId);
-    assert.ok(receipt.archive_relative_path.startsWith("handoff/"));
+    console.log("ACTUAL ARCHIVE PATH:", receipt.archive_relative_path);
+    console.log("EXPECTED PREFIX:", `handoff/runs/${taskId}/${archiveSha}`.replace(/\\/g, "/"));
+    assert.ok(receipt.archive_relative_path.startsWith(`handoff/runs/${taskId}/${archiveSha}`.replace(/\\/g, "/")));
     assert.ok(receipt.spec_set_sha256.length === 64, "Should have spec_set_sha256");
     assert.ok(receipt.review_contract_sha256.length === 64, "Should have review_contract_sha256");
     assert.ok(receipt.review_policy_sha256.length === 64, "Should have review_policy_sha256");
@@ -202,7 +211,44 @@ test("Phase 6 Integration: full deterministic result bundle packaging", async (t
     const stat = await fs.stat(absoluteZipPath);
     assert.equal(stat.size, receipt.archive_size_bytes);
 
-    // If verification succeeded inside, our archive is deterministic.
+    // Unpack ZIP to assert on evidence contents
+    const yauzl = await import("yauzl");
+    const zipEntries = new Map<string, Buffer>();
+    await new Promise<void>((resolve, reject) => {
+      yauzl.open(absoluteZipPath, { lazyEntries: true }, (err, zipfile) => {
+        if (err || !zipfile) return reject(err);
+        zipfile.readEntry();
+        zipfile.on("entry", (entry) => {
+          zipfile.openReadStream(entry, (err, stream) => {
+            if (err || !stream) return reject(err);
+            const chunks: Buffer[] = [];
+            stream.on("data", (c) => chunks.push(c));
+            stream.on("end", () => {
+              zipEntries.set(entry.fileName, Buffer.concat(chunks));
+              zipfile.readEntry();
+            });
+            stream.on("error", reject);
+          });
+        });
+        zipfile.on("end", () => resolve());
+        zipfile.on("error", reject);
+      });
+    });
+
+    // Check evidence contents
+    const execBuf = zipEntries.get("evidence/execution.json");
+    assert.ok(execBuf, "evidence/execution.json should exist in archive");
+    const execJson = JSON.parse(execBuf.toString("utf8"));
+    assert.equal(execJson.run_id, runId);
+    assert.equal(execJson.state, "READY_FOR_PUBLISH");
+    assert.equal(execJson.implementer.model, "test");
+
+    const draftPrBuf = zipEntries.get("evidence/github-draft-pr.json");
+    assert.ok(draftPrBuf, "evidence/github-draft-pr.json should exist in archive");
+    const draftPrJson = JSON.parse(draftPrBuf.toString("utf8"));
+    assert.equal(draftPrJson.pull_request_number, 123);
+    assert.equal(draftPrJson.pull_request_url, "https://github.com/owner/repo/pull/123");
+    
     // Ensure manifest is intact.
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });

@@ -85,12 +85,8 @@ export function projectDraftPrEvidence(
   receipt: Record<string, unknown>,
   gitPublishReceiptSha256: string
 ): PublicDraftPrEvidence {
-  const prNumber = Number(
-    (receipt.pull_request as Record<string, unknown> | undefined)?.number ?? 0
-  );
-  const prUrl = String(
-    (receipt.pull_request as Record<string, unknown> | undefined)?.url ?? ""
-  );
+  const prNumber = Number(receipt.pull_number ?? 0);
+  const prUrl = String(receipt.pull_url ?? "");
 
   return {
     run_id: String(receipt.run_id ?? ""),
