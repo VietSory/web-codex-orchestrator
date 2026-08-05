@@ -160,7 +160,9 @@ test("P4-057/P4-058/P4-070/P4-073/P4-074: blocking findings, unverified ACs, and
 });
 
 test("P4-020/P4-025/P4-039/P4-056/P4-072/P4-086: fake execution reaches READY_FOR_PUBLISH", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "wco-p4-exec-"));
+  const rootRaw = await mkdtemp(path.join(os.tmpdir(), "wco-p4-exec-"));
+  const { realpath } = await import("node:fs/promises");
+  const root = await realpath(rootRaw);
   try {
     const state = path.join(root, "state"); const bundle = path.join(state, "accepted", "task", "a".repeat(64)); const worktree = path.join(state, "worktrees", "task", "a".repeat(64), "repository");
     await mkdir(bundle, { recursive: true }); await mkdir(worktree, { recursive: true });

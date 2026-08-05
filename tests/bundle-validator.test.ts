@@ -33,7 +33,9 @@ test("missing required schema 1.1 file fails", async () => {
 });
 
 test("schema 1.0 directory contract remains backward compatible", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "wco-v10-test-"));
+  const rootRaw = await mkdtemp(path.join(tmpdir(), "wco-v10-test-"));
+  const { realpath } = await import("node:fs/promises");
+  const root = await realpath(rootRaw);
   const bundle = path.join(root, "bundle");
   try {
     await cp(path.resolve("templates/task-bundle"), bundle, { recursive: true });
@@ -46,8 +48,7 @@ test("schema 1.0 directory contract remains backward compatible", async () => {
       ["README.md", "readme.md"], ["REQUEST.md", "request.md"], ["RESEARCH.md", "research.md"],
       ["SOURCES.md", "sources.md"], ["PLAN.md", "plan.md"], ["RULES.md", "rules.md"], ["VALIDATION.md", "validation.md"],
     ] as const) {
-      await cp(path.join(bundle, from), path.join(bundle, to));
-      await rm(path.join(bundle, from));
+      await import("node:fs/promises").then(fs => fs.rename(path.join(bundle, from), path.join(bundle, to)));
     }
     await rm(path.join(bundle, "checksums.json"));
     const report = await validateBundleDirectory(bundle);

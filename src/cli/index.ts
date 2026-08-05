@@ -17,6 +17,7 @@ import { CodexVerificationSandbox } from "../verifier/codex-sandbox.js";
 import { redact } from "../evidence/log-redaction.js";
 import { PUBLISH_USAGE, runPublishCommand } from "../publish/publish-cli.js";
 import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
+import { runDraftPrCommand, DRAFT_PR_USAGE } from "../pull-request/draft-pr-cli.js";
 
 function printUsage(): void {
   console.log("Usage:");
@@ -28,6 +29,7 @@ function printUsage(): void {
   console.log("  wco execute --run-id <task-id:archive-sha256> --state-dir <directory> --config <config.json> [--json]");
   console.log("  wco execution-status --run-id <task-id:archive-sha256> --state-dir <directory> [--json]");
   console.log(PUBLISH_USAGE);
+  console.log(DRAFT_PR_USAGE.trim());
 }
 
 function parseIntakeArguments(args: string[]): { archivePath: string; stateDirectory: string; json: boolean } | null {
@@ -293,6 +295,7 @@ async function main(): Promise<void> {
   if (command === "execute") return runExecute(args);
   if (command === "execution-status") return runExecutionStatus(args);
   if (command === "publish") return runPublishCommand(args, printUsage);
+  if (command === "create-draft-pr") { process.exitCode = await runDraftPrCommand(args); return; }
   printUsage();
   process.exitCode = 2;
 }

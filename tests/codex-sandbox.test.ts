@@ -28,7 +28,9 @@ async function fixture(): Promise<{
   runtime: ReturnType<typeof fakeResolvedCodexRuntime>;
   cleanup(): Promise<void>;
 }> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "wco-sandbox-test-"));
+  const rootRaw = await mkdtemp(path.join(os.tmpdir(), "wco-sandbox-test-"));
+  const { realpath } = await import("node:fs/promises");
+  const root = await realpath(rootRaw);
   const cwd = path.join(root, "cwd");
   await mkdir(cwd);
   return {

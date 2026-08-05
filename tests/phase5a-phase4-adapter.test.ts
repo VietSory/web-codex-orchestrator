@@ -94,12 +94,19 @@ async function inspect(
   return { change_set_sha256: digest, paths: ["feature.txt"] };
 }
 
-test("P5A-012/P5A-013: a prepared READY_FOR_PUBLISH context publishes once and resumes idempotently", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "wco-phase5a-adapter-"));
+async function createAdapterFixture() {
+  const rootRaw = await mkdtemp(path.join(os.tmpdir(), "wco-p5-adapter-"));
+  const { realpath } = await import("node:fs/promises");
+  const root = await realpath(rootRaw);
   const worktree = path.join(root, "worktree");
   const remote = path.join(root, "remote.git");
   const hooks = path.join(root, "hooks");
   const executionDirectory = path.join(root, "state", "runs", "task", "archive", "execution");
+  return { root, worktree, remote, hooks, executionDirectory };
+}
+
+test("P5A-012/P5A-013: a prepared READY_FOR_PUBLISH context publishes once and resumes idempotently", async () => {
+  const { root, worktree, remote, hooks, executionDirectory } = await createAdapterFixture();
 
   try {
     await mkdir(worktree, { recursive: true });

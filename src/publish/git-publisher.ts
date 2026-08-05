@@ -984,7 +984,6 @@ export class GitPublisher {
     const cwd = await this.assertCanonicalWorktree(request.worktree_path);
     const expectedPaths = normalizedPathSet(request.expected_paths);
     let receipt = previousReceipt;
-    let boundary = await this.readRepositoryBoundary(request, cwd);
 
     if (receipt !== null) {
       assertReceiptMatches(receipt, request);
@@ -998,6 +997,7 @@ export class GitPublisher {
         );
       }
 
+      const boundary = await this.readRepositoryBoundary(request, cwd);
       if (boundary.head !== receipt.commit_sha) {
         throw new GitPublishError(
           "PUBLISH_BASE_MISMATCH",
@@ -1027,22 +1027,6 @@ export class GitPublisher {
     }
 
     if (receipt === null) {
-      if (boundary.head !== request.base_commit) {
-        throw new GitPublishError(
-          "PUBLISH_BASE_MISMATCH",
-          "The first publish attempt must start at the exact approved base commit.",
-        );
-      }
-
-      const existingRemoteSha = await this.readRemoteBranch(request, cwd);
-      if (existingRemoteSha !== null) {
-        throw new GitPublishError(
-          "PUBLISH_REMOTE_BRANCH_EXISTS",
-          "The delivery branch already exists remotely before a publish intent was persisted.",
-          { remote_branch_sha: existingRemoteSha },
-        );
-      }
-
       const approvedSnapshot = await this.attestCurrentWorktree(request, cwd);
       receipt = initialReceipt(request, approvedSnapshot, this.now);
 
@@ -1052,6 +1036,7 @@ export class GitPublisher {
     }
 
     if (receipt.state === "READY_FOR_COMMIT") {
+      const boundary = await this.readRepositoryBoundary(request, cwd);
       if (boundary.head !== request.base_commit) {
         await this.recoverCommittedReceipt(
           request,
@@ -1177,7 +1162,7 @@ export class GitPublisher {
       );
     }
 
-    boundary = await this.readRepositoryBoundary(request, cwd);
+    const boundary = await this.readRepositoryBoundary(request, cwd);
     if (boundary.head !== receipt.commit_sha) {
       throw new GitPublishError(
         "PUBLISH_BASE_MISMATCH",

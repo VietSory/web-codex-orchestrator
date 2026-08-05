@@ -63,5 +63,12 @@
     "maximum_changed_files": 50,
     "maximum_diff_lines": 8000,
     "allowed_generated_paths": ["coverage/**", "dist/**", "build/**", "target/**", ".pytest_cache/**"]
+  },
+  "github_pull_request": {
+    "provider": "github.com",
+    "authentication": {
+      "mode": "https_token",
+      "token_environment_key": "WCO_GITHUB_TOKEN"
+    }
   }
 }

@@ -26,7 +26,9 @@ export interface Phase4Fixture {
 /** Creates only local temporary state. It never creates a remote or invokes
  * any payload/validation command. */
 export async function createPhase4Fixture(): Promise<Phase4Fixture> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "wco-p4-fixture-"));
+  const rootRaw = await mkdtemp(path.join(os.tmpdir(), "wco-p4-fixture-"));
+  const { realpath } = await import("node:fs/promises");
+  const root = await realpath(rootRaw);
   try {
     const state = path.join(root, "state");
     const archiveSha256 = "a".repeat(64);
