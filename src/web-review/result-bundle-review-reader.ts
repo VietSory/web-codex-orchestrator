@@ -12,6 +12,7 @@ import type { ResultBundleReceipt, ResultBundleManifest } from "../result-bundle
 
 export interface LoadedResultBundle {
   receipt: ResultBundleReceipt;
+  phase6ReceiptSha256: string;
   archivePath: string;
   manifest: ResultBundleManifest;
   bundleEntries: Set<string>;
@@ -37,7 +38,15 @@ export async function loadAndVerifyResultBundle(
   const { taskId, archiveSha256: expectedArchiveSha } = parseRunIdentity(runId);
   const p6Paths = resultBundlePaths(stateDirectory, taskId, expectedArchiveSha);
 
-  // 1. Read Phase 6 receipt
+  // 1. Read Phase 6 receipt bytes and parse receipt
+  let receiptRawBytes: Buffer;
+  try {
+    receiptRawBytes = await fs.readFile(p6Paths.receiptPath);
+  } catch {
+    throw new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", `Phase 6 receipt not found for run ID '${runId}'`);
+  }
+
+  const phase6ReceiptSha256 = sha256Hex(receiptRawBytes);
   const receipt = await readResultBundleReceipt(p6Paths.receiptPath);
   if (!receipt) {
     throw new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", `Phase 6 receipt not found for run ID '${runId}'`);
@@ -72,9 +81,17 @@ export async function loadAndVerifyResultBundle(
     );
   }
 
-  // 4. Verify Result Bundle ZIP is a regular file and not a symlink
+  // 4. Verify Result Bundle ZIP path containment, regular file, and not a symlink
   const absoluteStateDir = path.resolve(stateDirectory);
   const archivePath = path.resolve(absoluteStateDir, receipt.archive_relative_path);
+  const expectedDir = path.resolve(p6Paths.directory);
+
+  if (!archivePath.startsWith(expectedDir + path.sep) && archivePath !== expectedDir) {
+    throw new WebReviewError(
+      "WEB_REVIEW_RESULT_BUNDLE_INVALID",
+      `Path traversal detected: archive_relative_path '${receipt.archive_relative_path}' escapes expected run directory '${expectedDir}'`
+    );
+  }
 
   let lstat: import("node:fs").Stats;
   try {
@@ -198,6 +215,7 @@ export async function loadAndVerifyResultBundle(
 
   return {
     receipt,
+    phase6ReceiptSha256,
     archivePath,
     manifest,
     bundleEntries,

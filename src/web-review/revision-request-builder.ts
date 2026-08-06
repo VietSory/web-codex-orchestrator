@@ -38,20 +38,15 @@ export function buildRevisionRequest(
     finding_id: f.finding_id,
     classification: f.classification as RevisionFinding["classification"],
     finding_origin: f.finding_origin as RevisionFinding["finding_origin"],
-    previous_finding_id: f.previous_finding_id,
     locked_reference_ids: [...f.locked_reference_ids],
     artifact_paths: [...f.artifact_paths],
     line_or_json_pointer: f.line_or_json_pointer,
-    expected_behavior: f.expected_behavior,
-    observed_behavior: f.observed_behavior,
     evidence: f.evidence,
     minimal_required_fix: f.minimal_required_fix,
-    revision_changed_paths: [...f.revision_changed_paths],
   }));
 
   const revisionRequest: RevisionRequest = {
     schema_version: "1.1",
-    kind: "wco-revision-request",
     run_id: verdict.run_id,
     revision_round: verdict.review_round,
     spec_set_sha256: verdict.spec_set_sha256,

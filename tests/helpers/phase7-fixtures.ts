@@ -152,7 +152,7 @@ export async function createPhase6BundleFixture(
       state: "open",
       draft: false,
       head_branch: "codex/feature",
-      head_sha: TEST_HEAD_SHA,
+      head_sha: TEST_PUBLISHED_COMMIT,
       base_branch: "main",
       title_sha256: "f".repeat(64),
     },

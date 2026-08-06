@@ -1,10 +1,14 @@
-// Review history validation, round chaining, and idempotency control for Phase 7
 import path from "node:path";
+import crypto from "node:crypto";
 import { WebReviewError } from "./contracts.js";
 import type { WebReviewReceipt, WebReviewVerdict } from "./contracts.js";
 import { resolveReviewRoundPaths, formatRoundNumber } from "./web-review-paths.js";
 import { readWebReviewReceipt, readCanonicalArtifact } from "./web-review-store.js";
 import type { LoadedResultBundle } from "./result-bundle-review-reader.js";
+
+function sha256Hex(buf: Buffer): string {
+  return crypto.createHash("sha256").update(buf).digest("hex");
+}
 
 export interface IdempotencyCheckResult {
   isSealed: boolean;
@@ -18,6 +22,7 @@ export interface IdempotencyCheckResult {
 export interface ReviewHistoryValidationResult {
   previousReceipt: WebReviewReceipt | null;
   previousRevisionRequestData: unknown | null;
+  previousVerdictData: unknown | null;
 }
 
 /**
@@ -107,7 +112,7 @@ export async function validateReviewHistory(
     if (verdict.review_mode !== "INITIAL") {
       throw new WebReviewError("WEB_REVIEW_HISTORY_INVALID", "Round 1 verdict review_mode must be 'INITIAL'.");
     }
-    return { previousReceipt: null, previousRevisionRequestData: null };
+    return { previousReceipt: null, previousRevisionRequestData: null, previousVerdictData: null };
   }
 
   // Revision rounds 2, 3, 4
@@ -177,16 +182,45 @@ export async function validateReviewHistory(
     );
   }
 
-  // Load previous round revision request artifact
-  const prevRevReqBuf = await readCanonicalArtifact(prevPaths.revisionRequestPath);
-  let previousRevisionRequestData: unknown = null;
-  if (prevRevReqBuf) {
-    try {
-      previousRevisionRequestData = JSON.parse(prevRevReqBuf.toString("utf8"));
-    } catch {
-      // ignore
-    }
+  // Read, re-hash, and verify previous round verdict artifact
+  const prevVerdictBuf = await readCanonicalArtifact(prevPaths.verdictPath);
+  if (!prevVerdictBuf) {
+    throw new WebReviewError("WEB_REVIEW_HISTORY_INVALID", `Missing previous round ${prevRound} verdict artifact file.`);
+  }
+  const prevVerdictSha = sha256Hex(prevVerdictBuf);
+  if (prevVerdictSha !== prevReceipt.verdict_sha256) {
+    throw new WebReviewError(
+      "WEB_REVIEW_HISTORY_INVALID",
+      `Previous round ${prevRound} verdict artifact SHA mismatch on disk (expected '${prevReceipt.verdict_sha256}', got '${prevVerdictSha}').`
+    );
   }
 
-  return { previousReceipt: prevReceipt, previousRevisionRequestData };
+  let previousVerdictData: unknown;
+  try {
+    previousVerdictData = JSON.parse(prevVerdictBuf.toString("utf8"));
+  } catch {
+    throw new WebReviewError("WEB_REVIEW_HISTORY_INVALID", `Previous round ${prevRound} verdict artifact is malformed JSON.`);
+  }
+
+  // Read, re-hash, and verify previous round revision request artifact
+  const prevRevReqBuf = await readCanonicalArtifact(prevPaths.revisionRequestPath);
+  if (!prevRevReqBuf) {
+    throw new WebReviewError("WEB_REVIEW_HISTORY_INVALID", `Missing previous round ${prevRound} revision request artifact file.`);
+  }
+  const prevRevReqSha = sha256Hex(prevRevReqBuf);
+  if (prevRevReqSha !== prevReceipt.revision_request_sha256) {
+    throw new WebReviewError(
+      "WEB_REVIEW_HISTORY_INVALID",
+      `Previous round ${prevRound} revision request artifact SHA mismatch on disk (expected '${prevReceipt.revision_request_sha256}', got '${prevRevReqSha}').`
+    );
+  }
+
+  let previousRevisionRequestData: unknown;
+  try {
+    previousRevisionRequestData = JSON.parse(prevRevReqBuf.toString("utf8"));
+  } catch {
+    throw new WebReviewError("WEB_REVIEW_HISTORY_INVALID", `Previous round ${prevRound} revision request artifact is malformed JSON.`);
+  }
+
+  return { previousReceipt: prevReceipt, previousRevisionRequestData, previousVerdictData };
 }

@@ -83,25 +83,17 @@ export interface RevisionFinding {
     | "SPEC_VIOLATION"
     | "IMPLEMENTATION_DEFECT"
     | "EVIDENCE_GAP"
-    | "REPOSITORY_DRIFT"
-    | "SPEC_CONTRADICTION"
-    | "HUMAN_REQUIRED";
+    | "REPOSITORY_DRIFT";
   finding_origin:
     | "INITIAL_DISCOVERY"
     | "PREVIOUS_UNRESOLVED"
     | "REVISION_REGRESSION"
-    | "REVISION_EVIDENCE_INVALIDATION"
-    | "UNCHANGED_CRITICAL_EXCEPTION"
-    | "SYSTEM_EXCEPTION";
-  previous_finding_id: string | null;
+    | "REVISION_EVIDENCE_INVALIDATION";
   locked_reference_ids: string[];
   artifact_paths: string[];
   line_or_json_pointer: string;
-  expected_behavior: string;
-  observed_behavior: string;
   evidence: string;
   minimal_required_fix: string;
-  revision_changed_paths: string[];
 }
 
 import type { WebReviewVerdict, VerdictBlockingFinding } from "../result-bundle/web-verdict-validator.js";
@@ -110,7 +102,6 @@ export type { WebReviewVerdict, VerdictBlockingFinding };
 /** Canonical revision request structure per revision-request.schema.json 1.1 */
 export interface RevisionRequest {
   schema_version: "1.1";
-  kind: "wco-revision-request";
   run_id: string;
   revision_round: number;
   spec_set_sha256: string;

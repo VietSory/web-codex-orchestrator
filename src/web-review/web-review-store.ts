@@ -132,13 +132,46 @@ export async function readWebReviewReceipt(receiptPath: string): Promise<WebRevi
 /** Atomically write a Web review receipt using temp file + rename */
 export async function writeWebReviewReceipt(receiptPath: string, receipt: WebReviewReceipt): Promise<void> {
   assertWebReviewReceipt(receipt);
-  await writeCanonicalArtifact(receiptPath, Buffer.from(JSON.stringify(receipt, null, 2) + "\n", "utf8"));
+  const dir = path.dirname(receiptPath);
+  await fs.mkdir(dir, { recursive: true });
+
+  const contentBuffer = Buffer.from(JSON.stringify(receipt, null, 2) + "\n", "utf8");
+  const tmp = `${receiptPath}.tmp.${process.pid}.${Date.now()}`;
+  try {
+    await fs.writeFile(tmp, contentBuffer);
+    await fs.rename(tmp, receiptPath);
+  } catch (error) {
+    await fs.unlink(tmp).catch(() => undefined);
+    throw new WebReviewError(
+      "WEB_REVIEW_OPERATIONAL_ERROR",
+      `Failed to write web review receipt at ${receiptPath}: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
 }
 
-/** Atomically write a canonical artifact using temp file + rename */
+/** Atomically write a canonical artifact using create-only / compare-and-adopt logic */
 export async function writeCanonicalArtifact(filePath: string, contentBuffer: Buffer): Promise<void> {
   const dir = path.dirname(filePath);
   await fs.mkdir(dir, { recursive: true });
+
+  try {
+    const existing = await fs.readFile(filePath);
+    if (existing.equals(contentBuffer)) {
+      return; // Compare-and-adopt: identical content already on disk
+    }
+    throw new WebReviewError(
+      "WEB_REVIEW_ALREADY_SEALED",
+      `Artifact already exists with different content at '${filePath}'. Overwrite forbidden.`
+    );
+  } catch (err) {
+    if (err instanceof WebReviewError) throw err;
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw new WebReviewError(
+        "WEB_REVIEW_OPERATIONAL_ERROR",
+        `Failed to check existing artifact at '${filePath}': ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
 
   const tmp = `${filePath}.tmp.${process.pid}.${Date.now()}`;
   try {
