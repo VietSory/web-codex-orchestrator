@@ -1,18 +1,20 @@
-// Verdict schema, mandatory binding, locked reference registry, and anti-drip policy validator for Phase 7
+// Verdict schema, mandatory binding, locked reference registry, and anti-drip policy validator for Phase 7 (P0-06, P0-08)
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
 import Ajv2020Mod from "ajv/dist/2020.js";
 import { WebReviewError } from "./contracts.js";
 import type { WebReviewVerdict, VerdictBlockingFinding } from "./contracts.js";
 import type { LoadedResultBundle } from "./result-bundle-review-reader.js";
+import { computeBoundedGitDelta } from "./bounded-git-delta.js";
 
 const Ajv2020 = (Ajv2020Mod as any).default ?? Ajv2020Mod;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export const ESCALATION_ONLY_CLASSIFICATIONS = new Set<string>([
+  "SPEC_CONTRADICTION",
+  "HUMAN_REQUIRED",
   "CRITICAL_SECURITY_EXCEPTION",
   "ARTIFACT_UNTRUSTED",
   "REVISION_BUDGET_EXHAUSTED",
@@ -23,56 +25,10 @@ export const FIXABLE_CLASSIFICATIONS = new Set<string>([
   "IMPLEMENTATION_DEFECT",
   "EVIDENCE_GAP",
   "REPOSITORY_DRIFT",
-  "SPEC_CONTRADICTION",
-  "HUMAN_REQUIRED",
 ]);
 
-/** Compute changed file paths between two published commits using safe argv git diff-tree */
-export function computeGitDiffDelta(
-  repoDir: string,
-  prevCommit: string,
-  currCommit: string
-): Promise<Set<string>> {
-  return new Promise((resolve, reject) => {
-    if (!prevCommit || !currCommit) {
-      return reject(new WebReviewError("WEB_REVIEW_OPERATIONAL_ERROR", "Missing commit SHA for git diff-tree."));
-    }
-    if (prevCommit === currCommit) {
-      return resolve(new Set());
-    }
-    const proc = spawn("git", ["diff-tree", "-r", "--name-only", prevCommit, currCommit], {
-      cwd: repoDir,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-    });
-    const chunks: Buffer[] = [];
-    const errChunks: Buffer[] = [];
-    proc.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
-    proc.stderr.on("data", (chunk: Buffer) => errChunks.push(chunk));
-    proc.on("close", (code) => {
-      if (code !== 0) {
-        const errText = Buffer.concat(errChunks).toString("utf8").trim();
-        return reject(
-          new WebReviewError(
-            "WEB_REVIEW_OPERATIONAL_ERROR",
-            `Git diff-tree execution failed in trusted repo '${repoDir}' (exit code ${code}): ${errText || "unknown error"}`
-          )
-        );
-      }
-      const text = Buffer.concat(chunks).toString("utf8");
-      const files = text.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
-      resolve(new Set(files));
-    });
-    proc.on("error", (err) => {
-      reject(
-        new WebReviewError(
-          "WEB_REVIEW_OPERATIONAL_ERROR",
-          `Git diff-tree process failed to spawn in trusted repo '${repoDir}': ${err.message}`
-        )
-      );
-    });
-  });
-}
+/** Re-export bounded Git delta calculation */
+export const computeGitDiffDelta = computeBoundedGitDelta;
 
 /** Build comprehensive locked reference registry from bundle task specs */
 export function buildLockedReferenceRegistry(bundle: LoadedResultBundle): Set<string> {
@@ -122,6 +78,14 @@ export async function validateVerdictPolicy(
   previousVerdictData?: unknown,
   repoDir?: string
 ): Promise<WebReviewVerdict> {
+  // P0-02 check: Input verdict MUST NOT contain previous_pr_head_sha (schema 1.1 exact check)
+  if (typeof verdictData === "object" && verdictData !== null && "previous_pr_head_sha" in verdictData) {
+    throw new WebReviewError(
+      "WEB_REVIEW_VERDICT_INVALID",
+      "Verdict JSON schema validation failed: /previous_pr_head_sha is an additional property not allowed by schema 1.1."
+    );
+  }
+
   // 1. Schema validation against embedded web-review-verdict.schema.json
   const ajv = new Ajv2020({ strict: false, allErrors: true });
   const schemaPath = path.join(__dirname, "..", "result-bundle", "resources", "web-review-verdict.schema.json");
@@ -226,7 +190,7 @@ export async function validateVerdictPolicy(
     }
   }
 
-  // 6. Verdict Semantics & Classification rules
+  // 6. Verdict Semantics & Classification rules (P0-06)
   if (verdict.verdict === "APPROVE") {
     if (!verdict.comprehensive_review_complete) {
       throw new WebReviewError("WEB_REVIEW_VERDICT_INVALID", "APPROVE verdict requires comprehensive_review_complete: true.");
@@ -270,7 +234,7 @@ export async function validateVerdictPolicy(
     }
   }
 
-  // 7. Anti-Drip Policy Enforcement (rounds > 1)
+  // 7. Anti-Drip Policy Enforcement (rounds > 1) (P0-08)
   if (reviewRound > 1) {
     if (!verdict.previous_published_commit_sha) {
       throw new WebReviewError("WEB_REVIEW_VERDICT_INVALID", "Revision review verdict missing previous_published_commit_sha.");
@@ -300,17 +264,18 @@ export async function validateVerdictPolicy(
     }
 
     for (const finding of verdict.blocking_findings) {
-      // Rejection of INITIAL_DISCOVERY in revision rounds
-      if (finding.finding_origin === "INITIAL_DISCOVERY") {
+      // Rejection of INITIAL_DISCOVERY and SYSTEM_EXCEPTION in revision REVISE (P0-06)
+      if (verdict.verdict === "REVISE" && (finding.finding_origin === "INITIAL_DISCOVERY" || finding.finding_origin === "SYSTEM_EXCEPTION")) {
         throw new WebReviewError(
           "WEB_REVIEW_ANTI_DRIP_VIOLATION",
-          `Finding '${finding.finding_id}' with origin INITIAL_DISCOVERY is forbidden in revision review rounds (rounds 2-4).`
+          `Finding '${finding.finding_id}' with origin '${finding.finding_origin}' is forbidden in revision REVISE verdict.`
         );
       }
 
-      // Validate revision_changed_paths is a subset of gitDelta (enforced even if gitDelta is empty)
+      // Validate revision_changed_paths is a subset of gitDelta (enforced even if gitDelta is empty) (P0-07)
       for (const changedPath of finding.revision_changed_paths) {
-        if (!gitDelta.has(changedPath)) {
+        const normalized = changedPath.replace(/^repository\/source\//, "");
+        if (!gitDelta.has(normalized) && !gitDelta.has(changedPath)) {
           throw new WebReviewError(
             "WEB_REVIEW_ANTI_DRIP_VIOLATION",
             `Finding '${finding.finding_id}' lists changed path '${changedPath}' which is not in computed git delta.`
@@ -318,29 +283,33 @@ export async function validateVerdictPolicy(
         }
       }
 
-      // Anti-drip on previous PASS criteria
-      for (const refId of finding.locked_reference_ids) {
-        if (prevPassCriteria.has(refId) && finding.revision_changed_paths.length === 0) {
+      // Origin-specific rules & anti-drip path linking (P0-08)
+      if (finding.finding_origin === "PREVIOUS_UNRESOLVED") {
+        if (!finding.previous_finding_id) {
           throw new WebReviewError(
             "WEB_REVIEW_ANTI_DRIP_VIOLATION",
-            `Finding '${finding.finding_id}' introduces a new blocker on unchanged previous-PASS criterion '${refId}'.`
+            `Finding '${finding.finding_id}' with origin PREVIOUS_UNRESOLVED missing mandatory previous_finding_id.`
           );
         }
-      }
-
-      // Origin-specific rules
-      if (finding.finding_origin === "PREVIOUS_UNRESOLVED") {
-        if (!finding.previous_finding_id || (previousFindingIds.size > 0 && !previousFindingIds.has(finding.previous_finding_id))) {
+        if (previousFindingIds.size > 0 && !previousFindingIds.has(finding.previous_finding_id)) {
           throw new WebReviewError(
             "WEB_REVIEW_ANTI_DRIP_VIOLATION",
-            `Finding '${finding.finding_id}' with origin PREVIOUS_UNRESOLVED has invalid previous_finding_id '${finding.previous_finding_id}'.`
+            `Finding '${finding.finding_id}' references previous_finding_id '${finding.previous_finding_id}' which does not exist in previous revision request.`
           );
+        }
+        for (const refId of finding.locked_reference_ids) {
+          if (prevPassCriteria.has(refId)) {
+            throw new WebReviewError(
+              "WEB_REVIEW_ANTI_DRIP_VIOLATION",
+              `Finding '${finding.finding_id}' with origin PREVIOUS_UNRESOLVED cannot target criterion '${refId}' that was previously PASS.`
+            );
+          }
         }
       } else if (finding.finding_origin === "REVISION_REGRESSION" || finding.finding_origin === "REVISION_EVIDENCE_INVALIDATION") {
         if (finding.revision_changed_paths.length === 0) {
           throw new WebReviewError(
             "WEB_REVIEW_ANTI_DRIP_VIOLATION",
-            `Finding '${finding.finding_id}' with origin '${finding.finding_origin}' must identify revision_changed_paths.`
+            `Finding '${finding.finding_id}' with origin '${finding.finding_origin}' must specify revision_changed_paths.`
           );
         }
       } else if (finding.finding_origin === "UNCHANGED_CRITICAL_EXCEPTION") {
@@ -349,6 +318,18 @@ export async function validateVerdictPolicy(
             "WEB_REVIEW_ANTI_DRIP_VIOLATION",
             `Origin UNCHANGED_CRITICAL_EXCEPTION is allowed only with verdict ESCALATE and classification CRITICAL_SECURITY_EXCEPTION.`
           );
+        }
+      }
+
+      // Anti-drip on previous PASS criteria: new blocker on previous PASS criterion requires valid regression/invalidation linked to delta
+      for (const refId of finding.locked_reference_ids) {
+        if (prevPassCriteria.has(refId)) {
+          if (finding.finding_origin !== "REVISION_REGRESSION" && finding.finding_origin !== "REVISION_EVIDENCE_INVALIDATION" && finding.finding_origin !== "UNCHANGED_CRITICAL_EXCEPTION") {
+            throw new WebReviewError(
+              "WEB_REVIEW_ANTI_DRIP_VIOLATION",
+              `Finding '${finding.finding_id}' introduces a new blocker on previous-PASS criterion '${refId}' without valid regression or invalidation origin.`
+            );
+          }
         }
       }
     }

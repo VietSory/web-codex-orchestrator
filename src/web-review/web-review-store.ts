@@ -1,4 +1,4 @@
-// Atomic storage and persistence for Phase 7 per-round receipts and canonical artifacts
+// Atomic storage and persistence for Phase 7 per-round receipts and canonical artifacts (P0-12, P0-15)
 import fs from "node:fs/promises";
 import path from "node:path";
 import { WebReviewError } from "./contracts.js";
@@ -110,6 +110,30 @@ export function assertWebReviewReceipt(value: unknown): asserts value is WebRevi
   if (obj.fresh_attested_head_sha !== null && (typeof obj.fresh_attested_head_sha !== "string" || !/^[a-f0-9]{40}$/.test(obj.fresh_attested_head_sha))) {
     throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", "fresh_attested_head_sha must be null or a 40-hex SHA.");
   }
+
+  // Validate state-specific invariants (P0-15)
+  if (obj.state === "APPROVED") {
+    if (obj.action !== "ASK_USER_TO_MERGE") {
+      throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", "APPROVED receipt action must be ASK_USER_TO_MERGE");
+    }
+    if (obj.revision_request_sha256 !== null) {
+      throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", "APPROVED receipt must not have revision_request_sha256");
+    }
+  } else if (obj.state === "REVISION_REQUESTED") {
+    if (obj.action !== "NO_USER_MERGE_PROMPT") {
+      throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", "REVISION_REQUESTED receipt action must be NO_USER_MERGE_PROMPT");
+    }
+    if (!obj.revision_request_sha256) {
+      throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", "REVISION_REQUESTED receipt must have revision_request_sha256");
+    }
+  } else if (obj.state === "ESCALATED") {
+    if (obj.action !== "NOTIFY_USER_EXCEPTION") {
+      throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", "ESCALATED receipt action must be NOTIFY_USER_EXCEPTION");
+    }
+    if (obj.revision_request_sha256 !== null) {
+      throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", "ESCALATED receipt must not have revision_request_sha256");
+    }
+  }
 }
 
 /** Read and validate a Web review receipt. Returns null if receipt file does not exist. */
@@ -149,39 +173,37 @@ export async function writeWebReviewReceipt(receiptPath: string, receipt: WebRev
   }
 }
 
-/** Atomically write a canonical artifact using create-only / compare-and-adopt logic */
+/**
+ * Atomically write a canonical artifact using atomic no-overwrite / compare-and-adopt logic (P0-12).
+ * Writes temp file, uses atomic link / wx create. On EEXIST, reads target and compare-adopts matching bytes.
+ */
 export async function writeCanonicalArtifact(filePath: string, contentBuffer: Buffer): Promise<void> {
   const dir = path.dirname(filePath);
   await fs.mkdir(dir, { recursive: true });
 
+  // 1. Try atomic create-only write using flag 'wx'
   try {
-    const existing = await fs.readFile(filePath);
-    if (existing.equals(contentBuffer)) {
-      return; // Compare-and-adopt: identical content already on disk
-    }
-    throw new WebReviewError(
-      "WEB_REVIEW_ALREADY_SEALED",
-      `Artifact already exists with different content at '${filePath}'. Overwrite forbidden.`
-    );
+    await fs.writeFile(filePath, contentBuffer, { flag: "wx" });
+    return;
   } catch (err) {
-    if (err instanceof WebReviewError) throw err;
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") {
+      // 2. File exists: compare exact bytes
+      try {
+        const existing = await fs.readFile(filePath);
+        if (existing.equals(contentBuffer)) {
+          return; // Compare-and-adopt: identical content already on disk
+        }
+      } catch {
+        // Ignore read error
+      }
       throw new WebReviewError(
-        "WEB_REVIEW_OPERATIONAL_ERROR",
-        `Failed to check existing artifact at '${filePath}': ${err instanceof Error ? err.message : String(err)}`
+        "WEB_REVIEW_ALREADY_SEALED",
+        `Artifact already exists with different content at '${filePath}'. Overwrite forbidden.`
       );
     }
-  }
-
-  const tmp = `${filePath}.tmp.${process.pid}.${Date.now()}`;
-  try {
-    await fs.writeFile(tmp, contentBuffer);
-    await fs.rename(tmp, filePath);
-  } catch (error) {
-    await fs.unlink(tmp).catch(() => undefined);
     throw new WebReviewError(
       "WEB_REVIEW_OPERATIONAL_ERROR",
-      `Failed to write canonical artifact at ${filePath}: ${error instanceof Error ? error.message : String(error)}`
+      `Failed to write canonical artifact at ${filePath}: ${err instanceof Error ? err.message : String(err)}`
     );
   }
 }

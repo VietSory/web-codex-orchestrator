@@ -173,6 +173,22 @@ export async function createPhase6BundleFixture(
 
   await fs.writeFile(receiptPath, JSON.stringify(receipt, null, 2) + "\n", "utf8");
 
+  // Always create the run receipt so resolveTrustedRunContext can locate it (P0-01)
+  const runsDir = path.join(stateDirectory, "runs", TEST_TASK_ID, archiveSha);
+  await fs.mkdir(runsDir, { recursive: true });
+  await fs.writeFile(
+    path.join(runsDir, "run.json"),
+    JSON.stringify({
+      version: "1.0",
+      run_id: fixtureRunId,
+      task_id: TEST_TASK_ID,
+      archive_sha256: archiveSha,
+      repository_id: "repo",
+      repository_path: stateDirectory,
+      state: "COMPLETED",
+    })
+  );
+
   return {
     stateDirectory,
     receiptPath,

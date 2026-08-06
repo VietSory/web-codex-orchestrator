@@ -1,4 +1,4 @@
-// Canonical decision-event.json builder for Phase 7
+// Canonical decision-event.json builder for Phase 7 (P0-10)
 import crypto from "node:crypto";
 import { WebReviewError } from "./contracts.js";
 import type { DecisionEvent, DecisionAction, DecisionState, WebReviewVerdict } from "./contracts.js";
@@ -14,12 +14,11 @@ export interface BuiltDecisionEvent {
   decisionEventSha256: string;
 }
 
-/** Build canonical decision-event.json from a validated verdict */
+/** Build deterministic canonical decision-event.json from a validated verdict (P0-10) */
 export function buildDecisionEvent(
   verdict: WebReviewVerdict,
   verdictSha256: string,
-  revisionRequestSha256: string | null,
-  createdAt: string
+  revisionRequestSha256: string | null
 ): BuiltDecisionEvent {
   let state: DecisionState;
   let action: DecisionAction;
@@ -51,7 +50,6 @@ export function buildDecisionEvent(
     published_commit_sha: verdict.published_commit_sha,
     pull_request_number: verdict.pull_request_number,
     observed_head_sha: verdict.observed_head_sha,
-    created_at: createdAt,
   };
 
   const canonicalBuffer = canonicalJsonBuffer(decisionEvent);

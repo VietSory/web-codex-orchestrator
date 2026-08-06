@@ -73,7 +73,6 @@ export interface DecisionEvent {
   published_commit_sha: string;
   pull_request_number: number;
   observed_head_sha: string;
-  created_at: string;
 }
 
 /** Revision finding per revision-request.schema.json 1.1 */

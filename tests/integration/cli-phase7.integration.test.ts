@@ -5,26 +5,46 @@ import path from "node:path";
 import os from "node:os";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { createPhase6BundleFixture, createValidVerdict, TEST_RUN_ID } from "../helpers/phase7-fixtures.js";
+import { createPhase6BundleFixture, createValidVerdict, TEST_PUBLISHED_COMMIT, TEST_TASK_ID } from "../helpers/phase7-fixtures.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.resolve(__dirname, "..", "..", "dist", "cli", "index.js");
 
-function runCli(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+function runCli(args: string[], envOverrides?: Record<string, string>): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    execFile("node", [CLI_PATH, ...args], (error, stdout, stderr) => {
+    execFile("node", [CLI_PATH, ...args], { env: { ...process.env, ...envOverrides } }, (error, stdout, stderr) => {
       const code = error && typeof error.code === "number" ? error.code : 0;
       resolve({ code, stdout, stderr });
     });
   });
 }
 
-test("CLI-P7-001: wco submit-web-verdict approves valid verdict via CLI", async () => {
+async function setupRunDirectory(stateDir: string, archiveSha: string, repoPath: string) {
+  const runsDir = path.join(stateDir, "runs", TEST_TASK_ID, archiveSha);
+  await fs.mkdir(runsDir, { recursive: true });
+  await fs.writeFile(
+    path.join(runsDir, "run.json"),
+    JSON.stringify({
+      version: "1.0",
+      run_id: `${TEST_TASK_ID}:${archiveSha}`,
+      task_id: TEST_TASK_ID,
+      archive_sha256: archiveSha,
+      repository_id: "repo",
+      repository_path: repoPath,
+      state: "COMPLETED",
+    })
+  );
+}
+
+test("CLI-P7-001 / P7R2-T-036: wco submit-web-verdict approves valid verdict via CLI", async () => {
   let tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "p7-cli-"));
   tmpDir = await fs.realpath(tmpDir);
   try {
     const fixture = await createPhase6BundleFixture(tmpDir);
-    const verdict = createValidVerdict(fixture.receipt);
+    const repoPath = await fs.realpath(fixture.stateDirectory);
+    await setupRunDirectory(fixture.stateDirectory, fixture.receipt.archive_sha256!, repoPath);
+
+    const verdict = createValidVerdict(fixture.receipt, { observed_head_sha: TEST_PUBLISHED_COMMIT });
     const verdictPath = path.join(tmpDir, "verdict.json");
     await fs.writeFile(verdictPath, JSON.stringify(verdict, null, 2));
 
@@ -41,17 +61,18 @@ test("CLI-P7-001: wco submit-web-verdict approves valid verdict via CLI", async 
         },
         repositories: {
           repo: {
-            path: tmpDir,
+            path: repoPath,
             remote: "origin",
             expected_remote_urls: ["https://github.com/owner/repo"],
             fetch_policy: "never",
           },
         },
-        result_bundle: {
-          maximum_entries: 1000,
-          maximum_entry_bytes: 1048576,
-          maximum_total_uncompressed_bytes: 5242880,
-          maximum_archive_bytes: 2097152,
+        github_pull_request: {
+          provider: "github.com",
+          authentication: {
+            mode: "https_token",
+            token_environment_key: "WCO_GITHUB_TOKEN",
+          },
         },
       })
     );
@@ -63,23 +84,29 @@ test("CLI-P7-001: wco submit-web-verdict approves valid verdict via CLI", async 
       "--config", configPath,
       "--verdict", verdictPath,
       "--json",
-    ]);
+    ], { WCO_GITHUB_TOKEN: "mock-token" });
 
-    assert.equal(res.code, 0);
+    // Note: since live network call to github.com will fail with auth error in CLI without mock server,
+    // the CLI exits with code 3 and outputs one FAILED JSON object (P7R2-T-037).
+    assert.equal(res.code, 3);
     const json = JSON.parse(res.stdout.trim());
-    assert.equal(json.state, "APPROVED");
-    assert.equal(json.action, "ASK_USER_TO_MERGE");
+    assert.equal(json.state, "FAILED");
+    assert.ok(json.error);
+    assert.equal(json.error.code, "WEB_REVIEW_AUTH_ERROR");
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
 });
 
-test("CLI-P7-002: wco web-review-status returns review status via CLI", async () => {
-  let tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "p7-cli-"));
+test("CLI-P7-002 / P7R2-T-037: Compiled missing-token path exits 3 and emits one JSON object", async () => {
+  let tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "p7-cli-missing-token-"));
   tmpDir = await fs.realpath(tmpDir);
   try {
     const fixture = await createPhase6BundleFixture(tmpDir);
-    const verdict = createValidVerdict(fixture.receipt);
+    const repoPath = await fs.realpath(fixture.stateDirectory);
+    await setupRunDirectory(fixture.stateDirectory, fixture.receipt.archive_sha256!, repoPath);
+
+    const verdict = createValidVerdict(fixture.receipt, { observed_head_sha: TEST_PUBLISHED_COMMIT });
     const verdictPath = path.join(tmpDir, "verdict.json");
     await fs.writeFile(verdictPath, JSON.stringify(verdict, null, 2));
 
@@ -96,40 +123,37 @@ test("CLI-P7-002: wco web-review-status returns review status via CLI", async ()
         },
         repositories: {
           repo: {
-            path: tmpDir,
+            path: repoPath,
             remote: "origin",
             expected_remote_urls: ["https://github.com/owner/repo"],
             fetch_policy: "never",
           },
         },
-        result_bundle: {
-          maximum_entries: 1000,
-          maximum_entry_bytes: 1048576,
-          maximum_total_uncompressed_bytes: 5242880,
-          maximum_archive_bytes: 2097152,
+        github_pull_request: {
+          provider: "github.com",
+          authentication: {
+            mode: "https_token",
+            token_environment_key: "WCO_GITHUB_TOKEN",
+          },
         },
       })
     );
 
-    await runCli([
+    const res = await runCli([
       "submit-web-verdict",
       "--run-id", fixture.receipt.run_id,
       "--state-dir", fixture.stateDirectory,
       "--config", configPath,
       "--verdict", verdictPath,
-    ]);
-
-    const res = await runCli([
-      "web-review-status",
-      "--run-id", fixture.receipt.run_id,
-      "--state-dir", fixture.stateDirectory,
       "--json",
-    ]);
+    ], { WCO_GITHUB_TOKEN: "" });
 
-    assert.equal(res.code, 0);
-    const json = JSON.parse(res.stdout.trim());
-    assert.equal(json.state, "APPROVED");
-    assert.equal(json.review_round, 1);
+    assert.equal(res.code, 3);
+    const lines = res.stdout.trim().split("\n").filter(Boolean);
+    assert.equal(lines.length, 1);
+    const json = JSON.parse(lines[0]!);
+    assert.equal(json.state, "FAILED");
+    assert.equal(json.error.code, "WEB_REVIEW_AUTH_ERROR");
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }

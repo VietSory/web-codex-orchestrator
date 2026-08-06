@@ -5,7 +5,7 @@ import path from "node:path";
 import os from "node:os";
 import { submitWebVerdict, getWebReviewStatus } from "../src/web-review/web-review-service.js";
 import { buildRevisionRequest } from "../src/web-review/revision-request-builder.js";
-import { createPhase6BundleFixture, createValidVerdict, TEST_PUBLISHED_COMMIT, TEST_SPEC_SET_SHA } from "./helpers/phase7-fixtures.js";
+import { createPhase6BundleFixture, createValidVerdict, TEST_PUBLISHED_COMMIT, TEST_BASE_COMMIT, TEST_SPEC_SET_SHA } from "./helpers/phase7-fixtures.js";
 import { WebReviewError } from "../src/web-review/contracts.js";
 import type { GitHubAttestationClient } from "../src/result-bundle/github-attestation.js";
 
@@ -15,8 +15,8 @@ function mockGithubClient(overrides?: Partial<any>): GitHubAttestationClient {
       return {
         number: prNumber,
         state: "open",
-        head: { ref: "codex/feature", sha: TEST_PUBLISHED_COMMIT },
-        base: { ref: "main", sha: "base123" },
+        head: { ref: "codex/feature", sha: TEST_PUBLISHED_COMMIT, repo: { full_name: `${owner}/${repo}` } },
+        base: { ref: "main", sha: TEST_BASE_COMMIT, repo: { full_name: `${owner}/${repo}` } },
         merged: false,
         ...overrides,
       } as any;
