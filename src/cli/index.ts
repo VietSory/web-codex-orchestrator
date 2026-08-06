@@ -19,6 +19,7 @@ import { PUBLISH_USAGE, runPublishCommand } from "../publish/publish-cli.js";
 import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
 import { runDraftPrCommand, DRAFT_PR_USAGE } from "../pull-request/draft-pr-cli.js";
 import { runPackageResultCommand, runResultBundleStatusCommand, PACKAGE_RESULT_USAGE } from "../result-bundle/result-bundle-cli.js";
+import { runSubmitWebVerdictCommand, runWebReviewStatusCommand, SUBMIT_WEB_VERDICT_USAGE } from "../web-review/web-review-cli.js";
 
 function printUsage(): void {
   console.log("Usage:");
@@ -32,6 +33,7 @@ function printUsage(): void {
   console.log(PUBLISH_USAGE);
   console.log(DRAFT_PR_USAGE.trim());
   console.log(PACKAGE_RESULT_USAGE.trim());
+  console.log(SUBMIT_WEB_VERDICT_USAGE.trim());
 }
 
 function parseIntakeArguments(args: string[]): { archivePath: string; stateDirectory: string; json: boolean } | null {
@@ -300,6 +302,8 @@ async function main(): Promise<void> {
   if (command === "create-draft-pr") { process.exitCode = await runDraftPrCommand(args); return; }
   if (command === "package-result") { process.exitCode = await runPackageResultCommand(args); return; }
   if (command === "result-bundle-status") { process.exitCode = await runResultBundleStatusCommand(args); return; }
+  if (command === "submit-web-verdict") { process.exitCode = await runSubmitWebVerdictCommand(args); return; }
+  if (command === "web-review-status") { process.exitCode = await runWebReviewStatusCommand(args); return; }
   printUsage();
   process.exitCode = 2;
 }

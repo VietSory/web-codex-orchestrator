@@ -3,6 +3,7 @@
 
 ## Unreleased
 
+- Added Phase 7 Web Review Verdict Processing (`wco submit-web-verdict`, `wco web-review-status`), providing secure untrusted verdict intake, per-round immutable storage (`handoff/reviews/runs/<task-id>/<archive-sha256>/rounds/<zero-padded-round>/`), Result Bundle verification, mandatory binding assertions, anti-drip policy enforcement, fresh read-only GitHub attestation, and deterministic dispatch (`APPROVED`, `REVISION_REQUESTED`, `ESCALATED`).
 - Added Phase 6 Deterministic Result Bundle Generation and Web Review Handoff, producing a sealed, reproducible ZIP archive containing strictly projected public evidence and safe Git artifact extractions.
 - Added Phase 3 inbox scanning, trusted repository routing, exact-base Git
   worktree preparation, run receipts, locks, and schema 1.2 execution policy.

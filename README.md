@@ -50,6 +50,21 @@ node dist/cli/index.js execute \
 node dist/cli/index.js execution-status \
   --run-id TASK-2026-003:<archive-sha256> \
   --state-dir ~/.local/state/web-codex-orchestrator --json
+
+node dist/cli/index.js package-result \
+  --run-id TASK-2026-003:<archive-sha256> \
+  --state-dir ~/.local/state/web-codex-orchestrator \
+  --config ~/.config/web-codex-orchestrator/config.json --json
+
+node dist/cli/index.js submit-web-verdict \
+  --run-id TASK-2026-003:<archive-sha256> \
+  --state-dir ~/.local/state/web-codex-orchestrator \
+  --config ~/.config/web-codex-orchestrator/config.json \
+  --verdict ./downloads/web-review-verdict.json --json
+
+node dist/cli/index.js web-review-status \
+  --run-id TASK-2026-003:<archive-sha256> \
+  --state-dir ~/.local/state/web-codex-orchestrator --json
 ```
 
 Add `--json` to `scan` for one machine-readable result object. Without it,
