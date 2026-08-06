@@ -46,3 +46,6 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Compiled CLI integration test
+        run: npm run test:cli

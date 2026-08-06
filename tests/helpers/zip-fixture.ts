@@ -66,6 +66,8 @@ export interface RawZipEntry {
   flags?: number;
   externalFileAttributes?: number;
   versionMadeBy?: number;
+  dosTime?: number;
+  dosDate?: number;
 }
 
 function crc32(data: Buffer): number {
@@ -102,9 +104,11 @@ export async function writeRawZip(archivePath: string, entries: RawZipEntry[]): 
     const name = Buffer.from(item.name, "utf8");
     const flags = item.flags ?? 0x800;
     const crc = crc32(plain);
+    const time = item.dosTime ?? 0;
+    const date = item.dosDate ?? 0x0021;
     const local = Buffer.concat([
       Buffer.from([0x50, 0x4b, 0x03, 0x04]),
-      u16(20), u16(flags), u16(method), u16(0), u16(0), u32(crc), u32(compressed.length), u32(uncompressedSize),
+      u16(20), u16(flags), u16(method), u16(time), u16(date), u32(crc), u32(compressed.length), u32(uncompressedSize),
       u16(name.length), u16(0), name, compressed,
     ]);
     localParts.push(local);
@@ -112,7 +116,7 @@ export async function writeRawZip(archivePath: string, entries: RawZipEntry[]): 
     const madeBy = item.versionMadeBy ?? ((3 << 8) | 20);
     centralParts.push(Buffer.concat([
       Buffer.from([0x50, 0x4b, 0x01, 0x02]),
-      u16(madeBy), u16(20), u16(flags), u16(method), u16(0), u16(0), u32(crc), u32(compressed.length), u32(uncompressedSize),
+      u16(madeBy), u16(20), u16(flags), u16(method), u16(time), u16(date), u32(crc), u32(compressed.length), u32(uncompressedSize),
       u16(name.length), u16(0), u16(0), u16(0), u16(0), u32(external), u32(offset), name,
     ]));
     offset += local.length;

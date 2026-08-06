@@ -2,6 +2,7 @@ import { lstat, mkdir, open, readFile, realpath, rename, rm } from "node:fs/prom
 import path from "node:path";
 import { DraftPullRequestError, type DraftPullRequestReceipt } from "./contracts.js";
 
+const SHA1 = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -33,7 +34,7 @@ function assertReceipt(value: unknown): asserts value is DraftPullRequestReceipt
     typeof repository_name !== "string" ||
     typeof base_branch !== "string" ||
     typeof head_branch !== "string" ||
-    typeof expected_head_sha !== "string" || !SHA256.test(expected_head_sha) ||
+    typeof expected_head_sha !== "string" || !SHA1.test(expected_head_sha) ||
     typeof git_publish_receipt_sha256 !== "string" || !SHA256.test(git_publish_receipt_sha256) ||
     typeof request_sha256 !== "string" || !SHA256.test(request_sha256) ||
     typeof title !== "string" ||
@@ -42,7 +43,7 @@ function assertReceipt(value: unknown): asserts value is DraftPullRequestReceipt
     typeof create_post_attempted !== "boolean" ||
     (pull_number !== null && (typeof pull_number !== "number" || pull_number <= 0)) ||
     (pull_url !== null && typeof pull_url !== "string") ||
-    (observed_head_sha !== null && (typeof observed_head_sha !== "string" || !SHA256.test(observed_head_sha))) ||
+    (observed_head_sha !== null && (typeof observed_head_sha !== "string" || !SHA1.test(observed_head_sha))) ||
     (observed_base_branch !== null && typeof observed_base_branch !== "string") ||
     (observed_state !== null && observed_state !== "open" && observed_state !== "closed") ||
     (observed_draft !== null && typeof observed_draft !== "boolean") ||
