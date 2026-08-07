@@ -2,96 +2,32 @@ import type { ReasoningEffort } from "../config/contracts.js";
 import type { VerificationCommandResult, ReviewVerdict } from "../execution/contracts.js";
 
 export const REVISION_STATES = [
-  "READY_TO_REVISE",
-  "IMPLEMENTING",
-  "POLICY_CHECKING",
-  "VERIFYING",
-  "TERRA_REVIEWING",
-  "SOL_REVIEWING",
-  "READY_FOR_PUBLISH",
-  "COMMITTED",
-  "PUSHED",
-  "RESULT_READY",
-  "BLOCKED",
-  "RETRYABLE",
-  "FAILED",
+  "READY_TO_REVISE","IMPLEMENTING","POLICY_CHECKING","VERIFYING","TERRA_REVIEWING","SOL_REVIEWING",
+  "READY_FOR_PUBLISH","COMMITTED","PUSHED","RESULT_READY","BLOCKED","RETRYABLE","FAILED",
 ] as const;
-
 export type RevisionState = (typeof REVISION_STATES)[number];
 
 export type RevisionErrorCode =
-  | "REVISION_REQUEST_INVALID"
-  | "REVISION_HISTORY_INVALID"
-  | "REVISION_STATE_INVALID"
-  | "REVISION_STATE_UNSAFE"
-  | "REVISION_LOCKED"
-  | "REVISION_CONFIG_INVALID"
-  | "REVISION_BUNDLE_MUTATED"
-  | "REVISION_SPEC_DRIFT"
-  | "REVISION_WORKTREE_UNSAFE"
-  | "REVISION_WORKTREE_DIRTY"
-  | "REVISION_HEAD_DRIFT"
-  | "REVISION_BRANCH_DRIFT"
-  | "REVISION_PR_DRIFT"
-  | "REVISION_REMOTE_DRIFT"
-  | "REVISION_AGENT_FAILED"
-  | "REVISION_POLICY_BLOCKED"
-  | "REVISION_VERIFICATION_FAILED"
-  | "REVISION_TERRA_REVIEW_FAILED"
-  | "REVISION_SOL_REVIEW_FAILED"
-  | "REVISION_BUDGET_EXHAUSTED"
-  | "REVISION_COMMIT_FAILED"
-  | "REVISION_PUSH_FAILED"
-  | "REVISION_RESULT_FAILED"
-  | "REVISION_INTERRUPTED"
-  | "REVISION_OPERATIONAL_ERROR";
+  | "REVISION_REQUEST_INVALID" | "REVISION_HISTORY_INVALID" | "REVISION_STATE_INVALID" | "REVISION_STATE_UNSAFE"
+  | "REVISION_LOCKED" | "REVISION_CONFIG_INVALID" | "REVISION_BUNDLE_MUTATED" | "REVISION_SPEC_DRIFT"
+  | "REVISION_WORKTREE_UNSAFE" | "REVISION_WORKTREE_DIRTY" | "REVISION_HEAD_DRIFT" | "REVISION_BRANCH_DRIFT"
+  | "REVISION_PR_DRIFT" | "REVISION_REMOTE_DRIFT" | "REVISION_AGENT_FAILED" | "REVISION_POLICY_BLOCKED"
+  | "REVISION_VERIFICATION_FAILED" | "REVISION_TERRA_REVIEW_FAILED" | "REVISION_SOL_REVIEW_FAILED"
+  | "REVISION_BUDGET_EXHAUSTED" | "REVISION_COMMIT_FAILED" | "REVISION_PUSH_FAILED" | "REVISION_RESULT_FAILED"
+  | "REVISION_INTERRUPTED" | "REVISION_OPERATIONAL_ERROR";
 
 export class RevisionError extends Error {
   readonly code: RevisionErrorCode;
   readonly details?: Record<string, unknown> | undefined;
-
-  constructor(code: RevisionErrorCode, message: string, details?: Record<string, unknown>) {
-    super(message);
-    this.name = "RevisionError";
-    this.code = code;
-    this.details = details;
-  }
+  constructor(code: RevisionErrorCode, message: string, details?: Record<string, unknown>) { super(message); this.name = "RevisionError"; this.code = code; this.details = details; }
 }
-
-export function isRevisionError(error: unknown): error is RevisionError {
-  return error instanceof RevisionError;
-}
-
+export function isRevisionError(error: unknown): error is RevisionError { return error instanceof RevisionError; }
 export function revisionExitCode(code: RevisionErrorCode): number {
-  if ([
-    "REVISION_REQUEST_INVALID",
-    "REVISION_HISTORY_INVALID",
-    "REVISION_STATE_INVALID",
-    "REVISION_STATE_UNSAFE",
-    "REVISION_CONFIG_INVALID",
-    "REVISION_BUNDLE_MUTATED",
-    "REVISION_SPEC_DRIFT",
-    "REVISION_WORKTREE_UNSAFE",
-    "REVISION_WORKTREE_DIRTY",
-    "REVISION_HEAD_DRIFT",
-    "REVISION_BRANCH_DRIFT",
-    "REVISION_PR_DRIFT",
-    "REVISION_REMOTE_DRIFT",
-    "REVISION_POLICY_BLOCKED",
-    "REVISION_VERIFICATION_FAILED",
-    "REVISION_TERRA_REVIEW_FAILED",
-    "REVISION_SOL_REVIEW_FAILED",
-    "REVISION_BUDGET_EXHAUSTED",
-  ].includes(code)) return 1;
+  if (["REVISION_REQUEST_INVALID","REVISION_HISTORY_INVALID","REVISION_STATE_INVALID","REVISION_STATE_UNSAFE","REVISION_CONFIG_INVALID","REVISION_BUNDLE_MUTATED","REVISION_SPEC_DRIFT","REVISION_WORKTREE_UNSAFE","REVISION_WORKTREE_DIRTY","REVISION_HEAD_DRIFT","REVISION_BRANCH_DRIFT","REVISION_PR_DRIFT","REVISION_REMOTE_DRIFT","REVISION_POLICY_BLOCKED","REVISION_VERIFICATION_FAILED","REVISION_TERRA_REVIEW_FAILED","REVISION_SOL_REVIEW_FAILED","REVISION_BUDGET_EXHAUSTED"].includes(code)) return 1;
   return 3;
 }
 
-export type RevisionFindingClassification =
-  | "SPEC_VIOLATION"
-  | "IMPLEMENTATION_DEFECT"
-  | "EVIDENCE_GAP"
-  | "REPOSITORY_DRIFT";
-
+export type RevisionFindingClassification = "SPEC_VIOLATION" | "IMPLEMENTATION_DEFECT" | "EVIDENCE_GAP" | "REPOSITORY_DRIFT";
 export interface RevisionFinding {
   finding_id: string;
   classification: RevisionFindingClassification;
@@ -102,7 +38,6 @@ export interface RevisionFinding {
   evidence: string;
   minimal_required_fix: string;
 }
-
 export interface RevisionRequest {
   schema_version: "1.1";
   run_id: string;
@@ -115,7 +50,6 @@ export interface RevisionRequest {
   pull_request_number: number;
   findings: RevisionFinding[];
 }
-
 export interface RevisionReviewEvidence {
   model: string;
   reasoning_effort: ReasoningEffort;
@@ -124,7 +58,16 @@ export interface RevisionReviewEvidence {
   verdict: ReviewVerdict | null;
   reviewed_change_set_sha256: string | null;
 }
-
+export interface RevisionUsage {
+  input_tokens: number;
+  cached_input_tokens: number;
+  output_tokens: number;
+  total_turns: number;
+  implementation_iterations: number;
+  internal_review_rounds: number;
+  sol_review_rounds: number;
+  started_at: string;
+}
 export interface RevisionReceipt {
   phase_version: "1.0";
   run_id: string;
@@ -142,20 +85,11 @@ export interface RevisionReceipt {
   base_branch: string;
   worktree_path: string;
   initial_refs_sha256: string;
-  implementer: {
-    model: string;
-    reasoning_effort: ReasoningEffort;
-    thread_id: string | null;
-    iterations: number;
-  };
-  verification: {
-    rounds: number;
-    required_commands_passed: boolean;
-    verified_change_set_sha256: string | null;
-    commands: VerificationCommandResult[];
-  };
+  implementer: { model: string; reasoning_effort: ReasoningEffort; thread_id: string | null; iterations: number };
+  verification: { rounds: number; required_commands_passed: boolean; verified_change_set_sha256: string | null; commands: VerificationCommandResult[] };
   terra_review: RevisionReviewEvidence;
   sol_review: RevisionReviewEvidence;
+  usage: RevisionUsage;
   revision_change_set_sha256: string | null;
   revision_paths: string[];
   approved_snapshot_sha256: string | null;
