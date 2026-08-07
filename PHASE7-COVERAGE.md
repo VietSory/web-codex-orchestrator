@@ -13,9 +13,21 @@
 | `tests/phase7-remediation-v2.test.ts` | Repository routing, escalation semantics, locks, CLI parsing and deterministic events | 15 |
 | `tests/phase7-final-hardening.test.ts` | Task/result archive identity split, embedded schema authority, terminal artifact integrity, contract hashes and GitHub identity | 5 |
 | `tests/phase7-final-trusted-run.test.ts` | Mandatory canonical remote identity and trusted remote URL binding | 2 |
-| `tests/integration/cli-phase7.integration.test.ts` | Compiled CLI integration | 2 |
+| `tests/phase7-maintainer-hardening.test.ts` | Fail-closed stale locks, symlink confinement, Draft PR invariants, fresh retry attestation and streaming response caps | 7 |
+| `tests/integration/cli-phase7.integration.test.ts` | Compiled CLI APPROVED success path and fail-closed authentication path | 2 |
 
-Total Phase 7 named cases: **61**.
+Total Phase 7 named cases: **68**.
+
+## Adversarial Maintainer Gate
+
+The maintainer hardening suite specifically attempts to invalidate the security claims that are easiest for ordinary happy-path tests to miss:
+
+- an existing stale lock cannot be silently stolen or removed;
+- a symlinked `handoff` ancestor cannot redirect Phase 7 writes outside the state root;
+- canonical artifact comparison never follows a symlink target;
+- both the Phase 6 receipt and fresh GitHub state must still describe a Draft PR;
+- an exact terminal retry performs fresh GitHub attestation instead of returning stale approval authority;
+- a chunked GitHub response without `Content-Length` is aborted as soon as it crosses the 1 MiB production cap.
 
 ## Required Release Evidence
 
