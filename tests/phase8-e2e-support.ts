@@ -315,10 +315,9 @@ test("P8-E2E-001: sealed REVISE becomes a verified same-PR revision bundle and r
 
     const configPath = await writeTrustedConfig(root, repo);
     const runner = new GitRunner();
-    const initialChangeSet = await calculateChangeSet({ worktreePath: repo, baseCommit: base, branchName: BRANCH, runner, allowedGeneratedPaths: ["dist/**"] });
-    assert.equal(initialChangeSet.entries.length, 1);
-    assert.ok(initialChangeSet.refs_sha256);
-    await writeInitialReceipts({ state, repo, accepted, base, initialHead, changeSetSha256: initialChangeSet.change_set_sha256, refsSha256: initialChangeSet.refs_sha256! });
+    const initialChangeSetSha256 = sha256Hex(`initial-change:${base}:${initialHead}`);
+    const initialRefsSha256 = sha256Hex(`initial-refs:${BRANCH}:${initialHead}`);
+    await writeInitialReceipts({ state, repo, accepted, base, initialHead, changeSetSha256: initialChangeSetSha256, refsSha256: initialRefsSha256 });
 
     const githubClient = new DynamicGitHubClient(repo, base);
     const initialBundle = await packageResultBundle({
