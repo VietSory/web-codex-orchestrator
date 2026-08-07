@@ -1,8 +1,7 @@
-import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { WebReviewError, type WebReviewReceipt, type WebReviewState } from "./contracts.js";
-import { readWebReviewReceipt } from "./web-review-store.js";
+import { readCanonicalArtifact, readWebReviewReceipt } from "./web-review-store.js";
 
 function sha256Hex(buf: Buffer): string {
   return crypto.createHash("sha256").update(buf).digest("hex");
@@ -19,9 +18,15 @@ export interface InspectionResult {
 
 async function hashIfPresent(filePath: string): Promise<string | null> {
   try {
-    return sha256Hex(await fs.readFile(filePath));
+    const buffer = await readCanonicalArtifact(filePath);
+    return buffer ? sha256Hex(buffer) : null;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if (error instanceof WebReviewError) {
+      throw new WebReviewError(
+        "WEB_REVIEW_RECEIPT_INVALID",
+        `Cannot inspect persisted review artifact '${filePath}': ${error.message}`
+      );
+    }
     throw new WebReviewError(
       "WEB_REVIEW_RECEIPT_INVALID",
       `Cannot inspect persisted review artifact '${filePath}': ${error instanceof Error ? error.message : String(error)}`
