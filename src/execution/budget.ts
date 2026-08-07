@@ -5,11 +5,16 @@ export interface Usage { implementationIterations: number; internalReviewRounds:
 
 export class BudgetTracker {
   readonly usage: Usage;
-  constructor(private readonly limits: AgentLimits, startedAt = Date.now(), initial?: Partial<Usage>) {
+  constructor(
+    private readonly limits: AgentLimits,
+    startedAt = Date.now(),
+    initial?: Partial<Usage>,
+    private readonly now: () => number = Date.now,
+  ) {
     this.usage = { implementationIterations: initial?.implementationIterations ?? 0, internalReviewRounds: initial?.internalReviewRounds ?? 0, solReviewRounds: initial?.solReviewRounds ?? 0, totalTurns: initial?.totalTurns ?? 0, inputTokens: initial?.inputTokens ?? 0, cachedInputTokens: initial?.cachedInputTokens ?? 0, outputTokens: initial?.outputTokens ?? 0, startedAt };
   }
   private check(value: number, maximum: number): void { if (value >= maximum) throw new ExecutionError("BUDGET_EXHAUSTED", "Configured execution budget is exhausted."); }
-  beforeTurn(): void { this.check(this.usage.totalTurns, this.limits.maximum_total_agent_turns); if ((Date.now() - this.usage.startedAt) / 1000 >= this.limits.maximum_total_seconds) throw new ExecutionError("BUDGET_EXHAUSTED", "Configured wall-clock budget is exhausted."); }
+  beforeTurn(): void { this.check(this.usage.totalTurns, this.limits.maximum_total_agent_turns); if ((this.now() - this.usage.startedAt) / 1000 >= this.limits.maximum_total_seconds) throw new ExecutionError("BUDGET_EXHAUSTED", "Configured wall-clock budget is exhausted."); }
   beginAssessment(): void { this.beforeTurn(); this.usage.totalTurns += 1; }
   beginRepair(): void { this.beforeTurn(); this.usage.totalTurns += 1; }
   beginImplementation(): void { this.check(this.usage.implementationIterations, this.limits.maximum_implementation_iterations); this.beforeTurn(); this.usage.implementationIterations += 1; this.usage.totalTurns += 1; }
