@@ -12,7 +12,12 @@ type FileMode = "100644" | "100755";
 interface SnapshotEntry { path: string; state: "file" | "deleted"; mode: FileMode | null; blob_oid: string | null; }
 
 export interface RevisionGitBoundary { worktreePath: string; branchName: string; remoteName: string; remoteUrl: string; previousHeadSha: string; initialRefsSha256: string; }
-export interface PublishRevisionRequest extends RevisionGitBoundary { approvedPaths: string[]; approvedSnapshotSha256: string; commitMessage: string; }
+export interface PublishRevisionRequest extends RevisionGitBoundary {
+  approvedPaths: string[];
+  approvedSnapshotSha256: string;
+  commitMessage: string;
+  onCommitted?: (commitSha: string, recoveredExistingCommit: boolean) => Promise<void>;
+}
 export interface PublishRevisionResult { previous_head_sha: string; new_commit_sha: string; remote_branch_sha: string; approved_snapshot_sha256: string; commit_tree_snapshot_sha256: string; paths: string[]; recovered_existing_commit: boolean; }
 
 function output(result: Awaited<ReturnType<GitRunner["run"]>>, code: "REVISION_OPERATIONAL_ERROR" | "REVISION_COMMIT_FAILED" | "REVISION_PUSH_FAILED" = "REVISION_OPERATIONAL_ERROR"): string {
@@ -122,7 +127,7 @@ export async function publishRevision(request: PublishRevisionRequest, runner = 
   const worktree = path.resolve(request.worktreePath); const paths = normalizePaths(request.approvedPaths);
   if (!GIT_OID.test(request.previousHeadSha)) throw new RevisionError("REVISION_HEAD_DRIFT", "Previous head SHA is invalid."); if (!/^[a-f0-9]{64}$/.test(request.approvedSnapshotSha256)) throw new RevisionError("REVISION_COMMIT_FAILED", "Approved snapshot SHA is invalid."); if (!request.commitMessage || request.commitMessage.length > 4096 || request.commitMessage.includes("\0")) throw new RevisionError("REVISION_COMMIT_FAILED", "Revision commit message is invalid.");
   const branch = output(await runner.run(["branch", "--show-current"], worktree)).trim(); if (branch !== request.branchName) throw new RevisionError("REVISION_BRANCH_DRIFT", `Revision publish branch '${branch}' does not match '${request.branchName}'.`);
-  let head = output(await runner.run(["rev-parse", "HEAD"], worktree)).trim(); let newCommit: string; let treeSnapshot: string; let recovered = false;
+  const head = output(await runner.run(["rev-parse", "HEAD"], worktree)).trim(); let newCommit: string; let treeSnapshot: string; let recovered = false;
   if (head === request.previousHeadSha) {
     if (await remoteHead(runner, worktree, request.remoteName, request.branchName) !== request.previousHeadSha) throw new RevisionError("REVISION_REMOTE_DRIFT", "Remote branch drifted before revision commit/push.");
     if (await worktreeSnapshot(runner, worktree, paths) !== request.approvedSnapshotSha256) throw new RevisionError("REVISION_COMMIT_FAILED", "Worktree bytes no longer match the approved revision snapshot.");
@@ -134,6 +139,9 @@ export async function publishRevision(request: PublishRevisionRequest, runner = 
     newCommit = head; treeSnapshot = await verifyCandidateCommit(runner, worktree, newCommit, request.previousHeadSha, paths, request.approvedSnapshotSha256);
     if (output(await runner.run(["status", "--porcelain=v1", "-z", "--untracked-files=all"], worktree)).length !== 0) throw new RevisionError("REVISION_COMMIT_FAILED", "Recovered revision commit has additional uncommitted changes."); recovered = true;
   }
+
+  if (request.onCommitted) await request.onCommitted(newCommit, recovered);
+
   const remoteNow = await remoteHead(runner, worktree, request.remoteName, request.branchName);
   if (remoteNow === newCommit) return { previous_head_sha: request.previousHeadSha, new_commit_sha: newCommit, remote_branch_sha: remoteNow, approved_snapshot_sha256: request.approvedSnapshotSha256, commit_tree_snapshot_sha256: treeSnapshot, paths, recovered_existing_commit: true };
   if (remoteNow !== request.previousHeadSha) throw new RevisionError("REVISION_REMOTE_DRIFT", "Remote branch is neither previous head nor the exact recovered revision commit.");
