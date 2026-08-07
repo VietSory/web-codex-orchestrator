@@ -237,7 +237,7 @@ export async function reviseRun(options: RevisionServiceOptions): Promise<Revisi
         if (!activeReceipt.implementer.thread_id) {
           budget.beginAssessment();
           await persistBudget(paths.receiptPath, activeReceipt, budget, now);
-          const assessed = await assessWithTerra(agentClient,{ model:config.agents.implementer.model, reasoning_effort:config.agents.implementer.reasoning_effort, prompt:revisionPrompt(source,bundle), workspacePath:activeReceipt.worktree_path, acceptedBundlePath, signal });
+          const assessed = await assessWithTerra(agentClient,{ model:config.agents.implementer.model, reasoning_effort:config.agents.implementer.reasoning_effort, prompt:revisionPrompt(source,bundle), threadId:undefined, workspacePath:activeReceipt.worktree_path, acceptedBundlePath, signal });
           recordUsage(budget, assessed.response);
           activeReceipt.implementer.thread_id = assessed.response.thread_id;
           await persistBudget(paths.receiptPath, activeReceipt, budget, now);
@@ -305,7 +305,7 @@ export async function reviseRun(options: RevisionServiceOptions): Promise<Revisi
       await persist(paths.receiptPath,activeReceipt,now);
       budget.beginInternalReview();
       await persistBudget(paths.receiptPath,activeReceipt,budget,now);
-      const terra=await reviewWithTerra(agentClient,{ model:config.agents.internal_reviewer.model, reasoning_effort:config.agents.internal_reviewer.reasoning_effort, prompt:JSON.stringify({ phase:"8", role:"independent_revision_review", sealed_revision_request:source.request, exact_change_set_sha256:currentChangeSet.change_set_sha256, instruction:"Review the exact revision against the frozen task contract. APPROVE only if all sealed findings are resolved, required acceptance remains satisfied, scope is unchanged, and evidence is sufficient." }), workspacePath:activeReceipt.worktree_path, acceptedBundlePath, signal });
+      const terra=await reviewWithTerra(agentClient,{ model:config.agents.internal_reviewer.model, reasoning_effort:config.agents.internal_reviewer.reasoning_effort, prompt:JSON.stringify({ phase:"8", role:"independent_revision_review", sealed_revision_request:source.request, exact_change_set_sha256:currentChangeSet.change_set_sha256, instruction:"Review the exact revision against the frozen task contract. APPROVE only if all sealed findings are resolved, required acceptance remains satisfied, scope is unchanged, and evidence is sufficient." }), threadId:undefined, workspacePath:activeReceipt.worktree_path, acceptedBundlePath, signal });
       recordUsage(budget,terra.response);
       terraReview=terra.review;
       activeReceipt.terra_review.thread_ids.push(terra.threadId);
@@ -333,7 +333,7 @@ export async function reviseRun(options: RevisionServiceOptions): Promise<Revisi
       await persist(paths.receiptPath,activeReceipt,now);
       budget.beginSolReview();
       await persistBudget(paths.receiptPath,activeReceipt,budget,now);
-      const sol=await reviewWithSol(agentClient,{ model:config.agents.final_reviewer.model, reasoning_effort:config.agents.final_reviewer.reasoning_effort, prompt:JSON.stringify({ phase:"8", role:"adversarial_revision_review", sealed_revision_request:source.request, exact_change_set_sha256:currentChangeSet.change_set_sha256, instruction:"Adversarially review the exact revision. APPROVE only if deterministic verification and frozen-contract compliance are complete with no hidden regression, scope expansion, or weakened test/evidence." }), workspacePath:activeReceipt.worktree_path, acceptedBundlePath, signal });
+      const sol=await reviewWithSol(agentClient,{ model:config.agents.final_reviewer.model, reasoning_effort:config.agents.final_reviewer.reasoning_effort, prompt:JSON.stringify({ phase:"8", role:"adversarial_revision_review", sealed_revision_request:source.request, exact_change_set_sha256:currentChangeSet.change_set_sha256, instruction:"Adversarially review the exact revision. APPROVE only if deterministic verification and frozen-contract compliance are complete with no hidden regression, scope expansion, or weakened test/evidence." }), threadId:undefined, workspacePath:activeReceipt.worktree_path, acceptedBundlePath, signal });
       recordUsage(budget,sol.response);
       solReview=sol.review;
       activeReceipt.sol_review.thread_ids.push(sol.threadId);
