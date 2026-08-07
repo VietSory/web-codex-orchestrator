@@ -94,17 +94,26 @@ same digest independently accepted by deterministic verification, Terra, and
 Sol before publication authority is persisted.
 
 Git network operations are fail-closed against remote replacement and mutable
-remote-configuration races. The current `git remote get-url` value is sanitized
-and must equal the remote URL sealed at the trusted revision boundary, but that
-remote name is used only as a configuration attestation. Every network
-`ls-remote` and `push` targets the exact sealed, sanitized URL directly, so a
-later mutation of `.git/config` cannot redirect credentials or publication to a
-different transport destination. Immediately before an actual push, Phase 8
-also rechecks the accepted Task Bundle and freshly attests that the same GitHub
-Pull Request remains open, unmerged and Draft with the exact previous head/base
-identities. Phase 8 then permits only a normal push of one commit whose sole
-parent is the previous PR head. It has no force-push, amend, rebase,
-branch-deletion, create-PR, mark-ready, or merge path.
+Git URL rewriting. The current `git remote get-url` value is sanitized and must
+equal the remote URL sealed at the trusted revision boundary, but that remote
+name is used only as a configuration attestation. Every Phase 8 network
+`ls-remote` executes from a newly created clean bare Git repository instead of
+the product worktree. A push uses a separate clean bare sender whose local
+config is empty and whose object database sees the already-created revision
+commit read-only through Git `objects/info/alternates`. The production
+`GitRunner` also disables system Git config and points global config at the
+trusted empty revision-runtime config. Consequently worktree-local
+`url.*.insteadOf` and `url.*.pushInsteadOf` rules are not loaded by the network
+transport and cannot redirect credentials or publication after the sealed URL
+has been selected. Each clean transport directory is removed after the network
+operation.
+
+Immediately before an actual push, Phase 8 also rechecks the accepted Task
+Bundle and freshly attests that the same GitHub Pull Request remains open,
+unmerged and Draft with the exact previous head/base identities. Phase 8 then
+permits only a normal push of one commit whose sole parent is the previous PR
+head. It has no force-push, amend, rebase, branch-deletion, create-PR,
+mark-ready, or merge path.
 
 Revision Result Bundle v1.2 is append-only review evidence. Review round 1 may
 consume only the initial Phase 6 v1.1 bundle; review rounds 2..4 may consume only
