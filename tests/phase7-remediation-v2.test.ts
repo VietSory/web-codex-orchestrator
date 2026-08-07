@@ -27,6 +27,7 @@ function mockGithubClient(overrides?: Partial<any>): GitHubAttestationClient {
       return {
         number: prNumber,
         state: "open",
+        draft: true,
         head: { ref: "codex/feature", sha: TEST_PUBLISHED_COMMIT, repo: { full_name: `${owner}/${repo}` } },
         base: { ref: "main", sha: TEST_BASE_COMMIT, repo: { full_name: `${owner}/${repo}` } },
         html_url: `https://github.com/${owner}/${repo}/pull/${prNumber}`,
@@ -461,11 +462,9 @@ test("P7R2-T-032: Long-running live lock is not deleted after TTL/mtime threshol
     const lockFile = path.join(tmpDir, "web-review.lock");
     const lock1 = await acquireReviewLock(lockFile, 1000);
 
-    // Modify mtime to be 2 hours old
     const oldTime = new Date(Date.now() - 7200_000);
     fsSync.utimesSync(lockFile, oldTime, oldTime);
 
-    // Attempting to acquire lock from another call should fail because process is alive
     await assert.rejects(
       () => acquireReviewLock(lockFile, 200),
       (err: any) => err instanceof WebReviewError && err.code === "WEB_REVIEW_LOCK_FAILED"
@@ -484,17 +483,14 @@ test("P7R2-T-033: Non-owner release cannot unlink another owner's lock", async (
     const lockFile = path.join(tmpDir, "web-review.lock");
     const lock1 = await acquireReviewLock(lockFile, 1000);
 
-    // Overwrite lock file with different nonce
     await fs.writeFile(
       lockFile,
       JSON.stringify({ pid: process.pid, nonce: "different-nonce", acquired_at: new Date().toISOString() })
     );
 
-    // Releasing lock1 with different nonce does not unlink file
     await lock1.release();
     assert.ok(fsSync.existsSync(lockFile));
 
-    // Manually clean up
     await fs.unlink(lockFile).catch(() => undefined);
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
