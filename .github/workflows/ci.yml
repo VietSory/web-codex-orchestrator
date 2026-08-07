@@ -41,8 +41,12 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Phase 9 authority regressions
-        run: npm run test:phase9
+      - name: Phase 9 protocol tests
+        run: npx tsx --test --test-reporter=spec tests/phase9-web-authority.test.ts
+        timeout-minutes: 2
+
+      - name: Phase 9 maintainer adversarial tests
+        run: npx tsx --test --test-reporter=spec tests/phase9-maintainer-hardening.test.ts
         timeout-minutes: 2
 
       - name: Unit and fake integration tests
