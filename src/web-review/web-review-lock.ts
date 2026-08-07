@@ -20,22 +20,60 @@ function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
+  } catch (error) {
+    // ESRCH is the only positive signal that the PID is gone. Permission or
+    // platform-specific failures are treated as alive so lock recovery remains
+    // fail-closed.
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+async function inspectExistingLock(lockPath: string): Promise<"LIVE" | "STALE" | "MALFORMED"> {
+  let stat: import("node:fs").Stats;
+  try {
+    stat = await fs.lstat(lockPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "STALE";
+    throw error;
+  }
+  if (stat.isSymbolicLink() || !stat.isFile()) return "MALFORMED";
+
+  try {
+    const content = await fs.readFile(lockPath, "utf8");
+    const parsed = JSON.parse(content) as Partial<LockData>;
+    if (
+      !Number.isInteger(parsed.pid) ||
+      (parsed.pid as number) <= 0 ||
+      typeof parsed.nonce !== "string" ||
+      parsed.nonce.length === 0 ||
+      typeof parsed.acquired_at !== "string"
+    ) {
+      return "MALFORMED";
+    }
+    return isProcessAlive(parsed.pid as number) ? "LIVE" : "STALE";
   } catch {
-    return false;
+    return "MALFORMED";
   }
 }
 
 /**
- * Acquire exclusive lock for a review round (`web-review.lock`) with safe ownership nonces (P0-13).
- * Never steals a live lock based on mtime/TTL alone.
- * Release verifies nonce/identity before unlinking lock file.
+ * Acquire exclusive lock for a review round (`web-review.lock`).
+ *
+ * Phase 7 deliberately never auto-deletes an existing lock. Automatic stale
+ * lock stealing has an unavoidable read/unlink replacement race with a newly
+ * acquired lock. A dead or malformed lock therefore fails closed and requires
+ * explicit operator recovery outside this phase.
  */
 export async function acquireReviewLock(
   lockPath: string,
   timeoutMs = 5000
 ): Promise<LockHandle> {
   const resolvedPath = path.resolve(lockPath);
-  await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
+  const parent = path.dirname(resolvedPath);
+  const parentStat = await fs.lstat(parent);
+  if (parentStat.isSymbolicLink() || !parentStat.isDirectory()) {
+    throw new WebReviewError("WEB_REVIEW_LOCK_FAILED", `Review lock parent is not a safe directory: ${parent}`);
+  }
 
   const start = Date.now();
   const pid = process.pid;
@@ -59,48 +97,37 @@ export async function acquireReviewLock(
           if (released) return;
           released = true;
           try {
+            const stat = await fs.lstat(resolvedPath);
+            if (stat.isSymbolicLink() || !stat.isFile()) return;
             const currentContent = await fs.readFile(resolvedPath, "utf8");
             const parsed: LockData = JSON.parse(currentContent);
-            if (parsed && parsed.nonce === nonce) {
+            if (parsed && parsed.nonce === nonce && parsed.pid === pid) {
               await fs.unlink(resolvedPath).catch(() => undefined);
             }
           } catch {
-            // If lock file was already unlinked or non-matching, ignore
+            // Missing, malformed, or replaced lock is not ours to remove.
           }
         },
       };
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "EEXIST") {
-        // Safe stale lock check: check if lock file is readable and holding PID is dead
-        try {
-          const content = await fs.readFile(resolvedPath, "utf8");
-          const parsed: LockData = JSON.parse(content);
-          if (parsed && typeof parsed.pid === "number") {
-            if (!isProcessAlive(parsed.pid)) {
-              // Dead process holding lock: safe to break stale lock
-              await fs.unlink(resolvedPath).catch(() => undefined);
-              continue;
-            }
-          }
-        } catch {
-          // If lock file is malformed JSON, break malformed lock
-          await fs.unlink(resolvedPath).catch(() => undefined);
-          continue;
-        }
-
-        if (Date.now() - start >= timeoutMs) {
-          throw new WebReviewError(
-            "WEB_REVIEW_LOCK_FAILED",
-            `Could not acquire review lock at ${resolvedPath} within ${timeoutMs}ms.`
-          );
-        }
-        await new Promise((res) => setTimeout(res, 50));
-        continue;
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw new WebReviewError(
+          "WEB_REVIEW_LOCK_FAILED",
+          `Failed to acquire lock: ${err instanceof Error ? err.message : String(err)}`
+        );
       }
-      throw new WebReviewError(
-        "WEB_REVIEW_LOCK_FAILED",
-        `Failed to acquire lock: ${err instanceof Error ? err.message : String(err)}`
-      );
+
+      const observed = await inspectExistingLock(resolvedPath);
+      if (Date.now() - start >= timeoutMs) {
+        const recovery = observed === "LIVE"
+          ? "another live process owns the round"
+          : `${observed.toLowerCase()} lock requires explicit operator cleanup; Phase 7 never auto-steals locks`;
+        throw new WebReviewError(
+          "WEB_REVIEW_LOCK_FAILED",
+          `Could not acquire review lock at ${resolvedPath} within ${timeoutMs}ms: ${recovery}.`
+        );
+      }
+      await new Promise((res) => setTimeout(res, 50));
     }
   }
 }
