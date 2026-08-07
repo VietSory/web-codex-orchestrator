@@ -1,4 +1,4 @@
-import { constants as fsConstants } from "node:fs";
+import { constants as fsConstants, type Stats } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -18,7 +18,7 @@ function isSafeBranchName(value: string): boolean {
   return value.split("/").every((component) => component.length > 0 && !component.startsWith(".") && !component.endsWith(".lock"));
 }
 
-async function openStableRegularFile(filePath: string, maximumBytes: number | null): Promise<{ handle: fs.FileHandle; before: Awaited<ReturnType<fs.FileHandle["stat"]>> }> {
+async function openStableRegularFile(filePath: string, maximumBytes: number | null): Promise<{ handle: fs.FileHandle; before: Stats }> {
   const pathBefore = await fs.lstat(filePath).catch((error) => {
     throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", `Cannot inspect registry file '${filePath}': ${error instanceof Error ? error.message : String(error)}`);
   });
@@ -37,7 +37,7 @@ async function openStableRegularFile(filePath: string, maximumBytes: number | nu
   }
 }
 
-async function assertStablePathAfter(filePath: string, before: Awaited<ReturnType<fs.FileHandle["stat"]>>, handle: fs.FileHandle): Promise<void> {
+async function assertStablePathAfter(filePath: string, before: Stats, handle: fs.FileHandle): Promise<void> {
   const afterHandle = await handle.stat();
   const afterPath = await fs.lstat(filePath).catch((error) => {
     throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", `Registry path disappeared during read: ${error instanceof Error ? error.message : String(error)}`);
