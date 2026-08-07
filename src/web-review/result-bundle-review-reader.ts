@@ -119,6 +119,19 @@ async function readBoundedStableReceipt(receiptPath: string, label: string): Pro
   }
 }
 
+function assertRoundBundleSemantics(receipt: ResultBundleReceipt, reviewRound: number): void {
+  if (reviewRound === 1) {
+    if (receipt.result_bundle_version !== "1.1" || receipt.input_kind === "revision" || (receipt.revision_round !== undefined && receipt.revision_round !== null)) {
+      throw resultBundleInvalid("Web review round 1 requires the immutable initial Phase 6 Result Bundle v1.1.");
+    }
+    return;
+  }
+  const expectedRevisionRound = reviewRound - 1;
+  if (receipt.result_bundle_version !== "1.2" || receipt.input_kind !== "revision" || receipt.revision_round !== expectedRevisionRound) {
+    throw resultBundleInvalid(`Web review round ${reviewRound} requires Phase 8 Result Bundle v1.2 for revision round ${expectedRevisionRound}.`);
+  }
+}
+
 /**
  * Load and independently verify the exact Result Bundle for one Web review
  * round. Round 1 selects the immutable initial Phase 6 bundle; rounds 2..4
@@ -165,6 +178,7 @@ export async function loadAndVerifyResultBundle(
   if (receipt.state !== "READY_FOR_WEB_REVIEW") {
     throw resultBundleInvalid(`Selected Result Bundle receipt state is '${receipt.state}', expected 'READY_FOR_WEB_REVIEW'`);
   }
+  assertRoundBundleSemantics(receipt, reviewRound);
 
   if (
     !receipt.archive_relative_path ||
