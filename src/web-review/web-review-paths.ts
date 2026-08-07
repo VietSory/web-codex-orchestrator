@@ -13,7 +13,7 @@ export interface ParsedRunIdentity {
   archiveSha256: string;
 }
 
-/** Parse and strictly validate run ID format (<task-id>:<archive-sha256>) */
+/** Parse and strictly validate run ID format (<task-id>:<archive-sha256>). */
 export function parseRunIdentity(runId: string): ParsedRunIdentity {
   if (!runId || typeof runId !== "string") {
     throw new WebReviewError("WEB_REVIEW_INVALID_RUN_ID", "runId must be a non-empty string.");
@@ -23,7 +23,8 @@ export function parseRunIdentity(runId: string): ParsedRunIdentity {
     throw new WebReviewError("WEB_REVIEW_INVALID_RUN_ID", `Invalid run ID format: '${runId}'. Expected <task-id>:<archive-sha256>`);
   }
   const [taskId, archiveSha256] = parts;
-  if (!taskId || !/^[A-Za-z0-9_-]{1,128}$/.test(taskId)) {
+  // Keep the Phase 7 parser exactly aligned with the canonical run-store task-id contract.
+  if (!taskId || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(taskId)) {
     throw new WebReviewError("WEB_REVIEW_INVALID_RUN_ID", `Unsafe or invalid task ID: '${taskId}'`);
   }
   if (!archiveSha256 || !/^[a-f0-9]{64}$/.test(archiveSha256)) {
@@ -32,7 +33,6 @@ export function parseRunIdentity(runId: string): ParsedRunIdentity {
   return { taskId, archiveSha256 };
 }
 
-/** Validate zero-padded round number (1..4 -> "01".."04") */
 export function formatRoundNumber(round: number): string {
   if (!Number.isInteger(round) || round < 1 || round > 4) {
     throw new WebReviewError("WEB_REVIEW_INVALID_ROUND", `Invalid review round: ${round}. Must be an integer between 1 and 4.`);
@@ -51,7 +51,6 @@ export interface ReviewRoundPaths {
   relativeRoundDir: string;
 }
 
-/** Compute and validate per-round storage paths */
 export function resolveReviewRoundPaths(
   stateDirectory: string,
   runId: string,
@@ -72,15 +71,12 @@ export function resolveReviewRoundPaths(
   ).replace(/\\/g, "/");
 
   const roundDir = path.resolve(resolvedStateDir, relativeRoundDir);
-
-  // Safety check: ensure roundDir is strictly contained within stateDirectory
   const relativeFromState = path.relative(resolvedStateDir, roundDir);
-  if (relativeFromState.startsWith("..") || path.isAbsolute(relativeFromState)) {
+  if (relativeFromState === ".." || relativeFromState.startsWith(`..${path.sep}`) || path.isAbsolute(relativeFromState)) {
     throw new WebReviewError("WEB_REVIEW_ATTEMPTED_PATH_ESCAPE", `Resolved round directory escaped state directory: ${roundDir}`);
   }
 
   const taskReviewsDir = path.dirname(path.dirname(roundDir));
-
   return {
     taskReviewsDir,
     roundDir,

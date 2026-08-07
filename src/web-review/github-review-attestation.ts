@@ -17,9 +17,10 @@ export interface VerifiedGitHubAttestation {
 const PINNED_GITHUB_API_URL = "https://api.github.com";
 
 /**
- * Strict GitHub attestation validator (P0-05).
- * Enforces mandatory fresh GitHub API PR status verification against exact Phase 6 receipt and verdict.
- * Production requests MUST pin endpoint to https://api.github.com (no arbitrary GITHUB_API_URL redirect).
+ * Strict read-only GitHub attestation validator.
+ * Production is pinned to api.github.com and every identity field used for a
+ * merge decision is mandatory; missing fields are repository drift, never a
+ * reason to fall back to trusted local expectations.
  */
 export async function verifyGitHubAttestation(params: {
   receipt: ResultBundleReceipt;
@@ -29,7 +30,6 @@ export async function verifyGitHubAttestation(params: {
 }): Promise<VerifiedGitHubAttestation> {
   const { receipt, config, verdict, githubClient } = params;
 
-  // Verify PR URL format
   if (!receipt.pull_request || !receipt.pull_request.url) {
     throw new WebReviewError("WEB_REVIEW_REPOSITORY_DRIFT", "Phase 6 receipt missing pull_request.url");
   }
@@ -38,10 +38,7 @@ export async function verifyGitHubAttestation(params: {
   try {
     parsedUrl = new URL(receipt.pull_request.url);
   } catch {
-    throw new WebReviewError(
-      "WEB_REVIEW_REPOSITORY_DRIFT",
-      `Invalid PR URL format '${receipt.pull_request.url}'`
-    );
+    throw new WebReviewError("WEB_REVIEW_REPOSITORY_DRIFT", `Invalid PR URL format '${receipt.pull_request.url}'`);
   }
 
   if (parsedUrl.protocol !== "https:") {
@@ -65,9 +62,8 @@ export async function verifyGitHubAttestation(params: {
   const owner = urlPathParts[0]!;
   const repo = urlPathParts[1]!;
   const prNumStr = urlPathParts[3]!;
-
-  const prNumber = parseInt(prNumStr, 10);
-  if (isNaN(prNumber) || prNumber <= 0 || prNumber !== receipt.pull_request.number) {
+  const prNumber = Number(prNumStr);
+  if (!Number.isInteger(prNumber) || prNumber <= 0 || prNumber !== receipt.pull_request.number) {
     throw new WebReviewError(
       "WEB_REVIEW_REPOSITORY_DRIFT",
       `PR number '${prNumStr}' in URL does not match receipt pull_request.number '${receipt.pull_request.number}'`
@@ -75,9 +71,7 @@ export async function verifyGitHubAttestation(params: {
   }
 
   let prData: any;
-
   if (githubClient) {
-    // Tests or custom injected client
     try {
       prData = await githubClient.getPullRequest(owner, repo, prNumber);
     } catch (e) {
@@ -87,7 +81,6 @@ export async function verifyGitHubAttestation(params: {
       );
     }
   } else {
-    // Real production call
     const tokenEnvKey = config.github_pull_request?.authentication?.token_environment_key ?? "WCO_GITHUB_TOKEN";
     const token = process.env[tokenEnvKey];
     if (!token) {
@@ -97,10 +90,7 @@ export async function verifyGitHubAttestation(params: {
       );
     }
 
-    // Require pinned endpoint for production token call (P0-05, P7R2-T-011)
-    const apiEndpoint = PINNED_GITHUB_API_URL;
-    const apiUrl = `${apiEndpoint}/repos/${owner}/${repo}/pulls/${prNumber}`;
-
+    const apiUrl = `${PINNED_GITHUB_API_URL}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${prNumber}`;
     try {
       const response = await fetch(apiUrl, {
         method: "GET",
@@ -109,15 +99,14 @@ export async function verifyGitHubAttestation(params: {
           Accept: "application/vnd.github.v3+json",
           "User-Agent": "wco-phase7-attestation",
         },
+        redirect: "error",
       });
-
       if (!response.ok) {
         throw new WebReviewError(
           "WEB_REVIEW_AUTH_ERROR",
           `GitHub API attestation returned HTTP ${response.status}: ${response.statusText}`
         );
       }
-
       prData = await response.json();
     } catch (e) {
       if (e instanceof WebReviewError) throw e;
@@ -128,90 +117,69 @@ export async function verifyGitHubAttestation(params: {
     }
   }
 
-  if (!prData || typeof prData !== "object") {
+  if (!prData || typeof prData !== "object" || Array.isArray(prData)) {
     throw new WebReviewError("WEB_REVIEW_REPOSITORY_DRIFT", "GitHub API response is not an object");
   }
-
-  // Strict assertions on PR payload
   if (prData.number !== prNumber) {
-    throw new WebReviewError(
-      "WEB_REVIEW_REPOSITORY_DRIFT",
-      `Attestation PR number ${prData.number} does not match expected ${prNumber}`
-    );
+    throw new WebReviewError("WEB_REVIEW_REPOSITORY_DRIFT", `Attestation PR number ${prData.number} does not match expected ${prNumber}`);
   }
-
   if (prData.state !== "open") {
-    throw new WebReviewError(
-      "WEB_REVIEW_REPOSITORY_DRIFT",
-      `GitHub PR state is '${prData.state}', expected 'open'`
-    );
+    throw new WebReviewError("WEB_REVIEW_REPOSITORY_DRIFT", `GitHub PR state is '${prData.state}', expected 'open'`);
   }
-
-  if (prData.merged === true) {
-    throw new WebReviewError(
-      "WEB_REVIEW_REPOSITORY_DRIFT",
-      "GitHub PR has already been merged"
-    );
+  if (prData.merged !== false) {
+    throw new WebReviewError("WEB_REVIEW_REPOSITORY_DRIFT", "GitHub PR merged state is missing, invalid, or already merged");
   }
 
   const expectedRepoFullName = `${owner}/${repo}`.toLowerCase();
-  const headRepoFullName = prData.head?.repo?.full_name?.toLowerCase();
-  const baseRepoFullName = prData.base?.repo?.full_name?.toLowerCase();
-
-  if (headRepoFullName && headRepoFullName !== expectedRepoFullName) {
-    throw new WebReviewError(
-      "WEB_REVIEW_REPOSITORY_DRIFT",
-      `GitHub PR head repository '${headRepoFullName}' does not match expected '${expectedRepoFullName}'`
-    );
+  const rawHeadRepoFullName = prData.head?.repo?.full_name;
+  const rawBaseRepoFullName = prData.base?.repo?.full_name;
+  if (typeof rawHeadRepoFullName !== "string" || rawHeadRepoFullName.length === 0) {
+    throw new WebReviewError("WEB_REVIEW_REPOSITORY_DRIFT", "GitHub PR response is missing head.repo.full_name");
   }
-
-  if (baseRepoFullName && baseRepoFullName !== expectedRepoFullName) {
-    throw new WebReviewError(
-      "WEB_REVIEW_REPOSITORY_DRIFT",
-      `GitHub PR base repository '${baseRepoFullName}' does not match expected '${expectedRepoFullName}'`
-    );
+  if (typeof rawBaseRepoFullName !== "string" || rawBaseRepoFullName.length === 0) {
+    throw new WebReviewError("WEB_REVIEW_REPOSITORY_DRIFT", "GitHub PR response is missing base.repo.full_name");
+  }
+  const headRepoFullName = rawHeadRepoFullName.toLowerCase();
+  const baseRepoFullName = rawBaseRepoFullName.toLowerCase();
+  if (headRepoFullName !== expectedRepoFullName) {
+    throw new WebReviewError("WEB_REVIEW_REPOSITORY_DRIFT", `GitHub PR head repository '${headRepoFullName}' does not match expected '${expectedRepoFullName}'`);
+  }
+  if (baseRepoFullName !== expectedRepoFullName) {
+    throw new WebReviewError("WEB_REVIEW_REPOSITORY_DRIFT", `GitHub PR base repository '${baseRepoFullName}' does not match expected '${expectedRepoFullName}'`);
   }
 
   const headBranch = prData.head?.ref;
-  if (!headBranch || headBranch !== receipt.pull_request.head_branch) {
-    throw new WebReviewError(
-      "WEB_REVIEW_REPOSITORY_DRIFT",
-      `GitHub PR head branch '${headBranch}' does not match Phase 6 receipt head branch '${receipt.pull_request.head_branch}'`
-    );
+  if (typeof headBranch !== "string" || headBranch !== receipt.pull_request.head_branch) {
+    throw new WebReviewError("WEB_REVIEW_REPOSITORY_DRIFT", `GitHub PR head branch '${headBranch}' does not match Phase 6 receipt head branch '${receipt.pull_request.head_branch}'`);
   }
-
   const baseBranch = prData.base?.ref;
-  if (!baseBranch || baseBranch !== receipt.pull_request.base_branch) {
-    throw new WebReviewError(
-      "WEB_REVIEW_REPOSITORY_DRIFT",
-      `GitHub PR base branch '${baseBranch}' does not match Phase 6 receipt base branch '${receipt.pull_request.base_branch}'`
-    );
+  if (typeof baseBranch !== "string" || baseBranch !== receipt.pull_request.base_branch) {
+    throw new WebReviewError("WEB_REVIEW_REPOSITORY_DRIFT", `GitHub PR base branch '${baseBranch}' does not match Phase 6 receipt base branch '${receipt.pull_request.base_branch}'`);
   }
 
   const headSha = prData.head?.sha;
-  if (!headSha || headSha !== verdict.observed_head_sha || headSha !== receipt.published_commit_sha) {
+  if (typeof headSha !== "string" || headSha !== verdict.observed_head_sha || headSha !== receipt.published_commit_sha || headSha !== receipt.pull_request.head_sha) {
     throw new WebReviewError(
       "WEB_REVIEW_REPOSITORY_DRIFT",
-      `GitHub PR head SHA '${headSha}' mismatch with verdict observed_head_sha '${verdict.observed_head_sha}' or Phase 6 published_commit_sha '${receipt.published_commit_sha}'`
+      `GitHub PR head SHA '${headSha}' mismatch with verdict/Phase 6 bindings`
     );
   }
-
   const baseSha = prData.base?.sha;
-  if (baseSha && receipt.base_commit && baseSha !== receipt.base_commit) {
-    throw new WebReviewError(
-      "WEB_REVIEW_REPOSITORY_DRIFT",
-      `GitHub PR base SHA '${baseSha}' does not match Phase 6 receipt base_commit '${receipt.base_commit}'`
-    );
+  if (typeof baseSha !== "string" || baseSha.length === 0) {
+    throw new WebReviewError("WEB_REVIEW_REPOSITORY_DRIFT", "GitHub PR response is missing base.sha");
+  }
+  if (baseSha !== receipt.base_commit) {
+    throw new WebReviewError("WEB_REVIEW_REPOSITORY_DRIFT", `GitHub PR base SHA '${baseSha}' does not match Phase 6 receipt base_commit '${receipt.base_commit}'`);
   }
 
   return {
     prNumber,
-    htmlUrl: prData.html_url ?? receipt.pull_request.url,
-    headRepoFullName: headRepoFullName ?? expectedRepoFullName,
-    baseRepoFullName: baseRepoFullName ?? expectedRepoFullName,
+    htmlUrl: typeof prData.html_url === "string" && prData.html_url.length > 0 ? prData.html_url : receipt.pull_request.url,
+    headRepoFullName,
+    baseRepoFullName,
     headBranch,
     baseBranch,
     headSha,
-    baseSha: baseSha ?? receipt.base_commit,
+    baseSha,
   };
 }

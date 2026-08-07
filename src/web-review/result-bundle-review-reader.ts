@@ -1,13 +1,13 @@
 // Phase 6 Result Bundle reader and verification wrapper for Phase 7
 import fs from "node:fs/promises";
 import path from "node:path";
-import yauzl from "yauzl";
 import crypto from "node:crypto";
 import { WebReviewError } from "./contracts.js";
 import { parseRunIdentity } from "./web-review-paths.js";
 import { readResultBundleReceipt } from "../result-bundle/result-bundle-store.js";
 import { resultBundlePaths } from "../result-bundle/result-bundle-paths.js";
 import { verifyResultBundleZip } from "../result-bundle/zip-verifier.js";
+import { loadEmbeddedReviewContracts, type LoadedEmbeddedContracts } from "./embedded-review-contracts.js";
 import type { ResultBundleReceipt, ResultBundleManifest } from "../result-bundle/contracts.js";
 
 export interface LoadedResultBundle {
@@ -21,15 +21,26 @@ export interface LoadedResultBundle {
   testMatrixData: unknown;
   validationData: unknown;
   riskPolicyData: unknown;
+  embeddedContracts: LoadedEmbeddedContracts;
 }
 
 function sha256Hex(buf: Buffer): string {
   return crypto.createHash("sha256").update(buf).digest("hex");
 }
 
+function resultBundleInvalid(message: string, cause?: unknown): WebReviewError {
+  const suffix = cause instanceof Error ? `: ${cause.message}` : cause ? `: ${String(cause)}` : "";
+  return new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", `${message}${suffix}`);
+}
+
 /**
- * Load and independently verify Phase 6 Result Bundle.
- * Safely reads review-required entries into memory without disk extraction.
+ * Load and independently verify the exact Phase 6 Result Bundle.
+ *
+ * Phase 7 deliberately does not buffer every ZIP entry. The Phase 6 verifier
+ * streams and hashes the complete archive, while the Phase 7 embedded-contract
+ * loader selectively reads only the bounded review/spec entries required for
+ * verdict validation. The complete entry registry is derived from the already
+ * verified manifest.
  */
 export async function loadAndVerifyResultBundle(
   stateDirectory: string,
@@ -38,29 +49,26 @@ export async function loadAndVerifyResultBundle(
   const { taskId, archiveSha256: expectedArchiveSha } = parseRunIdentity(runId);
   const p6Paths = resultBundlePaths(stateDirectory, taskId, expectedArchiveSha);
 
-  // 1. Read Phase 6 receipt bytes and parse receipt
   let receiptRawBytes: Buffer;
   try {
     receiptRawBytes = await fs.readFile(p6Paths.receiptPath);
   } catch {
-    throw new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", `Phase 6 receipt not found for run ID '${runId}'`);
+    throw resultBundleInvalid(`Phase 6 receipt not found for run ID '${runId}'`);
   }
 
   const phase6ReceiptSha256 = sha256Hex(receiptRawBytes);
   const receipt = await readResultBundleReceipt(p6Paths.receiptPath);
   if (!receipt) {
-    throw new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", `Phase 6 receipt not found for run ID '${runId}'`);
+    throw resultBundleInvalid(`Phase 6 receipt not found for run ID '${runId}'`);
   }
 
-  // 2. Require state READY_FOR_WEB_REVIEW
+  if (receipt.run_id !== runId) {
+    throw resultBundleInvalid(`Phase 6 receipt run_id '${receipt.run_id}' does not match '${runId}'`);
+  }
   if (receipt.state !== "READY_FOR_WEB_REVIEW") {
-    throw new WebReviewError(
-      "WEB_REVIEW_RESULT_BUNDLE_INVALID",
-      `Phase 6 receipt state is '${receipt.state}', expected 'READY_FOR_WEB_REVIEW'`
-    );
+    throw resultBundleInvalid(`Phase 6 receipt state is '${receipt.state}', expected 'READY_FOR_WEB_REVIEW'`);
   }
 
-  // 3. Require all binding fields to be non-null
   if (
     !receipt.archive_relative_path ||
     !receipt.archive_sha256 ||
@@ -69,26 +77,31 @@ export async function loadAndVerifyResultBundle(
     !receipt.reviewed_entry_set_sha256 ||
     !receipt.published_commit_sha ||
     !receipt.pull_request ||
-    !receipt.pull_request.head_sha
+    !receipt.pull_request.head_sha ||
+    receipt.archive_size_bytes === null ||
+    receipt.entry_count === null ||
+    receipt.uncompressed_size_bytes === null
   ) {
-    throw new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", "Phase 6 receipt has null or incomplete binding fields.");
+    throw resultBundleInvalid("Phase 6 receipt has null or incomplete binding fields.");
   }
 
   if (receipt.archive_sha256 !== expectedArchiveSha) {
-    throw new WebReviewError(
-      "WEB_REVIEW_RESULT_BUNDLE_INVALID",
+    throw resultBundleInvalid(
       `Archive SHA mismatch in receipt: got '${receipt.archive_sha256}', expected '${expectedArchiveSha}'`
     );
   }
 
-  // 4. Verify Result Bundle ZIP path containment, regular file, and not a symlink
   const absoluteStateDir = path.resolve(stateDirectory);
   const archivePath = path.resolve(absoluteStateDir, receipt.archive_relative_path);
   const expectedDir = path.resolve(p6Paths.directory);
-
-  if (!archivePath.startsWith(expectedDir + path.sep) && archivePath !== expectedDir) {
-    throw new WebReviewError(
-      "WEB_REVIEW_RESULT_BUNDLE_INVALID",
+  const archiveRelativeToRun = path.relative(expectedDir, archivePath);
+  if (
+    !archiveRelativeToRun ||
+    archiveRelativeToRun === ".." ||
+    archiveRelativeToRun.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(archiveRelativeToRun)
+  ) {
+    throw resultBundleInvalid(
       `Path traversal detected: archive_relative_path '${receipt.archive_relative_path}' escapes expected run directory '${expectedDir}'`
     );
   }
@@ -96,122 +109,105 @@ export async function loadAndVerifyResultBundle(
   let lstat: import("node:fs").Stats;
   try {
     lstat = await fs.lstat(archivePath);
-  } catch (err) {
-    throw new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", `Result Bundle archive file not found: ${archivePath}`);
+  } catch {
+    throw resultBundleInvalid(`Result Bundle archive file not found: ${archivePath}`);
   }
-
   if (lstat.isSymbolicLink()) {
-    throw new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", `Result Bundle archive must not be a symbolic link: ${archivePath}`);
+    throw resultBundleInvalid(`Result Bundle archive must not be a symbolic link: ${archivePath}`);
   }
   if (!lstat.isFile()) {
-    throw new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", `Result Bundle archive must be a regular file: ${archivePath}`);
+    throw resultBundleInvalid(`Result Bundle archive must be a regular file: ${archivePath}`);
   }
-
   if (lstat.size !== receipt.archive_size_bytes) {
-    throw new WebReviewError(
-      "WEB_REVIEW_RESULT_BUNDLE_INVALID",
+    throw resultBundleInvalid(
       `Archive file size (${lstat.size}) does not match receipt size (${receipt.archive_size_bytes})`
     );
   }
 
-  // 5. Reopen and verify ZIP using independent verifyResultBundleZip()
-  const verificationResult = await verifyResultBundleZip(archivePath);
+  let verificationResult: Awaited<ReturnType<typeof verifyResultBundleZip>>;
+  try {
+    verificationResult = await verifyResultBundleZip(archivePath);
+  } catch (error) {
+    throw resultBundleInvalid("Independent Result Bundle verification failed", error);
+  }
 
   if (verificationResult.sha256 !== receipt.archive_sha256) {
-    throw new WebReviewError(
-      "WEB_REVIEW_RESULT_BUNDLE_INVALID",
+    throw resultBundleInvalid(
       `Independent verifier archive sha256 '${verificationResult.sha256}' does not match receipt '${receipt.archive_sha256}'`
     );
   }
-
   if (verificationResult.reviewedEntrySetSha256 !== receipt.reviewed_entry_set_sha256) {
-    throw new WebReviewError(
-      "WEB_REVIEW_RESULT_BUNDLE_INVALID",
+    throw resultBundleInvalid(
       `Independent verifier reviewed_entry_set_sha256 '${verificationResult.reviewedEntrySetSha256}' does not match receipt '${receipt.reviewed_entry_set_sha256}'`
     );
   }
+  if (verificationResult.sizeBytes !== receipt.archive_size_bytes) {
+    throw resultBundleInvalid(
+      `Independent verifier archive size '${verificationResult.sizeBytes}' does not match receipt '${receipt.archive_size_bytes}'`
+    );
+  }
+  if (verificationResult.entryCount !== receipt.entry_count) {
+    throw resultBundleInvalid(
+      `Independent verifier entry count '${verificationResult.entryCount}' does not match receipt '${receipt.entry_count}'`
+    );
+  }
+  if (verificationResult.uncompressedBytes !== receipt.uncompressed_size_bytes) {
+    throw resultBundleInvalid(
+      `Independent verifier uncompressed size '${verificationResult.uncompressedBytes}' does not match receipt '${receipt.uncompressed_size_bytes}'`
+    );
+  }
 
-  // 6. Read entries into in-memory map without extracting to disk
-  const bundleEntries = new Set<string>();
-  const reviewEntries = new Map<string, Buffer>();
-
-  await new Promise<void>((resolve, reject) => {
-    yauzl.open(archivePath, { lazyEntries: true }, (openErr, zipfile) => {
-      if (openErr || !zipfile) {
-        return reject(new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", `Cannot open ZIP: ${openErr?.message ?? "unknown"}`));
-      }
-
-      zipfile.readEntry();
-
-      zipfile.on("entry", (entry: yauzl.Entry) => {
-        const entryPath = entry.fileName;
-        bundleEntries.add(entryPath);
-
-        zipfile.openReadStream(entry, (streamErr, readStream) => {
-          if (streamErr || !readStream) {
-            zipfile.close();
-            return reject(new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", `Cannot read entry '${entryPath}'`));
-          }
-
-          const chunks: Buffer[] = [];
-          readStream.on("data", (chunk: Buffer) => chunks.push(chunk));
-          readStream.on("error", (err: Error) => {
-            zipfile.close();
-            reject(new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", `Error reading entry '${entryPath}': ${err.message}`));
-          });
-          readStream.on("end", () => {
-            reviewEntries.set(entryPath, Buffer.concat(chunks));
-            zipfile.readEntry();
-          });
-        });
-      });
-
-      zipfile.on("end", () => {
-        zipfile.close();
-        resolve();
-      });
-
-      zipfile.on("error", (err: Error) => {
-        reject(new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", `ZIP stream error: ${err.message}`));
-      });
-    });
-  });
-
-  // 7. Verify manifest JSON & sha256
-  const manifestBuf = reviewEntries.get("manifest.json");
+  const embeddedContracts = await loadEmbeddedReviewContracts(archivePath, receipt);
+  const manifest = embeddedContracts.manifest as ResultBundleManifest;
+  const manifestBuf = embeddedContracts.entries.get("manifest.json");
   if (!manifestBuf) {
-    throw new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", "Missing manifest.json in Result Bundle.");
+    throw resultBundleInvalid("Missing manifest.json in Result Bundle.");
   }
   const manifestSha = sha256Hex(manifestBuf);
   if (manifestSha !== receipt.manifest_sha256) {
-    throw new WebReviewError(
-      "WEB_REVIEW_RESULT_BUNDLE_INVALID",
+    throw resultBundleInvalid(
       `Manifest SHA mismatch: got '${manifestSha}', expected '${receipt.manifest_sha256}'`
     );
   }
 
-  let manifest: ResultBundleManifest;
-  try {
-    manifest = JSON.parse(manifestBuf.toString("utf8"));
-  } catch (err) {
-    throw new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", "Invalid manifest.json in Result Bundle.");
+  if (!manifest || !Array.isArray(manifest.entries)) {
+    throw resultBundleInvalid("Invalid manifest.json in Result Bundle.");
+  }
+  if (manifest.run_id !== runId) {
+    throw resultBundleInvalid(`Manifest run_id '${manifest.run_id}' does not match '${runId}'`);
+  }
+  if (manifest.task_id !== taskId) {
+    throw resultBundleInvalid(`Manifest task_id '${manifest.task_id}' does not match '${taskId}'`);
+  }
+  if (manifest.published_commit_sha !== receipt.published_commit_sha) {
+    throw resultBundleInvalid("Manifest published_commit_sha does not match Phase 6 receipt.");
+  }
+  if (manifest.base_commit !== receipt.base_commit) {
+    throw resultBundleInvalid("Manifest base_commit does not match Phase 6 receipt.");
+  }
+  if (manifest.change_set_sha256 !== receipt.change_set_sha256) {
+    throw resultBundleInvalid("Manifest change_set_sha256 does not match Phase 6 receipt.");
+  }
+  if (manifest.pull_request_number !== receipt.pull_request.number) {
+    throw resultBundleInvalid("Manifest pull_request_number does not match Phase 6 receipt.");
+  }
+  if (manifest.spec_set_sha256 !== receipt.spec_set_sha256) {
+    throw resultBundleInvalid("Manifest spec_set_sha256 does not match Phase 6 receipt.");
+  }
+  if (manifest.reviewed_entry_set_sha256 !== receipt.reviewed_entry_set_sha256) {
+    throw resultBundleInvalid("Manifest reviewed_entry_set_sha256 does not match Phase 6 receipt.");
   }
 
-  // 8. Safely parse specification files
-  const parseJsonEntry = (entryPath: string): unknown => {
-    const buf = reviewEntries.get(entryPath);
-    if (!buf) return null;
-    try {
-      return JSON.parse(buf.toString("utf8"));
-    } catch {
-      return null;
+  const bundleEntries = new Set<string>(["manifest.json"]);
+  for (const entry of manifest.entries) {
+    if (!entry || typeof entry.path !== "string" || entry.path.length === 0) {
+      throw resultBundleInvalid("Manifest contains an invalid entry descriptor.");
     }
-  };
-
-  const acceptanceData = parseJsonEntry("task/acceptance.json");
-  const testMatrixData = parseJsonEntry("task/test-matrix.json");
-  const validationData = parseJsonEntry("task/validation.json");
-  const riskPolicyData = parseJsonEntry("task/risk-policy.json");
+    if (bundleEntries.has(entry.path)) {
+      throw resultBundleInvalid(`Manifest contains duplicate entry path '${entry.path}'.`);
+    }
+    bundleEntries.add(entry.path);
+  }
 
   return {
     receipt,
@@ -219,10 +215,11 @@ export async function loadAndVerifyResultBundle(
     archivePath,
     manifest,
     bundleEntries,
-    reviewEntries,
-    acceptanceData,
-    testMatrixData,
-    validationData,
-    riskPolicyData,
+    reviewEntries: embeddedContracts.entries,
+    acceptanceData: embeddedContracts.acceptance,
+    testMatrixData: embeddedContracts.testMatrix,
+    validationData: embeddedContracts.validation,
+    riskPolicyData: embeddedContracts.riskPolicy,
+    embeddedContracts,
   };
 }

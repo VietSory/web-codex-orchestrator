@@ -1,11 +1,11 @@
-import fs from "node:fs/promises";
 import fsSync from "node:fs";
-import path from "node:path";
 import { loadTrustedConfig } from "../config/config-loader.js";
 import type { TrustedConfig } from "../config/contracts.js";
+import { sanitizeRemoteUrl } from "../config/remote-url.js";
 import { readRunReceipt } from "../run/run-store.js";
 import type { RunReceipt } from "../run/contracts.js";
 import { WebReviewError } from "./contracts.js";
+import { parseRunIdentity } from "./web-review-paths.js";
 
 export interface TrustedRunContext {
   taskId: string;
@@ -22,72 +22,45 @@ export interface TrustedRunContext {
 }
 
 /**
- * Resolve exact trusted repository context from run identity (P0-01).
- * Never picks the first config entry by default. Parses <task-id>:<archive-sha256>,
- * validates Phase 3 run receipt, and resolves the exact repository_id in trusted config.
+ * Resolve the trusted repository only from the canonical Phase 3 run receipt
+ * and trusted local registry. There is deliberately no alternate handoff-path
+ * fallback: a missing or malformed canonical run receipt is a hard failure.
  */
 export async function resolveTrustedRunContext(
   runId: string,
   stateDirectory: string,
   configPath: string
 ): Promise<TrustedRunContext> {
-  const parts = runId.split(":");
-  if (parts.length !== 2) {
+  const { taskId, archiveSha256 } = parseRunIdentity(runId);
+
+  let runReceipt: RunReceipt | undefined;
+  try {
+    runReceipt = await readRunReceipt(stateDirectory, taskId, archiveSha256);
+  } catch (error) {
     throw new WebReviewError(
       "WEB_REVIEW_RESULT_BUNDLE_INVALID",
-      `Invalid run ID format '${runId}': expected '<task-id>:<archive-sha256>'`
+      `Canonical run receipt cannot be read: ${error instanceof Error ? error.message : String(error)}`
     );
-  }
-  const taskId = parts[0]!;
-  const archiveSha256 = parts[1]!;
-
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(taskId) || !/^[0-9a-f]{64}$/.test(archiveSha256)) {
-    throw new WebReviewError(
-      "WEB_REVIEW_RESULT_BUNDLE_INVALID",
-      `Invalid task ID or archive SHA256 in run ID '${runId}'`
-    );
-  }
-
-  // Load run receipt from stateDirectory
-  let runReceipt = await readRunReceipt(stateDirectory, taskId, archiveSha256);
-  if (!runReceipt) {
-    // Fallback: check handoff/runs directory if stateDirectory/runs doesn't contain it directly
-    const handoffReceiptPath = path.join(path.resolve(stateDirectory), "handoff", "runs", taskId, archiveSha256, "run.json");
-    try {
-      const st = await fs.lstat(handoffReceiptPath);
-      if (!st.isSymbolicLink() && st.isFile()) {
-        const raw = await fs.readFile(handoffReceiptPath, "utf8");
-        runReceipt = JSON.parse(raw) as RunReceipt;
-      }
-    } catch {
-      // Ignore
-    }
   }
 
   if (!runReceipt) {
     throw new WebReviewError(
       "WEB_REVIEW_RESULT_BUNDLE_INVALID",
-      `Run receipt not found for task '${taskId}' and archive SHA '${archiveSha256}'`
+      `Canonical run receipt not found for task '${taskId}' and archive SHA '${archiveSha256}'`
     );
   }
-
-  if (runReceipt.run_id !== runId) {
-    throw new WebReviewError(
-      "WEB_REVIEW_RESULT_BUNDLE_INVALID",
-      `Run receipt run_id '${runReceipt.run_id}' mismatch with expected '${runId}'`
-    );
+  if (runReceipt.run_id !== runId || runReceipt.task_id !== taskId || runReceipt.archive_sha256 !== archiveSha256) {
+    throw new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", "Run receipt identity does not match the requested run.");
   }
-
   if (!runReceipt.repository_id || typeof runReceipt.repository_id !== "string" || runReceipt.repository_id.trim() === "") {
-    throw new WebReviewError(
-      "WEB_REVIEW_RESULT_BUNDLE_INVALID",
-      `Run receipt repository_id is missing or empty`
-    );
+    throw new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", "Run receipt repository_id is missing or empty");
+  }
+  if (!runReceipt.repository_path || typeof runReceipt.repository_path !== "string") {
+    throw new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", "Run receipt repository_path is missing or empty");
   }
 
   const trustedConfig = await loadTrustedConfig(configPath);
   const resolvedRepo = trustedConfig.repositories[runReceipt.repository_id];
-
   if (!resolvedRepo || !resolvedRepo.path) {
     throw new WebReviewError(
       "WEB_REVIEW_OPERATIONAL_ERROR",
@@ -95,20 +68,37 @@ export async function resolveTrustedRunContext(
     );
   }
 
-  const canonicalResolvedRepoPath = fsSync.realpathSync(resolvedRepo.path);
-  if (runReceipt.repository_path) {
-    let canonicalStoredRepoPath: string | undefined;
-    try {
-      canonicalStoredRepoPath = fsSync.realpathSync(runReceipt.repository_path);
-    } catch {
-      // If stored path does not exist, use raw
-      canonicalStoredRepoPath = path.resolve(runReceipt.repository_path);
-    }
-    if (canonicalResolvedRepoPath !== canonicalStoredRepoPath) {
-      throw new WebReviewError(
-        "WEB_REVIEW_REPOSITORY_DRIFT",
-        `Resolved repository path '${canonicalResolvedRepoPath}' does not match stored run path '${canonicalStoredRepoPath}'`
-      );
+  let canonicalResolvedRepoPath: string;
+  let canonicalStoredRepoPath: string;
+  try {
+    canonicalResolvedRepoPath = fsSync.realpathSync(resolvedRepo.path);
+    canonicalStoredRepoPath = fsSync.realpathSync(runReceipt.repository_path);
+  } catch (error) {
+    throw new WebReviewError(
+      "WEB_REVIEW_REPOSITORY_DRIFT",
+      `Trusted repository path cannot be resolved: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  if (canonicalResolvedRepoPath !== canonicalStoredRepoPath) {
+    throw new WebReviewError(
+      "WEB_REVIEW_REPOSITORY_DRIFT",
+      `Resolved repository path '${canonicalResolvedRepoPath}' does not match stored run path '${canonicalStoredRepoPath}'`
+    );
+  }
+
+  // Canonical Phase 3 receipts contain these fields. Validate them whenever
+  // present so later phases cannot silently switch remote identity.
+  if (runReceipt.remote && runReceipt.remote !== resolvedRepo.remote) {
+    throw new WebReviewError(
+      "WEB_REVIEW_REPOSITORY_DRIFT",
+      `Run receipt remote '${runReceipt.remote}' does not match trusted registry remote '${resolvedRepo.remote}'`
+    );
+  }
+  if (runReceipt.remote_url) {
+    const storedRemote = sanitizeRemoteUrl(runReceipt.remote_url);
+    const expectedRemotes = resolvedRepo.expected_remote_urls.map((value) => sanitizeRemoteUrl(value));
+    if (!expectedRemotes.includes(storedRemote)) {
+      throw new WebReviewError("WEB_REVIEW_REPOSITORY_DRIFT", "Run receipt remote URL is not present in the trusted repository registry.");
     }
   }
 

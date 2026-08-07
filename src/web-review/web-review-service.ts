@@ -1,7 +1,7 @@
 // Core orchestrator for Phase 7 Web Review Verdict Processing
 import path from "node:path";
 import { WebReviewError } from "./contracts.js";
-import type { WebReviewReceipt, WebReviewState, DecisionAction } from "./contracts.js";
+import type { WebReviewReceipt } from "./contracts.js";
 import { resolveReviewRoundPaths } from "./web-review-paths.js";
 import { acquireReviewLock } from "./web-review-lock.js";
 import { readWebReviewReceipt, writeWebReviewReceipt, writeCanonicalArtifact } from "./web-review-store.js";
@@ -12,7 +12,6 @@ import { validateVerdictPolicy } from "./review-policy-validator.js";
 import { buildRevisionRequest } from "./revision-request-builder.js";
 import { buildDecisionEvent } from "./decision-event-builder.js";
 import { resolveTrustedRunContext } from "./trusted-run-context.js";
-import { loadEmbeddedReviewContracts } from "./embedded-review-contracts.js";
 import { verifyGitHubAttestation } from "./github-review-attestation.js";
 import { inspectReviewPersistence } from "./review-recovery.js";
 import type { GitHubAttestationClient } from "../result-bundle/github-attestation.js";
@@ -37,36 +36,33 @@ function currentIso(now?: () => Date): string {
   return (now ? now() : new Date()).toISOString();
 }
 
-/**
- * Ingest, validate, and process a Web review verdict for Phase 7.
- */
+/** Ingest, validate, and process a Web review verdict for Phase 7. */
 export async function submitWebVerdict(
   options: SubmitWebVerdictOptions
 ): Promise<WebReviewReceipt> {
   const { runId, stateDirectory, configPath, verdictPath, now, githubClient } = options;
   const timestamp = currentIso(now);
 
-  // 1. Resolve exact trusted repository context from run identity (P0-01)
+  // 1. Resolve exact trusted repository context from the canonical run receipt.
   const runCtx = await resolveTrustedRunContext(runId, stateDirectory, configPath);
   const trustedRepoPath = runCtx.trustedRepoPath;
 
-  // 2. Load Result Bundle & ingested verdict to resolve round paths
+  // 2. Independently verify the exact Result Bundle and ingest the untrusted verdict.
   const bundle = await loadAndVerifyResultBundle(stateDirectory, runId);
   const ingestedVerdict = await readAndCanonicalizeVerdict(verdictPath);
   const rawVerdictObj = ingestedVerdict.parsedVerdict as any;
   const reviewRound = typeof rawVerdictObj?.review_round === "number" ? rawVerdictObj.review_round : 1;
 
-  // 3. Selective bounded loading & verification of embedded review contracts (P0-03, P1-01)
-  const embeddedContracts = await loadEmbeddedReviewContracts(bundle.archivePath, bundle.receipt);
-
+  // The exact schemas/contracts used below came from this verified Result Bundle.
+  const embeddedContracts = bundle.embeddedContracts;
   const paths = resolveReviewRoundPaths(stateDirectory, runId, reviewRound);
 
-  // 4. Acquire per-round exclusive write-ahead lock with owner nonce FIRST (P0-13)
+  // 3. Acquire the per-round exclusive lock before inspecting or mutating round state.
   const lock = await acquireReviewLock(paths.lockPath);
   let receipt: WebReviewReceipt | null = null;
 
   try {
-    // 5. In-lock persistence inspection, crash recovery & idempotency check (P0-11, P0-14)
+    // 4. Validate persisted state and support exact, integrity-checked idempotent retry.
     const inspection = await inspectReviewPersistence(paths.roundDir, ingestedVerdict.verdictSha256);
     if (inspection.existingReceipt) {
       const ex = inspection.existingReceipt;
@@ -79,7 +75,6 @@ export async function submitWebVerdict(
         }
         return ex;
       }
-      // Non-terminal state recovery: preserve original created_at
       receipt = ex;
     }
 
@@ -124,18 +119,25 @@ export async function submitWebVerdict(
       };
     }
 
-    // Write write-ahead receipt: READY_TO_VALIDATE
     await writeWebReviewReceipt(paths.receiptPath, receipt);
-
-    // Transition state: VALIDATING
     receipt.state = "VALIDATING";
     receipt.updated_at = currentIso(now);
     await writeWebReviewReceipt(paths.receiptPath, receipt);
 
-    // 6. Review history validation (P0-09)
+    // 5. The exact verdict schema embedded in the exact reviewed bundle is
+    // authoritative. The built-in policy validator remains a minimum hard
+    // floor, so either side may tighten validation but neither may weaken it.
+    if (!embeddedContracts.compiledVerdictValidator(rawVerdictObj)) {
+      throw new WebReviewError(
+        "WEB_REVIEW_VERDICT_INVALID",
+        `Verdict failed exact embedded schema validation: ${embeddedContracts.verdictSchemaErrors() ?? "unknown schema error"}`
+      );
+    }
+
+    // 6. Validate immutable review history before policy interpretation.
     const historyResult = await validateReviewHistory(stateDirectory, runId, reviewRound, rawVerdictObj, bundle);
 
-    // 7. Verdict policy validation in trusted repository worktree (P0-06, P0-08)
+    // 7. Enforce mandatory bindings, semantic rules, locked references and anti-drip policy.
     const validatedVerdict = await validateVerdictPolicy(
       rawVerdictObj,
       bundle,
@@ -145,7 +147,7 @@ export async function submitWebVerdict(
       trustedRepoPath
     );
 
-    // 8. Mandatory strict fresh GitHub attestation (P0-05)
+    // 8. Mandatory fresh, read-only GitHub attestation immediately before dispatch.
     const attestation = await verifyGitHubAttestation({
       receipt: bundle.receipt,
       config: runCtx.trustedConfig,
@@ -155,23 +157,20 @@ export async function submitWebVerdict(
 
     receipt.fresh_attested_head_sha = attestation.headSha;
     receipt.fresh_attested_base_branch = attestation.baseBranch;
-
-    // Transition state: VALIDATED
     receipt.state = "VALIDATED";
     receipt.validated_at = currentIso(now);
     receipt.updated_at = currentIso(now);
     await writeWebReviewReceipt(paths.receiptPath, receipt);
 
-    // 9. Persist canonical verdict file (`web-review-verdict.json`) (P0-12)
+    // 9. Seal the canonical verdict only after all validation and attestation succeeds.
     await writeCanonicalArtifact(paths.verdictPath, ingestedVerdict.canonicalBuffer);
 
-    // 10. Build and persist revision request if REVISE
+    // 10. REVISE produces the registered, schema-validated Phase 8 handoff request.
     let revisionRequestSha256: string | null = null;
     if (validatedVerdict.verdict === "REVISE") {
       const builtRevReq = buildRevisionRequest(validatedVerdict, ingestedVerdict.verdictSha256);
       revisionRequestSha256 = builtRevReq.revisionRequestSha256;
 
-      // Validate revision request against embedded schema (P0-03)
       if (!embeddedContracts.compiledRevisionRequestValidator(builtRevReq.revisionRequest)) {
         throw new WebReviewError(
           "WEB_REVIEW_OPERATIONAL_ERROR",
@@ -184,7 +183,7 @@ export async function submitWebVerdict(
       receipt.artifact_paths.revision_request = path.relative(path.resolve(stateDirectory), paths.revisionRequestPath).replace(/\\/g, "/");
     }
 
-    // 11. Build and persist deterministic decision event (`decision-event.json`) (P0-10)
+    // 11. Seal deterministic decision event.
     const builtEvent = buildDecisionEvent(
       validatedVerdict,
       ingestedVerdict.verdictSha256,
@@ -194,7 +193,7 @@ export async function submitWebVerdict(
     receipt.decision_event_sha256 = builtEvent.decisionEventSha256;
     receipt.artifact_paths.decision_event = path.relative(path.resolve(stateDirectory), paths.decisionEventPath).replace(/\\/g, "/");
 
-    // 12. Terminal state & action assignment
+    // 12. Deterministic terminal dispatch. Phase 7 itself never mutates GitHub.
     if (validatedVerdict.verdict === "APPROVE") {
       receipt.state = "APPROVED";
       receipt.action = "ASK_USER_TO_MERGE";
@@ -208,8 +207,6 @@ export async function submitWebVerdict(
 
     receipt.completed_at = currentIso(now);
     receipt.updated_at = currentIso(now);
-
-    // Persist final receipt
     await writeWebReviewReceipt(paths.receiptPath, receipt);
     return receipt;
   } catch (error) {
@@ -221,7 +218,6 @@ export async function submitWebVerdict(
       receipt.state = isPolicyError ? "BLOCKED" : "FAILED";
       receipt.errors.push({ code, message });
       receipt.updated_at = currentIso(now);
-
       await writeWebReviewReceipt(paths.receiptPath, receipt).catch(() => undefined);
     }
     throw error;
@@ -230,9 +226,7 @@ export async function submitWebVerdict(
   }
 }
 
-/**
- * Get read-only status of Phase 7 Web Review. Performs NO validation or network access.
- */
+/** Get read-only status. Performs no validation, Git access or network access. */
 export async function getWebReviewStatus(
   options: GetWebReviewStatusOptions
 ): Promise<WebReviewReceipt | null> {
@@ -240,7 +234,6 @@ export async function getWebReviewStatus(
 
   let targetRound = round;
   if (!targetRound) {
-    // Find latest existing round from 4 down to 1
     for (let r = 4; r >= 1; r--) {
       const paths = resolveReviewRoundPaths(stateDirectory, runId, r);
       const existing = await readWebReviewReceipt(paths.receiptPath);
