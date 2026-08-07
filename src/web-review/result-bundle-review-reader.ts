@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { WebReviewError } from "./contracts.js";
-import { parseRunIdentity } from "./web-review-paths.js";
+import { assertExistingStatePathIsSafe, parseRunIdentity } from "./web-review-paths.js";
 import { readResultBundleReceipt } from "../result-bundle/result-bundle-store.js";
 import { resultBundlePaths } from "../result-bundle/result-bundle-paths.js";
 import { verifyResultBundleZip } from "../result-bundle/zip-verifier.js";
@@ -24,6 +24,8 @@ export interface LoadedResultBundle {
   embeddedContracts: LoadedEmbeddedContracts;
 }
 
+const MAX_PHASE6_RECEIPT_BYTES = 1024 * 1024;
+
 function sha256Hex(buf: Buffer): string {
   return crypto.createHash("sha256").update(buf).digest("hex");
 }
@@ -33,18 +35,20 @@ function resultBundleInvalid(message: string, cause?: unknown): WebReviewError {
   return new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", `${message}${suffix}`);
 }
 
+async function assertSafeStateSource(stateDirectory: string, targetPath: string, label: string): Promise<void> {
+  try {
+    await assertExistingStatePathIsSafe(stateDirectory, targetPath, "file");
+  } catch (error) {
+    throw resultBundleInvalid(`${label} is outside the safe Phase 7 state path chain`, error);
+  }
+}
+
 /**
  * Load and independently verify the exact Phase 6 Result Bundle.
  *
  * The run ID remains bound to the accepted Task Bundle archive SHA. The
  * Result Bundle archive has its own distinct SHA in the Phase 6 receipt.
  * Phase 7 must never conflate those two identities.
- *
- * Phase 7 deliberately does not buffer every ZIP entry. The Phase 6 verifier
- * streams and hashes the complete archive, while the Phase 7 embedded-contract
- * loader selectively reads only the bounded review/spec entries required for
- * verdict validation. The complete entry registry is derived from the already
- * verified manifest.
  */
 export async function loadAndVerifyResultBundle(
   stateDirectory: string,
@@ -53,17 +57,34 @@ export async function loadAndVerifyResultBundle(
   const { taskId, archiveSha256: taskBundleArchiveSha } = parseRunIdentity(runId);
   const p6Paths = resultBundlePaths(stateDirectory, taskId, taskBundleArchiveSha);
 
+  await assertSafeStateSource(stateDirectory, p6Paths.receiptPath, "Phase 6 receipt");
+  const receiptStat = await fs.stat(p6Paths.receiptPath);
+  if (receiptStat.size > MAX_PHASE6_RECEIPT_BYTES) {
+    throw resultBundleInvalid(`Phase 6 receipt exceeds ${MAX_PHASE6_RECEIPT_BYTES} bytes`);
+  }
+
   let receiptRawBytes: Buffer;
   try {
     receiptRawBytes = await fs.readFile(p6Paths.receiptPath);
-  } catch {
-    throw resultBundleInvalid(`Phase 6 receipt not found for run ID '${runId}'`);
+  } catch (error) {
+    throw resultBundleInvalid(`Phase 6 receipt not found for run ID '${runId}'`, error);
+  }
+  if (receiptRawBytes.byteLength > MAX_PHASE6_RECEIPT_BYTES) {
+    throw resultBundleInvalid(`Phase 6 receipt exceeds ${MAX_PHASE6_RECEIPT_BYTES} bytes during read`);
   }
 
   const phase6ReceiptSha256 = sha256Hex(receiptRawBytes);
   const receipt = await readResultBundleReceipt(p6Paths.receiptPath);
   if (!receipt) {
     throw resultBundleInvalid(`Phase 6 receipt not found for run ID '${runId}'`);
+  }
+
+  // The Phase 6 receipt is immutable at this boundary. Detect replacement or
+  // mutation between the raw-byte binding read and the validated receipt read.
+  await assertSafeStateSource(stateDirectory, p6Paths.receiptPath, "Phase 6 receipt");
+  const receiptAfterBytes = await fs.readFile(p6Paths.receiptPath);
+  if (receiptAfterBytes.byteLength > MAX_PHASE6_RECEIPT_BYTES || sha256Hex(receiptAfterBytes) !== phase6ReceiptSha256) {
+    throw resultBundleInvalid("Phase 6 receipt changed while Phase 7 was loading it");
   }
 
   if (receipt.run_id !== runId) {
@@ -104,17 +125,10 @@ export async function loadAndVerifyResultBundle(
     );
   }
 
-  let lstat: import("node:fs").Stats;
-  try {
-    lstat = await fs.lstat(archivePath);
-  } catch {
-    throw resultBundleInvalid(`Result Bundle archive file not found: ${archivePath}`);
-  }
-  if (lstat.isSymbolicLink()) {
-    throw resultBundleInvalid(`Result Bundle archive must not be a symbolic link: ${archivePath}`);
-  }
-  if (!lstat.isFile()) {
-    throw resultBundleInvalid(`Result Bundle archive must be a regular file: ${archivePath}`);
+  await assertSafeStateSource(stateDirectory, archivePath, "Result Bundle archive");
+  const lstat = await fs.lstat(archivePath);
+  if (!lstat.isFile() || lstat.isSymbolicLink()) {
+    throw resultBundleInvalid(`Result Bundle archive must be a regular non-symlink file: ${archivePath}`);
   }
   if (lstat.size !== receipt.archive_size_bytes) {
     throw resultBundleInvalid(
@@ -153,6 +167,13 @@ export async function loadAndVerifyResultBundle(
     throw resultBundleInvalid(
       `Independent verifier uncompressed size '${verificationResult.uncompressedBytes}' does not match receipt '${receipt.uncompressed_size_bytes}'`
     );
+  }
+
+  // Re-check the source path before reopening the archive for selective reads.
+  await assertSafeStateSource(stateDirectory, archivePath, "Result Bundle archive");
+  const archiveStatBeforeSelectiveRead = await fs.stat(archivePath);
+  if (archiveStatBeforeSelectiveRead.size !== receipt.archive_size_bytes) {
+    throw resultBundleInvalid("Result Bundle archive changed before selective review reads");
   }
 
   const embeddedContracts = await loadEmbeddedReviewContracts(archivePath, receipt);
