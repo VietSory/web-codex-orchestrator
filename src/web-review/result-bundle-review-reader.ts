@@ -51,6 +51,17 @@ export async function loadAndVerifyResultBundle(
   const { taskId, archiveSha256: taskBundleArchiveSha } = parseRunIdentity(runId);
   const p6Paths = resultBundlePaths(stateDirectory, taskId, taskBundleArchiveSha);
 
+  // Preserve the stable contract for an absent handoff while still applying the
+  // stricter no-symlink chain check to every source that actually exists.
+  try {
+    await fs.lstat(p6Paths.receiptPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw resultBundleInvalid(`Phase 6 receipt not found for run ID '${runId}'`);
+    }
+    throw resultBundleInvalid(`Cannot inspect Phase 6 receipt for run ID '${runId}'`, error);
+  }
+
   await assertSafeStateSource(stateDirectory, p6Paths.receiptPath, "Phase 6 receipt");
   const receiptStat = await fs.stat(p6Paths.receiptPath);
   if (receiptStat.size > MAX_PHASE6_RECEIPT_BYTES) {
