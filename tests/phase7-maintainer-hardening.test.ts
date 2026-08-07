@@ -279,7 +279,10 @@ test("P7-MAINT-009: canonical Phase 3 run ancestor symlink is rejected as author
 
     await assert.rejects(
       () => resolveTrustedRunContext(fixture.receipt.run_id, fixture.stateDirectory, configPath),
-      (error: unknown) => error instanceof WebReviewError && error.code === "WEB_REVIEW_RESULT_BUNDLE_INVALID" && error.message.includes("not safe")
+      (error: unknown) =>
+        error instanceof WebReviewError &&
+        error.code === "WEB_REVIEW_RESULT_BUNDLE_INVALID" &&
+        error.message.includes("symbolic link")
     );
   } finally {
     await fs.rm(root, { recursive: true, force: true });
