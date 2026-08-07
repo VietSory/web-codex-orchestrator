@@ -17,11 +17,33 @@ function sha256Hex(buf: Buffer): string {
   return crypto.createHash("sha256").update(buf).digest("hex");
 }
 
+async function readExactlyAttestedSize(handle: fs.FileHandle, expectedSize: number): Promise<Buffer> {
+  const buffer = Buffer.alloc(expectedSize);
+  let offset = 0;
+  while (offset < expectedSize) {
+    const { bytesRead } = await handle.read(buffer, offset, expectedSize - offset, offset);
+    if (bytesRead === 0) {
+      throw new WebReviewError("WEB_REVIEW_VERDICT_SOURCE_INVALID", "Verdict file was truncated during read.");
+    }
+    offset += bytesRead;
+  }
+
+  // Probe exactly one byte beyond the attested size. This prevents a growing
+  // source from forcing readFile-style unbounded allocation before the cap is
+  // checked.
+  const probe = Buffer.alloc(1);
+  const { bytesRead: extraBytes } = await handle.read(probe, 0, 1, expectedSize);
+  if (extraBytes !== 0) {
+    throw new WebReviewError("WEB_REVIEW_VERDICT_SOURCE_INVALID", "Verdict file grew during read.");
+  }
+  return buffer;
+}
+
 /**
  * Safely read an untrusted verdict file from disk, enforcing:
  * - regular file check (no symlinks, no special files)
- * - size limit (<= 1 MiB) before and after the read
- * - stable file identity and size across the complete read
+ * - allocation-safe size limit (<= 1 MiB)
+ * - stable file identity, size and metadata across the complete read
  * - JSON parsing & canonical JSON serialization
  * - SHA-256 calculation
  */
@@ -68,40 +90,38 @@ export async function readAndCanonicalizeVerdict(
     if (
       statOpened.dev !== lstatBefore.dev ||
       statOpened.ino !== lstatBefore.ino ||
-      statOpened.size !== lstatBefore.size
+      statOpened.size !== lstatBefore.size ||
+      statOpened.mtimeMs !== lstatBefore.mtimeMs ||
+      statOpened.ctimeMs !== lstatBefore.ctimeMs
     ) {
-      throw new WebReviewError("WEB_REVIEW_VERDICT_SOURCE_INVALID", "Verdict file changed identity or size before read.");
+      throw new WebReviewError("WEB_REVIEW_VERDICT_SOURCE_INVALID", "Verdict file changed identity or metadata before read.");
     }
     if (statOpened.size > maxBytes) {
       throw new WebReviewError("WEB_REVIEW_VERDICT_SOURCE_INVALID", `Verdict file size exceeds limit of ${maxBytes} bytes.`);
     }
 
-    rawBuf = await handle.readFile();
+    rawBuf = await readExactlyAttestedSize(handle, statOpened.size);
 
     const statAfter = await handle.stat();
-    if (rawBuf.byteLength > maxBytes || statAfter.size > maxBytes) {
-      throw new WebReviewError(
-        "WEB_REVIEW_VERDICT_SOURCE_INVALID",
-        `Verdict file grew beyond limit of ${maxBytes} bytes during read.`
-      );
-    }
     if (
       statAfter.dev !== statOpened.dev ||
       statAfter.ino !== statOpened.ino ||
       statAfter.size !== statOpened.size ||
-      statAfter.size !== rawBuf.byteLength
+      statAfter.mtimeMs !== statOpened.mtimeMs ||
+      statAfter.ctimeMs !== statOpened.ctimeMs
     ) {
       throw new WebReviewError("WEB_REVIEW_VERDICT_SOURCE_INVALID", "Verdict file modified during read.");
     }
 
-    // Ensure the path still names the same regular file after the handle read.
     const lstatAfter = await fs.lstat(resolvedPath);
     if (
       lstatAfter.isSymbolicLink() ||
       !lstatAfter.isFile() ||
       lstatAfter.dev !== statOpened.dev ||
       lstatAfter.ino !== statOpened.ino ||
-      lstatAfter.size !== statOpened.size
+      lstatAfter.size !== statOpened.size ||
+      lstatAfter.mtimeMs !== statOpened.mtimeMs ||
+      lstatAfter.ctimeMs !== statOpened.ctimeMs
     ) {
       throw new WebReviewError("WEB_REVIEW_VERDICT_SOURCE_INVALID", "Verdict path changed during read.");
     }
