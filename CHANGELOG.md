@@ -3,6 +3,7 @@
 
 ## Unreleased
 
+- Hardened Phase 7 Web Review Verdict Processing with exact Task Bundle vs Result Bundle identity separation, selective bounded ZIP reads, hash-bound embedded review contracts and schemas, canonical trusted-run repository bindings, duplicate run identity rejection, integrity-checked terminal retries, complete GitHub head/base repository and SHA attestation, and bounded production GitHub responses.
 - Added Phase 7 Web Review Verdict Processing (`wco submit-web-verdict`, `wco web-review-status`), providing secure untrusted verdict intake, per-round immutable storage (`handoff/reviews/runs/<task-id>/<archive-sha256>/rounds/<zero-padded-round>/`), Result Bundle verification, mandatory binding assertions, anti-drip policy enforcement, fresh read-only GitHub attestation, and deterministic dispatch (`APPROVED`, `REVISION_REQUESTED`, `ESCALATED`).
 - Added Phase 6 Deterministic Result Bundle Generation and Web Review Handoff, producing a sealed, reproducible ZIP archive containing strictly projected public evidence and safe Git artifact extractions.
 - Added Phase 3 inbox scanning, trusted repository routing, exact-base Git

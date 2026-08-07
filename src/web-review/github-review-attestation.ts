@@ -15,6 +15,7 @@ export interface VerifiedGitHubAttestation {
 }
 
 const PINNED_GITHUB_API_URL = "https://api.github.com";
+const MAX_GITHUB_ATTESTATION_RESPONSE_BYTES = 1024 * 1024;
 
 /**
  * Strict read-only GitHub attestation validator.
@@ -107,11 +108,34 @@ export async function verifyGitHubAttestation(params: {
           `GitHub API attestation returned HTTP ${response.status}: ${response.statusText}`
         );
       }
-      prData = await response.json();
+
+      const contentLengthHeader = response.headers.get("content-length");
+      if (contentLengthHeader !== null) {
+        const contentLength = Number(contentLengthHeader);
+        if (!Number.isFinite(contentLength) || contentLength < 0 || contentLength > MAX_GITHUB_ATTESTATION_RESPONSE_BYTES) {
+          throw new WebReviewError(
+            "WEB_REVIEW_REPOSITORY_DRIFT",
+            `GitHub attestation response declared unsafe size '${contentLengthHeader}'`
+          );
+        }
+      }
+
+      const responseBytes = Buffer.from(await response.arrayBuffer());
+      if (responseBytes.byteLength > MAX_GITHUB_ATTESTATION_RESPONSE_BYTES) {
+        throw new WebReviewError(
+          "WEB_REVIEW_REPOSITORY_DRIFT",
+          `GitHub attestation response exceeds ${MAX_GITHUB_ATTESTATION_RESPONSE_BYTES} bytes`
+        );
+      }
+      try {
+        prData = JSON.parse(responseBytes.toString("utf8"));
+      } catch {
+        throw new WebReviewError("WEB_REVIEW_REPOSITORY_DRIFT", "GitHub attestation response is not valid JSON");
+      }
     } catch (e) {
       if (e instanceof WebReviewError) throw e;
       throw new WebReviewError(
-        "WEB_REVIEW_AUTH_ERROR",
+        "WEB_REVIEW_NETWORK_ERROR",
         `GitHub API attestation network error: ${e instanceof Error ? e.message : String(e)}`
       );
     }
