@@ -2,11 +2,22 @@ import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import path from "node:path";
 import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
-import { REVISION_STATES, RevisionError, type RevisionReceipt, type RevisionState } from "./contracts.js";
+import { REVISION_STATES, RevisionError, type RevisionReceipt, type RevisionResumeState, type RevisionState } from "./contracts.js";
 import { assertExistingRevisionPathSafe } from "./revision-paths.js";
 
 export const MAX_REVISION_ARTIFACT_BYTES = 2 * 1024 * 1024;
 const VALID_STATES = new Set<RevisionState>(REVISION_STATES);
+const RESUMABLE_STATES = new Set<RevisionResumeState>([
+  "READY_TO_REVISE",
+  "IMPLEMENTING",
+  "POLICY_CHECKING",
+  "VERIFYING",
+  "TERRA_REVIEWING",
+  "SOL_REVIEWING",
+  "READY_FOR_PUBLISH",
+  "COMMITTED",
+  "PUSHED",
+]);
 const REASONING = new Set(["minimal", "low", "medium", "high", "xhigh"]);
 
 async function assertSafeParent(filePath: string): Promise<void> {
@@ -82,6 +93,11 @@ export function assertRevisionReceipt(value: unknown): asserts value is Revision
   if (typeof obj.run_id !== "string" || obj.run_id.length === 0 || obj.run_id.length > 256) throw new RevisionError("REVISION_STATE_INVALID", "Revision receipt run_id is invalid.");
   if (!Number.isInteger(obj.revision_round) || Number(obj.revision_round) < 1 || Number(obj.revision_round) > 3) throw new RevisionError("REVISION_STATE_INVALID", "Revision receipt revision_round is invalid.");
   if (!VALID_STATES.has(obj.state as RevisionState)) throw new RevisionError("REVISION_STATE_INVALID", `Revision receipt state is invalid: ${String(obj.state)}`);
+  if (obj.state === "RETRYABLE") {
+    if (!RESUMABLE_STATES.has(obj.resume_state as RevisionResumeState)) throw new RevisionError("REVISION_STATE_INVALID", "RETRYABLE receipt requires an exact resumable checkpoint.");
+  } else if (obj.resume_state !== null) {
+    throw new RevisionError("REVISION_STATE_INVALID", "Only RETRYABLE receipts may carry resume_state.");
+  }
   for (const field of ["spec_set_sha256", "revision_request_sha256", "previous_result_bundle_sha256", "previous_result_receipt_sha256", "previous_verdict_sha256", "initial_refs_sha256"] as const) requireSha(obj, field, 64);
   requireSha(obj, "revision_change_set_sha256", 64, true); requireSha(obj, "approved_snapshot_sha256", 64, true); requireSha(obj, "result_bundle_sha256", 64, true); requireSha(obj, "result_manifest_sha256", 64, true);
   for (const field of ["previous_published_commit_sha", "previous_pr_head_sha"] as const) requireSha(obj, field, 40);
