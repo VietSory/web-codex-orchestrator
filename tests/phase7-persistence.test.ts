@@ -14,6 +14,7 @@ function mockGithubClient(): GitHubAttestationClient {
       return {
         number: prNumber,
         state: "open",
+        draft: true,
         head: { ref: "codex/feature", sha: TEST_PUBLISHED_COMMIT, repo: { full_name: `${owner}/${repo}` } },
         base: { ref: "main", sha: TEST_BASE_COMMIT, repo: { full_name: `${owner}/${repo}` } },
         merged: false,
@@ -73,7 +74,6 @@ test("PERSIST-001: exact retry of submitWebVerdict is idempotent", async () => {
 
     assert.equal(receipt1.state, "APPROVED");
 
-    // Exact retry
     const receipt2 = await submitWebVerdict({
       runId: fixture.receipt.run_id,
       stateDirectory: fixture.stateDirectory,
@@ -106,7 +106,6 @@ test("PERSIST-002: conflicting verdict submitted to a sealed round is rejected",
       githubClient: mockGithubClient(),
     });
 
-    // Conflicting verdict with different content
     const verdict2 = createValidVerdict(fixture.receipt, { summary: "Different summary", observed_head_sha: TEST_PUBLISHED_COMMIT });
     const verdictPath2 = path.join(fixture.stateDirectory, "verdict2.json");
     await fs.writeFile(verdictPath2, JSON.stringify(verdict2, null, 2));
