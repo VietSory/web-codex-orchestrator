@@ -41,6 +41,10 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Phase 9 authority regressions
+        run: npm run test:phase9
+        timeout-minutes: 2
+
       - name: Unit and fake integration tests
         run: npm test
 
