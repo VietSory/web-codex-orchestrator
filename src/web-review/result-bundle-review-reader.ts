@@ -43,6 +43,45 @@ async function assertSafeStateSource(stateDirectory: string, targetPath: string,
   }
 }
 
+async function readBoundedStableReceipt(receiptPath: string): Promise<Buffer> {
+  let handle: fs.FileHandle | null = null;
+  try {
+    handle = await fs.open(receiptPath, "r");
+    const opened = await handle.stat();
+    if (!opened.isFile() || opened.size > MAX_PHASE6_RECEIPT_BYTES) {
+      throw resultBundleInvalid(`Phase 6 receipt exceeds ${MAX_PHASE6_RECEIPT_BYTES} bytes or is not a regular file`);
+    }
+
+    const buffer = Buffer.alloc(opened.size);
+    let offset = 0;
+    while (offset < opened.size) {
+      const { bytesRead } = await handle.read(buffer, offset, opened.size - offset, offset);
+      if (bytesRead === 0) throw resultBundleInvalid("Phase 6 receipt was truncated during read");
+      offset += bytesRead;
+    }
+    const probe = Buffer.alloc(1);
+    const { bytesRead: extraBytes } = await handle.read(probe, 0, 1, opened.size);
+    if (extraBytes !== 0) throw resultBundleInvalid("Phase 6 receipt grew during read");
+
+    const after = await handle.stat();
+    if (
+      after.dev !== opened.dev ||
+      after.ino !== opened.ino ||
+      after.size !== opened.size ||
+      after.mtimeMs !== opened.mtimeMs ||
+      after.ctimeMs !== opened.ctimeMs
+    ) {
+      throw resultBundleInvalid("Phase 6 receipt changed while Phase 7 was loading it");
+    }
+    return buffer;
+  } catch (error) {
+    if (error instanceof WebReviewError) throw error;
+    throw resultBundleInvalid("Cannot read Phase 6 receipt", error);
+  } finally {
+    if (handle) await handle.close().catch(() => undefined);
+  }
+}
+
 /** Load and independently verify the exact Phase 6 Result Bundle. */
 export async function loadAndVerifyResultBundle(
   stateDirectory: string,
@@ -51,8 +90,6 @@ export async function loadAndVerifyResultBundle(
   const { taskId, archiveSha256: taskBundleArchiveSha } = parseRunIdentity(runId);
   const p6Paths = resultBundlePaths(stateDirectory, taskId, taskBundleArchiveSha);
 
-  // Preserve the stable contract for an absent handoff while still applying the
-  // stricter no-symlink chain check to every source that actually exists.
   try {
     await fs.lstat(p6Paths.receiptPath);
   } catch (error) {
@@ -63,22 +100,9 @@ export async function loadAndVerifyResultBundle(
   }
 
   await assertSafeStateSource(stateDirectory, p6Paths.receiptPath, "Phase 6 receipt");
-  const receiptStat = await fs.stat(p6Paths.receiptPath);
-  if (receiptStat.size > MAX_PHASE6_RECEIPT_BYTES) {
-    throw resultBundleInvalid(`Phase 6 receipt exceeds ${MAX_PHASE6_RECEIPT_BYTES} bytes`);
-  }
-
-  let receiptRawBytes: Buffer;
-  try {
-    receiptRawBytes = await fs.readFile(p6Paths.receiptPath);
-  } catch (error) {
-    throw resultBundleInvalid(`Phase 6 receipt not found for run ID '${runId}'`, error);
-  }
-  if (receiptRawBytes.byteLength > MAX_PHASE6_RECEIPT_BYTES) {
-    throw resultBundleInvalid(`Phase 6 receipt exceeds ${MAX_PHASE6_RECEIPT_BYTES} bytes during read`);
-  }
-
+  const receiptRawBytes = await readBoundedStableReceipt(p6Paths.receiptPath);
   const phase6ReceiptSha256 = sha256Hex(receiptRawBytes);
+
   let receiptValue: unknown;
   try {
     receiptValue = JSON.parse(receiptRawBytes.toString("utf8"));
@@ -88,12 +112,9 @@ export async function loadAndVerifyResultBundle(
   }
   const receipt = receiptValue as ResultBundleReceipt;
 
-  // Ensure the path still names the exact file whose bytes were parsed and bound.
+  // Revalidate the path after the fd-bound read so replacement through a later
+  // symlink or moved ancestor cannot silently become the authority source.
   await assertSafeStateSource(stateDirectory, p6Paths.receiptPath, "Phase 6 receipt");
-  const receiptAfterStat = await fs.stat(p6Paths.receiptPath);
-  if (receiptAfterStat.size !== receiptRawBytes.byteLength) {
-    throw resultBundleInvalid("Phase 6 receipt changed while Phase 7 was loading it");
-  }
 
   if (receipt.run_id !== runId) {
     throw resultBundleInvalid(`Phase 6 receipt run_id '${receipt.run_id}' does not match '${runId}'`);
