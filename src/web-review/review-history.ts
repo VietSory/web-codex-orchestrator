@@ -95,6 +95,29 @@ export async function checkRoundIdempotency(
   );
 }
 
+function assertCurrentRevisionBundleChain(currentBundle: LoadedResultBundle, round: number, previousReceipt: WebReviewReceipt): void {
+  const current = currentBundle.receipt;
+  const expectedRevisionRound = round - 1;
+  if (current.result_bundle_version !== "1.2" || current.input_kind !== "revision" || current.revision_round !== expectedRevisionRound) {
+    throw new WebReviewError("WEB_REVIEW_HISTORY_INVALID", `Review round ${round} is not backed by the exact Phase 8 revision ${expectedRevisionRound} Result Bundle.`);
+  }
+  if (!previousReceipt.phase6_receipt_sha256 || !previousReceipt.result_bundle_sha256 || !previousReceipt.verdict_sha256 || !previousReceipt.revision_request_sha256 || !previousReceipt.fresh_attested_head_sha) {
+    throw new WebReviewError("WEB_REVIEW_HISTORY_INVALID", `Previous review round ${round - 1} lacks terminal authority hashes required by the revision Result Bundle chain.`);
+  }
+  const mismatches: string[] = [];
+  const same = (field: string, actual: unknown, expected: unknown): void => { if (actual !== expected) mismatches.push(field); };
+  same("previous_result_bundle_sha256", current.previous_result_bundle_sha256, previousReceipt.result_bundle_sha256);
+  same("previous_result_receipt_sha256", current.previous_result_receipt_sha256, previousReceipt.phase6_receipt_sha256);
+  same("previous_verdict_sha256", current.previous_verdict_sha256, previousReceipt.verdict_sha256);
+  same("revision_request_sha256", current.revision_request_sha256, previousReceipt.revision_request_sha256);
+  same("previous_published_commit_sha", current.previous_published_commit_sha, previousReceipt.published_commit_sha);
+  same("previous_pr_head_sha", current.previous_pr_head_sha, previousReceipt.fresh_attested_head_sha);
+  same("previous_pr_head_sha/observed", current.previous_pr_head_sha, previousReceipt.observed_head_sha);
+  same("spec_set_sha256", current.spec_set_sha256, previousReceipt.spec_set_sha256);
+  same("pull_request.number", current.pull_request.number, previousReceipt.pull_request_number);
+  if (mismatches.length > 0) throw new WebReviewError("WEB_REVIEW_HISTORY_INVALID", `Phase 8 Result Bundle is not chained to the exact previous Web review terminal: ${mismatches.join(", ")}.`);
+}
+
 /** Validate history chain for initial (round 1) or revision (round > 1) reviews. */
 export async function validateReviewHistory(
   stateDirectory: string,
@@ -103,7 +126,6 @@ export async function validateReviewHistory(
   verdict: any,
   currentBundle: LoadedResultBundle
 ): Promise<ReviewHistoryValidationResult> {
-  void currentBundle;
   if (round === 1) {
     if (
       verdict.previous_result_bundle_sha256 !== null ||
@@ -149,6 +171,8 @@ export async function validateReviewHistory(
       `Previous review round ${prevRound} state is '${prevReceipt.state}', expected 'REVISION_REQUESTED'.`
     );
   }
+
+  assertCurrentRevisionBundleChain(currentBundle, round, prevReceipt);
 
   if (verdict.previous_result_bundle_sha256 !== prevReceipt.result_bundle_sha256) {
     throw new WebReviewError("WEB_REVIEW_HISTORY_INVALID", `previous_result_bundle_sha256 mismatch. Expected '${prevReceipt.result_bundle_sha256}', got '${verdict.previous_result_bundle_sha256}'.`);
