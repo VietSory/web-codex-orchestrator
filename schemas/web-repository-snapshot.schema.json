@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wco.local/schemas/web-repository-snapshot.schema.json",
+  "title": "WCO Web Repository Snapshot v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "repository_tree_sha", "entries"],
+  "properties": {
+    "schema_version": { "const": "2.0" },
+    "repository_tree_sha": { "$ref": "#/$defs/gitSha" },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "mode", "type", "object_sha", "size_bytes"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+          "mode": { "type": "string", "pattern": "^[0-9]{6}$" },
+          "type": { "enum": ["blob", "commit"] },
+          "object_sha": { "$ref": "#/$defs/gitSha" },
+          "size_bytes": { "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] }
+        }
+      }
+    }
+  },
+  "$defs": { "gitSha": { "type": "string", "pattern": "^[a-f0-9]{40}$" } }
+}
