@@ -4,7 +4,6 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { canonicalJsonBuffer } from "../../src/result-bundle/canonical-json.js";
 import { buildDeterministicZip } from "../../src/result-bundle/deterministic-zip.js";
-import { FIXED_FILE_MODE, REQUIRED_RESULT_BUNDLE_ENTRIES } from "../../src/result-bundle/result-bundle-paths.js";
 import type { ResultBundleReceipt } from "../../src/result-bundle/contracts.js";
 import type { WebReviewVerdict } from "../../src/result-bundle/web-verdict-validator.js";
 
@@ -31,7 +30,8 @@ export interface CreatedPhase6BundleFixture {
 
 export async function createPhase6BundleFixture(
   tmpDir: string,
-  overrides?: Partial<ResultBundleReceipt>
+  overrides?: Partial<ResultBundleReceipt>,
+  entryOverrides?: Record<string, Buffer>
 ): Promise<CreatedPhase6BundleFixture> {
   const stateDirectory = path.resolve(tmpDir);
   const tempBuildDir = path.join(stateDirectory, "tmp-build");
@@ -74,7 +74,20 @@ export async function createPhase6BundleFixture(
     { path: "task/validation.json", content: Buffer.from(JSON.stringify({ schema_version: "1.1", commands: [{ id: "VAL-1", command: "npm test" }] }), "utf8") },
   ];
 
+  if (entryOverrides) {
+    for (const [entryPath, content] of Object.entries(entryOverrides)) {
+      const existing = rawEntries.find((entry) => entry.path === entryPath);
+      if (existing) existing.content = content;
+      else rawEntries.push({ path: entryPath, content });
+    }
+  }
+
   rawEntries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const entryByPath = new Map(rawEntries.map((entry) => [entry.path, entry.content] as const));
+  const reviewContractSha = sha256Hex(entryByPath.get("review/WEB-REVIEW-CONTRACT.md")!);
+  const revisionRequestSchemaSha = sha256Hex(entryByPath.get("review/revision-request.schema.json")!);
+  const reviewPolicySha = sha256Hex(entryByPath.get("review/web-review-policy.json")!);
+  const verdictSchemaSha = sha256Hex(entryByPath.get("review/web-review-verdict.schema.json")!);
 
   const manifestEntryList = rawEntries.map((e) => ({
     path: e.path,
@@ -95,10 +108,10 @@ export async function createPhase6BundleFixture(
     task_id: TEST_TASK_ID,
     created_at: "2026-02-15T08:00:00.000Z",
     spec_set_sha256: TEST_SPEC_SET_SHA,
-    review_contract_sha256: "f".repeat(64),
-    review_policy_sha256: "f".repeat(64),
-    verdict_schema_sha256: "f".repeat(64),
-    revision_request_schema_sha256: "f".repeat(64),
+    review_contract_sha256: reviewContractSha,
+    review_policy_sha256: reviewPolicySha,
+    verdict_schema_sha256: verdictSchemaSha,
+    revision_request_schema_sha256: revisionRequestSchemaSha,
     reviewed_entry_set_sha256: reviewedEntrySetSha256,
     entries: manifestEntryList,
   };
@@ -116,10 +129,10 @@ export async function createPhase6BundleFixture(
     maximumTotalUncompressedBytes: 100_000_000,
   });
 
-  const archiveSha = zipRes.sha256;
-  const fixtureRunId = `${TEST_TASK_ID}:${archiveSha}`;
-
-  const handoffDir = path.join(stateDirectory, "handoff", "runs", TEST_TASK_ID, archiveSha);
+  // Run identity stays bound to the original accepted Task Bundle archive.
+  // The Result Bundle has a separate independently-computed archive SHA.
+  const fixtureRunId = TEST_RUN_ID;
+  const handoffDir = path.join(stateDirectory, "handoff", "runs", TEST_TASK_ID, TEST_ARCHIVE_SHA);
   await fs.mkdir(handoffDir, { recursive: true });
 
   const archivePath = path.join(handoffDir, "result-bundle.zip");
@@ -138,10 +151,10 @@ export async function createPhase6BundleFixture(
     accepted_bundle_tree_sha256: "e".repeat(64),
     change_set_sha256: "e".repeat(64),
     spec_set_sha256: TEST_SPEC_SET_SHA,
-    review_contract_sha256: "f".repeat(64),
-    review_policy_sha256: "f".repeat(64),
-    verdict_schema_sha256: "f".repeat(64),
-    revision_request_schema_sha256: "f".repeat(64),
+    review_contract_sha256: reviewContractSha,
+    review_policy_sha256: reviewPolicySha,
+    verdict_schema_sha256: verdictSchemaSha,
+    revision_request_schema_sha256: revisionRequestSchemaSha,
     reviewed_entry_set_sha256: reviewedEntrySetSha256,
     base_commit: TEST_BASE_COMMIT,
     published_commit_sha: TEST_PUBLISHED_COMMIT,
@@ -157,7 +170,7 @@ export async function createPhase6BundleFixture(
       title_sha256: "f".repeat(64),
     },
     archive_relative_path: path.relative(stateDirectory, archivePath).replace(/\\/g, "/"),
-    archive_sha256: archiveSha,
+    archive_sha256: zipRes.sha256,
     archive_size_bytes: zipRes.sizeBytes,
     entry_count: allEntries.length,
     uncompressed_size_bytes: zipRes.uncompressedBytes,
@@ -173,19 +186,32 @@ export async function createPhase6BundleFixture(
 
   await fs.writeFile(receiptPath, JSON.stringify(receipt, null, 2) + "\n", "utf8");
 
-  // Always create the run receipt so resolveTrustedRunContext can locate it (P0-01)
-  const runsDir = path.join(stateDirectory, "runs", TEST_TASK_ID, archiveSha);
+  const runsDir = path.join(stateDirectory, "runs", TEST_TASK_ID, TEST_ARCHIVE_SHA);
   await fs.mkdir(runsDir, { recursive: true });
   await fs.writeFile(
     path.join(runsDir, "run.json"),
     JSON.stringify({
-      version: "1.0",
+      run_version: "1.0",
       run_id: fixtureRunId,
+      status: "READY_FOR_CODEX",
       task_id: TEST_TASK_ID,
-      archive_sha256: archiveSha,
+      archive_sha256: TEST_ARCHIVE_SHA,
+      bundle_schema_version: "1.3",
       repository_id: "repo",
       repository_path: stateDirectory,
-      state: "COMPLETED",
+      remote: "origin",
+      remote_url: "https://github.com/owner/repo",
+      base_branch: "main",
+      base_commit: TEST_BASE_COMMIT,
+      branch_name: "codex/feature",
+      worktree_path: path.join(stateDirectory, "worktrees", TEST_TASK_ID),
+      accepted_bundle_path: path.join(stateDirectory, "accepted", TEST_TASK_ID, TEST_ARCHIVE_SHA),
+      state: "READY_FOR_CODEX",
+      checks: ["remote-verified"],
+      errors: [],
+      created_at: "2026-02-15T08:00:00.000Z",
+      updated_at: "2026-02-15T08:00:00.000Z",
+      ready_at: "2026-02-15T08:00:00.000Z"
     })
   );
 

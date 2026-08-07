@@ -10,6 +10,16 @@ function sha256Hex(buf: Buffer): string {
   return crypto.createHash("sha256").update(buf).digest("hex");
 }
 
+function requireSha256(label: string, value: string | null): string {
+  if (typeof value !== "string" || !/^[a-f0-9]{64}$/.test(value)) {
+    throw new WebReviewError(
+      "WEB_REVIEW_RESULT_BUNDLE_INVALID",
+      `Phase 6 receipt is missing valid ${label}`
+    );
+  }
+  return value;
+}
+
 export const REQUIRED_REVIEW_BUNDLE_ENTRIES = [
   "manifest.json",
   "task/acceptance.json",
@@ -45,8 +55,10 @@ export interface LoadedEmbeddedContracts {
 }
 
 /**
- * Selective, bounded reading of embedded review contract files from Result Bundle ZIP (P0-03, P1-01).
- * Hashes exact entry bytes, cross-checks against Phase 6 receipt and manifest, and compiles schema validators.
+ * Selective, bounded reading of embedded review contract files from Result Bundle ZIP.
+ * Every authoritative review/spec artifact is hash-bound to the independently
+ * verified manifest and, where Phase 6 provides a named receipt binding, to the
+ * Phase 6 receipt as well.
  */
 export async function loadEmbeddedReviewContracts(
   archivePath: string,
@@ -66,85 +78,86 @@ export async function loadEmbeddedReviewContracts(
         );
       }
 
+      let settled = false;
+      const fail = (error: WebReviewError) => {
+        if (settled) return;
+        settled = true;
+        try { zipfile.close(); } catch { /* best effort */ }
+        reject(error);
+      };
+
       zipfile.on("entry", (entry: yauzl.Entry) => {
         const entryName = entry.fileName;
-        if (REQUIRED_REVIEW_BUNDLE_ENTRIES.includes(entryName as any)) {
-          if (entry.uncompressedSize > MAX_ENTRY_BYTES) {
-            zipfile.close();
-            return reject(
+        if (!REQUIRED_REVIEW_BUNDLE_ENTRIES.includes(entryName as any)) {
+          zipfile.readEntry();
+          return;
+        }
+        if (entriesMap.has(entryName)) {
+          return fail(new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", `Duplicate required ZIP entry '${entryName}'`));
+        }
+        if (entry.uncompressedSize > MAX_ENTRY_BYTES) {
+          return fail(
+            new WebReviewError(
+              "WEB_REVIEW_RESULT_BUNDLE_INVALID",
+              `ZIP entry '${entryName}' uncompressed size ${entry.uncompressedSize} bytes exceeds per-entry limit ${MAX_ENTRY_BYTES} bytes`
+            )
+          );
+        }
+
+        zipfile.openReadStream(entry, (streamErr, readStream) => {
+          if (streamErr || !readStream) {
+            return fail(
               new WebReviewError(
                 "WEB_REVIEW_RESULT_BUNDLE_INVALID",
-                `ZIP entry '${entryName}' uncompressed size ${entry.uncompressedSize} bytes exceeds per-entry limit ${MAX_ENTRY_BYTES} bytes`
+                `Failed to read ZIP entry '${entryName}': ${streamErr?.message ?? "unknown error"}`
               )
             );
           }
 
-          zipfile.openReadStream(entry, (streamErr, readStream) => {
-            if (streamErr || !readStream) {
-              zipfile.close();
-              return reject(
+          const chunks: Buffer[] = [];
+          let entryBytes = 0;
+          readStream.on("data", (chunk: Buffer) => {
+            entryBytes += chunk.length;
+            aggregateBytes += chunk.length;
+            if (entryBytes > MAX_ENTRY_BYTES || aggregateBytes > MAX_AGGREGATE_BYTES) {
+              readStream.destroy(
                 new WebReviewError(
                   "WEB_REVIEW_RESULT_BUNDLE_INVALID",
-                  `Failed to read ZIP entry '${entryName}': ${streamErr?.message}`
+                  `Reading entry '${entryName}' exceeded bounded review byte caps`
                 )
               );
+              return;
             }
-
-            const chunks: Buffer[] = [];
-            let entryBytes = 0;
-
-            readStream.on("data", (chunk: Buffer) => {
-              entryBytes += chunk.length;
-              aggregateBytes += chunk.length;
-
-              if (entryBytes > MAX_ENTRY_BYTES || aggregateBytes > MAX_AGGREGATE_BYTES) {
-                readStream.destroy();
-                zipfile.close();
-                return reject(
-                  new WebReviewError(
-                    "WEB_REVIEW_RESULT_BUNDLE_INVALID",
-                    `Reading entry '${entryName}' exceeded byte caps`
-                  )
-                );
-              }
-              chunks.push(chunk);
-            });
-
-            readStream.on("end", () => {
-              entriesMap.set(entryName, Buffer.concat(chunks));
-              zipfile.readEntry();
-            });
-
-            readStream.on("error", (rErr) => {
-              zipfile.close();
-              reject(
-                new WebReviewError(
-                  "WEB_REVIEW_RESULT_BUNDLE_INVALID",
-                  `Stream error reading entry '${entryName}': ${rErr.message}`
-                )
-              );
-            });
+            chunks.push(chunk);
           });
-        } else {
-          zipfile.readEntry();
-        }
+          readStream.on("end", () => {
+            if (settled) return;
+            entriesMap.set(entryName, Buffer.concat(chunks));
+            zipfile.readEntry();
+          });
+          readStream.on("error", (rErr) => {
+            fail(
+              rErr instanceof WebReviewError
+                ? rErr
+                : new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", `Stream error reading entry '${entryName}': ${rErr.message}`)
+            );
+          });
+        });
       });
 
-      zipfile.on("end", () => resolve());
+      zipfile.on("end", () => {
+        if (!settled) {
+          settled = true;
+          resolve();
+        }
+      });
       zipfile.on("error", (zErr) =>
-        reject(
-          new WebReviewError(
-            "WEB_REVIEW_RESULT_BUNDLE_INVALID",
-            `ZIP error: ${zErr.message}`
-          )
-        )
+        fail(new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", `ZIP error: ${zErr.message}`))
       );
-
       zipfile.readEntry();
     });
   });
 
-  // Verify all required entries were found
   for (const requiredEntry of REQUIRED_REVIEW_BUNDLE_ENTRIES) {
     if (!entriesMap.has(requiredEntry)) {
       throw new WebReviewError(
@@ -154,7 +167,6 @@ export async function loadEmbeddedReviewContracts(
     }
   }
 
-  // Strictly parse JSON entries
   const parseJsonEntry = (name: string) => {
     try {
       return JSON.parse(entriesMap.get(name)!.toString("utf8"));
@@ -177,44 +189,103 @@ export async function loadEmbeddedReviewContracts(
   const revisionRequestSchemaObj = parseJsonEntry("review/revision-request.schema.json");
   const reviewContractMd = entriesMap.get("review/WEB-REVIEW-CONTRACT.md")!.toString("utf8");
 
-  // Verify manifest hashes match Phase 6 receipt
+  const manifestReceiptSha = requireSha256("manifest_sha256", receipt.manifest_sha256);
   const manifestSha = sha256Hex(entriesMap.get("manifest.json")!);
-  if (receipt.manifest_sha256 && manifestSha !== receipt.manifest_sha256) {
+  if (manifestSha !== manifestReceiptSha) {
     throw new WebReviewError(
       "WEB_REVIEW_RESULT_BUNDLE_INVALID",
-      `Bundle manifest SHA256 '${manifestSha}' does not match Phase 6 receipt '${receipt.manifest_sha256}'`
+      `Manifest SHA mismatch: calculated '${manifestSha}', Phase 6 receipt specifies '${manifestReceiptSha}'`
     );
   }
 
-  // Cross-check entry hashes against manifest.entries
-  if (Array.isArray(manifest.entries)) {
-    const manifestMap = new Map<string, string>();
-    for (const e of manifest.entries) {
-      if (e && typeof e.path === "string" && typeof e.sha256 === "string") {
-        manifestMap.set(e.path, e.sha256);
-      }
-    }
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest) || !Array.isArray(manifest.entries)) {
+    throw new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", "Result Bundle manifest.entries is missing or invalid");
+  }
 
-    for (const requiredEntry of REQUIRED_REVIEW_BUNDLE_ENTRIES) {
-      if (requiredEntry === "manifest.json") continue;
-      const expectedSha = manifestMap.get(requiredEntry);
-      if (!expectedSha) {
-        throw new WebReviewError(
-          "WEB_REVIEW_RESULT_BUNDLE_INVALID",
-          `Required entry '${requiredEntry}' is not listed in manifest.entries`
-        );
-      }
-      const actualSha = sha256Hex(entriesMap.get(requiredEntry)!);
-      if (actualSha !== expectedSha) {
-        throw new WebReviewError(
-          "WEB_REVIEW_RESULT_BUNDLE_INVALID",
-          `Checksum mismatch for entry '${requiredEntry}': calculated '${actualSha}', manifest specifies '${expectedSha}'`
-        );
-      }
+  const manifestMap = new Map<string, string>();
+  for (const e of manifest.entries) {
+    if (!e || typeof e.path !== "string" || typeof e.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(e.sha256)) {
+      throw new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", "Result Bundle manifest contains an invalid entry descriptor");
+    }
+    if (manifestMap.has(e.path)) {
+      throw new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", `Result Bundle manifest contains duplicate entry '${e.path}'`);
+    }
+    manifestMap.set(e.path, e.sha256);
+  }
+
+  for (const requiredEntry of REQUIRED_REVIEW_BUNDLE_ENTRIES) {
+    if (requiredEntry === "manifest.json") continue;
+    const expectedSha = manifestMap.get(requiredEntry);
+    if (!expectedSha) {
+      throw new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", `Required entry '${requiredEntry}' is not listed in manifest.entries`);
+    }
+    const actualSha = sha256Hex(entriesMap.get(requiredEntry)!);
+    if (actualSha !== expectedSha) {
+      throw new WebReviewError(
+        "WEB_REVIEW_RESULT_BUNDLE_INVALID",
+        `Checksum mismatch for entry '${requiredEntry}': calculated '${actualSha}', manifest specifies '${expectedSha}'`
+      );
     }
   }
 
-  // Compile Ajv validators for embedded schemas
+  const namedBindings = [
+    {
+      label: "review_contract_sha256",
+      path: "review/WEB-REVIEW-CONTRACT.md",
+      receiptValue: requireSha256("review_contract_sha256", receipt.review_contract_sha256),
+      manifestValue: manifest.review_contract_sha256,
+    },
+    {
+      label: "review_policy_sha256",
+      path: "review/web-review-policy.json",
+      receiptValue: requireSha256("review_policy_sha256", receipt.review_policy_sha256),
+      manifestValue: manifest.review_policy_sha256,
+    },
+    {
+      label: "verdict_schema_sha256",
+      path: "review/web-review-verdict.schema.json",
+      receiptValue: requireSha256("verdict_schema_sha256", receipt.verdict_schema_sha256),
+      manifestValue: manifest.verdict_schema_sha256,
+    },
+    {
+      label: "revision_request_schema_sha256",
+      path: "review/revision-request.schema.json",
+      receiptValue: requireSha256("revision_request_schema_sha256", receipt.revision_request_schema_sha256),
+      manifestValue: manifest.revision_request_schema_sha256,
+    },
+  ] as const;
+
+  for (const binding of namedBindings) {
+    const actualSha = sha256Hex(entriesMap.get(binding.path)!);
+    if (actualSha !== binding.receiptValue) {
+      throw new WebReviewError(
+        "WEB_REVIEW_RESULT_BUNDLE_INVALID",
+        `${binding.label} does not match exact embedded '${binding.path}' bytes`
+      );
+    }
+    if (binding.manifestValue !== binding.receiptValue) {
+      throw new WebReviewError(
+        "WEB_REVIEW_RESULT_BUNDLE_INVALID",
+        `Manifest ${binding.label} does not match Phase 6 receipt`
+      );
+    }
+  }
+
+  const specSetSha = requireSha256("spec_set_sha256", receipt.spec_set_sha256);
+  if (manifest.spec_set_sha256 !== specSetSha || specLock?.spec_set_sha256 !== specSetSha) {
+    throw new WebReviewError(
+      "WEB_REVIEW_RESULT_BUNDLE_INVALID",
+      "spec_set_sha256 does not match across Phase 6 receipt, Result Bundle manifest and task/spec-lock.json"
+    );
+  }
+  const reviewedEntrySetSha = requireSha256("reviewed_entry_set_sha256", receipt.reviewed_entry_set_sha256);
+  if (manifest.reviewed_entry_set_sha256 !== reviewedEntrySetSha) {
+    throw new WebReviewError(
+      "WEB_REVIEW_RESULT_BUNDLE_INVALID",
+      "Manifest reviewed_entry_set_sha256 does not match Phase 6 receipt"
+    );
+  }
+
   const ajv = new Ajv2020({ strict: false, allErrors: true });
   let verdictValidate: any;
   let verdictErrorsText: string | null = null;
@@ -240,21 +311,12 @@ export async function loadEmbeddedReviewContracts(
 
   const compiledVerdictValidator = (data: unknown): boolean => {
     const valid = verdictValidate(data);
-    if (!valid) {
-      verdictErrorsText = ajv.errorsText(verdictValidate.errors);
-    } else {
-      verdictErrorsText = null;
-    }
+    verdictErrorsText = valid ? null : ajv.errorsText(verdictValidate.errors);
     return valid;
   };
-
   const compiledRevisionRequestValidator = (data: unknown): boolean => {
     const valid = revReqValidate(data);
-    if (!valid) {
-      revReqErrorsText = ajv.errorsText(revReqValidate.errors);
-    } else {
-      revReqErrorsText = null;
-    }
+    revReqErrorsText = valid ? null : ajv.errorsText(revReqValidate.errors);
     return valid;
   };
 

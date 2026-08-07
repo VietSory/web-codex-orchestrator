@@ -36,6 +36,10 @@ function resultBundleInvalid(message: string, cause?: unknown): WebReviewError {
 /**
  * Load and independently verify the exact Phase 6 Result Bundle.
  *
+ * The run ID remains bound to the accepted Task Bundle archive SHA. The
+ * Result Bundle archive has its own distinct SHA in the Phase 6 receipt.
+ * Phase 7 must never conflate those two identities.
+ *
  * Phase 7 deliberately does not buffer every ZIP entry. The Phase 6 verifier
  * streams and hashes the complete archive, while the Phase 7 embedded-contract
  * loader selectively reads only the bounded review/spec entries required for
@@ -46,8 +50,8 @@ export async function loadAndVerifyResultBundle(
   stateDirectory: string,
   runId: string
 ): Promise<LoadedResultBundle> {
-  const { taskId, archiveSha256: expectedArchiveSha } = parseRunIdentity(runId);
-  const p6Paths = resultBundlePaths(stateDirectory, taskId, expectedArchiveSha);
+  const { taskId, archiveSha256: taskBundleArchiveSha } = parseRunIdentity(runId);
+  const p6Paths = resultBundlePaths(stateDirectory, taskId, taskBundleArchiveSha);
 
   let receiptRawBytes: Buffer;
   try {
@@ -83,12 +87,6 @@ export async function loadAndVerifyResultBundle(
     receipt.uncompressed_size_bytes === null
   ) {
     throw resultBundleInvalid("Phase 6 receipt has null or incomplete binding fields.");
-  }
-
-  if (receipt.archive_sha256 !== expectedArchiveSha) {
-    throw resultBundleInvalid(
-      `Archive SHA mismatch in receipt: got '${receipt.archive_sha256}', expected '${expectedArchiveSha}'`
-    );
   }
 
   const absoluteStateDir = path.resolve(stateDirectory);
