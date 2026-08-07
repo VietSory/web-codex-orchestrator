@@ -16,9 +16,10 @@
 | `tests/phase7-maintainer-hardening.test.ts` | Fail-closed stale locks, state/source symlink confinement, Draft PR invariants, fresh retry attestation and streaming response caps | 9 |
 | `tests/phase7-state-bounds.test.ts` | Persisted state byte caps, receipt diagnostic bounds and bounded repeated failures | 3 |
 | `tests/phase7-github-failure-taxonomy.test.ts` | Stable auth, network/service and repository-drift HTTP classifications | 3 |
+| `tests/phase7-canonical-run-bounds.test.ts` | Allocation-safe canonical Phase 3 run receipt cap before JSON parsing | 1 |
 | `tests/integration/cli-phase7.integration.test.ts` | Compiled CLI APPROVED success path and fail-closed authentication path | 2 |
 
-Total Phase 7 named cases: **76**.
+Total Phase 7 named cases: **77**.
 
 ## Adversarial Maintainer Gate
 
@@ -27,7 +28,7 @@ The hardening suites specifically attempt to invalidate the security claims that
 - an existing stale or malformed lock cannot be silently stolen or removed;
 - a symlinked `handoff/reviews` ancestor cannot redirect Phase 7 writes outside the state root;
 - canonical artifact comparison never follows a symlink target;
-- the canonical Phase 3 `runs/.../run.json` authority path cannot be redirected through a symlink ancestor;
+- the canonical Phase 3 `runs/.../run.json` authority path cannot be redirected through a symlink ancestor and its file is allocation-bounded before parsing;
 - the Phase 6 `handoff/runs/...` receipt/archive authority path cannot be redirected through a symlink ancestor;
 - both the Phase 6 receipt and fresh GitHub state must still describe a Draft PR;
 - an exact terminal retry performs fresh GitHub attestation instead of returning stale approval authority;
