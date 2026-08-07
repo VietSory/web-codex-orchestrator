@@ -78,7 +78,7 @@ export async function createPhase9Fixture(): Promise<Phase9Fixture> {
   const raw = await git(repo, "ls-tree", "-rz", "-l", "--full-tree", baseCommit);
   const inventory = raw.split("\0").filter(Boolean).map((record) => {
     const tab = record.indexOf("\t");
-    const match = record.slice(0, tab).match(/^([0-9]{6}) (blob|commit) ([a-f0-9]{40}) ([0-9-]+)$/);
+    const match = record.slice(0, tab).match(/^([0-9]{6}) (blob|commit) ([a-f0-9]{40}) +([0-9-]+)$/);
     if (!match) throw new Error(`Unparseable git inventory fixture record: ${record}`);
     return {
       path: record.slice(tab + 1),
