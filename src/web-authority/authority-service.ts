@@ -1,3 +1,4 @@
+import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -52,14 +53,45 @@ function parsePackJson<T>(pack: WebImplementationPack, name: string): T {
   catch (error) { throw new WebAuthorityError("WEB_AUTHORITY_MANIFEST_INVALID", `Invalid JSON in '${name}': ${error instanceof Error ? error.message : String(error)}`); }
 }
 
+async function readBoundedStableFile(filePath: string, maximumBytes: number, code: "WEB_AUTHORITY_BINDING_MISMATCH" | "WEB_AUTHORITY_PREIMAGE_INVALID", label: string): Promise<Buffer> {
+  const before = await fs.lstat(filePath).catch((error) => {
+    throw new WebAuthorityError(code, `Cannot inspect ${label}: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  if (before.isSymbolicLink() || !before.isFile()) throw new WebAuthorityError(code, `${label} must be a regular non-symlink file.`);
+  if (before.size > maximumBytes) throw new WebAuthorityError(code, `${label} exceeds ${maximumBytes} bytes.`);
+  const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+  const handle = await fs.open(filePath, fsConstants.O_RDONLY | noFollow).catch((error) => {
+    throw new WebAuthorityError(code, `Cannot safely open ${label}: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  try {
+    const opened = await handle.stat();
+    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size || opened.size > maximumBytes) {
+      throw new WebAuthorityError(code, `${label} changed before bounded read.`);
+    }
+    const bytes = Buffer.alloc(opened.size);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const { bytesRead } = await handle.read(bytes, offset, bytes.byteLength - offset, offset);
+      if (bytesRead === 0) throw new WebAuthorityError(code, `${label} was truncated during bounded read.`);
+      offset += bytesRead;
+    }
+    const probe = Buffer.alloc(1);
+    const extra = await handle.read(probe, 0, 1, offset);
+    if (extra.bytesRead !== 0) throw new WebAuthorityError(code, `${label} grew during bounded read.`);
+    const afterHandle = await handle.stat();
+    const afterPath = await fs.lstat(filePath);
+    if (afterHandle.dev !== before.dev || afterHandle.ino !== before.ino || afterHandle.size !== before.size || afterPath.isSymbolicLink() || !afterPath.isFile() || afterPath.dev !== before.dev || afterPath.ino !== before.ino || afterPath.size !== before.size) {
+      throw new WebAuthorityError(code, `${label} changed during bounded read.`);
+    }
+    return bytes;
+  } finally { await handle.close(); }
+}
+
 async function computeTaskSpecSetSha256(bundlePath: string, taskId: string, runId: string, archiveSha256: string): Promise<string> {
   const names = ["manifest.json", "REQUEST.md", "PLAN.md", "RULES.md", "RESEARCH.md", "SOURCES.md", "VALIDATION.md", "acceptance.json", "checksums.json", "test-matrix.json", "validation.json", "risk-policy.json"];
   const files: Array<{ name: string; buffer: Buffer }> = [];
   for (const name of names) {
-    const filePath = path.join(bundlePath, name);
-    const stat = await fs.lstat(filePath).catch((error) => { throw new WebAuthorityError("WEB_AUTHORITY_BINDING_MISMATCH", `Cannot inspect accepted task file '${name}': ${error instanceof Error ? error.message : String(error)}`); });
-    if (stat.isSymbolicLink() || !stat.isFile() || stat.size > 8_388_608) throw new WebAuthorityError("WEB_AUTHORITY_BINDING_MISMATCH", `Accepted task file '${name}' is unsafe or too large.`);
-    files.push({ name, buffer: await fs.readFile(filePath) });
+    files.push({ name, buffer: await readBoundedStableFile(path.join(bundlePath, name), 8_388_608, "WEB_AUTHORITY_BINDING_MISMATCH", `accepted task file '${name}'`) });
   }
   const readme = Buffer.from([
     "# Task Specification Overview",
@@ -151,11 +183,7 @@ async function readWorktreePreimage(worktreePath: string, relativePath: string):
     if (stat.isSymbolicLink()) throw new WebAuthorityError("WEB_AUTHORITY_PREIMAGE_INVALID", `Operation path crosses a symbolic link: '${relativePath}'.`);
     const final = index === segments.length - 1;
     if (!final && !stat.isDirectory()) throw new WebAuthorityError("WEB_AUTHORITY_PREIMAGE_INVALID", `Operation ancestor is not a directory: '${relativePath}'.`);
-    if (final) {
-      if (!stat.isFile()) throw new WebAuthorityError("WEB_AUTHORITY_PREIMAGE_INVALID", `Operation target is not a regular file: '${relativePath}'.`);
-      if (stat.size > 8_388_608) throw new WebAuthorityError("WEB_AUTHORITY_PREIMAGE_INVALID", `Operation preimage exceeds 8 MiB: '${relativePath}'.`);
-      return await fs.readFile(current);
-    }
+    if (final) return await readBoundedStableFile(current, 8_388_608, "WEB_AUTHORITY_PREIMAGE_INVALID", `operation preimage '${relativePath}'`);
   }
   return null;
 }
