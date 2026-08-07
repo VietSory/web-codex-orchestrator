@@ -6,6 +6,7 @@ export const REVISION_STATES = [
   "READY_FOR_PUBLISH","COMMITTED","PUSHED","RESULT_READY","BLOCKED","RETRYABLE","FAILED",
 ] as const;
 export type RevisionState = (typeof REVISION_STATES)[number];
+export type RevisionResumeState = Exclude<RevisionState, "RESULT_READY" | "BLOCKED" | "RETRYABLE" | "FAILED">;
 
 export type RevisionErrorCode =
   | "REVISION_REQUEST_INVALID" | "REVISION_HISTORY_INVALID" | "REVISION_STATE_INVALID" | "REVISION_STATE_UNSAFE"
@@ -73,6 +74,7 @@ export interface RevisionReceipt {
   run_id: string;
   revision_round: number;
   state: RevisionState;
+  resume_state: RevisionResumeState | null;
   spec_set_sha256: string;
   revision_request_sha256: string;
   previous_result_bundle_sha256: string;
