@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
 import { WebAuthorityError, type ArtifactRegistrationRecord, type WebImplementationPack } from "./contracts.js";
 import { readAndValidateWebImplementationPack } from "./pack-reader.js";
+import { validateWebImplementationPackSemantics } from "./semantic-validator.js";
 import { assertExistingAuthorityFileSafe, prepareAuthorityDirectory, webAuthorityPaths } from "./paths.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -125,6 +126,7 @@ function packMatchesExistingRegistration(record: ArtifactRegistrationRecord, pac
 
 export async function registerWebImplementationPackArtifact(options: { stateDirectory: string; sourceArchivePath: string; pack: WebImplementationPack; registeredAt: string }): Promise<ArtifactRegistrationRecord> {
   const sourcePack = options.pack;
+  validateWebImplementationPackSemantics(sourcePack);
   const manifest = sourcePack.manifest;
   const paths = webAuthorityPaths(options.stateDirectory, manifest.task_id, manifest.task_bundle_sha256, sourcePack.archive_sha256);
   await prepareAuthorityDirectory(options.stateDirectory, paths.artifactDirectory);
@@ -137,6 +139,7 @@ export async function registerWebImplementationPackArtifact(options: { stateDire
 
   await copyArchiveImmutable(options.sourceArchivePath, paths.archivePath, sourcePack.archive_sha256, sourcePack.archive_size_bytes, options.stateDirectory);
   const registeredPack = await readAndValidateWebImplementationPack(paths.archivePath);
+  validateWebImplementationPackSemantics(registeredPack);
   if (!packsHaveSameAuthorityIdentity(sourcePack, registeredPack)) {
     throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_CONFLICT", "Immutable registry copy does not represent the same validated Web pack authority.");
   }
