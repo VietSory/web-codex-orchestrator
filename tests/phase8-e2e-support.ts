@@ -54,9 +54,6 @@ function phase6GitRunner() {
 class DynamicGitHubClient implements GitHubAttestationClient {
   constructor(private readonly worktree: string, private readonly baseSha: string) {}
   async getPullRequest(owner: string, repo: string, prNumber: number) {
-    // GitHub observes the pushed remote branch, not a local commit that has not
-    // been published yet. This distinction is essential for the Phase 8
-    // pre-push Draft/head attestation boundary.
     const remote = await git(this.worktree, ["ls-remote", "--heads", "origin", `refs/heads/${BRANCH}`]);
     const headSha = remote.split(/\s+/, 1)[0] ?? "";
     if (!/^[a-f0-9]{40,64}$/.test(headSha)) throw new Error("E2E GitHub client could not resolve the remote PR head.");
@@ -183,48 +180,278 @@ async function writeInitialReceipts(params: {
     base_commit: params.base,
     branch_name: BRANCH,
     worktree_path: params.repo,
-    implementer: { model: "gpt-5.6-terra", reasoning_effort: "high", thread_id: "initial-thread", iterations: 1 },
-    internal_reviewer: { model: "gpt-5.6-terra", reasoning_effort: "high", rounds: 1, thread_ids: ["terra-initial"], verdict: "APPROVE", reviewed_change_set_sha256: params.changeSetSha256 },
-    final_reviewer: { model: "gpt-5.6-sol", reasoning_effort: "high", rounds: 1, thread_ids: ["sol-initial"], verdict: "APPROVE", reviewed_change_set_sha256: params.changeSetSha256 },
-    verification: { rounds: 1, required_commands_passed: true, verified_change_set_sha256: params.changeSetSha256, commands: [] },
-    usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+    accepted_bundle_path: params.accepted,
     change_set_sha256: params.changeSetSha256,
-    change_set: { entries: [{ path: "src/app.ts", change_type: "modified" }], total_files: 1, total_additions: 1, total_deletions: 1, refs_sha256: params.refsSha256 },
+    repository_refs_sha256: params.refsSha256,
+    implementer: { model: "fixture", reasoning_effort: "high", thread_id: "fixture-impl", iterations: 1 },
+    internal_reviewer: { model: "fixture", reasoning_effort: "high", rounds: 1, latest_thread_id: "fixture-terra", verdict: "APPROVE", reviewed_change_set_sha256: params.changeSetSha256 },
+    final_reviewer: { model: "fixture", reasoning_effort: "high", rounds: 1, latest_thread_id: "fixture-sol", verdict: "APPROVE", reviewed_change_set_sha256: params.changeSetSha256 },
+    verification: { rounds: 1, required_commands_passed: true, verified_change_set_sha256: params.changeSetSha256, commands: [] },
+    usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 10, total_turns: 4, started_at: now },
     errors: [],
     created_at: now,
     updated_at: now,
   }, null, 2));
 
-  const executionReceiptSha = sha256Hex(await fs.readFile(path.join(executionDir, "execution.json")));
-  await fs.writeFile(path.join(publishDir, "git-publish.json"), JSON.stringify({
-    publish_version: "1.1", run_id: RUN_ID, state: "PUSHED", base_commit: params.base, branch_name: BRANCH, remote_name: "origin", allowed_remote_url: REMOTE_URL, change_set_sha256: params.changeSetSha256, expected_paths: ["src/app.ts"], approved_snapshot_sha256: "a".repeat(64), commit_sha: params.initialHead, remote_branch_sha: params.initialHead, created_at: now, updated_at: now, committed_at: now, pushed_at: now,
-  }, null, 2));
-  const publishReceiptSha = sha256Hex(await fs.readFile(path.join(publishDir, "git-publish.json")));
-  await fs.writeFile(path.join(publishDir, "draft-pr.json"), JSON.stringify({
-    pr_version: "1.0", run_id: RUN_ID, state: "OPEN", base_commit: params.base, branch_name: BRANCH, published_commit_sha: params.initialHead, change_set_sha256: params.changeSetSha256, git_publish_receipt_sha256: publishReceiptSha, pull_request_number: PR_NUMBER, pull_request_url: `https://github.com/owner/repo/pull/${PR_NUMBER}`, created_at: now, updated_at: now, opened_at: now, errors: [],
-  }, null, 2));
-  const draftReceiptSha = sha256Hex(await fs.readFile(path.join(publishDir, "draft-pr.json")));
-  await fs.writeFile(path.join(executionDir, "execution.json"), JSON.stringify({
-    execution_version: "1.0",
+  const gitPublishReceipt = {
+    publish_version: "1.1",
     run_id: RUN_ID,
-    state: "READY_FOR_PUBLISH",
+    state: "PUSHED",
     base_commit: params.base,
     branch_name: BRANCH,
-    worktree_path: params.repo,
-    implementer: { model: "gpt-5.6-terra", reasoning_effort: "high", thread_id: "initial-thread", iterations: 1 },
-    internal_reviewer: { model: "gpt-5.6-terra", reasoning_effort: "high", rounds: 1, thread_ids: ["terra-initial"], verdict: "APPROVE", reviewed_change_set_sha256: params.changeSetSha256 },
-    final_reviewer: { model: "gpt-5.6-sol", reasoning_effort: "high", rounds: 1, thread_ids: ["sol-initial"], verdict: "APPROVE", reviewed_change_set_sha256: params.changeSetSha256 },
-    verification: { rounds: 1, required_commands_passed: true, verified_change_set_sha256: params.changeSetSha256, commands: [] },
-    usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+    remote_name: "origin",
+    allowed_remote_url: REMOTE_URL,
     change_set_sha256: params.changeSetSha256,
-    change_set: { entries: [{ path: "src/app.ts", change_type: "modified" }], total_files: 1, total_additions: 1, total_deletions: 1, refs_sha256: params.refsSha256 },
-    errors: [],
+    expected_paths: ["src/index.ts"],
+    approved_snapshot_sha256: params.changeSetSha256,
+    commit_sha: params.initialHead,
+    remote_branch_sha: params.initialHead,
     created_at: now,
     updated_at: now,
+    committed_at: now,
+    pushed_at: now,
+  };
+  const gitPublishBytes = Buffer.from(`${JSON.stringify(gitPublishReceipt, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(publishDir, "git-publish.json"), gitPublishBytes);
+
+  const phase5bDir = path.join(params.state, "publish");
+  await fs.mkdir(phase5bDir, { recursive: true });
+  await fs.writeFile(path.join(phase5bDir, "github-draft-pr.json"), JSON.stringify({
+    receipt_version: "1.0",
+    run_id: RUN_ID,
+    state: "OPEN",
+    repository_owner: "owner",
+    repository_name: "repo",
+    base_branch: "main",
+    head_branch: BRANCH,
+    expected_head_sha: params.initialHead,
+    git_publish_receipt_sha256: sha256Hex(gitPublishBytes),
+    request_sha256: sha256Hex("phase8-e2e-request"),
+    title: "Phase 8 E2E",
+    body_sha256: sha256Hex("phase8-e2e-body"),
+    draft_required: true,
+    create_post_attempted: true,
+    pull_number: PR_NUMBER,
+    pull_url: `https://github.com/owner/repo/pull/${PR_NUMBER}`,
+    observed_head_sha: params.initialHead,
+    observed_base_branch: "main",
+    observed_state: "open",
+    observed_draft: true,
+    conflict_reason: null,
+    created_at: now,
+    updated_at: now,
+    create_attempted_at: now,
+    opened_at: now,
+    conflict_at: null,
   }, null, 2));
-  void executionReceiptSha;
-  void draftReceiptSha;
 }
 
-// Remaining E2E setup and assertions are unchanged from the previous version.
-// They are intentionally kept below verbatim by the repository update operation.
+function reviewResponse(baseCommit: string, runner: GitRunner) {
+  return async (request: AgentTurnRequest) => {
+    const changeSet = await calculateChangeSet({
+      worktreePath: request.workspace_path,
+      baseCommit,
+      branchName: BRANCH,
+      runner,
+      allowedGeneratedPaths: ["dist/**"],
+    });
+    return {
+      verdict: "APPROVE",
+      reviewed_change_set_sha256: changeSet.change_set_sha256,
+      summary: "Exact revision resolves the sealed finding without scope expansion.",
+      acceptance_results: [
+        { acceptance_id: "AC-001", status: "PASS", evidence: ["src/index.ts:1"] },
+        { acceptance_id: "AC-002", status: "PASS", evidence: ["evidence/verification.json"] },
+      ],
+      blocking_findings: [],
+      non_blocking_findings: [],
+      scope_violations: [],
+      unverified_acceptance: [],
+      human_action: null,
+    };
+  };
+}
+
+test("P8-E2E-001: sealed REVISE becomes a verified same-PR revision bundle and round-2 APPROVE", async () => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "wco-p8-e2e-")));
+  try {
+    const repo = path.join(root, "repo");
+    const bare = path.join(root, "remote.git");
+    const localRemoteUrl = pathToFileURL(bare).href;
+    const state = path.join(root, "state");
+    const accepted = path.join(state, "accepted", TASK_ID, ARCHIVE_SHA);
+    await fs.mkdir(repo, { recursive: true });
+    await fs.mkdir(state, { recursive: true });
+    await exec("git", ["init", "--bare", bare]);
+    await git(repo, ["init", "-b", "main"]);
+    await git(repo, ["config", "user.name", "Phase 8 E2E"]);
+    await git(repo, ["config", "user.email", "phase8-e2e@example.invalid"]);
+    await git(repo, ["config", `url.${localRemoteUrl}.insteadOf`, REMOTE_URL]);
+    await fs.mkdir(path.join(repo, "src"), { recursive: true });
+    await fs.writeFile(path.join(repo, "src", "index.ts"), "export const status = 'base';\n");
+    await git(repo, ["add", "src/index.ts"]);
+    await git(repo, ["commit", "-m", "base"]);
+    const base = await git(repo, ["rev-parse", "HEAD"]);
+    await git(repo, ["remote", "add", "origin", REMOTE_URL]);
+    await git(repo, ["push", "-u", "origin", "main"]);
+    await git(repo, ["checkout", "-b", BRANCH]);
+    await fs.writeFile(path.join(repo, "src", "index.ts"), "export const status = 'buggy';\n");
+    await git(repo, ["add", "src/index.ts"]);
+    await git(repo, ["commit", "-m", "initial product commit"]);
+    const initialHead = await git(repo, ["rev-parse", "HEAD"]);
+    await git(repo, ["push", "-u", "origin", BRANCH]);
+
+    await fs.cp(path.resolve("templates/task-bundle"), accepted, { recursive: true });
+    const manifestPath = path.join(accepted, "manifest.json");
+    const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8")) as Record<string, unknown>;
+    manifest.task_id = TASK_ID;
+    const repository = manifest.repository as Record<string, unknown>;
+    repository.id = "repo";
+    repository.base_branch = "main";
+    repository.base_commit = base;
+    const delivery = manifest.delivery as Record<string, unknown>;
+    delivery.remote = "origin";
+    delivery.base_branch = "main";
+    delivery.branch_name = BRANCH;
+    await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    await updateChecksums(accepted);
+
+    const configPath = await writeTrustedConfig(root, repo, localRemoteUrl);
+    const runner = new GitRunner();
+    const initialChangeSetSha256 = sha256Hex(`initial-change:${base}:${initialHead}`);
+    const initialRefsSha256 = sha256Hex(`initial-refs:${BRANCH}:${initialHead}`);
+    await writeInitialReceipts({ state, repo, accepted, base, initialHead, changeSetSha256: initialChangeSetSha256, refsSha256: initialRefsSha256 });
+
+    const githubClient = new DynamicGitHubClient(repo, base);
+    const initialBundle = await packageResultBundle({
+      runId: RUN_ID,
+      stateDirectory: state,
+      configPath,
+      githubClient,
+      gitRunner: phase6GitRunner(),
+      now: () => new Date("2026-08-07T12:10:00.000Z"),
+    });
+    assert.equal(initialBundle.result_bundle_version, "1.1");
+    assert.equal(initialBundle.published_commit_sha, initialHead);
+
+    const round1VerdictPath = path.join(root, "round1-revise.json");
+    const round1Verdict = createValidVerdict(initialBundle, {
+      verdict: "REVISE",
+      summary: "AC-001 requires a bounded implementation correction.",
+      comprehensive_review_complete: true,
+      criterion_results: [
+        { criterion_id: "AC-001", required: true, status: "FAIL", evidence_refs: ["repository/source/src/index.ts"], notes: "Status is buggy." },
+        { criterion_id: "AC-002", required: true, status: "PASS", evidence_refs: ["evidence/verification.json"], notes: "Verification remains green." },
+      ],
+      blocking_findings: [{
+        finding_id: "WEB-FIND-001",
+        classification: "IMPLEMENTATION_DEFECT",
+        finding_origin: "INITIAL_DISCOVERY",
+        previous_finding_id: null,
+        locked_reference_ids: ["AC-001"],
+        artifact_paths: ["repository/source/src/index.ts"],
+        line_or_json_pointer: "1",
+        expected_behavior: "The implementation must satisfy AC-001.",
+        observed_behavior: "The current status remains buggy.",
+        evidence: "repository/source/src/index.ts:1",
+        minimal_required_fix: "Correct src/index.ts without changing the frozen contract.",
+        revision_changed_paths: [],
+      }],
+    });
+    await fs.writeFile(round1VerdictPath, JSON.stringify(round1Verdict, null, 2));
+    const round1Receipt = await submitWebVerdict({ runId: RUN_ID, stateDirectory: state, configPath, verdictPath: round1VerdictPath, githubClient });
+    assert.equal(round1Receipt.state, "REVISION_REQUESTED");
+    assert.ok(round1Receipt.verdict_sha256);
+    assert.ok(round1Receipt.revision_request_sha256);
+
+    const review = reviewResponse(initialHead, runner);
+    const agent = new FakeAgentClient([
+      {
+        status: "COMPATIBLE",
+        summary: "The sealed finding can be fixed inside the frozen contract.",
+        repository_observations: [],
+        bundle_conflicts: [],
+        missing_prerequisites: [],
+        human_action: null,
+      },
+      async (request: AgentTurnRequest) => {
+        await fs.writeFile(path.join(request.workspace_path, "src", "index.ts"), "export const status = 'fixed';\n");
+        return {
+          status: "READY_FOR_VERIFICATION",
+          summary: "Fixed the sealed implementation defect.",
+          changed_files_claimed: ["src/index.ts"],
+          acceptance_evidence: [
+            { acceptance_id: "AC-001", status: "implemented", evidence: ["src/index.ts:1"], notes: "Status is fixed." },
+            { acceptance_id: "AC-002", status: "implemented", evidence: ["src/index.ts:1"], notes: "No contract change." },
+          ],
+          tests_added_or_changed: [],
+          unresolved_issues: [],
+          human_action: null,
+        };
+      },
+      review,
+      review,
+    ]);
+    const sandbox = new FakeVerificationSandbox();
+
+    const revision = await reviseRun({
+      runId: RUN_ID,
+      revisionRound: 1,
+      stateDirectory: state,
+      configPath,
+      agentClient: agent,
+      sandbox,
+      gitRunner: runner,
+      githubClient,
+      now: () => new Date("2026-08-07T12:20:00.000Z"),
+    });
+    assert.equal(revision.state, "RESULT_READY");
+    assert.equal(revision.branch_name, BRANCH);
+    assert.equal(revision.pull_request_number, PR_NUMBER);
+    assert.ok(revision.new_published_commit_sha);
+    assert.notEqual(revision.new_published_commit_sha, initialHead);
+    assert.equal(revision.new_published_commit_sha, revision.remote_branch_sha);
+    assert.equal(await git(repo, ["rev-list", "--count", `${initialHead}..${revision.new_published_commit_sha}`]), "1");
+    assert.equal(await git(repo, ["rev-parse", `${revision.new_published_commit_sha}^`]), initialHead);
+    const remoteRow = await git(repo, ["ls-remote", "--heads", "origin", `refs/heads/${BRANCH}`]);
+    assert.equal(remoteRow.split(/\s+/)[0], revision.new_published_commit_sha);
+
+    const round2Bundle = await loadAndVerifyResultBundle(state, RUN_ID, 2);
+    assert.equal(round2Bundle.receipt.result_bundle_version, "1.2");
+    assert.equal(round2Bundle.receipt.input_kind, "revision");
+    assert.equal(round2Bundle.receipt.revision_round, 1);
+    assert.equal(round2Bundle.receipt.previous_result_bundle_sha256, initialBundle.archive_sha256);
+    assert.equal(round2Bundle.receipt.previous_verdict_sha256, round1Receipt.verdict_sha256);
+    assert.equal(round2Bundle.receipt.previous_pr_head_sha, initialHead);
+    assert.equal(round2Bundle.receipt.published_commit_sha, revision.new_published_commit_sha);
+    assert.ok(round2Bundle.bundleEntries.has("revision/diff.patch"));
+    assert.ok(round2Bundle.bundleEntries.has("repository/diff.patch"));
+
+    const round2VerdictPath = path.join(root, "round2-approve.json");
+    const round2Verdict = createValidVerdict(round2Bundle.receipt, {
+      review_mode: "REVISION",
+      review_round: 2,
+      previous_result_bundle_sha256: initialBundle.archive_sha256!,
+      previous_verdict_sha256: round1Receipt.verdict_sha256!,
+      previous_published_commit_sha: initialHead,
+      revision_request_sha256: round1Receipt.revision_request_sha256!,
+      verdict: "APPROVE",
+      summary: "The sealed finding is resolved and the frozen contract remains satisfied.",
+      comprehensive_review_complete: true,
+      criterion_results: [
+        { criterion_id: "AC-001", required: true, status: "PASS", evidence_refs: ["revision/source/src/index.ts"], notes: "The correction is present." },
+        { criterion_id: "AC-002", required: true, status: "PASS", evidence_refs: ["evidence/verification.json"], notes: "Required verification passed." },
+      ],
+      blocking_findings: [],
+      non_blocking_backlog: [],
+    });
+    await fs.writeFile(round2VerdictPath, JSON.stringify(round2Verdict, null, 2));
+    const round2Receipt = await submitWebVerdict({ runId: RUN_ID, stateDirectory: state, configPath, verdictPath: round2VerdictPath, githubClient });
+    assert.equal(round2Receipt.state, "APPROVED");
+    assert.equal(round2Receipt.action, "ASK_USER_TO_MERGE");
+    assert.equal(round2Receipt.review_round, 2);
+    assert.equal(round2Receipt.fresh_attested_head_sha, revision.new_published_commit_sha);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
