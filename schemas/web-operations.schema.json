@@ -16,6 +16,13 @@
   "$defs": {
     "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
     "safePath": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "base": {
+      "type": "object",
+      "properties": {
+        "op_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "path": { "$ref": "#/$defs/safePath" }
+      }
+    },
     "operation": {
       "oneOf": [
         {
@@ -24,9 +31,22 @@
           "required": ["op_id", "kind", "path", "preimage_sha256", "payload_entry", "payload_sha256"],
           "properties": {
             "op_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
-            "kind": { "enum": ["create_file", "replace_file"] },
+            "kind": { "const": "create_file" },
             "path": { "$ref": "#/$defs/safePath" },
-            "preimage_sha256": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+            "preimage_sha256": { "type": "null" },
+            "payload_entry": { "type": "string", "pattern": "^payload/.+" },
+            "payload_sha256": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op_id", "kind", "path", "preimage_sha256", "payload_entry", "payload_sha256"],
+          "properties": {
+            "op_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+            "kind": { "const": "replace_file" },
+            "path": { "$ref": "#/$defs/safePath" },
+            "preimage_sha256": { "$ref": "#/$defs/sha256" },
             "payload_entry": { "type": "string", "pattern": "^payload/.+" },
             "payload_sha256": { "$ref": "#/$defs/sha256" }
           }
