@@ -12,6 +12,11 @@ const GIT_SHA = /^[a-f0-9]{40}$/;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const MAX_REGISTRATION_BYTES = 1_048_576;
 
+function isSafeBranchName(value: string): boolean {
+  if (!value || value.length > 255 || value === "@" || value.startsWith("/") || value.endsWith("/") || value.endsWith(".") || value.includes("//") || value.includes("..") || value.includes("@{") || /[\x00-\x20\x7f~^:?*\[\\]/.test(value)) return false;
+  return value.split("/").every((component) => component.length > 0 && !component.startsWith(".") && !component.endsWith(".lock"));
+}
+
 async function sha256File(filePath: string): Promise<{ sha256: string; size: number }> {
   const handle = await fs.open(filePath, "r");
   try {
@@ -93,7 +98,7 @@ function assertRegistrationRecord(record: ArtifactRegistrationRecord, expected: 
   if (record.registry_version !== "1.0" || record.artifact_kind !== "web-implementation-pack" || record.artifact_sha256 !== expected.artifactSha256 || record.task_id !== expected.taskId || record.task_bundle_sha256 !== expected.taskBundleSha256) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", "Registration record identity is inconsistent with its registry path.");
   if (!SHA256.test(record.artifact_sha256) || !Number.isSafeInteger(record.artifact_size_bytes) || record.artifact_size_bytes < 0 || record.stored_relative_path !== expected.storedRelativePath) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", "Registration record archive metadata is invalid.");
   if (!SAFE_ID.test(record.pack_id) || record.run_id !== `${record.task_id}:${record.task_bundle_sha256}` || !SHA256.test(record.manifest_sha256) || !Number.isFinite(Date.parse(record.registered_at))) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", "Registration record run/pack/timestamp metadata is invalid.");
-  if (!record.repository || !SAFE_ID.test(record.repository.id) || !record.repository.base_branch || !GIT_SHA.test(record.repository.base_commit) || !GIT_SHA.test(record.repository.tree_sha)) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", "Registration repository binding is invalid.");
+  if (!record.repository || !SAFE_ID.test(record.repository.id) || !isSafeBranchName(record.repository.base_branch) || !GIT_SHA.test(record.repository.base_commit) || !GIT_SHA.test(record.repository.tree_sha)) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", "Registration repository binding is invalid.");
   if (!record.bindings || Object.values(record.bindings).some((value) => typeof value !== "string" || !SHA256.test(value))) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", "Registration digest bindings are invalid.");
 }
 
