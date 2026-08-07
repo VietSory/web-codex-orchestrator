@@ -64,7 +64,7 @@ CI executes the Phase 8 end-to-end test as a separate bounded step so a stuck in
 | Invariant | Production boundary | Executable coverage |
 | --- | --- | --- |
 | Initial local HEAD, branch, configured remote identity, and remote branch equal the sealed previous head | `revision-git.ts` | `P8-GIT-001`, `P8-GIT-002`, `P8-E2E-001` |
-| The configured remote name is re-attested but every network `ls-remote`/push targets the exact sealed sanitized URL directly, preventing post-check TOCTOU redirection | `revision-git.ts` | `P8-MAINT-001`, `P8-MAINT-009` |
+| The configured remote name is re-attested, but every network `ls-remote` runs from a clean bare transport repository and every push runs from a clean bare sender using read-only object alternates, so worktree-local `insteadOf`/`pushInsteadOf` rules are not loaded | `revision-git.ts`, `revision-network.ts` | `P8-MAINT-001`, `P8-MAINT-009`, `P8-MAINT-010` |
 | Approved working bytes are re-hashed before staging | `revision-git.ts` | `P8-GIT-003` |
 | Staged index must equal the approved snapshot | `revision-git.ts` | `P8-GIT-001`, mutation regressions |
 | Revision commit has exactly one parent: previous PR head | `revision-git.ts` | `P8-GIT-001`, `P8-E2E-001` |
@@ -75,7 +75,7 @@ CI executes the Phase 8 end-to-end test as a separate bounded step so a stuck in
 | `COMMITTED` checkpoint is persisted after exact commit verification and before push | `revision-git.ts`, `revision-service.ts` | `P8-PUB-001` |
 | Crash after commit adopts the exact existing commit instead of making a second commit | `revision-git.ts` | `P8-GIT-REC-001` |
 | A failing fresh pre-push authority check occurs after the local commit but before any remote movement | `revision-git.ts` | `P8-MAINT-007` |
-| Normal push must re-attest the exact new remote head through the same sealed transport URL | `revision-git.ts` | `P8-GIT-001`, `P8-MAINT-009`, `P8-E2E-001` |
+| Normal push must re-attest the exact new remote head through the same sealed clean transport | `revision-git.ts`, `revision-network.ts` | `P8-GIT-001`, `P8-MAINT-009`, `P8-MAINT-010`, `P8-E2E-001` |
 
 ## GitHub Draft PR boundary
 
@@ -101,7 +101,7 @@ CI executes the Phase 8 end-to-end test as a separate bounded step so a stuck in
 
 ## Full-loop proof
 
-`tests/integration/phase8-e2e.integration.ts` loads `tests/phase8-e2e-support.ts` and exercises a complete local-only flow with a real Git repository under the Phase 3 state-owned worktree layout and a real bare remote. The fake GitHub client derives PR head identity from the remote branch, not unpushed local `HEAD`, so the pre-push and post-push attestations model the actual GitHub visibility boundary.
+`tests/integration/phase8-e2e.integration.ts` loads `tests/phase8-e2e-support.ts` and exercises a complete local-only flow with a real Git repository under the Phase 3 state-owned worktree layout and a real bare remote. The fake GitHub client derives PR head identity from the remote branch, not unpushed local `HEAD`, so the pre-push and post-push attestations model the actual GitHub visibility boundary. Separate `P8-MAINT-010` coverage proves that the clean network transport still reaches the intended remote when the product worktree contains active malicious `insteadOf` and `pushInsteadOf` rewrite rules.
 
 ```text
 initial product commit
@@ -115,7 +115,7 @@ initial product commit
 -> Sol APPROVE
 -> exactly one same-branch commit
 -> fresh pre-push Draft/previous-head authority check
--> normal push through the exact sealed transport URL
+-> normal push through a clean bare sender to the sealed transport URL
 -> fresh post-push same Draft PR/new-head attestation
 -> revision Result Bundle v1.2
 -> Web review round 2 with exact history-chain verification
@@ -132,14 +132,14 @@ Before merging Phase 8, verify the exact PR head:
 - [ ] Base is the merged Phase 7 `main` snapshot and PR head is not behind it.
 - [ ] `npm run phase8:release-gate` is green on the exact head.
 - [ ] Dedicated Phase 8 end-to-end step is green.
-- [ ] All `P8-MAINT-*` adversarial tests are green.
+- [ ] All `P8-MAINT-*` adversarial tests are green, including malicious Git URL-rewrite isolation.
 - [ ] Compiled Phase 8 CLI integration is green.
 - [ ] No production revision code contains a force-push, amend, rebase, branch-delete, PR-create, mark-ready, or merge path.
 - [ ] No Web-review round fallback exists.
 - [ ] Review-round bundle role and v1.2 previous-history chain are explicitly enforced, not inferred only from paths.
 - [ ] Canonical worktree and accepted Task Bundle remain state-owned and symlink-safe.
 - [ ] Accepted Task Bundle tree is re-attested against previously sealed authority before revision work.
-- [ ] Remote name is re-attested, while network Git uses the exact sealed URL directly; fresh Draft PR authority is checked immediately before a real push.
+- [ ] Remote name is re-attested, while network Git runs from clean bare transport contexts that do not load worktree-local URL rewrite configuration; fresh Draft PR authority is checked immediately before a real push.
 - [ ] Crash-after-commit recovery creates no second commit and ready revision Result Bundle recovery preserves exact archive bytes.
 - [ ] README, CHANGELOG, SECURITY, PHASE8 and this coverage map describe the same implemented workflow.
 - [ ] The user remains the only actor who decides whether to merge.
