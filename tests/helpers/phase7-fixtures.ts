@@ -49,7 +49,7 @@ export async function createPhase6BundleFixture(
     { path: "evidence/sol-review.json", content: Buffer.from(JSON.stringify({ verdict: "APPROVE" }), "utf8") },
     { path: "evidence/terra-review.json", content: Buffer.from(JSON.stringify({ verdict: "APPROVE" }), "utf8") },
     { path: "evidence/verification.json", content: Buffer.from(JSON.stringify({ status: "PASS" }), "utf8") },
-    { path: "github/pull-request.json", content: Buffer.from(JSON.stringify({ number: 101 }), "utf8") },
+    { path: "github/pull-request.json", content: Buffer.from(JSON.stringify({ number: 101, draft: true }), "utf8") },
     { path: "repository/changed-files.json", content: Buffer.from(JSON.stringify(["repository/source/index.ts"]), "utf8") },
     { path: "repository/deleted-files.json", content: Buffer.from(JSON.stringify([]), "utf8") },
     { path: "repository/diff.patch", content: Buffer.from("", "utf8") },
@@ -129,8 +129,6 @@ export async function createPhase6BundleFixture(
     maximumTotalUncompressedBytes: 100_000_000,
   });
 
-  // Run identity stays bound to the original accepted Task Bundle archive.
-  // The Result Bundle has a separate independently-computed archive SHA.
   const fixtureRunId = TEST_RUN_ID;
   const handoffDir = path.join(stateDirectory, "handoff", "runs", TEST_TASK_ID, TEST_ARCHIVE_SHA);
   await fs.mkdir(handoffDir, { recursive: true });
@@ -163,7 +161,7 @@ export async function createPhase6BundleFixture(
       number: 101,
       url: "https://github.com/owner/repo/pull/101",
       state: "open",
-      draft: false,
+      draft: true,
       head_branch: "codex/feature",
       head_sha: TEST_PUBLISHED_COMMIT,
       base_branch: "main",
