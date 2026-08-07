@@ -76,6 +76,20 @@ node dist/cli/index.js submit-web-verdict \
 node dist/cli/index.js web-review-status \
   --run-id TASK-2026-003:<task-bundle-sha256> \
   --state-dir ~/.local/state/web-codex-orchestrator --json
+
+# Phase 8: execute an already-sealed Phase 7 REVISE request.
+node dist/cli/index.js revise \
+  --run-id TASK-2026-003:<task-bundle-sha256> \
+  --round 1 \
+  --state-dir ~/.local/state/web-codex-orchestrator \
+  --config ~/.config/web-codex-orchestrator/config.json \
+  --json
+
+node dist/cli/index.js revision-status \
+  --run-id TASK-2026-003:<task-bundle-sha256> \
+  --round 1 \
+  --state-dir ~/.local/state/web-codex-orchestrator \
+  --json
 ```
 
 The delivery order is intentional: `execute` must reach `READY_FOR_PUBLISH`,
@@ -83,6 +97,27 @@ then `publish` must reach `PUSHED`, then `create-draft-pr` must reach `OPEN`
 before `package-result` can produce the exact Result Bundle for Web review.
 Phase 7 processes only the registered Web verdict for that exact bundle and
 never mutates GitHub.
+
+If Phase 7 seals a `REVISE` decision, Phase 8 consumes only that canonical
+revision request. `revise` re-attests the accepted Task Bundle, canonical
+worktree, exact previous PR head, configured remote, and the same open,
+unmerged Draft PR. It performs the bounded correction, deterministic
+verification, Terra review, and Sol review; then it appends exactly one normal
+commit and performs a normal fast-forward push to the existing PR branch. It
+never creates another PR, force-pushes, marks the PR Ready, or merges it.
+
+After publication, Phase 8 creates a deterministic Result Bundle v1.2 containing
+both cumulative repository evidence and the exact previous-head-to-new-head
+revision delta. Web review round 2 reads revision bundle 1, round 3 reads
+revision bundle 2, and round 4 reads revision bundle 3. There is no fallback to
+an older Result Bundle. The v1.2 receipt is hash-bound to the exact previous
+Result Bundle receipt/archive, Web verdict, revision request, previous commit,
+and previous PR head before Phase 7 may accept the next verdict.
+
+A completed Phase 8 round ends in `RESULT_READY`; the user still decides whether
+to merge only after a later Phase 7 `APPROVED` decision. `revision-status` is a
+read-only status command. Revision rounds are limited to 1..3, matching Web
+review rounds 2..4.
 
 Add `--json` to `scan` for one machine-readable result object. Without it,
 `scan` prints a short human-readable summary; diagnostics remain on stderr.
@@ -152,4 +187,10 @@ For the Phase 7 release gate:
 
 ```bash
 npm run phase7:release-gate
+```
+
+For the Phase 8 release gate, including the full fake same-PR revision loop:
+
+```bash
+npm run phase8:release-gate
 ```
