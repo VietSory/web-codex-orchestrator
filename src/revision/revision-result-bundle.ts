@@ -110,9 +110,9 @@ export interface RevisionResultBundleOptions {
   originalBaseCommit: string;
   worktreePath: string;
   runner: GitRunner;
-  limits?: Partial<ResultBundleLimits>;
-  secrets?: string[];
-  now?: () => Date;
+  limits?: Partial<ResultBundleLimits> | undefined;
+  secrets?: string[] | undefined;
+  now?: (() => Date) | undefined;
 }
 
 export async function packageRevisionResultBundle(options: RevisionResultBundleOptions): Promise<ResultBundleReceipt> {
@@ -206,7 +206,7 @@ export async function packageRevisionResultBundle(options: RevisionResultBundleO
     execution_receipt_sha256:source.previousResultBundle.receipt.execution_receipt_sha256,
     git_publish_receipt_sha256:source.previousResultBundle.receipt.git_publish_receipt_sha256,
     draft_pr_receipt_sha256:source.previousResultBundle.receipt.draft_pr_receipt_sha256,
-    revision_receipt_sha256:options.revisionEvidenceSha256,
+    revision_evidence_sha256:options.revisionEvidenceSha256,
     revision_request_sha256:source.requestSha256,
     previous_result_bundle_sha256:source.request.previous_result_bundle_sha256,
     previous_result_receipt_sha256:previousReceiptSha,
