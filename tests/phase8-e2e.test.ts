@@ -14,6 +14,7 @@ import { submitWebVerdict } from "../src/web-review/web-review-service.js";
 import { loadAndVerifyResultBundle } from "../src/web-review/result-bundle-review-reader.js";
 import { reviseRun } from "../src/revision/revision-service.js";
 import { FakeAgentClient } from "../src/agent/fake-agent-client.js";
+import type { AgentTurnRequest } from "../src/agent/contracts.js";
 import { FakeVerificationSandbox } from "../src/verifier/fake-sandbox.js";
 import { GitRunner } from "../src/git/git-runner.js";
 import { calculateChangeSet } from "../src/execution/change-set.js";
@@ -244,7 +245,7 @@ async function writeInitialReceipts(params: {
 }
 
 function reviewResponse(baseCommit: string, runner: GitRunner) {
-  return async (request: { workspace_path: string }) => {
+  return async (request: AgentTurnRequest) => {
     const changeSet = await calculateChangeSet({
       worktreePath: request.workspace_path,
       baseCommit,
@@ -371,7 +372,7 @@ test("P8-E2E-001: sealed REVISE becomes a verified same-PR revision bundle and r
         missing_prerequisites: [],
         human_action: null,
       },
-      async (request) => {
+      async (request: AgentTurnRequest) => {
         await fs.writeFile(path.join(request.workspace_path, "src", "index.ts"), "export const status = 'fixed';\n");
         return {
           status: "READY_FOR_VERIFICATION",
