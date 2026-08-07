@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wco.local/schemas/web-operations.schema.json",
+  "title": "WCO Web Implementation Operations v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "operations"],
+  "properties": {
+    "schema_version": { "const": "2.0" },
+    "operations": {
+      "type": "array",
+      "maxItems": 256,
+      "items": { "$ref": "#/$defs/operation" }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "safePath": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "operation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op_id", "kind", "path", "preimage_sha256", "payload_entry", "payload_sha256"],
+          "properties": {
+            "op_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+            "kind": { "enum": ["create_file", "replace_file"] },
+            "path": { "$ref": "#/$defs/safePath" },
+            "preimage_sha256": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+            "payload_entry": { "type": "string", "pattern": "^payload/.+" },
+            "payload_sha256": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op_id", "kind", "path", "preimage_sha256"],
+          "properties": {
+            "op_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+            "kind": { "const": "delete_file" },
+            "path": { "$ref": "#/$defs/safePath" },
+            "preimage_sha256": { "$ref": "#/$defs/sha256" }
+          }
+        }
+      ]
+    }
+  }
+}
