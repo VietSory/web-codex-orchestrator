@@ -41,7 +41,8 @@ const VALID_STATES = new Set<ResultBundleState>([
   "BLOCKED", "RETRYABLE", "FAILED",
 ]);
 
-function assertReceipt(value: unknown): asserts value is ResultBundleReceipt {
+/** Validate an already-parsed Result Bundle receipt without performing I/O. */
+export function assertResultBundleReceipt(value: unknown): asserts value is ResultBundleReceipt {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Receipt must be a JSON object.");
   }
@@ -88,7 +89,7 @@ export async function readResultBundleReceipt(receiptPath: string): Promise<Resu
   try {
     const raw = await fs.promises.readFile(receiptPath, "utf8");
     const parsed: unknown = JSON.parse(raw);
-    assertReceipt(parsed);
+    assertResultBundleReceipt(parsed);
     return parsed;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
@@ -108,7 +109,6 @@ export async function writeResultBundleReceipt(receiptPath: string, receipt: Res
     await fs.promises.writeFile(tmp, JSON.stringify(receipt, null, 2) + "\n", "utf8");
     await fs.promises.rename(tmp, receiptPath);
   } catch (error) {
-    // Clean up temp on failure
     await fs.promises.unlink(tmp).catch(() => undefined);
     throw new ResultBundleError(
       "RESULT_OPERATIONAL_ERROR",

@@ -1,4 +1,3 @@
-
 # Web Codex Orchestrator
 
 Web Codex Orchestrator validates task bundles and provides a secure intake
@@ -42,15 +41,48 @@ node dist/cli/index.js watch \
   --jsonl
 
 node dist/cli/index.js execute \
-  --run-id TASK-2026-003:<archive-sha256> \
+  --run-id TASK-2026-003:<task-bundle-sha256> \
   --state-dir ~/.local/state/web-codex-orchestrator \
   --config ~/.config/web-codex-orchestrator/config.json \
   --json
 
 node dist/cli/index.js execution-status \
-  --run-id TASK-2026-003:<archive-sha256> \
+  --run-id TASK-2026-003:<task-bundle-sha256> \
+  --state-dir ~/.local/state/web-codex-orchestrator --json
+
+node dist/cli/index.js publish \
+  --run-id TASK-2026-003:<task-bundle-sha256> \
+  --state-dir ~/.local/state/web-codex-orchestrator \
+  --config ~/.config/web-codex-orchestrator/config.json \
+  --json
+
+node dist/cli/index.js create-draft-pr \
+  --run-id TASK-2026-003:<task-bundle-sha256> \
+  --state-dir ~/.local/state/web-codex-orchestrator \
+  --config ~/.config/web-codex-orchestrator/config.json \
+  --json
+
+node dist/cli/index.js package-result \
+  --run-id TASK-2026-003:<task-bundle-sha256> \
+  --state-dir ~/.local/state/web-codex-orchestrator \
+  --config ~/.config/web-codex-orchestrator/config.json --json
+
+node dist/cli/index.js submit-web-verdict \
+  --run-id TASK-2026-003:<task-bundle-sha256> \
+  --state-dir ~/.local/state/web-codex-orchestrator \
+  --config ~/.config/web-codex-orchestrator/config.json \
+  --verdict ./downloads/web-review-verdict.json --json
+
+node dist/cli/index.js web-review-status \
+  --run-id TASK-2026-003:<task-bundle-sha256> \
   --state-dir ~/.local/state/web-codex-orchestrator --json
 ```
+
+The delivery order is intentional: `execute` must reach `READY_FOR_PUBLISH`,
+then `publish` must reach `PUSHED`, then `create-draft-pr` must reach `OPEN`
+before `package-result` can produce the exact Result Bundle for Web review.
+Phase 7 processes only the registered Web verdict for that exact bundle and
+never mutates GitHub.
 
 Add `--json` to `scan` for one machine-readable result object. Without it,
 `scan` prints a short human-readable summary; diagnostics remain on stderr.
@@ -107,11 +139,17 @@ Production configuration is trusted local input:
     "codex_home": "/home/user/.codex"
   }
 }
+```
 
 The global `codex` executable is not used, and no executable override
-environment variable is required. For a local release gate:
+environment variable is required. For a local Phase 4 release gate:
 
 ```bash
 WCO_CODEX_HOME="$HOME/.codex" npm run phase4:release-gate
 ```
+
+For the Phase 7 release gate:
+
+```bash
+npm run phase7:release-gate
 ```
