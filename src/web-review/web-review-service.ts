@@ -8,7 +8,13 @@ import {
   reviewRoundDirectoryExistsAndIsSafe,
 } from "./web-review-paths.js";
 import { acquireReviewLock } from "./web-review-lock.js";
-import { readWebReviewReceipt, writeWebReviewReceipt, writeCanonicalArtifact } from "./web-review-store.js";
+import {
+  MAX_RECEIPT_DIAGNOSTIC_CHARS,
+  MAX_RECEIPT_ERRORS,
+  readWebReviewReceipt,
+  writeWebReviewReceipt,
+  writeCanonicalArtifact,
+} from "./web-review-store.js";
 import { readAndCanonicalizeVerdict } from "./verdict-source-reader.js";
 import { loadAndVerifyResultBundle } from "./result-bundle-review-reader.js";
 import { validateReviewHistory } from "./review-history.js";
@@ -38,6 +44,20 @@ export interface GetWebReviewStatusOptions {
 
 function currentIso(now?: () => Date): string {
   return (now ? now() : new Date()).toISOString();
+}
+
+function boundedDiagnostic(value: string): string {
+  return value.length <= MAX_RECEIPT_DIAGNOSTIC_CHARS
+    ? value
+    : `${value.slice(0, MAX_RECEIPT_DIAGNOSTIC_CHARS - 1)}…`;
+}
+
+function appendBoundedReceiptError(receipt: WebReviewReceipt, code: string, message: string): void {
+  const next = {
+    code: boundedDiagnostic(code).slice(0, 256),
+    message: boundedDiagnostic(message),
+  };
+  receipt.errors = [...receipt.errors.slice(-(MAX_RECEIPT_ERRORS - 1)), next];
 }
 
 /** Ingest, validate, and process a Web review verdict for Phase 7. */
@@ -244,7 +264,7 @@ export async function submitWebVerdict(
     if (receipt) {
       const isPolicyError = code.startsWith("WEB_REVIEW_") && code !== "WEB_REVIEW_OPERATIONAL_ERROR" && code !== "WEB_REVIEW_NETWORK_ERROR" && code !== "WEB_REVIEW_AUTH_ERROR";
       receipt.state = isPolicyError ? "BLOCKED" : "FAILED";
-      receipt.errors.push({ code, message });
+      appendBoundedReceiptError(receipt, code, message);
       receipt.updated_at = currentIso(now);
       await writeWebReviewReceipt(paths.receiptPath, receipt).catch(() => undefined);
     }
