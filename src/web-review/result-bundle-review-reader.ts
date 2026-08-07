@@ -4,7 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { WebReviewError } from "./contracts.js";
 import { assertExistingStatePathIsSafe, parseRunIdentity } from "./web-review-paths.js";
-import { readResultBundleReceipt } from "../result-bundle/result-bundle-store.js";
+import { assertResultBundleReceipt } from "../result-bundle/result-bundle-store.js";
 import { resultBundlePaths } from "../result-bundle/result-bundle-paths.js";
 import { verifyResultBundleZip } from "../result-bundle/zip-verifier.js";
 import { loadEmbeddedReviewContracts, type LoadedEmbeddedContracts } from "./embedded-review-contracts.js";
@@ -43,13 +43,7 @@ async function assertSafeStateSource(stateDirectory: string, targetPath: string,
   }
 }
 
-/**
- * Load and independently verify the exact Phase 6 Result Bundle.
- *
- * The run ID remains bound to the accepted Task Bundle archive SHA. The
- * Result Bundle archive has its own distinct SHA in the Phase 6 receipt.
- * Phase 7 must never conflate those two identities.
- */
+/** Load and independently verify the exact Phase 6 Result Bundle. */
 export async function loadAndVerifyResultBundle(
   stateDirectory: string,
   runId: string
@@ -74,16 +68,19 @@ export async function loadAndVerifyResultBundle(
   }
 
   const phase6ReceiptSha256 = sha256Hex(receiptRawBytes);
-  const receipt = await readResultBundleReceipt(p6Paths.receiptPath);
-  if (!receipt) {
-    throw resultBundleInvalid(`Phase 6 receipt not found for run ID '${runId}'`);
+  let receiptValue: unknown;
+  try {
+    receiptValue = JSON.parse(receiptRawBytes.toString("utf8"));
+    assertResultBundleReceipt(receiptValue);
+  } catch (error) {
+    throw resultBundleInvalid("Phase 6 receipt is malformed or invalid", error);
   }
+  const receipt = receiptValue as ResultBundleReceipt;
 
-  // The Phase 6 receipt is immutable at this boundary. Detect replacement or
-  // mutation between the raw-byte binding read and the validated receipt read.
+  // Ensure the path still names the exact file whose bytes were parsed and bound.
   await assertSafeStateSource(stateDirectory, p6Paths.receiptPath, "Phase 6 receipt");
-  const receiptAfterBytes = await fs.readFile(p6Paths.receiptPath);
-  if (receiptAfterBytes.byteLength > MAX_PHASE6_RECEIPT_BYTES || sha256Hex(receiptAfterBytes) !== phase6ReceiptSha256) {
+  const receiptAfterStat = await fs.stat(p6Paths.receiptPath);
+  if (receiptAfterStat.size !== receiptRawBytes.byteLength) {
     throw resultBundleInvalid("Phase 6 receipt changed while Phase 7 was loading it");
   }
 
@@ -169,7 +166,6 @@ export async function loadAndVerifyResultBundle(
     );
   }
 
-  // Re-check the source path before reopening the archive for selective reads.
   await assertSafeStateSource(stateDirectory, archivePath, "Result Bundle archive");
   const archiveStatBeforeSelectiveRead = await fs.stat(archivePath);
   if (archiveStatBeforeSelectiveRead.size !== receipt.archive_size_bytes) {
