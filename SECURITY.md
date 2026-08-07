@@ -24,3 +24,29 @@ The accepted bundle is read by the orchestrator and
 bounded content is placed in prompts; it is not an additional writable SDK
 root. Deterministic verifier failures are redacted and bounded before being
 stored in receipts, artifacts, or Terra correction prompts.
+
+## Phase 7 Web review boundary
+
+Phase 7 treats both the Web verdict and the Result Bundle path as security
+boundaries. The Result Bundle is independently verified before review data is
+trusted, and the Web verdict is size-bounded, canonicalized, schema-validated,
+and bound to the exact Task Bundle run, Result Bundle, manifest, spec set,
+published commit, Draft Pull Request, and reviewed entry set.
+
+Phase 7 review state is stored only below the configured state directory.
+Lifecycle directories are created one component at a time and existing
+symbolic-link ancestors or non-directories are rejected. Canonical review
+artifacts are read as regular non-symlink files and immutable artifacts are
+create-only with exact compare-and-adopt semantics. A per-round lock is owned
+by PID plus a random nonce. Existing locks are never automatically stolen or
+removed, including apparently stale locks, because path-based stale-lock
+reclamation has a replacement race; operator recovery is deliberately
+fail-closed.
+
+Every terminal decision is authorized by fresh, read-only GitHub state. The
+Pull Request must still be open, unmerged, and Draft, with exact head/base
+repository identities, branches, head SHA, and base SHA. Exact retries re-run
+this attestation rather than reusing stale approval authority. Production
+GitHub access is pinned to `https://api.github.com`, has a 10-second request
+timeout, and reads response bodies incrementally with a hard 1 MiB cap.
+Phase 7 never commits, pushes, marks a PR Ready, modifies a PR, or merges.
