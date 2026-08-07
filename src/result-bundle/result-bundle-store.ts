@@ -41,7 +41,7 @@ export function assertResultBundleReceipt(value: unknown): asserts value is Resu
   if (obj.result_bundle_version === "1.2") {
     if (obj.input_kind !== "revision") throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle v1.2 input_kind must be revision.");
     if (!Number.isInteger(obj.revision_round) || Number(obj.revision_round) < 1 || Number(obj.revision_round) > 3) throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Revision Result Bundle revision_round must be 1..3.");
-    for (const field of ["revision_receipt_sha256","revision_request_sha256","previous_result_bundle_sha256","previous_result_receipt_sha256","previous_verdict_sha256"] as const) requireSha(obj, field, false);
+    for (const field of ["revision_evidence_sha256","revision_request_sha256","previous_result_bundle_sha256","previous_result_receipt_sha256","previous_verdict_sha256"] as const) requireSha(obj, field, false);
     for (const field of ["previous_published_commit_sha","previous_pr_head_sha"] as const) requireCommit(obj, field);
   } else if (obj.input_kind !== undefined && obj.input_kind !== "initial") {
     throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle v1.1 input_kind, when present, must be initial.");
