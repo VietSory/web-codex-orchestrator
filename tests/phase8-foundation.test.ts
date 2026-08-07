@@ -67,11 +67,15 @@ function reviseVerdict(receipt: Awaited<ReturnType<typeof createPhase6BundleFixt
       finding_id: "WEB-FIND-001",
       classification: "IMPLEMENTATION_DEFECT",
       finding_origin: "INITIAL_DISCOVERY",
+      previous_finding_id: null,
       locked_reference_ids: ["AC-1"],
       artifact_paths: ["repository/source/index.ts"],
       line_or_json_pointer: "1",
+      expected_behavior: "AC-1 must be satisfied.",
+      observed_behavior: "The current implementation does not satisfy AC-1.",
       evidence: "Current implementation does not satisfy AC-1.",
       minimal_required_fix: "Correct the implementation without changing the frozen contract.",
+      revision_changed_paths: [],
     }],
   });
 }
