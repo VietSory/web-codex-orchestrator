@@ -275,10 +275,10 @@ function reviewResponse(baseCommit: string, runner: GitRunner) {
 test("P8-E2E-001: sealed REVISE becomes a verified same-PR revision bundle and round-2 APPROVE", async () => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "wco-p8-e2e-")));
   try {
-    const repo = path.join(root, "repo");
+    const state = path.join(root, "state");
+    const repo = path.join(state, "worktrees", TASK_ID, ARCHIVE_SHA, "repository");
     const bare = path.join(root, "remote.git");
     const localRemoteUrl = pathToFileURL(bare).href;
-    const state = path.join(root, "state");
     const accepted = path.join(state, "accepted", TASK_ID, ARCHIVE_SHA);
     await fs.mkdir(repo, { recursive: true });
     await fs.mkdir(state, { recursive: true });
