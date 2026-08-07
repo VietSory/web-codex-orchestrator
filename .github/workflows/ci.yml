@@ -44,6 +44,10 @@ jobs:
       - name: Unit and fake integration tests
         run: npm test
 
+      - name: Phase 8 fake end-to-end
+        run: npm run test:phase8-e2e
+        timeout-minutes: 2
+
       - name: Build
         run: npm run build
 
