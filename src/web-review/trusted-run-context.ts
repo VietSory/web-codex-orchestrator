@@ -6,7 +6,7 @@ import { sanitizeRemoteUrl } from "../config/remote-url.js";
 import { readRunReceipt } from "../run/run-store.js";
 import type { RunReceipt } from "../run/contracts.js";
 import { WebReviewError } from "./contracts.js";
-import { parseRunIdentity } from "./web-review-paths.js";
+import { assertExistingStatePathIsSafe, parseRunIdentity } from "./web-review-paths.js";
 
 export interface TrustedRunContext {
   taskId: string;
@@ -24,6 +24,7 @@ export interface TrustedRunContext {
 
 const MAX_SIBLING_RUN_DIRECTORIES = 4096;
 const MAX_SIBLING_RECEIPT_BYTES = 1024 * 1024;
+const MAX_CANONICAL_RUN_RECEIPT_BYTES = 1024 * 1024;
 
 function rejectDuplicateRunIdentity(
   stateDirectory: string,
@@ -81,6 +82,24 @@ export async function resolveTrustedRunContext(
   configPath: string
 ): Promise<TrustedRunContext> {
   const { taskId, archiveSha256 } = parseRunIdentity(runId);
+  const canonicalRunPath = path.join(path.resolve(stateDirectory), "runs", taskId, archiveSha256, "run.json");
+
+  try {
+    await assertExistingStatePathIsSafe(stateDirectory, canonicalRunPath, "file");
+    const runStat = fsSync.statSync(canonicalRunPath);
+    if (runStat.size > MAX_CANONICAL_RUN_RECEIPT_BYTES) {
+      throw new WebReviewError(
+        "WEB_REVIEW_RESULT_BUNDLE_INVALID",
+        `Canonical run receipt exceeds ${MAX_CANONICAL_RUN_RECEIPT_BYTES} bytes`
+      );
+    }
+  } catch (error) {
+    if (error instanceof WebReviewError && error.code === "WEB_REVIEW_RESULT_BUNDLE_INVALID") throw error;
+    throw new WebReviewError(
+      "WEB_REVIEW_RESULT_BUNDLE_INVALID",
+      `Canonical run receipt path is not safe: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
 
   let runReceipt: RunReceipt | undefined;
   try {
