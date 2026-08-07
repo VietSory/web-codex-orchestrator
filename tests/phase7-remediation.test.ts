@@ -15,6 +15,7 @@ function mockGithubClient(overrides?: Partial<any>): GitHubAttestationClient {
       return {
         number: prNumber,
         state: "open",
+        draft: true,
         head: { ref: "codex/feature", sha: TEST_PUBLISHED_COMMIT, repo: { full_name: `${owner}/${repo}` } },
         base: { ref: "main", sha: TEST_BASE_COMMIT, repo: { full_name: `${owner}/${repo}` } },
         merged: false,
@@ -195,7 +196,6 @@ test("P7-REM-004: GitHub head/base drift rejects with WEB_REVIEW_REPOSITORY_DRIF
     const verdict = createValidVerdict(fixture.receipt, { observed_head_sha: TEST_PUBLISHED_COMMIT });
     await fs.writeFile(verdictPath, JSON.stringify(verdict));
 
-    // Client returns head branch drift
     const driftingClient = mockGithubClient({ head: { ref: "wrong-branch", sha: TEST_PUBLISHED_COMMIT } });
 
     await assert.rejects(
@@ -220,7 +220,6 @@ test("P7-REM-005: INITIAL_DISCOVERY origin in round 2 is rejected as anti-drip v
     const fixture = await createPhase6BundleFixture(tmpDir);
     const configPath = await createTestConfig(fixture.stateDirectory);
 
-    // Create Round 1 verdict & receipt
     const r1VerdictPath = path.join(fixture.stateDirectory, "r1-verdict.json");
     const r1Verdict = createValidVerdict(fixture.receipt, {
       verdict: "REVISE",
@@ -253,7 +252,6 @@ test("P7-REM-005: INITIAL_DISCOVERY origin in round 2 is rejected as anti-drip v
       githubClient: mockGithubClient(),
     });
 
-    // Create Round 2 verdict with forbidden INITIAL_DISCOVERY origin
     const r2VerdictPath = path.join(fixture.stateDirectory, "r2-verdict.json");
     const r2Verdict = createValidVerdict(fixture.receipt, {
       review_round: 2,
@@ -269,7 +267,7 @@ test("P7-REM-005: INITIAL_DISCOVERY origin in round 2 is rejected as anti-drip v
         {
           finding_id: "WEB-FIND-002",
           classification: "IMPLEMENTATION_DEFECT",
-          finding_origin: "INITIAL_DISCOVERY", // FORBIDDEN IN ROUND 2
+          finding_origin: "INITIAL_DISCOVERY",
           previous_finding_id: null,
           locked_reference_ids: ["AC-1"],
           artifact_paths: ["repository/source/index.ts"],
@@ -306,7 +304,6 @@ test("P7-REM-006: missing or tampered previous artifacts reject revision round w
     const fixture = await createPhase6BundleFixture(tmpDir);
     const configPath = await createTestConfig(fixture.stateDirectory);
 
-    // Create Round 1 verdict & receipt
     const r1VerdictPath = path.join(fixture.stateDirectory, "r1-verdict.json");
     const r1Verdict = createValidVerdict(fixture.receipt, {
       verdict: "REVISE",
@@ -339,11 +336,9 @@ test("P7-REM-006: missing or tampered previous artifacts reject revision round w
       githubClient: mockGithubClient(),
     });
 
-    // Tamper with round 1 verdict on disk
     const diskR1VerdictPath = path.join(fixture.stateDirectory, r1Receipt.artifact_paths.verdict!);
     await fs.writeFile(diskR1VerdictPath, JSON.stringify({ tampered: true }));
 
-    // Create Round 2 verdict
     const r2VerdictPath = path.join(fixture.stateDirectory, "r2-verdict.json");
     const r2Verdict = createValidVerdict(fixture.receipt, {
       review_round: 2,
@@ -382,7 +377,6 @@ test("P7-REM-007: submitWebVerdict happy paths for APPROVE and ESCALATE", async 
     const fixture = await createPhase6BundleFixture(tmpDir);
     const configPath = await createTestConfig(fixture.stateDirectory);
 
-    // APPROVE
     const approveVerdictPath = path.join(fixture.stateDirectory, "approve-verdict.json");
     const approveVerdict = createValidVerdict(fixture.receipt, { observed_head_sha: TEST_PUBLISHED_COMMIT });
     await fs.writeFile(approveVerdictPath, JSON.stringify(approveVerdict));
