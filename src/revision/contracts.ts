@@ -133,6 +133,7 @@ export interface RevisionReceipt {
   spec_set_sha256: string;
   revision_request_sha256: string;
   previous_result_bundle_sha256: string;
+  previous_result_receipt_sha256: string;
   previous_verdict_sha256: string;
   previous_published_commit_sha: string;
   previous_pr_head_sha: string;
@@ -140,6 +141,7 @@ export interface RevisionReceipt {
   branch_name: string;
   base_branch: string;
   worktree_path: string;
+  initial_refs_sha256: string;
   implementer: {
     model: string;
     reasoning_effort: ReasoningEffort;
@@ -156,6 +158,7 @@ export interface RevisionReceipt {
   sol_review: RevisionReviewEvidence;
   revision_change_set_sha256: string | null;
   revision_paths: string[];
+  approved_snapshot_sha256: string | null;
   new_published_commit_sha: string | null;
   remote_branch_sha: string | null;
   result_bundle_sha256: string | null;
