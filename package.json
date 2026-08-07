@@ -14,7 +14,7 @@
     "validate": "tsx src/cli/index.ts validate",
     "typecheck": "tsc -p tsconfig.json",
     "build": "tsc -p tsconfig.build.json && node -e \"require('fs').cpSync('src/result-bundle/resources', 'dist/result-bundle/resources', {recursive:true, force:true})\"",
-    "test": "tsx --test --test-concurrency=1 --test-reporter=spec tests/*.test.ts",
+    "test": "node scripts/run-unit-tests.mjs",
     "test:phase8-e2e": "tsx --test --test-reporter=spec tests/integration/phase8-e2e.integration.ts",
     "test:cli": "tsx --test tests/integration/cli-phase6.integration.test.ts tests/integration/cli-phase7.integration.test.ts tests/integration/cli-phase8.integration.test.ts",
     "test:sandbox-integration": "tsx --test tests/integration/codex-sandbox.integration.ts",
