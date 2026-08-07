@@ -76,11 +76,13 @@ requires fresh validation before a human merge action.
 Phase 8 is not a new authority source. It may consume only the canonical
 `REVISION_REQUESTED` terminal produced by Phase 7. Before agent work begins it
 reconstructs that sealed request and its exact preceding Result Bundle/verdict,
-resolves the canonical Phase 3 trusted run context, and re-attests the accepted
-Task Bundle against the `accepted_bundle_tree_sha256` already sealed in the
-preceding independently verified Result Bundle. Recomputing `checksums.json`
-after modifying accepted bundle files does not create new authority: the tree
-hash must still equal the previously sealed value.
+resolves the canonical Phase 3 trusted run context, and requires the recorded
+worktree and accepted Task Bundle to remain canonical real directories below
+the configured WCO state root. It then re-attests the accepted Task Bundle
+against the `accepted_bundle_tree_sha256` already sealed in the preceding
+independently verified Result Bundle. Recomputing `checksums.json` after
+modifying accepted bundle files does not create new authority: the tree hash
+must still equal the previously sealed value.
 
 The mutable Phase 8 receipt is a progress checkpoint, not an authority source.
 On resume, all externally derivable identity fields are rebound to canonical
@@ -91,14 +93,18 @@ approved path set and file snapshot, and the final change-set digest must be the
 same digest independently accepted by deterministic verification, Terra, and
 Sol before publication authority is persisted.
 
-Git network operations are fail-closed against remote replacement. The current
-`git remote get-url` value is sanitized and must equal the remote URL sealed at
-the trusted revision boundary before any `ls-remote` or `push`. Immediately
-before an actual push, Phase 8 also rechecks the accepted Task Bundle and
-freshly attests that the same GitHub Pull Request remains open, unmerged and
-Draft with the exact previous head/base identities. Phase 8 then permits only a
-normal push of one commit whose sole parent is the previous PR head. It has no
-force-push, amend, rebase, branch-deletion, create-PR, mark-ready, or merge path.
+Git network operations are fail-closed against remote replacement and mutable
+remote-configuration races. The current `git remote get-url` value is sanitized
+and must equal the remote URL sealed at the trusted revision boundary, but that
+remote name is used only as a configuration attestation. Every network
+`ls-remote` and `push` targets the exact sealed, sanitized URL directly, so a
+later mutation of `.git/config` cannot redirect credentials or publication to a
+different transport destination. Immediately before an actual push, Phase 8
+also rechecks the accepted Task Bundle and freshly attests that the same GitHub
+Pull Request remains open, unmerged and Draft with the exact previous head/base
+identities. Phase 8 then permits only a normal push of one commit whose sole
+parent is the previous PR head. It has no force-push, amend, rebase,
+branch-deletion, create-PR, mark-ready, or merge path.
 
 Revision Result Bundle v1.2 is append-only review evidence. Review round 1 may
 consume only the initial Phase 6 v1.1 bundle; review rounds 2..4 may consume only
