@@ -8,6 +8,8 @@ import { acquireReviewLock } from "../src/web-review/web-review-lock.js";
 import { prepareReviewRoundDirectory, resolveReviewRoundPaths } from "../src/web-review/web-review-paths.js";
 import { writeCanonicalArtifact } from "../src/web-review/web-review-store.js";
 import { verifyGitHubAttestation } from "../src/web-review/github-review-attestation.js";
+import { loadAndVerifyResultBundle } from "../src/web-review/result-bundle-review-reader.js";
+import { resolveTrustedRunContext } from "../src/web-review/trusted-run-context.js";
 import { submitWebVerdict } from "../src/web-review/web-review-service.js";
 import { WebReviewError } from "../src/web-review/contracts.js";
 import type { GitHubAttestationClient } from "../src/result-bundle/github-attestation.js";
@@ -244,5 +246,42 @@ test("P7-MAINT-007: production GitHub body is stream-bounded without Content-Len
     if (previousToken === undefined) delete process.env.WCO_GITHUB_TOKEN;
     else process.env.WCO_GITHUB_TOKEN = previousToken;
     await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("P7-MAINT-008: Phase 6 handoff ancestor symlink cannot redirect Result Bundle authority", { skip: process.platform === "win32" }, async () => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "p7-maint-p6-source-")));
+  try {
+    const fixture = await createPhase6BundleFixture(root);
+    const handoff = path.join(fixture.stateDirectory, "handoff");
+    const moved = path.join(root, "moved-handoff");
+    await fs.rename(handoff, moved);
+    await fs.symlink(moved, handoff);
+
+    await assert.rejects(
+      () => loadAndVerifyResultBundle(fixture.stateDirectory, fixture.receipt.run_id),
+      (error: unknown) => error instanceof WebReviewError && error.code === "WEB_REVIEW_RESULT_BUNDLE_INVALID" && error.message.includes("safe Phase 7 state path chain")
+    );
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("P7-MAINT-009: canonical Phase 3 run ancestor symlink is rejected as authority", { skip: process.platform === "win32" }, async () => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "p7-maint-run-source-")));
+  try {
+    const fixture = await createPhase6BundleFixture(root);
+    const configPath = await createConfig(fixture.stateDirectory);
+    const runs = path.join(fixture.stateDirectory, "runs");
+    const moved = path.join(root, "moved-runs");
+    await fs.rename(runs, moved);
+    await fs.symlink(moved, runs);
+
+    await assert.rejects(
+      () => resolveTrustedRunContext(fixture.receipt.run_id, fixture.stateDirectory, configPath),
+      (error: unknown) => error instanceof WebReviewError && error.code === "WEB_REVIEW_RESULT_BUNDLE_INVALID" && error.message.includes("not safe")
+    );
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
   }
 });
