@@ -29,7 +29,7 @@ GitHub access in Phase 7 is strictly **read-only** and used solely for fresh att
 Phase 7 is fail-closed on all review authority and repository bindings:
 
 1. `run_id` remains bound to the accepted **Task Bundle** archive SHA. The Phase 6 Result Bundle has an independent `archive_sha256`; the two identities are never conflated.
-2. The canonical Phase 3 `runs/<task-id>/<task-bundle-sha>/run.json` is the only trusted run receipt. Alternate handoff paths are not accepted, duplicate physical receipts claiming the same `run_id` are rejected as ambiguous state, and the complete authority path must remain a real non-symlink path inside the configured state root.
+2. The canonical Phase 3 `runs/<task-id>/<task-bundle-sha>/run.json` is the only trusted run receipt. Alternate handoff paths are not accepted, duplicate physical receipts claiming the same `run_id` are rejected as ambiguous state, the complete authority path must remain a real non-symlink path inside the configured state root, and the canonical receipt is allocation-bounded to 1 MiB and parsed from the exact same stable file-handle bytes that were attested.
 3. The canonical run receipt must bind `repository_id`, canonical `repository_path`, remote name, and remote URL to the trusted repository registry.
 4. The Phase 6 `handoff/runs/...` receipt and Result Bundle archive are authority inputs only when their complete ancestor chains are real, non-symlink paths below the state root. The exact Phase 6 receipt bytes are size-bounded, read once through a stable file handle, hash-bound, parsed, and validated from that same buffer.
 5. The full Result Bundle is independently streamed and verified. Phase 7 selectively reads only bounded review/spec entries; it never buffers all ZIP entries into memory.
