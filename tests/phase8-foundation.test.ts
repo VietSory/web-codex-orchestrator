@@ -65,7 +65,6 @@ function reviseVerdict(receipt: Awaited<ReturnType<typeof createPhase6BundleFixt
     criterion_results: [{ criterion_id: "AC-1", required: true, status: "FAIL", evidence_refs: ["repository/source/index.ts"], notes: "Needs correction" }],
     blocking_findings: [{
       finding_id: "WEB-FIND-001",
-      severity: "HIGH",
       classification: "IMPLEMENTATION_DEFECT",
       finding_origin: "INITIAL_DISCOVERY",
       locked_reference_ids: ["AC-1"],
