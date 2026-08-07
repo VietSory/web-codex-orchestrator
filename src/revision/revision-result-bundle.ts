@@ -23,6 +23,7 @@ const MAX_CHANGED_PATHS = 2000;
 
 function sha256(data: Buffer | string): string { return crypto.createHash("sha256").update(typeof data === "string" ? Buffer.from(data, "utf8") : data).digest("hex"); }
 function iso(now?: () => Date): string { return (now ? now() : new Date()).toISOString(); }
+function lexicalCompare(left: string, right: string): number { return left < right ? -1 : left > right ? 1 : 0; }
 function normalizePath(value: string): string {
   const normalized = value.replace(/\\/g, "/");
   if (!normalized || normalized.includes("\0") || normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized) || normalized.split("/").some((p) => !p || p === "." || p === "..")) throw new ResultBundleError("RESULT_SOURCE_PATH_UNSAFE", `Unsafe repository path '${value}'.`);
@@ -39,7 +40,7 @@ function scanSecret(content: Buffer, secrets: string[], label: string): void {
 }
 
 async function computeAcceptedBundleTree(bundlePath: string): Promise<string> {
-  const files = (await fs.readdir(bundlePath)).sort();
+  const files = (await fs.readdir(bundlePath)).sort(lexicalCompare);
   const hash = crypto.createHash("sha256");
   for (const file of files) {
     const full = path.join(bundlePath, file);
@@ -64,7 +65,7 @@ interface GitEvidence {
 async function collectGitEvidence(params: { runner: GitRunner; worktree: string; from: string; to: string; limits: ResultBundleLimits }): Promise<GitEvidence> {
   const { runner, worktree, from, to, limits } = params;
   const namesRaw = gitOut(await runner.run(["diff", "--no-renames", "--name-only", "-z", from, to, "--"], worktree));
-  const paths = namesRaw.split("\0").filter(Boolean).map(normalizePath).sort((a, b) => a.localeCompare(b));
+  const paths = namesRaw.split("\0").filter(Boolean).map(normalizePath).sort(lexicalCompare);
   if (paths.length > MAX_CHANGED_PATHS || new Set(paths).size !== paths.length) throw new ResultBundleError("RESULT_ARCHIVE_ENTRY_LIMIT", "Git evidence path set is oversized or ambiguous.");
   const diffText = gitOut(await runner.run(["diff", "--no-renames", "--no-ext-diff", "--no-color", "--full-index", from, to, "--"], worktree));
   const diffPatch = Buffer.from(diffText, "utf8");
@@ -133,7 +134,7 @@ export async function packageRevisionResultBundle(options: RevisionResultBundleO
   const newHead = revisionReceipt.new_published_commit_sha;
   const cumulative = await collectGitEvidence({ runner, worktree: options.worktreePath, from: options.originalBaseCommit, to: newHead, limits });
   const delta = await collectGitEvidence({ runner, worktree: options.worktreePath, from: source.request.previous_pr_head_sha, to: newHead, limits });
-  if (revisionReceipt.revision_paths.length && JSON.stringify([...revisionReceipt.revision_paths].sort()) !== JSON.stringify(delta.paths)) throw new ResultBundleError("RESULT_DIFF_MISMATCH", "Revision receipt path set does not match published previous-head→new-head delta.");
+  if (revisionReceipt.revision_paths.length && JSON.stringify([...revisionReceipt.revision_paths].sort(lexicalCompare)) !== JSON.stringify(delta.paths)) throw new ResultBundleError("RESULT_DIFF_MISMATCH", "Revision receipt path set does not match published previous-head→new-head delta.");
 
   const allEntries: ZipEntry[] = [];
   const addBuffer = (entryPath: string, content: Buffer): void => { scanSecret(content, secrets, entryPath); allEntries.push({ path: entryPath, content }); };
@@ -153,7 +154,7 @@ export async function packageRevisionResultBundle(options: RevisionResultBundleO
   }
   const taskReadme = Buffer.from(["# Task Specification Overview","",`Task ID: \`${taskId}\``,`Run ID: \`${runId}\``,`Archive SHA-256: \`${taskArchiveSha}\``,"","This directory contains the task specification and spec-lock.","Files copied from the accepted task bundle are preserved verbatim.","The spec_set_sha256 recorded in task/spec-lock.json covers the authoritative files listed in spec-lock, excluding spec-lock.json itself.",""].join("\n"), "utf8");
   taskFiles.push({ name: "README.md", buffer: taskReadme }); addBuffer("task/README.md", taskReadme);
-  const authoritativeFiles = [...taskFiles].sort((a,b)=>a.name.localeCompare(b.name)).map((f)=>({ path:`task/${f.name}`, sha256:sha256(f.buffer), size_bytes:f.buffer.byteLength }));
+  const authoritativeFiles = [...taskFiles].sort((a,b)=>lexicalCompare(a.name,b.name)).map((f)=>({ path:`task/${f.name}`, sha256:sha256(f.buffer), size_bytes:f.buffer.byteLength }));
   const specSetSha256 = sha256(canonicalJsonBuffer(authoritativeFiles));
   if (specSetSha256 !== source.request.spec_set_sha256 || specSetSha256 !== source.previousResultBundle.receipt.spec_set_sha256) throw new ResultBundleError("RESULT_BUNDLE_MUTATED", "Frozen spec set changed while creating the revision Result Bundle.");
   addJson("task/spec-lock.json", { lock_version:"1.0", task_id:taskId, task_archive_sha256:taskArchiveSha, accepted_bundle_tree_sha256:acceptedBundleTreeSha256, authoritative_files:authoritativeFiles, spec_set_sha256:specSetSha256 });
@@ -184,16 +185,16 @@ export async function packageRevisionResultBundle(options: RevisionResultBundleO
   for (const [relative, bytes] of delta.sourceFiles) addBuffer(`revision/source/${relative}`, bytes);
   addJson("github/pull-request.json", prAttestation);
 
-  allEntries.sort((a,b)=>a.path.localeCompare(b.path));
+  allEntries.sort((a,b)=>lexicalCompare(a.path,b.path));
   const checksums = canonicalJsonBuffer({ algorithm:"sha256", files:allEntries.map((entry)=>({ path:entry.path, sha256:sha256(entry.content), size_bytes:entry.content.byteLength })) });
   const manifestEntries: ManifestEntry[] = allEntries.map((entry)=>({ path:entry.path, sha256:sha256(entry.content), size_bytes:entry.content.byteLength }));
-  manifestEntries.push({ path:"checksums.json", sha256:sha256(checksums), size_bytes:checksums.byteLength }); manifestEntries.sort((a,b)=>a.path.localeCompare(b.path));
+  manifestEntries.push({ path:"checksums.json", sha256:sha256(checksums), size_bytes:checksums.byteLength }); manifestEntries.sort((a,b)=>lexicalCompare(a.path,b.path));
   const reviewedEntrySetSha256 = sha256(canonicalJsonBuffer(manifestEntries));
   const archiveFilename = `wco-result-${taskId}-${newHead.slice(0,12)}.zip`;
   const createdAt = iso(options.now);
   const manifest: ResultBundleManifest = { schema_version:"1.1", kind:"wco-result-bundle", run_id:runId, archive_filename:archiveFilename, published_commit_sha:newHead, base_commit:options.originalBaseCommit, change_set_sha256:cumulative.digest, pull_request_number:source.request.pull_request_number, task_id:taskId, created_at:createdAt, spec_set_sha256:specSetSha256, review_contract_sha256:reviewContractSha, review_policy_sha256:reviewPolicySha, verdict_schema_sha256:verdictSchemaSha, revision_request_schema_sha256:revisionSchemaSha, reviewed_entry_set_sha256:reviewedEntrySetSha256, entries:manifestEntries };
   const manifestBuffer = canonicalJsonBuffer(manifest); const manifestSha = sha256(manifestBuffer);
-  const finalEntries = [...allEntries,{path:"checksums.json",content:checksums},{path:"manifest.json",content:manifestBuffer}].sort((a,b)=>a.path.localeCompare(b.path));
+  const finalEntries = [...allEntries,{path:"checksums.json",content:checksums},{path:"manifest.json",content:manifestBuffer}].sort((a,b)=>lexicalCompare(a.path,b.path));
   if (finalEntries.length > limits.maximum_entries) throw new ResultBundleError("RESULT_ARCHIVE_ENTRY_LIMIT", `Revision Result Bundle has ${finalEntries.length} entries; limit is ${limits.maximum_entries}.`);
   for (const entry of finalEntries) if (entry.content.byteLength > limits.maximum_entry_bytes) throw new ResultBundleError("RESULT_SOURCE_FILE_TOO_LARGE", `Result entry '${entry.path}' exceeds maximum_entry_bytes.`);
 
