@@ -12,10 +12,49 @@ export interface VerifiedGitHubAttestation {
   baseBranch: string;
   headSha: string;
   baseSha: string;
+  draft: true;
 }
 
 const PINNED_GITHUB_API_URL = "https://api.github.com";
-const MAX_GITHUB_ATTESTATION_RESPONSE_BYTES = 1024 * 1024;
+export const MAX_GITHUB_ATTESTATION_RESPONSE_BYTES = 1024 * 1024;
+export const GITHUB_ATTESTATION_TIMEOUT_MS = 10_000;
+
+async function readBoundedResponseBody(response: Response): Promise<Buffer> {
+  const contentLengthHeader = response.headers.get("content-length");
+  if (contentLengthHeader !== null) {
+    const contentLength = Number(contentLengthHeader);
+    if (!Number.isFinite(contentLength) || contentLength < 0 || contentLength > MAX_GITHUB_ATTESTATION_RESPONSE_BYTES) {
+      throw new WebReviewError(
+        "WEB_REVIEW_REPOSITORY_DRIFT",
+        `GitHub attestation response declared unsafe size '${contentLengthHeader}'`
+      );
+    }
+  }
+
+  if (!response.body) return Buffer.alloc(0);
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || value.byteLength === 0) continue;
+      total += value.byteLength;
+      if (total > MAX_GITHUB_ATTESTATION_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        throw new WebReviewError(
+          "WEB_REVIEW_REPOSITORY_DRIFT",
+          `GitHub attestation response exceeds ${MAX_GITHUB_ATTESTATION_RESPONSE_BYTES} bytes`
+        );
+      }
+      chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, total);
+}
 
 /**
  * Strict read-only GitHub attestation validator.
@@ -33,6 +72,9 @@ export async function verifyGitHubAttestation(params: {
 
   if (!receipt.pull_request || !receipt.pull_request.url) {
     throw new WebReviewError("WEB_REVIEW_REPOSITORY_DRIFT", "Phase 6 receipt missing pull_request.url");
+  }
+  if (receipt.pull_request.draft !== true) {
+    throw new WebReviewError("WEB_REVIEW_REPOSITORY_DRIFT", "Phase 6 receipt does not attest an open Draft Pull Request");
   }
 
   let parsedUrl: URL;
@@ -76,6 +118,7 @@ export async function verifyGitHubAttestation(params: {
     try {
       prData = await githubClient.getPullRequest(owner, repo, prNumber);
     } catch (e) {
+      if (e instanceof WebReviewError) throw e;
       throw new WebReviewError(
         "WEB_REVIEW_AUTH_ERROR",
         `GitHub attestation request failed: ${e instanceof Error ? e.message : String(e)}`
@@ -98,9 +141,11 @@ export async function verifyGitHubAttestation(params: {
         headers: {
           Authorization: `Bearer ${token}`,
           Accept: "application/vnd.github.v3+json",
+          "X-GitHub-Api-Version": "2022-11-28",
           "User-Agent": "wco-phase7-attestation",
         },
         redirect: "error",
+        signal: AbortSignal.timeout(GITHUB_ATTESTATION_TIMEOUT_MS),
       });
       if (!response.ok) {
         throw new WebReviewError(
@@ -109,24 +154,7 @@ export async function verifyGitHubAttestation(params: {
         );
       }
 
-      const contentLengthHeader = response.headers.get("content-length");
-      if (contentLengthHeader !== null) {
-        const contentLength = Number(contentLengthHeader);
-        if (!Number.isFinite(contentLength) || contentLength < 0 || contentLength > MAX_GITHUB_ATTESTATION_RESPONSE_BYTES) {
-          throw new WebReviewError(
-            "WEB_REVIEW_REPOSITORY_DRIFT",
-            `GitHub attestation response declared unsafe size '${contentLengthHeader}'`
-          );
-        }
-      }
-
-      const responseBytes = Buffer.from(await response.arrayBuffer());
-      if (responseBytes.byteLength > MAX_GITHUB_ATTESTATION_RESPONSE_BYTES) {
-        throw new WebReviewError(
-          "WEB_REVIEW_REPOSITORY_DRIFT",
-          `GitHub attestation response exceeds ${MAX_GITHUB_ATTESTATION_RESPONSE_BYTES} bytes`
-        );
-      }
+      const responseBytes = await readBoundedResponseBody(response);
       try {
         prData = JSON.parse(responseBytes.toString("utf8"));
       } catch {
@@ -152,6 +180,9 @@ export async function verifyGitHubAttestation(params: {
   }
   if (prData.merged !== false) {
     throw new WebReviewError("WEB_REVIEW_REPOSITORY_DRIFT", "GitHub PR merged state is missing, invalid, or already merged");
+  }
+  if (prData.draft !== true) {
+    throw new WebReviewError("WEB_REVIEW_REPOSITORY_DRIFT", "GitHub PR is no longer in Draft state");
   }
 
   const expectedRepoFullName = `${owner}/${repo}`.toLowerCase();
@@ -205,5 +236,6 @@ export async function verifyGitHubAttestation(params: {
     baseBranch,
     headSha,
     baseSha,
+    draft: true,
   };
 }
