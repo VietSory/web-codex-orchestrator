@@ -13,21 +13,28 @@
 | `tests/phase7-remediation-v2.test.ts` | Repository routing, escalation semantics, locks, CLI parsing and deterministic events | 15 |
 | `tests/phase7-final-hardening.test.ts` | Task/result archive identity split, embedded schema authority, terminal artifact integrity, contract hashes and GitHub identity | 5 |
 | `tests/phase7-final-trusted-run.test.ts` | Mandatory canonical remote identity and trusted remote URL binding | 2 |
-| `tests/phase7-maintainer-hardening.test.ts` | Fail-closed stale locks, symlink confinement, Draft PR invariants, fresh retry attestation and streaming response caps | 7 |
+| `tests/phase7-maintainer-hardening.test.ts` | Fail-closed stale locks, state/source symlink confinement, Draft PR invariants, fresh retry attestation and streaming response caps | 9 |
+| `tests/phase7-state-bounds.test.ts` | Persisted state byte caps, receipt diagnostic bounds and bounded repeated failures | 3 |
+| `tests/phase7-github-failure-taxonomy.test.ts` | Stable auth, network/service and repository-drift HTTP classifications | 3 |
 | `tests/integration/cli-phase7.integration.test.ts` | Compiled CLI APPROVED success path and fail-closed authentication path | 2 |
 
-Total Phase 7 named cases: **68**.
+Total Phase 7 named cases: **76**.
 
 ## Adversarial Maintainer Gate
 
-The maintainer hardening suite specifically attempts to invalidate the security claims that are easiest for ordinary happy-path tests to miss:
+The hardening suites specifically attempt to invalidate the security claims that ordinary happy-path tests are likely to miss:
 
-- an existing stale lock cannot be silently stolen or removed;
-- a symlinked `handoff` ancestor cannot redirect Phase 7 writes outside the state root;
+- an existing stale or malformed lock cannot be silently stolen or removed;
+- a symlinked `handoff/reviews` ancestor cannot redirect Phase 7 writes outside the state root;
 - canonical artifact comparison never follows a symlink target;
+- the canonical Phase 3 `runs/.../run.json` authority path cannot be redirected through a symlink ancestor;
+- the Phase 6 `handoff/runs/...` receipt/archive authority path cannot be redirected through a symlink ancestor;
 - both the Phase 6 receipt and fresh GitHub state must still describe a Draft PR;
 - an exact terminal retry performs fresh GitHub attestation instead of returning stale approval authority;
-- a chunked GitHub response without `Content-Length` is aborted as soon as it crosses the 1 MiB production cap.
+- a chunked GitHub response without `Content-Length` is aborted as soon as it crosses the 1 MiB production cap;
+- persisted review artifacts are bounded, regular non-symlink files and receipt error history cannot grow without limit;
+- GitHub authentication, transient service/network failures and missing/stale PR identity remain distinct stable error classes;
+- compiled `dist/cli/index.js` reaches `APPROVED` on a valid isolated Draft-PR HTTP fixture.
 
 ## Required Release Evidence
 
