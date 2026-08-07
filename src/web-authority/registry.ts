@@ -1,3 +1,4 @@
+import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -17,31 +18,56 @@ function isSafeBranchName(value: string): boolean {
   return value.split("/").every((component) => component.length > 0 && !component.startsWith(".") && !component.endsWith(".lock"));
 }
 
-async function sha256File(filePath: string): Promise<{ sha256: string; size: number }> {
-  const handle = await fs.open(filePath, "r");
+async function openStableRegularFile(filePath: string, maximumBytes: number | null): Promise<{ handle: fs.FileHandle; before: Awaited<ReturnType<fs.FileHandle["stat"]>> }> {
+  const pathBefore = await fs.lstat(filePath).catch((error) => {
+    throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", `Cannot inspect registry file '${filePath}': ${error instanceof Error ? error.message : String(error)}`);
+  });
+  if (pathBefore.isSymbolicLink() || !pathBefore.isFile() || maximumBytes !== null && pathBefore.size > maximumBytes) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", `Registry path is not a bounded regular non-symlink file: ${filePath}`);
+  const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+  const handle = await fs.open(filePath, fsConstants.O_RDONLY | noFollow).catch((error) => {
+    throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", `Cannot safely open registry file '${filePath}': ${error instanceof Error ? error.message : String(error)}`);
+  });
   try {
-    const stat = await handle.stat();
-    if (!stat.isFile()) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", `Registry artifact is not a regular file: ${filePath}`);
+    const before = await handle.stat();
+    if (!before.isFile() || before.dev !== pathBefore.dev || before.ino !== pathBefore.ino || before.size !== pathBefore.size || maximumBytes !== null && before.size > maximumBytes) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", `Registry file changed before open: ${filePath}`);
+    return { handle, before };
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+
+async function assertStablePathAfter(filePath: string, before: Awaited<ReturnType<fs.FileHandle["stat"]>>, handle: fs.FileHandle): Promise<void> {
+  const afterHandle = await handle.stat();
+  const afterPath = await fs.lstat(filePath).catch((error) => {
+    throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", `Registry path disappeared during read: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  if (afterPath.isSymbolicLink() || !afterPath.isFile() || afterHandle.dev !== before.dev || afterHandle.ino !== before.ino || afterHandle.size !== before.size || afterPath.dev !== before.dev || afterPath.ino !== before.ino || afterPath.size !== before.size) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", `Registry file changed during read: ${filePath}`);
+}
+
+async function sha256File(filePath: string): Promise<{ sha256: string; size: number }> {
+  const opened = await openStableRegularFile(filePath, null);
+  const { handle, before } = opened;
+  try {
     const hash = crypto.createHash("sha256");
     const buffer = Buffer.alloc(64 * 1024);
     let offset = 0;
-    while (offset < stat.size) {
-      const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, stat.size - offset), offset);
+    while (offset < before.size) {
+      const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, before.size - offset), offset);
       if (bytesRead === 0) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", `Registry artifact truncated while hashing: ${filePath}`);
       hash.update(buffer.subarray(0, bytesRead));
       offset += bytesRead;
     }
-    const after = await handle.stat();
-    if (after.size !== stat.size || after.ino !== stat.ino || after.dev !== stat.dev) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", `Registry artifact changed while hashing: ${filePath}`);
-    return { sha256: hash.digest("hex"), size: stat.size };
+    if ((await handle.read(Buffer.alloc(1), 0, 1, offset)).bytesRead !== 0) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", `Registry artifact grew while hashing: ${filePath}`);
+    await assertStablePathAfter(filePath, before, handle);
+    return { sha256: hash.digest("hex"), size: before.size };
   } finally { await handle.close(); }
 }
 
 async function readBoundedStableFile(filePath: string, maximumBytes: number): Promise<Buffer> {
-  const handle = await fs.open(filePath, "r");
+  const opened = await openStableRegularFile(filePath, maximumBytes);
+  const { handle, before } = opened;
   try {
-    const before = await handle.stat();
-    if (!before.isFile() || before.size > maximumBytes) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", `Registry record exceeds ${maximumBytes} bytes or is not regular.`);
     const bytes = Buffer.alloc(before.size);
     let offset = 0;
     while (offset < bytes.length) {
@@ -50,8 +76,7 @@ async function readBoundedStableFile(filePath: string, maximumBytes: number): Pr
       offset += bytesRead;
     }
     if ((await handle.read(Buffer.alloc(1), 0, 1, offset)).bytesRead !== 0) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", "Registry record grew during read.");
-    const after = await handle.stat();
-    if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", "Registry record changed during read.");
+    await assertStablePathAfter(filePath, before, handle);
     return bytes;
   } finally { await handle.close(); }
 }
@@ -70,7 +95,7 @@ async function installImmutableTemp(tempPath: string, finalPath: string, expecte
 async function copyArchiveImmutable(sourcePath: string, finalPath: string, expectedSha256: string, expectedSize: number, stateDirectory: string): Promise<void> {
   const tempPath = `${finalPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
   try {
-    await fs.copyFile(sourcePath, tempPath, fs.constants.COPYFILE_EXCL);
+    await fs.copyFile(sourcePath, tempPath, fsConstants.COPYFILE_EXCL);
     await fs.chmod(tempPath, 0o600).catch(() => undefined);
     const copied = await sha256File(tempPath);
     if (copied.sha256 !== expectedSha256 || copied.size !== expectedSize) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_CONFLICT", "Source Web pack changed between validation and registry copy.");
