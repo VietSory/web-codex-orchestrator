@@ -1,4 +1,5 @@
 import fsSync from "node:fs";
+import path from "node:path";
 import { loadTrustedConfig } from "../config/config-loader.js";
 import type { TrustedConfig } from "../config/contracts.js";
 import { sanitizeRemoteUrl } from "../config/remote-url.js";
@@ -19,6 +20,62 @@ export interface TrustedRunContext {
     fetch_policy: string;
   };
   trustedRepoPath: string;
+}
+
+const MAX_SIBLING_RUN_DIRECTORIES = 4096;
+const MAX_SIBLING_RECEIPT_BYTES = 1024 * 1024;
+
+/**
+ * Reject duplicate physical run receipts that claim the exact same run_id from
+ * a sibling archive directory. The canonical location is derived solely from
+ * run_id; accepting an alias receipt would make repository identity ambiguous.
+ */
+function rejectDuplicateRunIdentity(
+  stateDirectory: string,
+  taskId: string,
+  canonicalArchiveSha: string,
+  runId: string
+): void {
+  const taskRunsDirectory = path.join(path.resolve(stateDirectory), "runs", taskId);
+  let entries: fsSync.Dirent[];
+  try {
+    entries = fsSync.readdirSync(taskRunsDirectory, { withFileTypes: true });
+  } catch (error) {
+    throw new WebReviewError(
+      "WEB_REVIEW_OPERATIONAL_ERROR",
+      `Cannot inspect run identity registry: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+
+  if (entries.length > MAX_SIBLING_RUN_DIRECTORIES) {
+    throw new WebReviewError(
+      "WEB_REVIEW_OPERATIONAL_ERROR",
+      `Run identity registry exceeds bounded directory limit ${MAX_SIBLING_RUN_DIRECTORIES}`
+    );
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === canonicalArchiveSha || !/^[a-f0-9]{64}$/.test(entry.name)) {
+      continue;
+    }
+
+    const candidatePath = path.join(taskRunsDirectory, entry.name, "run.json");
+    try {
+      const stat = fsSync.lstatSync(candidatePath);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_SIBLING_RECEIPT_BYTES) continue;
+      const parsed = JSON.parse(fsSync.readFileSync(candidatePath, "utf8")) as { run_id?: unknown };
+      if (parsed?.run_id === runId) {
+        throw new WebReviewError(
+          "WEB_REVIEW_OPERATIONAL_ERROR",
+          `Conflicting duplicate run receipt claims canonical run_id '${runId}' from archive directory '${entry.name}'`
+        );
+      }
+    } catch (error) {
+      if (error instanceof WebReviewError) throw error;
+      // Unrelated historical sibling state is not authoritative for this run.
+      continue;
+    }
+  }
 }
 
 /**
@@ -59,6 +116,8 @@ export async function resolveTrustedRunContext(
     throw new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", "Run receipt repository_path is missing or empty");
   }
 
+  rejectDuplicateRunIdentity(stateDirectory, taskId, archiveSha256, runId);
+
   const trustedConfig = await loadTrustedConfig(configPath);
   const resolvedRepo = trustedConfig.repositories[runReceipt.repository_id];
   if (!resolvedRepo || !resolvedRepo.path) {
@@ -86,8 +145,6 @@ export async function resolveTrustedRunContext(
     );
   }
 
-  // Canonical Phase 3 receipts contain these fields. Validate them whenever
-  // present so later phases cannot silently switch remote identity.
   if (runReceipt.remote && runReceipt.remote !== resolvedRepo.remote) {
     throw new WebReviewError(
       "WEB_REVIEW_REPOSITORY_DRIFT",

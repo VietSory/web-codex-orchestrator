@@ -57,7 +57,7 @@ export async function inspectReviewPersistence(
   if (existingReceipt.verdict_sha256 && existingReceipt.verdict_sha256 !== incomingVerdictSha256) {
     throw new WebReviewError(
       "WEB_REVIEW_ALREADY_SEALED",
-      `Review round ${existingReceipt.review_round} is already bound to a different verdict.`
+      `Review round ${existingReceipt.review_round} is already sealed with a different verdict.`
     );
   }
 
