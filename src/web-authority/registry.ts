@@ -25,9 +25,7 @@ async function sha256File(filePath: string): Promise<{ sha256: string; size: num
       offset += bytesRead;
     }
     const after = await handle.stat();
-    if (after.size !== stat.size || after.ino !== stat.ino || after.dev !== stat.dev) {
-      throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", `Registry artifact changed while hashing: ${filePath}`);
-    }
+    if (after.size !== stat.size || after.ino !== stat.ino || after.dev !== stat.dev) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", `Registry artifact changed while hashing: ${filePath}`);
     return { sha256: hash.digest("hex"), size: stat.size };
   } finally { await handle.close(); }
 }
@@ -44,8 +42,7 @@ async function readBoundedStableFile(filePath: string, maximumBytes: number): Pr
       if (bytesRead === 0) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", "Registry record was truncated during read.");
       offset += bytesRead;
     }
-    const extra = await handle.read(Buffer.alloc(1), 0, 1, offset);
-    if (extra.bytesRead !== 0) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", "Registry record grew during read.");
+    if ((await handle.read(Buffer.alloc(1), 0, 1, offset)).bytesRead !== 0) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", "Registry record grew during read.");
     const after = await handle.stat();
     if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", "Registry record changed during read.");
     return bytes;
@@ -59,9 +56,7 @@ async function installImmutableTemp(tempPath: string, finalPath: string, expecte
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     await assertExistingAuthorityFileSafe(stateDirectory, finalPath);
     const existing = await sha256File(finalPath);
-    if (existing.sha256 !== expectedSha256 || existing.size !== expectedSize) {
-      throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_CONFLICT", `Immutable registry path already exists with different bytes: ${finalPath}`);
-    }
+    if (existing.sha256 !== expectedSha256 || existing.size !== expectedSize) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_CONFLICT", `Immutable registry path already exists with different bytes: ${finalPath}`);
   } finally { await fs.unlink(tempPath).catch(() => undefined); }
 }
 
@@ -71,9 +66,7 @@ async function copyArchiveImmutable(sourcePath: string, finalPath: string, expec
     await fs.copyFile(sourcePath, tempPath, fs.constants.COPYFILE_EXCL);
     await fs.chmod(tempPath, 0o600).catch(() => undefined);
     const copied = await sha256File(tempPath);
-    if (copied.sha256 !== expectedSha256 || copied.size !== expectedSize) {
-      throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_CONFLICT", "Source Web pack changed between validation and registry copy.");
-    }
+    if (copied.sha256 !== expectedSha256 || copied.size !== expectedSize) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_CONFLICT", "Source Web pack changed between validation and registry copy.");
     await installImmutableTemp(tempPath, finalPath, expectedSha256, expectedSize, stateDirectory);
   } catch (error) {
     await fs.unlink(tempPath).catch(() => undefined);
@@ -95,33 +88,38 @@ async function writeRegistrationImmutable(record: ArtifactRegistrationRecord, fi
 }
 
 function assertRegistrationRecord(record: ArtifactRegistrationRecord, expected: { taskId: string; taskBundleSha256: string; artifactSha256: string; storedRelativePath: string }): void {
-  if (record.registry_version !== "1.0" || record.artifact_kind !== "web-implementation-pack" || record.artifact_sha256 !== expected.artifactSha256 || record.task_id !== expected.taskId || record.task_bundle_sha256 !== expected.taskBundleSha256) {
-    throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", "Registration record identity is inconsistent with its registry path.");
-  }
-  if (!SHA256.test(record.artifact_sha256) || !Number.isSafeInteger(record.artifact_size_bytes) || record.artifact_size_bytes < 0 || record.stored_relative_path !== expected.storedRelativePath) {
-    throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", "Registration record archive metadata is invalid.");
-  }
-  if (!SAFE_ID.test(record.pack_id) || record.run_id !== `${record.task_id}:${record.task_bundle_sha256}` || !SHA256.test(record.manifest_sha256) || !Number.isFinite(Date.parse(record.registered_at))) {
-    throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", "Registration record run/pack/timestamp metadata is invalid.");
-  }
-  if (!record.repository || !SAFE_ID.test(record.repository.id) || !record.repository.base_branch || !GIT_SHA.test(record.repository.base_commit) || !GIT_SHA.test(record.repository.tree_sha)) {
-    throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", "Registration repository binding is invalid.");
-  }
-  if (!record.bindings || Object.values(record.bindings).some((value) => typeof value !== "string" || !SHA256.test(value))) {
-    throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", "Registration digest bindings are invalid.");
-  }
+  if (record.registry_version !== "1.0" || record.artifact_kind !== "web-implementation-pack" || record.artifact_sha256 !== expected.artifactSha256 || record.task_id !== expected.taskId || record.task_bundle_sha256 !== expected.taskBundleSha256) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", "Registration record identity is inconsistent with its registry path.");
+  if (!SHA256.test(record.artifact_sha256) || !Number.isSafeInteger(record.artifact_size_bytes) || record.artifact_size_bytes < 0 || record.stored_relative_path !== expected.storedRelativePath) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", "Registration record archive metadata is invalid.");
+  if (!SAFE_ID.test(record.pack_id) || record.run_id !== `${record.task_id}:${record.task_bundle_sha256}` || !SHA256.test(record.manifest_sha256) || !Number.isFinite(Date.parse(record.registered_at))) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", "Registration record run/pack/timestamp metadata is invalid.");
+  if (!record.repository || !SAFE_ID.test(record.repository.id) || !record.repository.base_branch || !GIT_SHA.test(record.repository.base_commit) || !GIT_SHA.test(record.repository.tree_sha)) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", "Registration repository binding is invalid.");
+  if (!record.bindings || Object.values(record.bindings).some((value) => typeof value !== "string" || !SHA256.test(value))) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", "Registration digest bindings are invalid.");
 }
 
-export async function registerWebImplementationPackArtifact(options: {
-  stateDirectory: string;
-  sourceArchivePath: string;
-  pack: WebImplementationPack;
-  registeredAt: string;
-}): Promise<ArtifactRegistrationRecord> {
+function packMatchesExistingRegistration(record: ArtifactRegistrationRecord, pack: WebImplementationPack): boolean {
+  const manifestBytes = pack.entries.get("implementation-pack.json");
+  if (!manifestBytes) return false;
+  const manifestSha = crypto.createHash("sha256").update(manifestBytes).digest("hex");
+  return record.artifact_sha256 === pack.archive_sha256
+    && record.artifact_size_bytes === pack.archive_size_bytes
+    && record.run_id === pack.manifest.run_id
+    && record.pack_id === pack.manifest.pack_id
+    && record.manifest_sha256 === manifestSha
+    && JSON.stringify(record.repository) === JSON.stringify(pack.manifest.repository)
+    && JSON.stringify(record.bindings) === JSON.stringify(pack.manifest.bindings);
+}
+
+export async function registerWebImplementationPackArtifact(options: { stateDirectory: string; sourceArchivePath: string; pack: WebImplementationPack; registeredAt: string }): Promise<ArtifactRegistrationRecord> {
   const { pack } = options;
   const manifest = pack.manifest;
   const paths = webAuthorityPaths(options.stateDirectory, manifest.task_id, manifest.task_bundle_sha256, pack.archive_sha256);
   await prepareAuthorityDirectory(options.stateDirectory, paths.artifactDirectory);
+
+  const existing = await readArtifactRegistration(options.stateDirectory, manifest.task_id, manifest.task_bundle_sha256, pack.archive_sha256);
+  if (existing) {
+    if (!packMatchesExistingRegistration(existing, pack)) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_CONFLICT", "Existing registration does not match the validated Web pack.");
+    return existing;
+  }
+
   await copyArchiveImmutable(options.sourceArchivePath, paths.archivePath, pack.archive_sha256, pack.archive_size_bytes, options.stateDirectory);
   const manifestBytes = pack.entries.get("implementation-pack.json");
   if (!manifestBytes) throw new WebAuthorityError("WEB_AUTHORITY_MANIFEST_INVALID", "implementation-pack.json disappeared after validation.");
