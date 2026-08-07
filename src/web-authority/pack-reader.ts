@@ -25,6 +25,11 @@ function sha256(data: Buffer): string {
   return crypto.createHash("sha256").update(data).digest("hex");
 }
 
+function isSafeBranchName(value: string): boolean {
+  if (!value || value.length > 255 || value === "@" || value.startsWith("/") || value.endsWith("/") || value.endsWith(".") || value.includes("//") || value.includes("..") || value.includes("@{") || /[\x00-\x20\x7f~^:?*\[\\]/.test(value)) return false;
+  return value.split("/").every((component) => component.length > 0 && !component.startsWith(".") && !component.endsWith(".lock"));
+}
+
 function assertArchiveEntryPath(entryPath: string): void {
   if (!entryPath || entryPath.includes("\0") || entryPath.includes("\\")) {
     throw new WebAuthorityError("WEB_AUTHORITY_ENTRY_UNSAFE", `Unsafe archive entry path '${entryPath}'.`);
@@ -83,7 +88,7 @@ function validateManifest(manifest: WebImplementationPackManifest): void {
   if (manifest.task_id !== identity.taskId || manifest.task_bundle_sha256 !== identity.taskBundleSha256) {
     throw new WebAuthorityError("WEB_AUTHORITY_BINDING_MISMATCH", "Manifest task/run identity is inconsistent.");
   }
-  if (!SAFE_ID.test(manifest.repository.id) || !SAFE_ID.test(manifest.repository.base_branch)) {
+  if (!SAFE_ID.test(manifest.repository.id) || !isSafeBranchName(manifest.repository.base_branch)) {
     throw new WebAuthorityError("WEB_AUTHORITY_MANIFEST_INVALID", "Repository ID/base branch is invalid.");
   }
   if (!GIT_SHA.test(manifest.repository.base_commit) || !GIT_SHA.test(manifest.repository.tree_sha)) {
