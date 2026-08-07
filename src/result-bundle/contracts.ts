@@ -62,7 +62,7 @@ export interface PullRequestAttestation {
 
 /**
  * v1.1 is the initial Phase 6 receipt. v1.2 adds an explicit revision input
- * chain so Phase 8 never aliases its evidence into Phase 6-named fields.
+ * chain so Phase 8 never aliases immutable revision evidence into Phase 6 fields.
  */
 export interface ResultBundleReceipt {
   result_bundle_version: "1.1" | "1.2";
@@ -74,7 +74,7 @@ export interface ResultBundleReceipt {
   execution_receipt_sha256: string;
   git_publish_receipt_sha256: string;
   draft_pr_receipt_sha256: string;
-  revision_receipt_sha256?: string | null;
+  revision_evidence_sha256?: string | null;
   revision_request_sha256?: string | null;
   previous_result_bundle_sha256?: string | null;
   previous_result_receipt_sha256?: string | null;
