@@ -15,27 +15,34 @@ import { WebAuthorityError } from "../src/web-authority/contracts.js";
 test("P9-AUTH-001 valid pack is snapshot-bound, registered and idempotently adopted", async (t) => {
   const fixture = await createPhase9Fixture();
   t.after(async () => fs.rm(fixture.root, { recursive: true, force: true }));
-  const archive = await buildPhase9Pack(fixture);
-  const pack = await readAndValidateWebImplementationPack(archive);
-  assert.equal(pack.manifest.repository.tree_sha, fixture.treeSha);
-  const record = await registerWebImplementationPack({
-    runId: fixture.runId,
-    stateDirectory: fixture.state,
-    configPath: fixture.config,
-    archivePath: archive,
-    now: () => new Date("2026-08-08T00:01:00.000Z"),
-  });
-  assert.equal(record.artifact_sha256, pack.archive_sha256);
-  const stored = await readArtifactRegistration(fixture.state, fixture.taskId, fixture.archiveSha, record.artifact_sha256);
-  assert.equal(stored?.pack_id, "PACK-P9-001");
-  const adopted = await registerWebImplementationPack({
-    runId: fixture.runId,
-    stateDirectory: fixture.state,
-    configPath: fixture.config,
-    archivePath: archive,
-    now: () => new Date("2026-08-08T00:02:00.000Z"),
-  });
-  assert.equal(adopted.artifact_sha256, record.artifact_sha256);
+  try {
+    const archive = await buildPhase9Pack(fixture);
+    const pack = await readAndValidateWebImplementationPack(archive);
+    assert.equal(pack.manifest.repository.tree_sha, fixture.treeSha);
+    const record = await registerWebImplementationPack({
+      runId: fixture.runId,
+      stateDirectory: fixture.state,
+      configPath: fixture.config,
+      archivePath: archive,
+      now: () => new Date("2026-08-08T00:01:00.000Z"),
+    });
+    assert.equal(record.artifact_sha256, pack.archive_sha256);
+    const stored = await readArtifactRegistration(fixture.state, fixture.taskId, fixture.archiveSha, record.artifact_sha256);
+    assert.equal(stored?.pack_id, "PACK-P9-001");
+    const adopted = await registerWebImplementationPack({
+      runId: fixture.runId,
+      stateDirectory: fixture.state,
+      configPath: fixture.config,
+      archivePath: archive,
+      now: () => new Date("2026-08-08T00:02:00.000Z"),
+    });
+    assert.equal(adopted.artifact_sha256, record.artifact_sha256);
+  } catch (error) {
+    const code = error instanceof WebAuthorityError ? error.code : error instanceof Error ? error.name : "UNKNOWN";
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`::error title=P9-AUTH-001 ${code}::${message.replace(/\r?\n/g, "%0A")}\n`);
+    throw error;
+  }
 });
 
 test("P9-AUTH-002 checksum tamper is rejected before registration", async (t) => {
