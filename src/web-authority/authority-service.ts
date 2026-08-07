@@ -90,9 +90,7 @@ async function readBoundedStableFile(filePath: string, maximumBytes: number, cod
 async function computeTaskSpecSetSha256(bundlePath: string, taskId: string, runId: string, archiveSha256: string): Promise<string> {
   const names = ["manifest.json", "REQUEST.md", "PLAN.md", "RULES.md", "RESEARCH.md", "SOURCES.md", "VALIDATION.md", "acceptance.json", "checksums.json", "test-matrix.json", "validation.json", "risk-policy.json"];
   const files: Array<{ name: string; buffer: Buffer }> = [];
-  for (const name of names) {
-    files.push({ name, buffer: await readBoundedStableFile(path.join(bundlePath, name), 8_388_608, "WEB_AUTHORITY_BINDING_MISMATCH", `accepted task file '${name}'`) });
-  }
+  for (const name of names) files.push({ name, buffer: await readBoundedStableFile(path.join(bundlePath, name), 8_388_608, "WEB_AUTHORITY_BINDING_MISMATCH", `accepted task file '${name}'`) });
   const readme = Buffer.from([
     "# Task Specification Overview",
     "",
@@ -117,7 +115,7 @@ function parseGitInventory(raw: string): InventoryEntry[] {
     if (tab <= 0) throw new WebAuthorityError("WEB_AUTHORITY_BINDING_MISMATCH", "git ls-tree returned an unparseable record.");
     const meta = record.slice(0, tab);
     const filePath = record.slice(tab + 1);
-    const match = meta.match(/^([0-9]{6}) (blob|commit) ([a-f0-9]{40}) ([0-9-]+)$/);
+    const match = meta.match(/^([0-9]{6}) (blob|commit) ([a-f0-9]{40}) +([0-9-]+)$/);
     if (!match) throw new WebAuthorityError("WEB_AUTHORITY_BINDING_MISMATCH", `Unsupported git tree entry '${meta}'.`);
     entries.push({ path: filePath, mode: match[1]!, type: match[2]! as "blob" | "commit", object_sha: match[3]!, size_bytes: match[4] === "-" ? null : Number(match[4]) });
   }
@@ -135,9 +133,7 @@ function validateInventory(pack: WebImplementationPack, actual: InventoryEntry[]
   for (let index = 0; index < actual.length; index += 1) {
     const web = expected[index]!;
     const git = actual[index]!;
-    if (web.path !== git.path || web.mode !== git.mode || web.type !== git.type || web.object_sha !== git.object_sha || web.size_bytes !== git.size_bytes) {
-      throw new WebAuthorityError("WEB_AUTHORITY_BINDING_MISMATCH", `Repository inventory diverges from Git at '${web.path || git.path}'.`);
-    }
+    if (web.path !== git.path || web.mode !== git.mode || web.type !== git.type || web.object_sha !== git.object_sha || web.size_bytes !== git.size_bytes) throw new WebAuthorityError("WEB_AUTHORITY_BINDING_MISMATCH", `Repository inventory diverges from Git at '${web.path || git.path}'.`);
     if (map.has(web.path)) throw new WebAuthorityError("WEB_AUTHORITY_BINDING_MISMATCH", `Duplicate inventory path '${web.path}'.`);
     map.set(web.path, web);
   }
@@ -146,24 +142,18 @@ function validateInventory(pack: WebImplementationPack, actual: InventoryEntry[]
 
 function validateReadCoverage(pack: WebImplementationPack, inventory: Map<string, InventoryEntry>): void {
   const document = parsePackJson<ReadCoverageDocument>(pack, "read-coverage.json");
-  if (document.schema_version !== "2.0" || document.repository_tree_sha !== pack.manifest.repository.tree_sha || !Array.isArray(document.reads)) {
-    throw new WebAuthorityError("WEB_AUTHORITY_BINDING_MISMATCH", "read-coverage.json has invalid snapshot binding.");
-  }
+  if (document.schema_version !== "2.0" || document.repository_tree_sha !== pack.manifest.repository.tree_sha || !Array.isArray(document.reads)) throw new WebAuthorityError("WEB_AUTHORITY_BINDING_MISMATCH", "read-coverage.json has invalid snapshot binding.");
   const seen = new Set<string>();
   for (const read of document.reads) {
     const entry = inventory.get(read.path);
-    if (!entry || entry.object_sha !== read.object_sha || !["full", "partial"].includes(read.coverage) || seen.has(read.path)) {
-      throw new WebAuthorityError("WEB_AUTHORITY_BINDING_MISMATCH", `Read coverage does not bind an exact inventory entry: '${read.path}'.`);
-    }
+    if (!entry || entry.object_sha !== read.object_sha || !["full", "partial"].includes(read.coverage) || seen.has(read.path)) throw new WebAuthorityError("WEB_AUTHORITY_BINDING_MISMATCH", `Read coverage does not bind an exact inventory entry: '${read.path}'.`);
     seen.add(read.path);
   }
 }
 
 function assertWorktreeContained(root: string, candidate: string): void {
   const relative = path.relative(root, candidate);
-  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    throw new WebAuthorityError("WEB_AUTHORITY_PREIMAGE_INVALID", `Operation path escapes the worktree: ${candidate}`);
-  }
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new WebAuthorityError("WEB_AUTHORITY_PREIMAGE_INVALID", `Operation path escapes the worktree: ${candidate}`);
 }
 
 async function readWorktreePreimage(worktreePath: string, relativePath: string): Promise<Buffer | null> {
@@ -195,20 +185,11 @@ async function validateOperationPreimages(pack: WebImplementationPack, worktreeP
       if (current !== null) throw new WebAuthorityError("WEB_AUTHORITY_PREIMAGE_INVALID", `create_file target already exists at the locked snapshot: '${operation.path}'.`);
       continue;
     }
-    if (!current || sha256(current) !== operation.preimage_sha256) {
-      throw new WebAuthorityError("WEB_AUTHORITY_PREIMAGE_INVALID", `Exact preimage mismatch for '${operation.path}'.`);
-    }
+    if (!current || sha256(current) !== operation.preimage_sha256) throw new WebAuthorityError("WEB_AUTHORITY_PREIMAGE_INVALID", `Exact preimage mismatch for '${operation.path}'.`);
   }
 }
 
-export async function registerWebImplementationPack(options: {
-  runId: string;
-  stateDirectory: string;
-  configPath: string;
-  archivePath: string;
-  limits?: Partial<WebAuthorityLimits>;
-  now?: () => Date;
-}): Promise<ArtifactRegistrationRecord> {
+export async function registerWebImplementationPack(options: { runId: string; stateDirectory: string; configPath: string; archivePath: string; limits?: Partial<WebAuthorityLimits>; now?: () => Date }): Promise<ArtifactRegistrationRecord> {
   const pack = await readAndValidateWebImplementationPack(options.archivePath, options.limits);
   if (pack.manifest.run_id !== options.runId) throw new WebAuthorityError("WEB_AUTHORITY_BINDING_MISMATCH", "Requested run_id does not match implementation-pack.json.");
   let trusted;
@@ -216,9 +197,7 @@ export async function registerWebImplementationPack(options: {
   catch (error) { throw new WebAuthorityError("WEB_AUTHORITY_BINDING_MISMATCH", `Canonical run authority could not be resolved: ${error instanceof Error ? error.message : String(error)}`); }
   const run = trusted.runReceipt;
   if (run.state !== "READY_FOR_CODEX") throw new WebAuthorityError("WEB_AUTHORITY_BINDING_MISMATCH", `Canonical run state '${run.state}' is not READY_FOR_CODEX.`);
-  if (pack.manifest.repository.id !== run.repository_id || pack.manifest.repository.base_branch !== run.base_branch || pack.manifest.repository.base_commit !== run.base_commit) {
-    throw new WebAuthorityError("WEB_AUTHORITY_BINDING_MISMATCH", "Web pack repository binding differs from canonical Phase 3 run authority.");
-  }
+  if (pack.manifest.repository.id !== run.repository_id || pack.manifest.repository.base_branch !== run.base_branch || pack.manifest.repository.base_commit !== run.base_commit) throw new WebAuthorityError("WEB_AUTHORITY_BINDING_MISMATCH", "Web pack repository binding differs from canonical Phase 3 run authority.");
   const head = (await runGit(run.worktree_path, ["rev-parse", "HEAD"], 1024)).trim();
   if (head !== run.base_commit) throw new WebAuthorityError("WEB_AUTHORITY_BINDING_MISMATCH", `Worktree HEAD '${head}' differs from locked base '${run.base_commit}'.`);
   const status = await runGit(run.worktree_path, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], 1_048_576);
