@@ -23,6 +23,7 @@ import { readRevisionReceipt, writeRevisionReceipt, writeCanonicalRevisionArtifa
 import { attestRevisionPullRequest } from "./revision-github-attestation.js";
 import { attestRevisionGitBoundary, calculateApprovedRevisionSnapshot, publishRevision } from "./revision-git.js";
 import { packageRevisionResultBundle } from "./revision-result-bundle.js";
+import { attestAcceptedBundleAuthority, assertRevisionReceiptAuthority } from "./revision-authority.js";
 import { loadAndVerifyResultBundle } from "../web-review/result-bundle-review-reader.js";
 import { RevisionError, type RevisionReceipt, type RevisionResumeState, type RevisionState } from "./contracts.js";
 
@@ -141,6 +142,7 @@ export async function reviseRun(options: RevisionServiceOptions): Promise<Revisi
     const config = await loadPhase4Config(configPath).catch((error) => { throw new RevisionError("REVISION_CONFIG_INVALID", error instanceof Error ? error.message : String(error)); });
     if (!config.publish) throw new RevisionError("REVISION_CONFIG_INVALID", "Trusted publish configuration is required for Phase 8.");
     const acceptedBundlePath = path.resolve(runReceipt.accepted_bundle_path);
+    await attestAcceptedBundleAuthority(acceptedBundlePath, source.previousResultBundle.receipt.accepted_bundle_tree_sha256);
     const bundleSnapshot = await snapshotBundle(acceptedBundlePath).catch((error) => { throw new RevisionError("REVISION_BUNDLE_MUTATED", error instanceof Error ? error.message : String(error)); });
     const bundle = await readBundleJson(acceptedBundlePath).catch((error) => { throw new RevisionError("REVISION_BUNDLE_MUTATED", error instanceof Error ? error.message : String(error)); });
     const contract = assertPhase4ExecutionContract(bundle.manifest);
@@ -150,8 +152,27 @@ export async function reviseRun(options: RevisionServiceOptions): Promise<Revisi
     if (contract.delivery.branch_name !== source.previousResultBundle.receipt.pull_request.head_branch || contract.delivery.base_branch !== source.previousResultBundle.receipt.pull_request.base_branch) throw new RevisionError("REVISION_BRANCH_DRIFT", "Frozen delivery branch identity changed across Result Bundles.");
 
     const existing = await readRevisionReceipt(stateDirectory, paths.receiptPath);
+    if (existing) {
+      assertRevisionReceiptAuthority(existing, {
+        runId,
+        revisionRound,
+        revisionRequestSha256: source.requestSha256,
+        specSetSha256: source.request.spec_set_sha256,
+        previousResultBundleSha256: source.request.previous_result_bundle_sha256,
+        previousResultReceiptSha256: source.previousResultBundle.phase6ReceiptSha256,
+        previousVerdictSha256: source.request.previous_verdict_sha256,
+        previousPublishedCommitSha: source.request.previous_published_commit_sha,
+        previousPrHeadSha: source.request.previous_pr_head_sha,
+        pullRequestNumber: source.request.pull_request_number,
+        branchName: contract.delivery.branch_name,
+        baseBranch: contract.delivery.base_branch,
+        worktreePath: path.resolve(runReceipt.worktree_path),
+        implementer: { model: config.agents.implementer.model, reasoningEffort: config.agents.implementer.reasoning_effort },
+        terra: { model: config.agents.internal_reviewer.model, reasoningEffort: config.agents.internal_reviewer.reasoning_effort },
+        sol: { model: config.agents.final_reviewer.model, reasoningEffort: config.agents.final_reviewer.reasoning_effort },
+      });
+    }
     if (existing?.state === "RESULT_READY") {
-      if (existing.run_id !== runId || existing.revision_round !== revisionRound || existing.revision_request_sha256 !== source.requestSha256) throw new RevisionError("REVISION_STATE_INVALID", "Existing RESULT_READY receipt does not bind this sealed revision request.");
       const verified = await loadAndVerifyResultBundle(stateDirectory, runId, revisionRound + 1);
       if (verified.receipt.archive_sha256 !== existing.result_bundle_sha256 || verified.receipt.manifest_sha256 !== existing.result_manifest_sha256) throw new RevisionError("REVISION_RESULT_FAILED", "Existing revision Result Bundle no longer matches the completed receipt.");
       return existing;
@@ -185,7 +206,6 @@ export async function reviseRun(options: RevisionServiceOptions): Promise<Revisi
       await writeCanonicalRevisionArtifact(paths.requestPath, source.requestBuffer);
       await persist(paths.receiptPath, activeReceipt, now);
     } else {
-      if (existing.run_id !== runId || existing.revision_round !== revisionRound || existing.revision_request_sha256 !== source.requestSha256 || existing.previous_pr_head_sha !== source.request.previous_pr_head_sha || existing.spec_set_sha256 !== source.request.spec_set_sha256) throw new RevisionError("REVISION_STATE_INVALID", "Persisted revision receipt does not bind the sealed authority chain.");
       activeReceipt = existing;
       receiptForCatch = activeReceipt;
       if (activeReceipt.state === "RETRYABLE") {
@@ -398,6 +418,11 @@ export async function reviseRun(options: RevisionServiceOptions): Promise<Revisi
           activeReceipt.state="COMMITTED";
           activeReceipt.resume_state=null;
           await persist(paths.receiptPath,activeReceipt,now);
+        },
+        beforePush: async () => {
+          await attestAcceptedBundleAuthority(acceptedBundlePath, source.previousResultBundle.receipt.accepted_bundle_tree_sha256);
+          await assertBundleUnchanged(acceptedBundlePath,bundleSnapshot).catch((error)=>{throw new RevisionError("REVISION_BUNDLE_MUTATED",error instanceof Error?error.message:String(error));});
+          await attestRevisionPullRequest({ expected:{ pullRequestUrl:source.previousResultBundle.receipt.pull_request.url, pullRequestNumber:activeReceipt.pull_request_number, headBranch:activeReceipt.branch_name, headSha:activeReceipt.previous_pr_head_sha, baseBranch:activeReceipt.base_branch, baseSha:source.previousResultBundle.receipt.base_commit }, config, githubClient });
         },
       },gitRunner);
       activeReceipt.new_published_commit_sha=published.new_commit_sha;
