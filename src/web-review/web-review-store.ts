@@ -6,6 +6,10 @@ import { WebReviewError } from "./contracts.js";
 import type { WebReviewReceipt, WebReviewState } from "./contracts.js";
 
 const RECEIPT_VERSION = "1.1";
+export const MAX_REVIEW_STATE_FILE_BYTES = 2 * 1024 * 1024;
+export const MAX_RECEIPT_ERRORS = 32;
+export const MAX_RECEIPT_WARNINGS = 64;
+export const MAX_RECEIPT_DIAGNOSTIC_CHARS = 8192;
 
 const REQUIRED_RECEIPT_FIELDS: ReadonlyArray<keyof WebReviewReceipt> = [
   "phase_version",
@@ -63,7 +67,8 @@ async function assertSafeParentDirectory(filePath: string): Promise<void> {
 async function readRegularFileNoSymlink(
   filePath: string,
   missingAllowed: boolean,
-  errorCode: string
+  errorCode: string,
+  maxBytes = MAX_REVIEW_STATE_FILE_BYTES
 ): Promise<Buffer | null> {
   let before: import("node:fs").Stats;
   try {
@@ -76,18 +81,48 @@ async function readRegularFileNoSymlink(
   if (before.isSymbolicLink() || !before.isFile()) {
     throw new WebReviewError(errorCode, `Review artifact must be a regular non-symlink file: ${filePath}`);
   }
+  if (before.size > maxBytes) {
+    throw new WebReviewError(errorCode, `Review artifact '${filePath}' exceeds ${maxBytes} bytes.`);
+  }
 
   let handle: fs.FileHandle | null = null;
   try {
     handle = await fs.open(filePath, "r");
     const opened = await handle.stat();
-    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino) {
-      throw new WebReviewError(errorCode, `Review artifact changed identity during open: ${filePath}`);
+    if (
+      !opened.isFile() ||
+      opened.dev !== before.dev ||
+      opened.ino !== before.ino ||
+      opened.size !== before.size
+    ) {
+      throw new WebReviewError(errorCode, `Review artifact changed identity or size during open: ${filePath}`);
     }
+    if (opened.size > maxBytes) {
+      throw new WebReviewError(errorCode, `Review artifact '${filePath}' exceeds ${maxBytes} bytes.`);
+    }
+
     const buffer = await handle.readFile();
     const after = await handle.stat();
-    if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== buffer.byteLength) {
-      throw new WebReviewError(errorCode, `Review artifact changed while being read: ${filePath}`);
+    if (
+      buffer.byteLength > maxBytes ||
+      after.size > maxBytes ||
+      after.dev !== opened.dev ||
+      after.ino !== opened.ino ||
+      after.size !== opened.size ||
+      after.size !== buffer.byteLength
+    ) {
+      throw new WebReviewError(errorCode, `Review artifact changed or exceeded its byte cap while being read: ${filePath}`);
+    }
+
+    const pathAfter = await fs.lstat(filePath);
+    if (
+      pathAfter.isSymbolicLink() ||
+      !pathAfter.isFile() ||
+      pathAfter.dev !== opened.dev ||
+      pathAfter.ino !== opened.ino ||
+      pathAfter.size !== opened.size
+    ) {
+      throw new WebReviewError(errorCode, `Review artifact path changed while being read: ${filePath}`);
     }
     return buffer;
   } catch (error) {
@@ -95,6 +130,17 @@ async function readRegularFileNoSymlink(
     throw new WebReviewError(errorCode, `Cannot read review artifact '${filePath}': ${error instanceof Error ? error.message : String(error)}`);
   } finally {
     if (handle) await handle.close().catch(() => undefined);
+  }
+}
+
+function assertBoundedStringArray(value: unknown, label: string, maximumItems: number): void {
+  if (!Array.isArray(value) || value.length > maximumItems) {
+    throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", `${label} must be an array with at most ${maximumItems} entries.`);
+  }
+  for (const entry of value) {
+    if (typeof entry !== "string" || entry.length > MAX_RECEIPT_DIAGNOSTIC_CHARS) {
+      throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", `${label} contains an invalid or oversized entry.`);
+    }
   }
 }
 
@@ -113,9 +159,17 @@ export function assertWebReviewReceipt(value: unknown): asserts value is WebRevi
   if (obj.phase_version !== RECEIPT_VERSION) {
     throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", `phase_version must be "${RECEIPT_VERSION}".`);
   }
-
   if (!VALID_STATES.has(obj.state as WebReviewState)) {
     throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", `Invalid state: ${String(obj.state)}`);
+  }
+  if (!Number.isInteger(obj.review_round) || (obj.review_round as number) < 1 || (obj.review_round as number) > 4) {
+    throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", "review_round must be an integer between 1 and 4.");
+  }
+  if (obj.review_mode !== "INITIAL" && obj.review_mode !== "REVISION") {
+    throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", "review_mode must be INITIAL or REVISION.");
+  }
+  if (typeof obj.run_id !== "string" || obj.run_id.length === 0 || obj.run_id.length > 256) {
+    throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", "run_id is missing or oversized.");
   }
 
   for (const shaField of [
@@ -150,9 +204,35 @@ export function assertWebReviewReceipt(value: unknown): asserts value is WebRevi
       throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", `${commitField} must be a 40-hex SHA.`);
     }
   }
-
   if (obj.fresh_attested_head_sha !== null && (typeof obj.fresh_attested_head_sha !== "string" || !/^[a-f0-9]{40}$/.test(obj.fresh_attested_head_sha))) {
     throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", "fresh_attested_head_sha must be null or a 40-hex SHA.");
+  }
+
+  assertBoundedStringArray(obj.warnings, "warnings", MAX_RECEIPT_WARNINGS);
+  if (!Array.isArray(obj.errors) || obj.errors.length > MAX_RECEIPT_ERRORS) {
+    throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", `errors must contain at most ${MAX_RECEIPT_ERRORS} entries.`);
+  }
+  for (const errorEntry of obj.errors) {
+    if (typeof errorEntry !== "object" || errorEntry === null || Array.isArray(errorEntry)) {
+      throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", "errors contains a non-object entry.");
+    }
+    const entry = errorEntry as Record<string, unknown>;
+    if (typeof entry.code !== "string" || entry.code.length === 0 || entry.code.length > 256) {
+      throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", "errors contains an invalid code.");
+    }
+    if (typeof entry.message !== "string" || entry.message.length > MAX_RECEIPT_DIAGNOSTIC_CHARS) {
+      throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", "errors contains an invalid or oversized message.");
+    }
+  }
+
+  if (typeof obj.artifact_paths !== "object" || obj.artifact_paths === null || Array.isArray(obj.artifact_paths)) {
+    throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", "artifact_paths must be an object.");
+  }
+  for (const key of ["verdict", "receipt", "decision_event", "revision_request", "lock"] as const) {
+    const pathValue = (obj.artifact_paths as Record<string, unknown>)[key];
+    if (pathValue !== null && (typeof pathValue !== "string" || pathValue.length > 2048)) {
+      throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", `artifact_paths.${key} is invalid or oversized.`);
+    }
   }
 
   if (obj.state === "APPROVED") {
@@ -199,6 +279,9 @@ export async function writeWebReviewReceipt(receiptPath: string, receipt: WebRev
   await assertSafeParentDirectory(receiptPath);
 
   const contentBuffer = Buffer.from(JSON.stringify(receipt, null, 2) + "\n", "utf8");
+  if (contentBuffer.byteLength > MAX_REVIEW_STATE_FILE_BYTES) {
+    throw new WebReviewError("WEB_REVIEW_OPERATIONAL_ERROR", `Web review receipt exceeds ${MAX_REVIEW_STATE_FILE_BYTES} bytes.`);
+  }
   const tmp = `${receiptPath}.tmp.${process.pid}.${crypto.randomUUID()}`;
   try {
     await fs.writeFile(tmp, contentBuffer, { flag: "wx" });
@@ -214,6 +297,9 @@ export async function writeWebReviewReceipt(receiptPath: string, receipt: WebRev
 
 /** Create-only canonical artifact with exact compare-and-adopt idempotency. */
 export async function writeCanonicalArtifact(filePath: string, contentBuffer: Buffer): Promise<void> {
+  if (contentBuffer.byteLength > MAX_REVIEW_STATE_FILE_BYTES) {
+    throw new WebReviewError("WEB_REVIEW_OPERATIONAL_ERROR", `Canonical review artifact exceeds ${MAX_REVIEW_STATE_FILE_BYTES} bytes.`);
+  }
   await assertSafeParentDirectory(filePath);
   try {
     await fs.writeFile(filePath, contentBuffer, { flag: "wx" });
@@ -234,7 +320,7 @@ export async function writeCanonicalArtifact(filePath: string, contentBuffer: Bu
   }
 }
 
-/** Read a canonical artifact as a regular non-symlink file. */
+/** Read a canonical artifact as a bounded regular non-symlink file. */
 export async function readCanonicalArtifact(filePath: string): Promise<Buffer | null> {
   return readRegularFileNoSymlink(filePath, true, "WEB_REVIEW_OPERATIONAL_ERROR");
 }
