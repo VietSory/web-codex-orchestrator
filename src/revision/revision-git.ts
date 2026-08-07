@@ -102,8 +102,9 @@ async function assertRemoteIdentity(runner: GitRunner, worktree: string, remote:
   if (current !== expected) throw new RevisionError("REVISION_REMOTE_DRIFT", "Revision remote URL changed after the trusted publication boundary was established.");
 }
 async function remoteHead(runner: GitRunner, worktree: string, remote: string, branch: string, expectedRemoteUrl?: string): Promise<string> {
+  const transport = expectedRemoteUrl ?? remote;
   if (expectedRemoteUrl !== undefined) await assertRemoteIdentity(runner, worktree, remote, expectedRemoteUrl);
-  const raw = output(await runner.run(["ls-remote", "--heads", remote, `refs/heads/${branch}`], worktree), "REVISION_PUSH_FAILED").trim();
+  const raw = output(await runner.run(["ls-remote", "--heads", transport, `refs/heads/${branch}`], worktree), "REVISION_PUSH_FAILED").trim();
   if (!raw) return "";
   const rows = raw.split(/\r?\n/).filter(Boolean); if (rows.length !== 1) throw new RevisionError("REVISION_REMOTE_DRIFT", `Remote branch '${branch}' resolved ambiguously.`);
   const [sha, ref] = rows[0]!.split(/\s+/); if (!sha || !GIT_OID.test(sha) || ref !== `refs/heads/${branch}`) throw new RevisionError("REVISION_REMOTE_DRIFT", `Remote branch '${branch}' returned malformed identity.`);
@@ -128,8 +129,8 @@ export async function attestRevisionGitBoundary(params: { worktreePath: string; 
   if (output(await runner.run(["status", "--porcelain=v1", "-z", "--untracked-files=all"], canonical)).length !== 0) throw new RevisionError("REVISION_WORKTREE_DIRTY", "Revision worktree must be clean before a revision round starts.");
   const remoteUrl = output(await runner.run(["remote", "get-url", params.remoteName], canonical)).trim(); let sanitized: string; try { sanitized = sanitizeRemoteUrl(remoteUrl); } catch (error) { throw new RevisionError("REVISION_REMOTE_DRIFT", `Revision remote URL is unsafe: ${error instanceof Error ? error.message : String(error)}`); }
   if (!params.expectedRemoteUrls.map((value) => sanitizeRemoteUrl(value)).includes(sanitized)) throw new RevisionError("REVISION_REMOTE_DRIFT", "Revision remote URL is not present in the trusted repository registry.");
-  const remoteSha = await remoteHead(runner, canonical, params.remoteName, params.branchName, remoteUrl); if (remoteSha !== params.previousHeadSha) throw new RevisionError("REVISION_REMOTE_DRIFT", `Remote branch is '${remoteSha || "<missing>"}', expected '${params.previousHeadSha}'.`);
-  return { worktreePath: canonical, branchName: params.branchName, remoteName: params.remoteName, remoteUrl, previousHeadSha: params.previousHeadSha, initialRefsSha256: "" };
+  const remoteSha = await remoteHead(runner, canonical, params.remoteName, params.branchName, sanitized); if (remoteSha !== params.previousHeadSha) throw new RevisionError("REVISION_REMOTE_DRIFT", `Remote branch is '${remoteSha || "<missing>"}', expected '${params.previousHeadSha}'.`);
+  return { worktreePath: canonical, branchName: params.branchName, remoteName: params.remoteName, remoteUrl: sanitized, previousHeadSha: params.previousHeadSha, initialRefsSha256: "" };
 }
 export async function calculateApprovedRevisionSnapshot(params: { runner?: GitRunner; worktreePath: string; approvedPaths: string[] }): Promise<string> { return worktreeSnapshot(params.runner ?? new GitRunner(), path.resolve(params.worktreePath), normalizePaths(params.approvedPaths)); }
 
@@ -158,7 +159,7 @@ export async function publishRevision(request: PublishRevisionRequest, runner = 
   if (remoteNow !== request.previousHeadSha) throw new RevisionError("REVISION_REMOTE_DRIFT", "Remote branch is neither previous head nor the exact recovered revision commit.");
   if (request.beforePush) await request.beforePush(newCommit);
   await assertRemoteIdentity(runner, worktree, request.remoteName, request.remoteUrl);
-  output(await runner.run(["push", request.remoteName, `${request.branchName}:refs/heads/${request.branchName}`], worktree), "REVISION_PUSH_FAILED");
+  output(await runner.run(["push", request.remoteUrl, `${request.branchName}:refs/heads/${request.branchName}`], worktree), "REVISION_PUSH_FAILED");
   const remoteAfter = await remoteHead(runner, worktree, request.remoteName, request.branchName, request.remoteUrl); if (remoteAfter !== newCommit) throw new RevisionError("REVISION_PUSH_FAILED", `Remote branch did not attest the new revision commit '${newCommit}'.`);
   if (output(await runner.run(["status", "--porcelain=v1", "-z", "--untracked-files=all"], worktree)).length !== 0) throw new RevisionError("REVISION_COMMIT_FAILED", "Revision worktree is not clean after the append-only commit.");
   return { previous_head_sha: request.previousHeadSha, new_commit_sha: newCommit, remote_branch_sha: remoteAfter, approved_snapshot_sha256: request.approvedSnapshotSha256, commit_tree_snapshot_sha256: treeSnapshot, paths, recovered_existing_commit: recovered };
