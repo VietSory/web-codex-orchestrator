@@ -20,8 +20,8 @@ function sha256Hex(buf: Buffer): string {
 /**
  * Safely read an untrusted verdict file from disk, enforcing:
  * - regular file check (no symlinks, no special files)
- * - size limit (<= 1 MiB)
- * - file identity & size stability check before and after read
+ * - size limit (<= 1 MiB) before and after the read
+ * - stable file identity and size across the complete read
  * - JSON parsing & canonical JSON serialization
  * - SHA-256 calculation
  */
@@ -31,7 +31,6 @@ export async function readAndCanonicalizeVerdict(
 ): Promise<IngestedVerdict> {
   const resolvedPath = path.resolve(verdictPath);
 
-  // 1. Check lstat to reject symlinks before open
   let lstatBefore: import("node:fs").Stats;
   try {
     lstatBefore = await fs.lstat(resolvedPath);
@@ -58,29 +57,53 @@ export async function readAndCanonicalizeVerdict(
     );
   }
 
-  // 2. Open handle and read
   let handle: fs.FileHandle | null = null;
   let rawBuf: Buffer;
   try {
     handle = await fs.open(resolvedPath, "r");
-    const statHandle = await handle.stat();
-    if (!statHandle.isFile()) {
+    const statOpened = await handle.stat();
+    if (!statOpened.isFile()) {
       throw new WebReviewError("WEB_REVIEW_VERDICT_SOURCE_INVALID", `Verdict file handle is not a regular file: '${verdictPath}'`);
     }
-    if (statHandle.size > maxBytes) {
+    if (
+      statOpened.dev !== lstatBefore.dev ||
+      statOpened.ino !== lstatBefore.ino ||
+      statOpened.size !== lstatBefore.size
+    ) {
+      throw new WebReviewError("WEB_REVIEW_VERDICT_SOURCE_INVALID", "Verdict file changed identity or size before read.");
+    }
+    if (statOpened.size > maxBytes) {
       throw new WebReviewError("WEB_REVIEW_VERDICT_SOURCE_INVALID", `Verdict file size exceeds limit of ${maxBytes} bytes.`);
     }
 
     rawBuf = await handle.readFile();
 
-    // 3. Post-read stat check for stability
-    const statAfter = await fs.stat(resolvedPath);
+    const statAfter = await handle.stat();
+    if (rawBuf.byteLength > maxBytes || statAfter.size > maxBytes) {
+      throw new WebReviewError(
+        "WEB_REVIEW_VERDICT_SOURCE_INVALID",
+        `Verdict file grew beyond limit of ${maxBytes} bytes during read.`
+      );
+    }
     if (
-      statAfter.dev !== lstatBefore.dev ||
-      statAfter.ino !== lstatBefore.ino ||
-      statAfter.size !== rawBuf.length
+      statAfter.dev !== statOpened.dev ||
+      statAfter.ino !== statOpened.ino ||
+      statAfter.size !== statOpened.size ||
+      statAfter.size !== rawBuf.byteLength
     ) {
       throw new WebReviewError("WEB_REVIEW_VERDICT_SOURCE_INVALID", "Verdict file modified during read.");
+    }
+
+    // Ensure the path still names the same regular file after the handle read.
+    const lstatAfter = await fs.lstat(resolvedPath);
+    if (
+      lstatAfter.isSymbolicLink() ||
+      !lstatAfter.isFile() ||
+      lstatAfter.dev !== statOpened.dev ||
+      lstatAfter.ino !== statOpened.ino ||
+      lstatAfter.size !== statOpened.size
+    ) {
+      throw new WebReviewError("WEB_REVIEW_VERDICT_SOURCE_INVALID", "Verdict path changed during read.");
     }
   } catch (err) {
     if (err instanceof WebReviewError) throw err;
@@ -94,7 +117,6 @@ export async function readAndCanonicalizeVerdict(
     }
   }
 
-  // 4. Parse JSON
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawBuf.toString("utf8"));
@@ -105,7 +127,6 @@ export async function readAndCanonicalizeVerdict(
     );
   }
 
-  // 5. Serialize as canonical JSON & compute SHA-256
   let canonicalBuffer: Buffer;
   try {
     canonicalBuffer = canonicalJsonBuffer(parsed);
@@ -116,11 +137,16 @@ export async function readAndCanonicalizeVerdict(
     );
   }
 
-  const verdictSha256 = sha256Hex(canonicalBuffer);
+  if (canonicalBuffer.byteLength > maxBytes) {
+    throw new WebReviewError(
+      "WEB_REVIEW_VERDICT_SOURCE_INVALID",
+      `Canonical verdict size (${canonicalBuffer.byteLength} bytes) exceeds limit of ${maxBytes} bytes.`
+    );
+  }
 
   return {
     canonicalBuffer,
-    verdictSha256,
+    verdictSha256: sha256Hex(canonicalBuffer),
     parsedVerdict: parsed,
   };
 }
