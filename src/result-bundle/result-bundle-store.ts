@@ -15,13 +15,19 @@ const VALID_STATES = new Set<ResultBundleState>(["READY_TO_BUILD","BUILDING","BU
 
 function requireSha(obj: Record<string, unknown>, field: string, nullable: boolean): void {
   const value = obj[field];
-  if (nullable && value === null) return;
-  if (typeof value !== "string" || !/^[a-f0-9]{64}$/.test(value)) throw new ResultBundleError("RESULT_RECEIPT_INVALID", `${field} must be ${nullable ? "null or " : ""}a 64-hex SHA-256.`);
+  if (value === null) {
+    if (nullable) return;
+    throw new ResultBundleError("RESULT_RECEIPT_INVALID", `${field} cannot be null in state ${String(obj.state)}.`);
+  }
+  if (typeof value !== "string" || !/^[a-f0-9]{64}$/.test(value)) throw new ResultBundleError("RESULT_RECEIPT_INVALID", `${field} must be a 64-hex SHA-256.`);
 }
 function requireCommit(obj: Record<string, unknown>, field: string, nullable = false): void {
   const value = obj[field];
-  if (nullable && value === null) return;
-  if (typeof value !== "string" || !/^[a-f0-9]{40}$/.test(value)) throw new ResultBundleError("RESULT_RECEIPT_INVALID", `${field} must be ${nullable ? "null or " : ""}a 40-hex SHA.`);
+  if (value === null) {
+    if (nullable) return;
+    throw new ResultBundleError("RESULT_RECEIPT_INVALID", `${field} cannot be null in state ${String(obj.state)}.`);
+  }
+  if (typeof value !== "string" || !/^[a-f0-9]{40}$/.test(value)) throw new ResultBundleError("RESULT_RECEIPT_INVALID", `${field} must be a 40-hex SHA.`);
 }
 
 export function assertResultBundleReceipt(value: unknown): asserts value is ResultBundleReceipt {
@@ -50,7 +56,7 @@ export function assertResultBundleReceipt(value: unknown): asserts value is Resu
   if (!obj.pull_request || typeof obj.pull_request !== "object" || Array.isArray(obj.pull_request)) throw new ResultBundleError("RESULT_RECEIPT_INVALID", "pull_request must be an object.");
   const pr = obj.pull_request as Record<string, unknown>;
   if (!Number.isInteger(pr.number) || Number(pr.number) < 1 || pr.state !== "open" || typeof pr.draft !== "boolean") throw new ResultBundleError("RESULT_RECEIPT_INVALID", "pull_request identity/state is invalid.");
-  requireCommit({ head: pr.head_sha }, "head");
+  requireCommit({ head: pr.head_sha, state: obj.state }, "head");
   if (!Array.isArray(obj.warnings) || obj.warnings.length > 256 || obj.warnings.some((item) => typeof item !== "string" || item.length > 8192)) throw new ResultBundleError("RESULT_RECEIPT_INVALID", "warnings is invalid or unbounded.");
 }
 
