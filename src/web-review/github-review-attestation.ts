@@ -56,6 +56,20 @@ async function readBoundedResponseBody(response: Response): Promise<Buffer> {
   return Buffer.concat(chunks, total);
 }
 
+function githubHttpFailure(status: number, statusText: string): WebReviewError {
+  const detail = `GitHub API attestation returned HTTP ${status}${statusText ? `: ${statusText}` : ""}`;
+  if (status === 401 || status === 403) {
+    return new WebReviewError("WEB_REVIEW_AUTH_ERROR", detail);
+  }
+  if (status === 404 || status === 410 || status === 422) {
+    return new WebReviewError("WEB_REVIEW_REPOSITORY_DRIFT", detail);
+  }
+  if (status === 408 || status === 425 || status === 429 || status >= 500) {
+    return new WebReviewError("WEB_REVIEW_NETWORK_ERROR", detail);
+  }
+  return new WebReviewError("WEB_REVIEW_NETWORK_ERROR", detail);
+}
+
 /**
  * Strict read-only GitHub attestation validator.
  * Production is pinned to api.github.com and every identity field used for a
@@ -120,8 +134,8 @@ export async function verifyGitHubAttestation(params: {
     } catch (e) {
       if (e instanceof WebReviewError) throw e;
       throw new WebReviewError(
-        "WEB_REVIEW_AUTH_ERROR",
-        `GitHub attestation request failed: ${e instanceof Error ? e.message : String(e)}`
+        "WEB_REVIEW_NETWORK_ERROR",
+        `GitHub attestation client failed: ${e instanceof Error ? e.message : String(e)}`
       );
     }
   } else {
@@ -147,12 +161,7 @@ export async function verifyGitHubAttestation(params: {
         redirect: "error",
         signal: AbortSignal.timeout(GITHUB_ATTESTATION_TIMEOUT_MS),
       });
-      if (!response.ok) {
-        throw new WebReviewError(
-          "WEB_REVIEW_AUTH_ERROR",
-          `GitHub API attestation returned HTTP ${response.status}: ${response.statusText}`
-        );
-      }
+      if (!response.ok) throw githubHttpFailure(response.status, response.statusText);
 
       const responseBytes = await readBoundedResponseBody(response);
       try {
