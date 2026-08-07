@@ -1,5 +1,6 @@
 // Atomic storage and persistence for Phase 7 per-round receipts and canonical artifacts (P0-12, P0-15)
 import fs from "node:fs/promises";
+import crypto from "node:crypto";
 import path from "node:path";
 import { WebReviewError } from "./contracts.js";
 import type { WebReviewReceipt, WebReviewState } from "./contracts.js";
@@ -51,6 +52,52 @@ const VALID_STATES = new Set<WebReviewState>([
   "FAILED",
 ]);
 
+async function assertSafeParentDirectory(filePath: string): Promise<void> {
+  const parent = path.dirname(filePath);
+  const stat = await fs.lstat(parent);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new WebReviewError("WEB_REVIEW_OPERATIONAL_ERROR", `Review artifact parent is not a safe directory: ${parent}`);
+  }
+}
+
+async function readRegularFileNoSymlink(
+  filePath: string,
+  missingAllowed: boolean,
+  errorCode: string
+): Promise<Buffer | null> {
+  let before: import("node:fs").Stats;
+  try {
+    before = await fs.lstat(filePath);
+  } catch (error) {
+    if (missingAllowed && (error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new WebReviewError(errorCode, `Cannot inspect review artifact '${filePath}': ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  if (before.isSymbolicLink() || !before.isFile()) {
+    throw new WebReviewError(errorCode, `Review artifact must be a regular non-symlink file: ${filePath}`);
+  }
+
+  let handle: fs.FileHandle | null = null;
+  try {
+    handle = await fs.open(filePath, "r");
+    const opened = await handle.stat();
+    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino) {
+      throw new WebReviewError(errorCode, `Review artifact changed identity during open: ${filePath}`);
+    }
+    const buffer = await handle.readFile();
+    const after = await handle.stat();
+    if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== buffer.byteLength) {
+      throw new WebReviewError(errorCode, `Review artifact changed while being read: ${filePath}`);
+    }
+    return buffer;
+  } catch (error) {
+    if (error instanceof WebReviewError) throw error;
+    throw new WebReviewError(errorCode, `Cannot read review artifact '${filePath}': ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    if (handle) await handle.close().catch(() => undefined);
+  }
+}
+
 export function assertWebReviewReceipt(value: unknown): asserts value is WebReviewReceipt {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", "Receipt must be a JSON object.");
@@ -71,7 +118,6 @@ export function assertWebReviewReceipt(value: unknown): asserts value is WebRevi
     throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", `Invalid state: ${String(obj.state)}`);
   }
 
-  // Validate required hex SHAs
   for (const shaField of [
     "phase6_receipt_sha256",
     "result_bundle_sha256",
@@ -85,7 +131,6 @@ export function assertWebReviewReceipt(value: unknown): asserts value is WebRevi
     }
   }
 
-  // Validate optional hex SHAs
   for (const optShaField of [
     "verdict_sha256",
     "previous_result_bundle_sha256",
@@ -99,7 +144,6 @@ export function assertWebReviewReceipt(value: unknown): asserts value is WebRevi
     }
   }
 
-  // Validate commit SHAs
   for (const commitField of ["published_commit_sha", "observed_head_sha"] as const) {
     const v = obj[commitField];
     if (typeof v !== "string" || !/^[a-f0-9]{40}$/.test(v)) {
@@ -111,7 +155,6 @@ export function assertWebReviewReceipt(value: unknown): asserts value is WebRevi
     throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", "fresh_attested_head_sha must be null or a 40-hex SHA.");
   }
 
-  // Validate state-specific invariants (P0-15)
   if (obj.state === "APPROVED") {
     if (obj.action !== "ASK_USER_TO_MERGE") {
       throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", "APPROVED receipt action must be ASK_USER_TO_MERGE");
@@ -138,31 +181,27 @@ export function assertWebReviewReceipt(value: unknown): asserts value is WebRevi
 
 /** Read and validate a Web review receipt. Returns null if receipt file does not exist. */
 export async function readWebReviewReceipt(receiptPath: string): Promise<WebReviewReceipt | null> {
+  const buffer = await readRegularFileNoSymlink(receiptPath, true, "WEB_REVIEW_RECEIPT_INVALID");
+  if (!buffer) return null;
   try {
-    const raw = await fs.readFile(receiptPath, "utf8");
-    const parsed: unknown = JSON.parse(raw);
+    const parsed: unknown = JSON.parse(buffer.toString("utf8"));
     assertWebReviewReceipt(parsed);
     return parsed;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     if (error instanceof WebReviewError) throw error;
-    throw new WebReviewError(
-      "WEB_REVIEW_RECEIPT_INVALID",
-      `Cannot read web review receipt: ${error instanceof Error ? error.message : String(error)}`
-    );
+    throw new WebReviewError("WEB_REVIEW_RECEIPT_INVALID", `Cannot parse web review receipt: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
-/** Atomically write a Web review receipt using temp file + rename */
+/** Atomically replace the mutable per-round receipt inside an already-safe directory. */
 export async function writeWebReviewReceipt(receiptPath: string, receipt: WebReviewReceipt): Promise<void> {
   assertWebReviewReceipt(receipt);
-  const dir = path.dirname(receiptPath);
-  await fs.mkdir(dir, { recursive: true });
+  await assertSafeParentDirectory(receiptPath);
 
   const contentBuffer = Buffer.from(JSON.stringify(receipt, null, 2) + "\n", "utf8");
-  const tmp = `${receiptPath}.tmp.${process.pid}.${Date.now()}`;
+  const tmp = `${receiptPath}.tmp.${process.pid}.${crypto.randomUUID()}`;
   try {
-    await fs.writeFile(tmp, contentBuffer);
+    await fs.writeFile(tmp, contentBuffer, { flag: "wx" });
     await fs.rename(tmp, receiptPath);
   } catch (error) {
     await fs.unlink(tmp).catch(() => undefined);
@@ -173,32 +212,19 @@ export async function writeWebReviewReceipt(receiptPath: string, receipt: WebRev
   }
 }
 
-/**
- * Atomically write a canonical artifact using atomic no-overwrite / compare-and-adopt logic (P0-12).
- * Writes temp file, uses atomic link / wx create. On EEXIST, reads target and compare-adopts matching bytes.
- */
+/** Create-only canonical artifact with exact compare-and-adopt idempotency. */
 export async function writeCanonicalArtifact(filePath: string, contentBuffer: Buffer): Promise<void> {
-  const dir = path.dirname(filePath);
-  await fs.mkdir(dir, { recursive: true });
-
-  // 1. Try atomic create-only write using flag 'wx'
+  await assertSafeParentDirectory(filePath);
   try {
     await fs.writeFile(filePath, contentBuffer, { flag: "wx" });
     return;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "EEXIST") {
-      // 2. File exists: compare exact bytes
-      try {
-        const existing = await fs.readFile(filePath);
-        if (existing.equals(contentBuffer)) {
-          return; // Compare-and-adopt: identical content already on disk
-        }
-      } catch {
-        // Ignore read error
-      }
+      const existing = await readRegularFileNoSymlink(filePath, false, "WEB_REVIEW_ALREADY_SEALED");
+      if (existing?.equals(contentBuffer)) return;
       throw new WebReviewError(
         "WEB_REVIEW_ALREADY_SEALED",
-        `Artifact already exists with different content at '${filePath}'. Overwrite forbidden.`
+        `Artifact already exists with different or unsafe content at '${filePath}'. Overwrite forbidden.`
       );
     }
     throw new WebReviewError(
@@ -208,15 +234,7 @@ export async function writeCanonicalArtifact(filePath: string, contentBuffer: Bu
   }
 }
 
-/** Read a canonical artifact file as buffer. Returns null if file does not exist. */
+/** Read a canonical artifact as a regular non-symlink file. */
 export async function readCanonicalArtifact(filePath: string): Promise<Buffer | null> {
-  try {
-    return await fs.readFile(filePath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw new WebReviewError(
-      "WEB_REVIEW_OPERATIONAL_ERROR",
-      `Failed to read artifact at ${filePath}: ${error instanceof Error ? error.message : String(error)}`
-    );
-  }
+  return readRegularFileNoSymlink(filePath, true, "WEB_REVIEW_OPERATIONAL_ERROR");
 }
