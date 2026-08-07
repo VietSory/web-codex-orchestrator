@@ -55,6 +55,7 @@ function githubClient(overrides?: Record<string, unknown>): GitHubAttestationCli
       return {
         number: prNumber,
         state: "open",
+        draft: true,
         merged: false,
         html_url: `https://github.com/${owner}/${repo}/pull/${prNumber}`,
         head: {
@@ -180,6 +181,7 @@ test("P7-FINAL-005: GitHub attestation rejects missing repository identity and b
     pull_request: {
       number: 101,
       url: "https://github.com/owner/repo/pull/101",
+      draft: true,
       head_branch: "codex/feature",
       head_sha: TEST_PUBLISHED_COMMIT,
       base_branch: "main",
