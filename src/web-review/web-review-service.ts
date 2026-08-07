@@ -2,7 +2,11 @@
 import path from "node:path";
 import { WebReviewError } from "./contracts.js";
 import type { WebReviewReceipt } from "./contracts.js";
-import { resolveReviewRoundPaths } from "./web-review-paths.js";
+import {
+  prepareReviewRoundDirectory,
+  resolveReviewRoundPaths,
+  reviewRoundDirectoryExistsAndIsSafe,
+} from "./web-review-paths.js";
 import { acquireReviewLock } from "./web-review-lock.js";
 import { readWebReviewReceipt, writeWebReviewReceipt, writeCanonicalArtifact } from "./web-review-store.js";
 import { readAndCanonicalizeVerdict } from "./verdict-source-reader.js";
@@ -56,6 +60,7 @@ export async function submitWebVerdict(
   // The exact schemas/contracts used below came from this verified Result Bundle.
   const embeddedContracts = bundle.embeddedContracts;
   const paths = resolveReviewRoundPaths(stateDirectory, runId, reviewRound);
+  await prepareReviewRoundDirectory(stateDirectory, paths.roundDir);
 
   // 3. Acquire the per-round exclusive lock before inspecting or mutating round state.
   const lock = await acquireReviewLock(paths.lockPath);
@@ -73,6 +78,31 @@ export async function submitWebVerdict(
             `Review round ${reviewRound} is already sealed with a different verdict.`
           );
         }
+
+        // Idempotency never means stale GitHub authority. Re-validate the exact
+        // stored verdict against the exact current bundle/history and perform a
+        // fresh read-only GitHub attestation before returning any terminal action.
+        if (!embeddedContracts.compiledVerdictValidator(rawVerdictObj)) {
+          throw new WebReviewError(
+            "WEB_REVIEW_VERDICT_INVALID",
+            `Verdict failed exact embedded schema validation on retry: ${embeddedContracts.verdictSchemaErrors() ?? "unknown schema error"}`
+          );
+        }
+        const historyResult = await validateReviewHistory(stateDirectory, runId, reviewRound, rawVerdictObj, bundle);
+        const validatedVerdict = await validateVerdictPolicy(
+          rawVerdictObj,
+          bundle,
+          reviewRound,
+          historyResult.previousRevisionRequestData,
+          historyResult.previousVerdictData,
+          trustedRepoPath
+        );
+        await verifyGitHubAttestation({
+          receipt: bundle.receipt,
+          config: runCtx.trustedConfig,
+          verdict: validatedVerdict,
+          githubClient,
+        });
         return ex;
       }
       receipt = ex;
@@ -124,9 +154,7 @@ export async function submitWebVerdict(
     receipt.updated_at = currentIso(now);
     await writeWebReviewReceipt(paths.receiptPath, receipt);
 
-    // 5. The exact verdict schema embedded in the exact reviewed bundle is
-    // authoritative. The built-in policy validator remains a minimum hard
-    // floor, so either side may tighten validation but neither may weaken it.
+    // 5. The exact verdict schema embedded in the exact reviewed bundle is authoritative.
     if (!embeddedContracts.compiledVerdictValidator(rawVerdictObj)) {
       throw new WebReviewError(
         "WEB_REVIEW_VERDICT_INVALID",
@@ -236,6 +264,7 @@ export async function getWebReviewStatus(
   if (!targetRound) {
     for (let r = 4; r >= 1; r--) {
       const paths = resolveReviewRoundPaths(stateDirectory, runId, r);
+      if (!(await reviewRoundDirectoryExistsAndIsSafe(stateDirectory, paths.roundDir))) continue;
       const existing = await readWebReviewReceipt(paths.receiptPath);
       if (existing) {
         targetRound = r;
@@ -246,5 +275,6 @@ export async function getWebReviewStatus(
   }
 
   const paths = resolveReviewRoundPaths(stateDirectory, runId, targetRound);
+  if (!(await reviewRoundDirectoryExistsAndIsSafe(stateDirectory, paths.roundDir))) return null;
   return readWebReviewReceipt(paths.receiptPath);
 }
