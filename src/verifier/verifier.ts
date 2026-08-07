@@ -19,7 +19,7 @@ export interface VerifierOptions {
   sandbox: VerificationSandbox;
   runner?: GitRunner;
   signal?: AbortSignal | undefined;
-  now?: () => Date;
+  now?: (() => Date) | undefined;
   expectedRefsSha256?: string | undefined;
 }
 
@@ -48,13 +48,8 @@ export async function verifyDeterministically(options: VerifierOptions): Promise
     if (run.timed_out && command.required) requiredPass = false;
     const after = await calculateChangeSet({ worktreePath: options.worktreePath, baseCommit: options.baseCommit, branchName: options.branchName, runner: options.runner, allowedGeneratedPaths: options.policy.allowed_generated_paths });
     const generatedPaths = assertVerifierDidNotMutateSource(before, after, options.policy.allowed_generated_paths);
-    // Redact before applying the byte cap; truncating first can remove the
-    // secret's key and leave the credential-bearing suffix in the receipt.
     const redactedStdout = redact(run.stdout);
     const redactedStderr = redact(run.stderr);
-    // A real sandbox owns the byte cap and reports truncation. Preserve its
-    // complete redacted tail (redaction can expand a marker) while enforcing
-    // a second cap for sandbox implementations that did not report one.
     const boundedStdout = run.stdout_truncated ? { value: redactedStdout, truncated: false } : boundedOutput(redactedStdout, Math.min(command.maximum_output_bytes, options.policy.maximum_output_bytes));
     const boundedStderr = run.stderr_truncated ? { value: redactedStderr, truncated: false } : boundedOutput(redactedStderr, Math.min(command.maximum_output_bytes, options.policy.maximum_output_bytes));
     results.push({ result_version: "1.0", command_id: command.id, required: command.required, specification_sha256: specificationHash(command), executable: command.executable, args: [...command.args], cwd: command.cwd, environment_keys: Object.keys(command.environment).sort(), started_at: started.toISOString(), finished_at: finished.toISOString(), duration_ms: run.duration_ms, exit_code: run.exitCode, signal: run.signal, timed_out: run.timed_out, stdout_bytes: run.stdout_bytes, stderr_bytes: run.stderr_bytes, stdout_truncated: run.stdout_truncated || boundedStdout.truncated, stderr_truncated: run.stderr_truncated || boundedStderr.truncated, stdout: boundedStdout.value, stderr: boundedStderr.value, generated_paths: generatedPaths, status });

@@ -14,12 +14,14 @@
     "validate": "tsx src/cli/index.ts validate",
     "typecheck": "tsc -p tsconfig.json",
     "build": "tsc -p tsconfig.build.json && node -e \"require('fs').cpSync('src/result-bundle/resources', 'dist/result-bundle/resources', {recursive:true, force:true})\"",
-    "test": "tsx --test --test-concurrency=1 --test-reporter=spec tests/*.test.ts",
-    "test:cli": "tsx --test tests/integration/cli-phase6.integration.test.ts tests/integration/cli-phase7.integration.test.ts",
+    "test": "node scripts/run-unit-tests.mjs",
+    "test:phase8-e2e": "tsx --test --test-reporter=spec tests/integration/phase8-e2e.integration.ts",
+    "test:cli": "tsx --test tests/integration/cli-phase6.integration.test.ts tests/integration/cli-phase7.integration.test.ts tests/integration/cli-phase8.integration.test.ts",
     "test:sandbox-integration": "tsx --test tests/integration/codex-sandbox.integration.ts",
     "test:codex-integration": "tsx --test tests/integration/codex-execution.integration.ts",
     "phase4:release-gate": "node scripts/phase4-release-gate.mjs",
-    "phase7:release-gate": "npm run typecheck && npm test && npm run build && npm run test:cli"
+    "phase7:release-gate": "npm run typecheck && npm test && npm run build && npm run test:cli",
+    "phase8:release-gate": "npm run typecheck && npm test && npm run test:phase8-e2e && npm run build && npm run test:cli"
   },
   "devDependencies": {
     "@types/node": "latest",

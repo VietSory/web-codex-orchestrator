@@ -71,11 +71,16 @@ export async function submitWebVerdict(
   const runCtx = await resolveTrustedRunContext(runId, stateDirectory, configPath);
   const trustedRepoPath = runCtx.trustedRepoPath;
 
-  // 2. Independently verify the exact Result Bundle and ingest the untrusted verdict.
-  const bundle = await loadAndVerifyResultBundle(stateDirectory, runId);
+  // 2. Ingest the bounded untrusted verdict first only to determine the declared
+  // review round, then independently select and verify the Result Bundle for
+  // exactly that round. Revision rounds never fall back to the initial bundle.
   const ingestedVerdict = await readAndCanonicalizeVerdict(verdictPath);
   const rawVerdictObj = ingestedVerdict.parsedVerdict as any;
-  const reviewRound = typeof rawVerdictObj?.review_round === "number" ? rawVerdictObj.review_round : 1;
+  const reviewRound = rawVerdictObj?.review_round;
+  if (!Number.isInteger(reviewRound) || reviewRound < 1 || reviewRound > 4) {
+    throw new WebReviewError("WEB_REVIEW_VERDICT_INVALID", `review_round must be an integer between 1 and 4; got '${String(reviewRound)}'`);
+  }
+  const bundle = await loadAndVerifyResultBundle(stateDirectory, runId, reviewRound);
 
   // The exact schemas/contracts used below came from this verified Result Bundle.
   const embeddedContracts = bundle.embeddedContracts;

@@ -260,7 +260,10 @@ test("P7-MAINT-008: Phase 6 handoff ancestor symlink cannot redirect Result Bund
 
     await assert.rejects(
       () => loadAndVerifyResultBundle(fixture.stateDirectory, fixture.receipt.run_id),
-      (error: unknown) => error instanceof WebReviewError && error.code === "WEB_REVIEW_RESULT_BUNDLE_INVALID" && error.message.includes("safe Phase 7 state path chain")
+      (error: unknown) =>
+        error instanceof WebReviewError &&
+        error.code === "WEB_REVIEW_RESULT_BUNDLE_INVALID" &&
+        error.message.includes("symbolic link")
     );
   } finally {
     await fs.rm(root, { recursive: true, force: true });

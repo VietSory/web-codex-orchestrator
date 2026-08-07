@@ -141,6 +141,33 @@ function rejectDuplicateRunIdentity(
   }
 }
 
+function assertLexicallyStateOwned(stateDirectory: string, candidate: string, label: string): string {
+  const root = path.resolve(stateDirectory);
+  const resolved = path.resolve(candidate);
+  const relative = path.relative(root, resolved);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new WebReviewError("WEB_REVIEW_REPOSITORY_DRIFT", `${label} must remain below the configured WCO state root.`);
+  }
+  return resolved;
+}
+
+async function assertExistingStateOwnedDirectoryWhenPresent(stateDirectory: string, candidate: string, label: string): Promise<void> {
+  const resolved = assertLexicallyStateOwned(stateDirectory, candidate, label);
+  try {
+    const stat = fsSync.lstatSync(resolved);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new WebReviewError("WEB_REVIEW_REPOSITORY_DRIFT", `${label} must be a real directory.`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    if (error instanceof WebReviewError) throw error;
+    throw new WebReviewError("WEB_REVIEW_REPOSITORY_DRIFT", `Cannot inspect ${label}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  try {
+    await assertExistingStatePathIsSafe(stateDirectory, resolved, "directory");
+  } catch (error) {
+    throw new WebReviewError("WEB_REVIEW_REPOSITORY_DRIFT", `${label} escaped or crossed an unsafe state path: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 /**
  * Resolve the trusted repository only from the canonical Phase 3 run receipt
  * and trusted local registry. A canonical run receipt must carry the exact
@@ -189,6 +216,15 @@ export async function resolveTrustedRunContext(
   if (!runReceipt.remote_url || typeof runReceipt.remote_url !== "string" || runReceipt.remote_url.trim() === "") {
     throw new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", "Run receipt remote_url is missing or empty");
   }
+  if (!runReceipt.worktree_path || typeof runReceipt.worktree_path !== "string" || runReceipt.worktree_path.trim() === "") {
+    throw new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", "Run receipt worktree_path is missing or empty");
+  }
+  if (!runReceipt.accepted_bundle_path || typeof runReceipt.accepted_bundle_path !== "string" || runReceipt.accepted_bundle_path.trim() === "") {
+    throw new WebReviewError("WEB_REVIEW_RESULT_BUNDLE_INVALID", "Run receipt accepted_bundle_path is missing or empty");
+  }
+
+  await assertExistingStateOwnedDirectoryWhenPresent(stateDirectory, runReceipt.worktree_path, "Phase 3 worktree path");
+  await assertExistingStateOwnedDirectoryWhenPresent(stateDirectory, runReceipt.accepted_bundle_path, "Accepted Task Bundle path");
 
   rejectDuplicateRunIdentity(stateDirectory, taskId, archiveSha256, runId);
 

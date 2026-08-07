@@ -70,3 +70,63 @@ invalid repository identity are classified separately, but all fail closed.
 Phase 7 never commits, pushes, marks a PR Ready, modifies a PR, or merges. An
 `APPROVED` result applies only to its exact attested head; later PR/head drift
 requires fresh validation before a human merge action.
+
+## Phase 8 same-PR revision boundary
+
+Phase 8 is not a new authority source. It may consume only the canonical
+`REVISION_REQUESTED` terminal produced by Phase 7. Before agent work begins it
+reconstructs that sealed request and its exact preceding Result Bundle/verdict,
+resolves the canonical Phase 3 trusted run context, and requires the recorded
+worktree and accepted Task Bundle to remain canonical real directories below
+the configured WCO state root. It then re-attests the accepted Task Bundle
+against the `accepted_bundle_tree_sha256` already sealed in the preceding
+independently verified Result Bundle. Recomputing `checksums.json` after
+modifying accepted bundle files does not create new authority: the tree hash
+must still equal the previously sealed value.
+
+The mutable Phase 8 receipt is a progress checkpoint, not an authority source.
+On resume, all externally derivable identity fields are rebound to canonical
+Phase 3/7/config state, including run/round, revision request and history hashes,
+PR number, branch/base, worktree path, and configured implementer/Terra/Sol
+models and reasoning effort. Worktree changes still have to reproduce the exact
+approved path set and file snapshot, and the final change-set digest must be the
+same digest independently accepted by deterministic verification, Terra, and
+Sol before publication authority is persisted.
+
+Git network operations are fail-closed against remote replacement and mutable
+Git URL rewriting. The current `git remote get-url` value is sanitized and must
+equal the remote URL sealed at the trusted revision boundary, but that remote
+name is used only as a configuration attestation. Every Phase 8 network
+`ls-remote` executes from a newly created clean bare Git repository instead of
+the product worktree. A push uses a separate clean bare sender whose local
+config is empty and whose object database sees the already-created revision
+commit read-only through Git `objects/info/alternates`. The production
+`GitRunner` also disables system Git config and points global config at the
+trusted empty revision-runtime config. Consequently worktree-local
+`url.*.insteadOf` and `url.*.pushInsteadOf` rules are not loaded by the network
+transport and cannot redirect credentials or publication after the sealed URL
+has been selected. Each clean transport directory is removed after the network
+operation.
+
+Immediately before an actual push, Phase 8 also rechecks the accepted Task
+Bundle and freshly attests that the same GitHub Pull Request remains open,
+unmerged and Draft with the exact previous head/base identities. Phase 8 then
+permits only a normal push of one commit whose sole parent is the previous PR
+head. It has no force-push, amend, rebase, branch-deletion, create-PR,
+mark-ready, or merge path.
+
+Revision Result Bundle v1.2 is append-only review evidence. Review round 1 may
+consume only the initial Phase 6 v1.1 bundle; review rounds 2..4 may consume only
+Phase 8 v1.2 bundles for revision rounds 1..3 respectively. Phase 7 checks the
+v1.2 previous Result Bundle archive/receipt, previous Web verdict, revision
+request, previous published commit/head, spec set, and PR number against the
+exact previous terminal review before accepting a new verdict. Missing or
+mismatched chain elements fail closed and there is no fallback to an older
+bundle.
+
+Phase 8 archive-visible timestamps are retry-stable. If a verified revision
+Result Bundle already reached `READY_FOR_WEB_REVIEW` but the parent revision
+checkpoint was not yet advanced to `RESULT_READY`, a retry independently
+re-verifies and adopts the exact existing archive instead of rebuilding it with
+new bytes. This keeps crash recovery idempotent without overwriting sealed
+review evidence.

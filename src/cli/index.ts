@@ -20,6 +20,7 @@ import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
 import { runDraftPrCommand, DRAFT_PR_USAGE } from "../pull-request/draft-pr-cli.js";
 import { runPackageResultCommand, runResultBundleStatusCommand, PACKAGE_RESULT_USAGE } from "../result-bundle/result-bundle-cli.js";
 import { runSubmitWebVerdictCommand, runWebReviewStatusCommand, SUBMIT_WEB_VERDICT_USAGE } from "../web-review/web-review-cli.js";
+import { runReviseCli, runRevisionStatusCli } from "../revision/revision-cli.js";
 
 function printUsage(): void {
   console.log("Usage:");
@@ -34,6 +35,8 @@ function printUsage(): void {
   console.log(DRAFT_PR_USAGE.trim());
   console.log(PACKAGE_RESULT_USAGE.trim());
   console.log(SUBMIT_WEB_VERDICT_USAGE.trim());
+  console.log("  wco revise --run-id <task-id:archive-sha256> --state-dir <directory> --config <config.json> --round <1-3> [--json]");
+  console.log("  wco revision-status --run-id <task-id:archive-sha256> --state-dir <directory> [--round <1-3>] [--json]");
 }
 
 function parseIntakeArguments(args: string[]): { archivePath: string; stateDirectory: string; json: boolean } | null {
@@ -304,6 +307,8 @@ async function main(): Promise<void> {
   if (command === "result-bundle-status") { process.exitCode = await runResultBundleStatusCommand(args); return; }
   if (command === "submit-web-verdict") { process.exitCode = await runSubmitWebVerdictCommand(args); return; }
   if (command === "web-review-status") { process.exitCode = await runWebReviewStatusCommand(args); return; }
+  if (command === "revise") { process.exitCode = await runReviseCli(args, { stdout: (value) => process.stdout.write(`${value}\n`), stderr: (value) => process.stderr.write(`${value}\n`) }); return; }
+  if (command === "revision-status") { process.exitCode = await runRevisionStatusCli(args, { stdout: (value) => process.stdout.write(`${value}\n`), stderr: (value) => process.stderr.write(`${value}\n`) }); return; }
   printUsage();
   process.exitCode = 2;
 }
