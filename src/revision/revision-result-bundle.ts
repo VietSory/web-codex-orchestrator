@@ -8,7 +8,7 @@ import type { ZipEntry } from "../result-bundle/deterministic-zip.js";
 import { buildDeterministicZip } from "../result-bundle/deterministic-zip.js";
 import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
 import { verifyResultBundleZip } from "../result-bundle/zip-verifier.js";
-import { writeResultBundleReceipt } from "../result-bundle/result-bundle-store.js";
+import { readResultBundleReceipt, writeResultBundleReceipt } from "../result-bundle/result-bundle-store.js";
 import { verifyBundleChecksums } from "../intake/checksum-verifier.js";
 import type { RevisionReceipt } from "./contracts.js";
 import type { LoadedRevisionSource } from "./revision-source.js";
@@ -116,6 +116,34 @@ export interface RevisionResultBundleOptions {
   now?: (() => Date) | undefined;
 }
 
+async function reuseReadyRevisionBundle(options: RevisionResultBundleOptions): Promise<ResultBundleReceipt | null> {
+  const existing = await readResultBundleReceipt(options.paths.resultReceiptPath);
+  if (!existing || existing.state !== "READY_FOR_WEB_REVIEW") return null;
+  const { source, revisionReceipt } = options;
+  if (
+    existing.result_bundle_version !== "1.2" || existing.input_kind !== "revision" ||
+    existing.run_id !== source.request.run_id || existing.revision_round !== source.request.revision_round ||
+    existing.revision_request_sha256 !== source.requestSha256 ||
+    existing.previous_result_bundle_sha256 !== source.request.previous_result_bundle_sha256 ||
+    existing.previous_result_receipt_sha256 !== source.previousResultBundle.phase6ReceiptSha256 ||
+    existing.previous_verdict_sha256 !== source.request.previous_verdict_sha256 ||
+    existing.previous_published_commit_sha !== source.request.previous_published_commit_sha ||
+    existing.previous_pr_head_sha !== source.request.previous_pr_head_sha ||
+    existing.published_commit_sha !== revisionReceipt.new_published_commit_sha ||
+    existing.remote_branch_sha !== revisionReceipt.remote_branch_sha ||
+    existing.pull_request.number !== source.request.pull_request_number
+  ) throw new ResultBundleError("RESULT_RECEIPT_INCONSISTENT", "Existing revision Result Bundle does not bind the exact recovery authority chain.");
+  if (!existing.archive_relative_path || !existing.archive_sha256 || existing.archive_size_bytes === null || existing.entry_count === null || existing.uncompressed_size_bytes === null || !existing.reviewed_entry_set_sha256) throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Existing ready revision Result Bundle is missing immutable archive bindings.");
+  const stateRoot = path.resolve(options.stateDirectory);
+  const archivePath = path.resolve(stateRoot, existing.archive_relative_path);
+  const relative = path.relative(path.resolve(options.paths.resultDirectory), archivePath);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new ResultBundleError("RESULT_SOURCE_PATH_UNSAFE", "Existing revision Result Bundle archive escaped its round directory.");
+  await assertExistingRevisionPathSafe(options.stateDirectory, archivePath, "file");
+  const verified = await verifyResultBundleZip(archivePath);
+  if (verified.sha256 !== existing.archive_sha256 || verified.sizeBytes !== existing.archive_size_bytes || verified.entryCount !== existing.entry_count || verified.uncompressedBytes !== existing.uncompressed_size_bytes || verified.reviewedEntrySetSha256 !== existing.reviewed_entry_set_sha256) throw new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", "Existing ready revision Result Bundle failed independent recovery verification.");
+  return existing;
+}
+
 export async function packageRevisionResultBundle(options: RevisionResultBundleOptions): Promise<ResultBundleReceipt> {
   const { source, revisionReceipt, prAttestation, paths, runner } = options;
   const limits = { ...DEFAULT_RESULT_BUNDLE_LIMITS, ...options.limits };
@@ -126,6 +154,8 @@ export async function packageRevisionResultBundle(options: RevisionResultBundleO
   if (revisionReceipt.state !== "PUSHED" || !revisionReceipt.new_published_commit_sha || !revisionReceipt.remote_branch_sha || revisionReceipt.new_published_commit_sha !== revisionReceipt.remote_branch_sha) throw new ResultBundleError("RESULT_PUBLISH_NOT_PUSHED", "Revision receipt must be PUSHED with identical commit/remote SHA before packaging.");
   if (revisionReceipt.revision_round !== source.request.revision_round || revisionReceipt.revision_request_sha256 !== source.requestSha256) throw new ResultBundleError("RESULT_RECEIPT_INCONSISTENT", "Revision receipt does not bind the sealed request.");
   await assertExistingRevisionPathSafe(options.stateDirectory, paths.resultDirectory, "directory");
+  const recoveredReady = await reuseReadyRevisionBundle(options);
+  if (recoveredReady) return recoveredReady;
 
   await verifyBundleChecksums(options.acceptedBundlePath).catch((error) => { throw new ResultBundleError("RESULT_BUNDLE_INVALID", `Accepted bundle checksum verification failed: ${error instanceof Error ? error.message : String(error)}`); });
   const acceptedBundleTreeSha256 = await computeAcceptedBundleTree(options.acceptedBundlePath);
@@ -191,7 +221,10 @@ export async function packageRevisionResultBundle(options: RevisionResultBundleO
   manifestEntries.push({ path:"checksums.json", sha256:sha256(checksums), size_bytes:checksums.byteLength }); manifestEntries.sort((a,b)=>lexicalCompare(a.path,b.path));
   const reviewedEntrySetSha256 = sha256(canonicalJsonBuffer(manifestEntries));
   const archiveFilename = `wco-result-${taskId}-${newHead.slice(0,12)}.zip`;
-  const createdAt = iso(options.now);
+  // Archive-visible time must be retry-stable. The revision receipt was created
+  // before execution and is immutable authority for this round; wall-clock retry
+  // time is only used for mutable receipt progress timestamps below.
+  const createdAt = revisionReceipt.created_at;
   const manifest: ResultBundleManifest = { schema_version:"1.1", kind:"wco-result-bundle", run_id:runId, archive_filename:archiveFilename, published_commit_sha:newHead, base_commit:options.originalBaseCommit, change_set_sha256:cumulative.digest, pull_request_number:source.request.pull_request_number, task_id:taskId, created_at:createdAt, spec_set_sha256:specSetSha256, review_contract_sha256:reviewContractSha, review_policy_sha256:reviewPolicySha, verdict_schema_sha256:verdictSchemaSha, revision_request_schema_sha256:revisionSchemaSha, reviewed_entry_set_sha256:reviewedEntrySetSha256, entries:manifestEntries };
   const manifestBuffer = canonicalJsonBuffer(manifest); const manifestSha = sha256(manifestBuffer);
   const finalEntries = [...allEntries,{path:"checksums.json",content:checksums},{path:"manifest.json",content:manifestBuffer}].sort((a,b)=>lexicalCompare(a.path,b.path));
@@ -215,7 +248,7 @@ export async function packageRevisionResultBundle(options: RevisionResultBundleO
     previous_published_commit_sha:source.request.previous_published_commit_sha,
     previous_pr_head_sha:source.request.previous_pr_head_sha,
     accepted_bundle_tree_sha256:acceptedBundleTreeSha256, change_set_sha256:cumulative.digest, base_commit:options.originalBaseCommit, published_commit_sha:newHead, remote_branch_sha:newHead, pull_request:prReceipt,
-    archive_relative_path:null, archive_sha256:null, archive_size_bytes:null, entry_count:null, uncompressed_size_bytes:null, manifest_sha256:manifestSha, warnings:[], created_at:createdAt, updated_at:createdAt, built_at:null, verified_at:null, ready_at:null,
+    archive_relative_path:null, archive_sha256:null, archive_size_bytes:null, entry_count:null, uncompressed_size_bytes:null, manifest_sha256:manifestSha, warnings:[], created_at:createdAt, updated_at:iso(options.now), built_at:null, verified_at:null, ready_at:null,
     spec_set_sha256:specSetSha256, review_contract_sha256:reviewContractSha, review_policy_sha256:reviewPolicySha, verdict_schema_sha256:verdictSchemaSha, revision_request_schema_sha256:revisionSchemaSha, reviewed_entry_set_sha256:reviewedEntrySetSha256,
   };
   await writeResultBundleReceipt(paths.resultReceiptPath, receipt);
