@@ -24,7 +24,6 @@ export function parseRunIdentity(runId: string): ParsedRunIdentity {
     throw new WebReviewError("WEB_REVIEW_INVALID_RUN_ID", `Invalid run ID format: '${runId}'. Expected <task-id>:<archive-sha256>`);
   }
   const [taskId, archiveSha256] = parts;
-  // Keep the Phase 7 parser exactly aligned with the canonical run-store task-id contract.
   if (!taskId || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(taskId)) {
     throw new WebReviewError("WEB_REVIEW_INVALID_RUN_ID", `Unsafe or invalid task ID: '${taskId}'`);
   }
@@ -62,17 +61,55 @@ function assertLexicallyContained(root: string, target: string): void {
 async function assertDirectoryEntry(directoryPath: string): Promise<void> {
   const stat = await fs.lstat(directoryPath);
   if (stat.isSymbolicLink()) {
-    throw new WebReviewError("WEB_REVIEW_ATTEMPTED_PATH_ESCAPE", `Review lifecycle directory must not be a symbolic link: ${directoryPath}`);
+    throw new WebReviewError("WEB_REVIEW_ATTEMPTED_PATH_ESCAPE", `Phase 7 state directory must not be a symbolic link: ${directoryPath}`);
   }
   if (!stat.isDirectory()) {
-    throw new WebReviewError("WEB_REVIEW_ATTEMPTED_PATH_ESCAPE", `Review lifecycle path must be a directory: ${directoryPath}`);
+    throw new WebReviewError("WEB_REVIEW_ATTEMPTED_PATH_ESCAPE", `Phase 7 state path must be a directory: ${directoryPath}`);
   }
 }
 
-async function assertRealContainment(stateDirectory: string, roundDirectory: string): Promise<void> {
+async function assertRealContainment(stateDirectory: string, targetPath: string): Promise<void> {
   const realState = await fs.realpath(stateDirectory);
-  const realRound = await fs.realpath(roundDirectory);
-  assertLexicallyContained(realState, realRound);
+  const realTarget = await fs.realpath(targetPath);
+  assertLexicallyContained(realState, realTarget);
+}
+
+/**
+ * Validate a pre-existing file or directory anywhere below the Phase 7 state
+ * root. Every ancestor is checked with lstat so an apparently safe lexical path
+ * cannot be redirected through a symlink or junction-like symbolic entry.
+ */
+export async function assertExistingStatePathIsSafe(
+  stateDirectory: string,
+  targetPath: string,
+  expectedType: "file" | "directory"
+): Promise<void> {
+  const resolvedState = path.resolve(stateDirectory);
+  const resolvedTarget = path.resolve(targetPath);
+  assertLexicallyContained(resolvedState, resolvedTarget);
+  await assertDirectoryEntry(resolvedState);
+
+  const segments = path.relative(resolvedState, resolvedTarget).split(path.sep).filter(Boolean);
+  let current = resolvedState;
+  for (let index = 0; index < segments.length; index++) {
+    current = path.join(current, segments[index]!);
+    const stat = await fs.lstat(current);
+    if (stat.isSymbolicLink()) {
+      throw new WebReviewError("WEB_REVIEW_ATTEMPTED_PATH_ESCAPE", `Phase 7 state path must not contain a symbolic link: ${current}`);
+    }
+    const final = index === segments.length - 1;
+    if (!final && !stat.isDirectory()) {
+      throw new WebReviewError("WEB_REVIEW_ATTEMPTED_PATH_ESCAPE", `Phase 7 state ancestor must be a directory: ${current}`);
+    }
+    if (final && expectedType === "file" && !stat.isFile()) {
+      throw new WebReviewError("WEB_REVIEW_ATTEMPTED_PATH_ESCAPE", `Expected a regular Phase 7 state file: ${current}`);
+    }
+    if (final && expectedType === "directory" && !stat.isDirectory()) {
+      throw new WebReviewError("WEB_REVIEW_ATTEMPTED_PATH_ESCAPE", `Expected a Phase 7 state directory: ${current}`);
+    }
+  }
+
+  await assertRealContainment(resolvedState, resolvedTarget);
 }
 
 /**
