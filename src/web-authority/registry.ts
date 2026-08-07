@@ -3,6 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
 import { WebAuthorityError, type ArtifactRegistrationRecord, type WebImplementationPack } from "./contracts.js";
+import { readAndValidateWebImplementationPack } from "./pack-reader.js";
 import { assertExistingAuthorityFileSafe, prepareAuthorityDirectory, webAuthorityPaths } from "./paths.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -95,47 +96,65 @@ function assertRegistrationRecord(record: ArtifactRegistrationRecord, expected: 
   if (!record.bindings || Object.values(record.bindings).some((value) => typeof value !== "string" || !SHA256.test(value))) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", "Registration digest bindings are invalid.");
 }
 
+function manifestSha(pack: WebImplementationPack): string | null {
+  const bytes = pack.entries.get("implementation-pack.json");
+  return bytes ? crypto.createHash("sha256").update(bytes).digest("hex") : null;
+}
+
+function packsHaveSameAuthorityIdentity(left: WebImplementationPack, right: WebImplementationPack): boolean {
+  return left.archive_sha256 === right.archive_sha256
+    && left.archive_size_bytes === right.archive_size_bytes
+    && manifestSha(left) === manifestSha(right)
+    && left.manifest.run_id === right.manifest.run_id
+    && left.manifest.pack_id === right.manifest.pack_id
+    && canonicalJsonBuffer(left.manifest.repository).equals(canonicalJsonBuffer(right.manifest.repository))
+    && canonicalJsonBuffer(left.manifest.bindings).equals(canonicalJsonBuffer(right.manifest.bindings));
+}
+
 function packMatchesExistingRegistration(record: ArtifactRegistrationRecord, pack: WebImplementationPack): boolean {
-  const manifestBytes = pack.entries.get("implementation-pack.json");
-  if (!manifestBytes) return false;
-  const manifestSha = crypto.createHash("sha256").update(manifestBytes).digest("hex");
+  const manifestDigest = manifestSha(pack);
+  if (!manifestDigest) return false;
   return record.artifact_sha256 === pack.archive_sha256
     && record.artifact_size_bytes === pack.archive_size_bytes
     && record.run_id === pack.manifest.run_id
     && record.pack_id === pack.manifest.pack_id
-    && record.manifest_sha256 === manifestSha
-    && JSON.stringify(record.repository) === JSON.stringify(pack.manifest.repository)
-    && JSON.stringify(record.bindings) === JSON.stringify(pack.manifest.bindings);
+    && record.manifest_sha256 === manifestDigest
+    && canonicalJsonBuffer(record.repository).equals(canonicalJsonBuffer(pack.manifest.repository))
+    && canonicalJsonBuffer(record.bindings).equals(canonicalJsonBuffer(pack.manifest.bindings));
 }
 
 export async function registerWebImplementationPackArtifact(options: { stateDirectory: string; sourceArchivePath: string; pack: WebImplementationPack; registeredAt: string }): Promise<ArtifactRegistrationRecord> {
-  const { pack } = options;
-  const manifest = pack.manifest;
-  const paths = webAuthorityPaths(options.stateDirectory, manifest.task_id, manifest.task_bundle_sha256, pack.archive_sha256);
+  const sourcePack = options.pack;
+  const manifest = sourcePack.manifest;
+  const paths = webAuthorityPaths(options.stateDirectory, manifest.task_id, manifest.task_bundle_sha256, sourcePack.archive_sha256);
   await prepareAuthorityDirectory(options.stateDirectory, paths.artifactDirectory);
 
-  const existing = await readArtifactRegistration(options.stateDirectory, manifest.task_id, manifest.task_bundle_sha256, pack.archive_sha256);
+  const existing = await readArtifactRegistration(options.stateDirectory, manifest.task_id, manifest.task_bundle_sha256, sourcePack.archive_sha256);
   if (existing) {
-    if (!packMatchesExistingRegistration(existing, pack)) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_CONFLICT", "Existing registration does not match the validated Web pack.");
+    if (!packMatchesExistingRegistration(existing, sourcePack)) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_CONFLICT", "Existing registration does not match the validated Web pack.");
     return existing;
   }
 
-  await copyArchiveImmutable(options.sourceArchivePath, paths.archivePath, pack.archive_sha256, pack.archive_size_bytes, options.stateDirectory);
-  const manifestBytes = pack.entries.get("implementation-pack.json");
-  if (!manifestBytes) throw new WebAuthorityError("WEB_AUTHORITY_MANIFEST_INVALID", "implementation-pack.json disappeared after validation.");
+  await copyArchiveImmutable(options.sourceArchivePath, paths.archivePath, sourcePack.archive_sha256, sourcePack.archive_size_bytes, options.stateDirectory);
+  const registeredPack = await readAndValidateWebImplementationPack(paths.archivePath);
+  if (!packsHaveSameAuthorityIdentity(sourcePack, registeredPack)) {
+    throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_CONFLICT", "Immutable registry copy does not represent the same validated Web pack authority.");
+  }
+  const registeredManifestBytes = registeredPack.entries.get("implementation-pack.json");
+  if (!registeredManifestBytes) throw new WebAuthorityError("WEB_AUTHORITY_MANIFEST_INVALID", "Registered implementation-pack.json disappeared after validation.");
   const record: ArtifactRegistrationRecord = {
     registry_version: "1.0",
     artifact_kind: "web-implementation-pack",
-    artifact_sha256: pack.archive_sha256,
-    artifact_size_bytes: pack.archive_size_bytes,
+    artifact_sha256: registeredPack.archive_sha256,
+    artifact_size_bytes: registeredPack.archive_size_bytes,
     stored_relative_path: path.relative(path.resolve(options.stateDirectory), paths.archivePath).split(path.sep).join("/"),
-    run_id: manifest.run_id,
-    task_id: manifest.task_id,
-    task_bundle_sha256: manifest.task_bundle_sha256,
-    pack_id: manifest.pack_id,
-    repository: manifest.repository,
-    bindings: manifest.bindings,
-    manifest_sha256: crypto.createHash("sha256").update(manifestBytes).digest("hex"),
+    run_id: registeredPack.manifest.run_id,
+    task_id: registeredPack.manifest.task_id,
+    task_bundle_sha256: registeredPack.manifest.task_bundle_sha256,
+    pack_id: registeredPack.manifest.pack_id,
+    repository: registeredPack.manifest.repository,
+    bindings: registeredPack.manifest.bindings,
+    manifest_sha256: crypto.createHash("sha256").update(registeredManifestBytes).digest("hex"),
     registered_at: options.registeredAt,
   };
   await writeRegistrationImmutable(record, paths.registrationPath, options.stateDirectory);
