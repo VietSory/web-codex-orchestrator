@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wco.local/schemas/web-source-receipts.schema.json",
+  "title": "WCO Web Source Receipts v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "receipts"],
+  "properties": {
+    "schema_version": { "const": "2.0" },
+    "receipts": {
+      "type": "array",
+      "maxItems": 512,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_id", "source_type", "locator", "accessed_at", "content_sha256", "authority"],
+        "properties": {
+          "source_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+          "source_type": { "enum": ["web", "github", "document", "mcp", "other"] },
+          "locator": { "type": "string", "minLength": 1, "maxLength": 4096 },
+          "accessed_at": { "type": "string", "format": "date-time" },
+          "content_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "authority": { "enum": ["primary", "secondary", "community", "unknown"] }
+        }
+      }
+    }
+  }
+}
