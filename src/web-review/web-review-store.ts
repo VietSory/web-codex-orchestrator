@@ -64,6 +64,29 @@ async function assertSafeParentDirectory(filePath: string): Promise<void> {
   }
 }
 
+async function readExactlyAttestedSize(
+  handle: fs.FileHandle,
+  expectedSize: number,
+  errorCode: string,
+  filePath: string
+): Promise<Buffer> {
+  const buffer = Buffer.alloc(expectedSize);
+  let offset = 0;
+  while (offset < expectedSize) {
+    const { bytesRead } = await handle.read(buffer, offset, expectedSize - offset, offset);
+    if (bytesRead === 0) {
+      throw new WebReviewError(errorCode, `Review artifact was truncated during read: ${filePath}`);
+    }
+    offset += bytesRead;
+  }
+  const probe = Buffer.alloc(1);
+  const { bytesRead: extraBytes } = await handle.read(probe, 0, 1, expectedSize);
+  if (extraBytes !== 0) {
+    throw new WebReviewError(errorCode, `Review artifact grew during read: ${filePath}`);
+  }
+  return buffer;
+}
+
 async function readRegularFileNoSymlink(
   filePath: string,
   missingAllowed: boolean,
@@ -93,25 +116,26 @@ async function readRegularFileNoSymlink(
       !opened.isFile() ||
       opened.dev !== before.dev ||
       opened.ino !== before.ino ||
-      opened.size !== before.size
+      opened.size !== before.size ||
+      opened.mtimeMs !== before.mtimeMs ||
+      opened.ctimeMs !== before.ctimeMs
     ) {
-      throw new WebReviewError(errorCode, `Review artifact changed identity or size during open: ${filePath}`);
+      throw new WebReviewError(errorCode, `Review artifact changed identity or metadata during open: ${filePath}`);
     }
     if (opened.size > maxBytes) {
       throw new WebReviewError(errorCode, `Review artifact '${filePath}' exceeds ${maxBytes} bytes.`);
     }
 
-    const buffer = await handle.readFile();
+    const buffer = await readExactlyAttestedSize(handle, opened.size, errorCode, filePath);
     const after = await handle.stat();
     if (
-      buffer.byteLength > maxBytes ||
-      after.size > maxBytes ||
       after.dev !== opened.dev ||
       after.ino !== opened.ino ||
       after.size !== opened.size ||
-      after.size !== buffer.byteLength
+      after.mtimeMs !== opened.mtimeMs ||
+      after.ctimeMs !== opened.ctimeMs
     ) {
-      throw new WebReviewError(errorCode, `Review artifact changed or exceeded its byte cap while being read: ${filePath}`);
+      throw new WebReviewError(errorCode, `Review artifact changed while being read: ${filePath}`);
     }
 
     const pathAfter = await fs.lstat(filePath);
@@ -120,7 +144,9 @@ async function readRegularFileNoSymlink(
       !pathAfter.isFile() ||
       pathAfter.dev !== opened.dev ||
       pathAfter.ino !== opened.ino ||
-      pathAfter.size !== opened.size
+      pathAfter.size !== opened.size ||
+      pathAfter.mtimeMs !== opened.mtimeMs ||
+      pathAfter.ctimeMs !== opened.ctimeMs
     ) {
       throw new WebReviewError(errorCode, `Review artifact path changed while being read: ${filePath}`);
     }
