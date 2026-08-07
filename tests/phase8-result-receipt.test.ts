@@ -89,19 +89,18 @@ test("P8-RB-002: v1.2 cannot masquerade as initial input or exceed revision budg
 });
 
 test("P8-RB-003: Phase 6 v1.1 remains backward-compatible", () => {
-  const revision = validRevisionReceipt();
-  const initial: ResultBundleReceipt = {
-    ...revision,
-    result_bundle_version: "1.1",
-    input_kind: "initial",
-    revision_round: null,
-    revision_evidence_sha256: undefined,
-    revision_request_sha256: undefined,
-    previous_result_bundle_sha256: undefined,
-    previous_result_receipt_sha256: undefined,
-    previous_verdict_sha256: undefined,
-    previous_published_commit_sha: undefined,
-    previous_pr_head_sha: undefined,
-  };
+  const initial = { ...validRevisionReceipt() } as Record<string, unknown>;
+  for (const field of [
+    "revision_evidence_sha256",
+    "revision_request_sha256",
+    "previous_result_bundle_sha256",
+    "previous_result_receipt_sha256",
+    "previous_verdict_sha256",
+    "previous_published_commit_sha",
+    "previous_pr_head_sha",
+  ] as const) delete initial[field];
+  initial.result_bundle_version = "1.1";
+  initial.input_kind = "initial";
+  initial.revision_round = null;
   assert.doesNotThrow(() => assertResultBundleReceipt(initial));
 });
