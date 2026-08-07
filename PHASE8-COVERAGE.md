@@ -37,8 +37,8 @@ CI executes the Phase 8 end-to-end test as a separate bounded step so a stuck in
 
 | Invariant | Production boundary | Executable coverage |
 | --- | --- | --- |
-| Revision state is confined under the registered state root | `revision-paths.ts` | `P8-FND-002` plus revision path tests |
-| Symlink ancestors and unsafe state paths fail closed | `revision-paths.ts`, `revision-store.ts` | `P8-FND-002` |
+| Revision state, canonical Phase 3 worktree, and accepted Task Bundle remain below the configured state root | `revision-paths.ts`, `trusted-run-context.ts` | `P8-FND-002`, `P8-MAINT-008`, `P8-E2E-001` |
+| Symlink ancestors and unsafe state paths fail closed | `revision-paths.ts`, `revision-store.ts`, `trusted-run-context.ts` | `P8-FND-002`, `P8-MAINT-008` |
 | One revision round has one exclusive lock | `revision-lock.ts` | `P8-FND-003` |
 | Stale/malformed locks are not silently stolen | `revision-lock.ts` | `P8-FND-003` |
 | Persisted receipt state/usage is bounded and validated | `revision-store.ts`, `contracts.ts` | `P8-STATE-001..003` |
@@ -51,7 +51,7 @@ CI executes the Phase 8 end-to-end test as a separate bounded step so a stuck in
 
 | Invariant | Production boundary | Executable coverage |
 | --- | --- | --- |
-| Revision reuses the canonical isolated worktree and existing branch | `revision-service.ts`, `revision-authority.ts`, `revision-git.ts` | `P8-E2E-001`, `P8-MAINT-003` |
+| Revision reuses the canonical isolated worktree and existing branch | `revision-service.ts`, `revision-authority.ts`, `revision-git.ts`, `trusted-run-context.ts` | `P8-E2E-001`, `P8-MAINT-003`, `P8-MAINT-008` |
 | Frozen accepted bundle is historically re-attested before work and snapshotted for no-change checks before publication | `revision-authority.ts`, `revision-service.ts` | `P8-MAINT-002`, `P8-E2E-001` |
 | Path/change limits remain bounded by the frozen task contract and trusted config | `revision-service.ts`, `execution/path-policy.ts` | shared Phase 4 path-policy tests; Phase 8 invokes the same boundary before verifier/review/publication |
 | Deterministic verifier runs before independent review | `revision-service.ts`, `verifier.ts` | `P8-E2E-001` plus verifier regressions |
@@ -64,7 +64,7 @@ CI executes the Phase 8 end-to-end test as a separate bounded step so a stuck in
 | Invariant | Production boundary | Executable coverage |
 | --- | --- | --- |
 | Initial local HEAD, branch, configured remote identity, and remote branch equal the sealed previous head | `revision-git.ts` | `P8-GIT-001`, `P8-GIT-002`, `P8-E2E-001` |
-| The remote URL is rechecked before every network `ls-remote`/push so a post-checkpoint remote replacement cannot receive credentials or publication | `revision-git.ts` | `P8-MAINT-001` |
+| The configured remote name is re-attested but every network `ls-remote`/push targets the exact sealed sanitized URL directly, preventing post-check TOCTOU redirection | `revision-git.ts` | `P8-MAINT-001`, `P8-MAINT-009` |
 | Approved working bytes are re-hashed before staging | `revision-git.ts` | `P8-GIT-003` |
 | Staged index must equal the approved snapshot | `revision-git.ts` | `P8-GIT-001`, mutation regressions |
 | Revision commit has exactly one parent: previous PR head | `revision-git.ts` | `P8-GIT-001`, `P8-E2E-001` |
@@ -75,7 +75,7 @@ CI executes the Phase 8 end-to-end test as a separate bounded step so a stuck in
 | `COMMITTED` checkpoint is persisted after exact commit verification and before push | `revision-git.ts`, `revision-service.ts` | `P8-PUB-001` |
 | Crash after commit adopts the exact existing commit instead of making a second commit | `revision-git.ts` | `P8-GIT-REC-001` |
 | A failing fresh pre-push authority check occurs after the local commit but before any remote movement | `revision-git.ts` | `P8-MAINT-007` |
-| Normal push must re-attest the exact new remote head | `revision-git.ts` | `P8-GIT-001`, `P8-E2E-001` |
+| Normal push must re-attest the exact new remote head through the same sealed transport URL | `revision-git.ts` | `P8-GIT-001`, `P8-MAINT-009`, `P8-E2E-001` |
 
 ## GitHub Draft PR boundary
 
@@ -101,21 +101,21 @@ CI executes the Phase 8 end-to-end test as a separate bounded step so a stuck in
 
 ## Full-loop proof
 
-`tests/integration/phase8-e2e.integration.ts` loads `tests/phase8-e2e-support.ts` and exercises a complete local-only flow with a real Git repository and a real bare remote. The fake GitHub client derives PR head identity from the remote branch, not unpushed local `HEAD`, so the pre-push and post-push attestations model the actual GitHub visibility boundary.
+`tests/integration/phase8-e2e.integration.ts` loads `tests/phase8-e2e-support.ts` and exercises a complete local-only flow with a real Git repository under the Phase 3 state-owned worktree layout and a real bare remote. The fake GitHub client derives PR head identity from the remote branch, not unpushed local `HEAD`, so the pre-push and post-push attestations model the actual GitHub visibility boundary.
 
 ```text
 initial product commit
 -> Phase 6 Result Bundle v1.1
 -> Phase 7 REVISE
 -> sealed revision-request.json
--> Phase 8 Task Bundle / worktree / remote / Draft PR re-attestation
+-> Phase 8 Task Bundle / state-owned worktree / remote / Draft PR re-attestation
 -> bounded implementation
 -> deterministic verification
 -> Terra APPROVE
 -> Sol APPROVE
 -> exactly one same-branch commit
 -> fresh pre-push Draft/previous-head authority check
--> normal push to same remote branch
+-> normal push through the exact sealed transport URL
 -> fresh post-push same Draft PR/new-head attestation
 -> revision Result Bundle v1.2
 -> Web review round 2 with exact history-chain verification
@@ -137,8 +137,9 @@ Before merging Phase 8, verify the exact PR head:
 - [ ] No production revision code contains a force-push, amend, rebase, branch-delete, PR-create, mark-ready, or merge path.
 - [ ] No Web-review round fallback exists.
 - [ ] Review-round bundle role and v1.2 previous-history chain are explicitly enforced, not inferred only from paths.
+- [ ] Canonical worktree and accepted Task Bundle remain state-owned and symlink-safe.
 - [ ] Accepted Task Bundle tree is re-attested against previously sealed authority before revision work.
-- [ ] Remote URL is re-attested before network Git operations and fresh Draft PR authority is checked immediately before a real push.
+- [ ] Remote name is re-attested, while network Git uses the exact sealed URL directly; fresh Draft PR authority is checked immediately before a real push.
 - [ ] Crash-after-commit recovery creates no second commit and ready revision Result Bundle recovery preserves exact archive bytes.
 - [ ] README, CHANGELOG, SECURITY, PHASE8 and this coverage map describe the same implemented workflow.
 - [ ] The user remains the only actor who decides whether to merge.
