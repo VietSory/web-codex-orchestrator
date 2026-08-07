@@ -1,4 +1,5 @@
 // Path construction and security validation for Phase 7 Web Review Verdict Processing
+import fs from "node:fs/promises";
 import path from "node:path";
 import { WebReviewError } from "./contracts.js";
 
@@ -51,6 +52,93 @@ export interface ReviewRoundPaths {
   relativeRoundDir: string;
 }
 
+function assertLexicallyContained(root: string, target: string): void {
+  const relative = path.relative(root, target);
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new WebReviewError("WEB_REVIEW_ATTEMPTED_PATH_ESCAPE", `Review path escaped state directory: ${target}`);
+  }
+}
+
+async function assertDirectoryEntry(directoryPath: string): Promise<void> {
+  const stat = await fs.lstat(directoryPath);
+  if (stat.isSymbolicLink()) {
+    throw new WebReviewError("WEB_REVIEW_ATTEMPTED_PATH_ESCAPE", `Review lifecycle directory must not be a symbolic link: ${directoryPath}`);
+  }
+  if (!stat.isDirectory()) {
+    throw new WebReviewError("WEB_REVIEW_ATTEMPTED_PATH_ESCAPE", `Review lifecycle path must be a directory: ${directoryPath}`);
+  }
+}
+
+async function assertRealContainment(stateDirectory: string, roundDirectory: string): Promise<void> {
+  const realState = await fs.realpath(stateDirectory);
+  const realRound = await fs.realpath(roundDirectory);
+  assertLexicallyContained(realState, realRound);
+}
+
+/**
+ * Prepare the Phase 7 round directory one component at a time.
+ * Existing symlinks, junction-like symbolic entries, and non-directories are
+ * rejected instead of being followed by recursive mkdir/write operations.
+ */
+export async function prepareReviewRoundDirectory(
+  stateDirectory: string,
+  roundDirectory: string
+): Promise<void> {
+  const resolvedState = path.resolve(stateDirectory);
+  const resolvedRound = path.resolve(roundDirectory);
+  assertLexicallyContained(resolvedState, resolvedRound);
+  await assertDirectoryEntry(resolvedState);
+
+  const relative = path.relative(resolvedState, resolvedRound);
+  let current = resolvedState;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    try {
+      await assertDirectoryEntry(current);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      try {
+        await fs.mkdir(current);
+      } catch (mkdirError) {
+        if ((mkdirError as NodeJS.ErrnoException).code !== "EEXIST") throw mkdirError;
+      }
+      await assertDirectoryEntry(current);
+    }
+  }
+
+  await assertRealContainment(resolvedState, resolvedRound);
+}
+
+/**
+ * Validate an already-existing round directory without creating anything.
+ * Returns false when the directory does not exist. Unsafe existing ancestors
+ * fail closed.
+ */
+export async function reviewRoundDirectoryExistsAndIsSafe(
+  stateDirectory: string,
+  roundDirectory: string
+): Promise<boolean> {
+  const resolvedState = path.resolve(stateDirectory);
+  const resolvedRound = path.resolve(roundDirectory);
+  assertLexicallyContained(resolvedState, resolvedRound);
+  await assertDirectoryEntry(resolvedState);
+
+  const relative = path.relative(resolvedState, resolvedRound);
+  let current = resolvedState;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    try {
+      await assertDirectoryEntry(current);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+  }
+
+  await assertRealContainment(resolvedState, resolvedRound);
+  return true;
+}
+
 export function resolveReviewRoundPaths(
   stateDirectory: string,
   runId: string,
@@ -71,10 +159,7 @@ export function resolveReviewRoundPaths(
   ).replace(/\\/g, "/");
 
   const roundDir = path.resolve(resolvedStateDir, relativeRoundDir);
-  const relativeFromState = path.relative(resolvedStateDir, roundDir);
-  if (relativeFromState === ".." || relativeFromState.startsWith(`..${path.sep}`) || path.isAbsolute(relativeFromState)) {
-    throw new WebReviewError("WEB_REVIEW_ATTEMPTED_PATH_ESCAPE", `Resolved round directory escaped state directory: ${roundDir}`);
-  }
+  assertLexicallyContained(resolvedStateDir, roundDir);
 
   const taskReviewsDir = path.dirname(path.dirname(roundDir));
   return {
