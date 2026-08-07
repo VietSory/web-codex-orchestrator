@@ -70,7 +70,7 @@ class DynamicGitHubClient implements GitHubAttestationClient {
   }
 }
 
-async function writeTrustedConfig(root: string, repo: string): Promise<string> {
+async function writeTrustedConfig(root: string, repo: string, localRemoteUrl: string): Promise<string> {
   const configPath = path.join(root, "config.json");
   await fs.writeFile(configPath, JSON.stringify({
     config_version: "1.0",
@@ -79,7 +79,7 @@ async function writeTrustedConfig(root: string, repo: string): Promise<string> {
       repo: {
         path: repo,
         remote: "origin",
-        expected_remote_urls: [REMOTE_URL],
+        expected_remote_urls: [REMOTE_URL, localRemoteUrl],
         fetch_policy: "never",
       },
     },
@@ -275,6 +275,7 @@ test("P8-E2E-001: sealed REVISE becomes a verified same-PR revision bundle and r
   try {
     const repo = path.join(root, "repo");
     const bare = path.join(root, "remote.git");
+    const localRemoteUrl = pathToFileURL(bare).href;
     const state = path.join(root, "state");
     const accepted = path.join(state, "accepted", TASK_ID, ARCHIVE_SHA);
     await fs.mkdir(repo, { recursive: true });
@@ -283,7 +284,7 @@ test("P8-E2E-001: sealed REVISE becomes a verified same-PR revision bundle and r
     await git(repo, ["init", "-b", "main"]);
     await git(repo, ["config", "user.name", "Phase 8 E2E"]);
     await git(repo, ["config", "user.email", "phase8-e2e@example.invalid"]);
-    await git(repo, ["config", `url.${pathToFileURL(bare).href}.insteadOf`, REMOTE_URL]);
+    await git(repo, ["config", `url.${localRemoteUrl}.insteadOf`, REMOTE_URL]);
     await fs.mkdir(path.join(repo, "src"), { recursive: true });
     await fs.writeFile(path.join(repo, "src", "index.ts"), "export const status = 'base';\n");
     await git(repo, ["add", "src/index.ts"]);
@@ -313,7 +314,7 @@ test("P8-E2E-001: sealed REVISE becomes a verified same-PR revision bundle and r
     await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
     await updateChecksums(accepted);
 
-    const configPath = await writeTrustedConfig(root, repo);
+    const configPath = await writeTrustedConfig(root, repo, localRemoteUrl);
     const runner = new GitRunner();
     const initialChangeSetSha256 = sha256Hex(`initial-change:${base}:${initialHead}`);
     const initialRefsSha256 = sha256Hex(`initial-refs:${BRANCH}:${initialHead}`);
