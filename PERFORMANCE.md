@@ -141,6 +141,7 @@ Persistent hot state must not grow without a retention/compaction policy.
 - receipts contain bounded diagnostics, not raw unbounded logs;
 - raw logs/evidence are stored separately and content-addressed where useful;
 - UI/status reads use bounded receipts/indexes rather than deserializing every historical artifact or Codex rollout;
+- orchestration run-ledger reads are capped at 2 MiB and semantic validation walks only the bounded transition counters, diagnostics and compacted event tail before state can drive work;
 - orchestration event history is compacted and repeated diagnostics are deduplicated with counters;
 - Web review/revision round discovery is bounded by the protocol's fixed round limits;
 - completed temporary transport/session state is not lifecycle authority.
@@ -166,6 +167,7 @@ The final repository gate covers the performance/token invariants that WCO can p
 
 - concurrency caps and explicit backpressure through the bounded resource-pool regressions;
 - bounded ledger/event/diagnostic state and durable retry/circuit behavior;
+- semantic ledger tamper cases are rejected before contradictory status/retry/budget state can trigger external work;
 - exact sealed request hashes across retry/recovery paths;
 - bounded/stable authority file reads and durable revision state writes;
 - status/snapshot discovery from bounded protocol receipts rather than whole session history;
