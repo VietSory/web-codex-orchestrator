@@ -42,9 +42,11 @@ export RUN_ID='<task-id>:<task-bundle-sha256>'
 export WCO_STATE='<absolute-state-directory>'
 export WCO_CONFIG='<absolute-config-json>'
 npm run build
-node dist/orchestration/standalone-cli.js doctor --run-id "$RUN_ID" --state-dir "$WCO_STATE" --config "$WCO_CONFIG" --json
-node dist/orchestration/standalone-cli.js status --run-id "$RUN_ID" --state-dir "$WCO_STATE" --json
+npm run doctor -- --state-dir "$WCO_STATE" --config "$WCO_CONFIG" --json
+npm run control -- status --run-id "$RUN_ID" --state-dir "$WCO_STATE" --json
 ```
+
+`doctor` intentionally does not require a run ID: it is the machine/runtime/config preflight that should also work before the first task exists. `status` remains run-specific.
 
 Return: both complete JSON outputs, with secrets/private paths redacted if necessary.
 
