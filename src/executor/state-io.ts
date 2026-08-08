@@ -90,7 +90,7 @@ async function syncExecutorDirectory(directory: string): Promise<void> {
     await handle.sync();
   } catch (error) {
     throw new ExecutorError(
-      "EXECUTOR_STATE_DURABILITY",
+      "EXECUTOR_OPERATIONAL_ERROR",
       `Failed to sync executor directory metadata '${directory}': ${error instanceof Error ? error.message : String(error)}`,
     );
   } finally {
