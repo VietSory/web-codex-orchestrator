@@ -1,12 +1,17 @@
-import { lstat, mkdir, readFile, appendFile } from "node:fs/promises";
+import { lstat, mkdir, appendFile, open } from "node:fs/promises";
 import path from "node:path";
 import { atomicWriteJson, atomicWriteText } from "../run/run-store.js";
 import { readRunReceipt } from "../run/run-store.js";
 import type { RunReceipt } from "../run/contracts.js";
+import { readJsonFile } from "../shared/read-json.js";
 import { type ExecutionReceipt, type ExecutionState } from "./contracts.js";
 import { isExecutionState } from "./state-machine.js";
 import { ExecutionError } from "./errors.js";
 import { redact } from "../evidence/log-redaction.js";
+
+const EXECUTION_RECEIPT_MAX_BYTES = 4 * 1024 * 1024;
+const EXECUTION_EVENT_MAX_BYTES = 256 * 1024;
+const EXECUTION_EVENT_TAIL_BYTES = EXECUTION_EVENT_MAX_BYTES * 2;
 
 export interface ExecutionPaths {
   directory: string;
@@ -74,7 +79,7 @@ async function readRegularJson<T>(filePath: string): Promise<T | undefined> {
   try {
     const info = await lstat(filePath);
     if (info.isSymbolicLink() || !info.isFile()) throw new Error("Receipt must be a regular non-symlink file.");
-    return JSON.parse(await readFile(filePath, "utf8")) as T;
+    return await readJsonFile(filePath, EXECUTION_RECEIPT_MAX_BYTES) as T;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
@@ -84,6 +89,54 @@ async function readRegularJson<T>(filePath: string): Promise<T | undefined> {
 async function assertRegularAppendTarget(filePath: string): Promise<void> {
   const info = await lstat(filePath).catch((error: unknown) => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; });
   if (info && (info.isSymbolicLink() || !info.isFile())) throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "Execution journal must be a regular non-symlink file.");
+}
+
+function sanitizeDiagnostic(value: unknown): unknown {
+  return Array.isArray(value)
+    ? value.slice(0, 256).map(sanitizeDiagnostic)
+    : value && typeof value === "object"
+      ? Object.fromEntries(Object.entries(value as Record<string, unknown>).slice(0, 64).map(([key, item]) => [key.slice(0, 128), sanitizeDiagnostic(item)]))
+      : typeof value === "string"
+        ? redact(value).slice(0, 32_768)
+        : typeof value === "number" && Number.isFinite(value)
+          ? value
+          : value === null || typeof value === "boolean"
+            ? value
+            : undefined;
+}
+
+function boundedJournalLine(value: Record<string, unknown>, preserve: Record<string, unknown>): string {
+  const serialized = JSON.stringify(value);
+  const bytes = Buffer.byteLength(serialized);
+  if (bytes <= EXECUTION_EVENT_MAX_BYTES) return `${serialized}\n`;
+  return `${JSON.stringify({ ...preserve, truncated: true, original_bytes: bytes })}\n`;
+}
+
+async function nextExecutionEventSequence(filePath: string): Promise<number> {
+  let handle;
+  try {
+    handle = await open(filePath, "r");
+    const info = await handle.stat();
+    if (!info.isFile()) throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "Execution journal must be a regular file.");
+    if (info.size === 0) return 1;
+    const readBytes = Math.min(info.size, EXECUTION_EVENT_TAIL_BYTES);
+    const buffer = Buffer.alloc(readBytes);
+    const { bytesRead } = await handle.read(buffer, 0, readBytes, info.size - readBytes);
+    const text = buffer.subarray(0, bytesRead).toString("utf8");
+    const lines = text.split(/\r?\n/).filter(Boolean);
+    const last = lines.at(-1);
+    if (!last) return 1;
+    let parsed: unknown;
+    try { parsed = JSON.parse(last) as unknown; } catch { throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "Execution journal tail is not valid JSONL."); }
+    const sequence = parsed && typeof parsed === "object" ? (parsed as { sequence?: unknown }).sequence : undefined;
+    if (!Number.isSafeInteger(sequence) || (sequence as number) < 1) throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "Execution journal tail has an invalid sequence.");
+    return (sequence as number) + 1;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 1;
+    throw error;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
 }
 
 export async function readExecutionReceipt(stateDirectory: string, taskId: string, archiveSha256: string): Promise<ExecutionReceipt | undefined> {
@@ -140,8 +193,7 @@ export async function writeExecutionArtifact(stateDirectory: string, taskId: str
   const paths = executionPaths(stateDirectory, taskId, archiveSha256);
   await ensureExecutionDirectory(paths);
   const directory = paths[relativeName === "terra-review" ? "terraReview" : relativeName === "sol-review" ? "solReview" : relativeName] as string;
-  const sanitize = (input: unknown): unknown => Array.isArray(input) ? input.map(sanitize) : input && typeof input === "object" ? Object.fromEntries(Object.entries(input as Record<string, unknown>).map(([key, item]) => [key, sanitize(item)])) : typeof input === "string" ? redact(input).slice(0, 32_768) : input;
-  await atomicWriteJson(await safeArtifactPath(directory, fileName), sanitize(value));
+  await atomicWriteJson(await safeArtifactPath(directory, fileName), sanitizeDiagnostic(value));
 }
 
 export async function writeExecutionText(stateDirectory: string, taskId: string, archiveSha256: string, relativeName: "verification" | "evidence", value: string, fileName: string): Promise<void> {
@@ -164,18 +216,21 @@ export async function appendExecutionEvent(
   const paths = executionPaths(stateDirectory, taskId, archiveSha256);
   await ensureExecutionDirectory(paths);
   await assertRegularAppendTarget(paths.events);
-  let sequence = 1;
-  try { sequence = (await readFile(paths.events, "utf8")).split(/\r?\n/).filter(Boolean).length + 1; } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-  const sanitize = (value: unknown): unknown => Array.isArray(value) ? value.slice(0, 256).map(sanitize) : value && typeof value === "object" ? Object.fromEntries(Object.entries(value as Record<string, unknown>).slice(0, 64).map(([key, item]) => [key.slice(0, 128), sanitize(item)])) : typeof value === "string" ? redact(value).slice(0, 32_768) : typeof value === "number" && Number.isFinite(value) ? value : value === null || typeof value === "boolean" ? value : undefined;
-  await appendFile(paths.events, `${JSON.stringify({ event_version: "1.0", run_id: redact(runId), sequence, from, to, timestamp: now().toISOString(), details: sanitize(details) })}\n`, { encoding: "utf8", mode: 0o600 });
+  const sequence = await nextExecutionEventSequence(paths.events);
+  const base = { event_version: "1.0", run_id: redact(runId), sequence, from, to, timestamp: now().toISOString() };
+  await appendFile(paths.events, boundedJournalLine({ ...base, details: sanitizeDiagnostic(details) }, base), { encoding: "utf8", mode: 0o600 });
 }
 
 export async function appendAgentEvent(stateDirectory: string, taskId: string, archiveSha256: string, event: Record<string, unknown>): Promise<void> {
   const paths = executionPaths(stateDirectory, taskId, archiveSha256);
   await ensureExecutionDirectory(paths);
   await assertRegularAppendTarget(paths.agentEvents);
-  const sanitize = (value: unknown): unknown => Array.isArray(value) ? value.slice(0, 256).map(sanitize) : value && typeof value === "object" ? Object.fromEntries(Object.entries(value as Record<string, unknown>).slice(0, 64).map(([key, item]) => [key.slice(0, 128), sanitize(item)])) : typeof value === "string" ? redact(value).slice(0, 32_768) : typeof value === "number" && Number.isFinite(value) ? value : value === null || typeof value === "boolean" ? value : undefined;
-  await appendFile(paths.agentEvents, `${JSON.stringify(sanitize(event))}\n`, { encoding: "utf8", mode: 0o600 });
+  const sanitized = sanitizeDiagnostic(event);
+  const sanitizedRecord = sanitized && typeof sanitized === "object" && !Array.isArray(sanitized)
+    ? sanitized as Record<string, unknown>
+    : { value: sanitized };
+  const eventType = typeof sanitizedRecord.event_type === "string" ? sanitizedRecord.event_type : "agent-event";
+  await appendFile(paths.agentEvents, boundedJournalLine(sanitizedRecord, { event_type: eventType }), { encoding: "utf8", mode: 0o600 });
 }
 
 export async function readPreparationForExecution(stateDirectory: string, runId: string): Promise<{ receipt: RunReceipt; taskId: string; archiveSha256: string }> {

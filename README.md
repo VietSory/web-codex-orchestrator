@@ -1,237 +1,137 @@
 # Web Codex Orchestrator
 
-Web Codex Orchestrator validates task bundles and provides a secure intake
-boundary for ZIP files downloaded from ChatGPT Web. Intake is deliberately a
-metadata-only operation: it never runs `payload/`, executes validation
-commands, calls Codex, accesses the network, or changes Git remotes.
+[![CI](https://github.com/VietSory/web-codex-orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/VietSory/web-codex-orchestrator/actions/workflows/ci.yml)
 
-## Commands
+Web Codex Orchestrator (WCO) is a security-focused CLI that turns externally authored implementation evidence into a durable, reviewable Git workflow. It validates untrusted handoffs, operates in isolated worktrees, runs deterministic verification and independent model review, publishes only exact approved changes, opens a Draft pull request, and keeps merge authority with a human.
+
+> Status: pre-release. The repository is suitable for development and technical evaluation; a stable binary/package release has not been published yet.
+
+## What WCO does
+
+```text
+Task Bundle
+    ↓
+secure intake + isolated worktree
+    ↓
+registered Web implementation authority
+    ↓
+deterministic apply + verification
+    ↓
+Terra review → Sol review
+    ↓
+exact Git publication → Draft PR
+    ↓
+Result Bundle → explicit Web verdict
+    ↓
+bounded same-PR revision loop
+    ↓
+human merge decision
+```
+
+WCO deliberately does not treat browser tabs, chat transcripts, model sessions, or a previous success message as lifecycle authority. Durable receipts and exact content identities drive recovery and continuation.
+
+## Requirements
+
+- Node.js 22 or newer
+- Git
+- a local repository registered in WCO configuration
+- Codex authentication for model-backed execution/review paths
+- GitHub credentials only for operations that attest or create a Draft pull request
+
+Linux and WSL are the primary development environments today. Native platform behavior that depends on local Codex/browser tooling should be validated on the target machine before release use.
+
+## Quick start from source
 
 ```bash
+git clone https://github.com/VietSory/web-codex-orchestrator.git
+cd web-codex-orchestrator
 npm ci
-npm run validate -- ./templates/task-bundle
-npm run typecheck
-npm test
 npm run build
-
-node dist/cli/index.js intake ./downloads/wco-task-207.zip --state-dir ./.wco
-node dist/cli/index.js intake ./downloads/wco-task-207.zip --state-dir ./.wco --json
+npm link
+wco --help
 ```
 
-For regular use, keep state outside the repository so quarantined downloads
-cannot be accidentally added to source control:
+`npm link` is optional. Without it, use `npm run wco -- <command>` from the checkout.
+
+Create a local configuration without adding it to Git:
 
 ```bash
-node dist/cli/index.js intake ./downloads/wco-task-207.zip \
-  --state-dir ~/.local/state/web-codex-orchestrator
-
-node dist/cli/index.js prepare ./downloads/wco-task-207.zip \
-  --state-dir ~/.local/state/web-codex-orchestrator \
-  --config ~/.config/web-codex-orchestrator/config.json
-
-node dist/cli/index.js scan \
-  --inbox ~/Downloads/web-codex-inbox \
-  --state-dir ~/.local/state/web-codex-orchestrator \
-  --config ~/.config/web-codex-orchestrator/config.json
-
-node dist/cli/index.js watch \
-  --inbox ~/Downloads/web-codex-inbox \
-  --state-dir ~/.local/state/web-codex-orchestrator \
-  --config ~/.config/web-codex-orchestrator/config.json \
-  --jsonl
-
-node dist/cli/index.js execute \
-  --run-id TASK-2026-003:<task-bundle-sha256> \
-  --state-dir ~/.local/state/web-codex-orchestrator \
-  --config ~/.config/web-codex-orchestrator/config.json \
-  --json
-
-node dist/cli/index.js execution-status \
-  --run-id TASK-2026-003:<task-bundle-sha256> \
-  --state-dir ~/.local/state/web-codex-orchestrator --json
-
-node dist/cli/index.js publish \
-  --run-id TASK-2026-003:<task-bundle-sha256> \
-  --state-dir ~/.local/state/web-codex-orchestrator \
-  --config ~/.config/web-codex-orchestrator/config.json \
-  --json
-
-node dist/cli/index.js create-draft-pr \
-  --run-id TASK-2026-003:<task-bundle-sha256> \
-  --state-dir ~/.local/state/web-codex-orchestrator \
-  --config ~/.config/web-codex-orchestrator/config.json \
-  --json
-
-node dist/cli/index.js package-result \
-  --run-id TASK-2026-003:<task-bundle-sha256> \
-  --state-dir ~/.local/state/web-codex-orchestrator \
-  --config ~/.config/web-codex-orchestrator/config.json --json
-
-node dist/cli/index.js submit-web-verdict \
-  --run-id TASK-2026-003:<task-bundle-sha256> \
-  --state-dir ~/.local/state/web-codex-orchestrator \
-  --config ~/.config/web-codex-orchestrator/config.json \
-  --verdict ./downloads/web-review-verdict.json --json
-
-node dist/cli/index.js web-review-status \
-  --run-id TASK-2026-003:<task-bundle-sha256> \
-  --state-dir ~/.local/state/web-codex-orchestrator --json
-
-# Phase 8: execute an already-sealed Phase 7 REVISE request.
-node dist/cli/index.js revise \
-  --run-id TASK-2026-003:<task-bundle-sha256> \
-  --round 1 \
-  --state-dir ~/.local/state/web-codex-orchestrator \
-  --config ~/.config/web-codex-orchestrator/config.json \
-  --json
-
-node dist/cli/index.js revision-status \
-  --run-id TASK-2026-003:<task-bundle-sha256> \
-  --round 1 \
-  --state-dir ~/.local/state/web-codex-orchestrator \
-  --json
-
-# Phase 9: register an exact Web implementation pack before any Phase 10 apply.
-node dist/web-authority/standalone-cli.js register-web-pack \
-  --run-id TASK-2026-003:<task-bundle-sha256> \
-  --state-dir ~/.local/state/web-codex-orchestrator \
-  --config ~/.config/web-codex-orchestrator/config.json \
-  --pack ./downloads/wco-web-implementation-pack.zip \
-  --json
-
-node dist/web-authority/standalone-cli.js web-pack-status \
-  --run-id TASK-2026-003:<task-bundle-sha256> \
-  --state-dir ~/.local/state/web-codex-orchestrator \
-  --artifact-sha256 <registered-pack-sha256> \
-  --json
+mkdir -p .wco
+cp examples/config.example.json .wco/config.json
 ```
 
-The delivery order is intentional: `execute` must reach `READY_FOR_PUBLISH`,
-then `publish` must reach `PUSHED`, then `create-draft-pr` must reach `OPEN`
-before `package-result` can produce the exact Result Bundle for Web review.
-Phase 7 processes only the registered Web verdict for that exact bundle and
-never mutates GitHub.
-
-If Phase 7 seals a `REVISE` decision, Phase 8 consumes only that canonical
-revision request. `revise` re-attests the accepted Task Bundle, canonical
-worktree, exact previous PR head, configured remote, and the same open,
-unmerged Draft PR. It performs the bounded correction, deterministic
-verification, Terra review, and Sol review; then it appends exactly one normal
-commit and performs a normal fast-forward push to the existing PR branch. It
-never creates another PR, force-pushes, marks the PR Ready, or merges it.
-
-After publication, Phase 8 creates a deterministic Result Bundle v1.2 containing
-both cumulative repository evidence and the exact previous-head-to-new-head
-revision delta. Web review round 2 reads revision bundle 1, round 3 reads
-revision bundle 2, and round 4 reads revision bundle 3. There is no fallback to
-an older Result Bundle. The v1.2 receipt is hash-bound to the exact previous
-Result Bundle receipt/archive, Web verdict, revision request, previous commit,
-and previous PR head before Phase 7 may accept the next verdict.
-
-A completed Phase 8 round ends in `RESULT_READY`; the user still decides whether
-to merge only after a later Phase 7 `APPROVED` decision. `revision-status` is a
-read-only status command. Revision rounds are limited to 1..3, matching Web
-review rounds 2..4.
-
-Phase 9 introduces the Web Authority Protocol v2. A Web implementation pack is
-not executable merely because it exists on disk or was mentioned in chat. WCO
-validates its bounded ZIP structure, full checksums, repository inventory, read
-coverage, project map, source receipts, frozen architecture/acceptance locks,
-prohibited-change policy, exact operations and exact preimages. It then
-re-attests the canonical Phase 3 run, accepted Task Bundle spec set, clean Git
-worktree, base commit/tree and actual `git ls-tree` inventory before installing
-an immutable content-addressed copy under `authority/runs/.../artifacts/<sha>/`.
-The immutable copy is parsed and semantic-validated again before
-`registration.json` is created. Phase 9 never applies the operations; Phase 10
-is allowed to consume only a matching registered artifact.
-
-`wco-web-authority` is a temporary compiled Phase 9 entry point while the main
-CLI is still organized around the Phase 1-8 command router. The command surface
-will be unified before native Phase 12 UX is frozen; it is not intended to
-become a second long-lived control plane.
-
-Add `--json` to `scan` for one machine-readable result object. Without it,
-`scan` prints a short human-readable summary; diagnostics remain on stderr.
-
-Accepted bundles are stored under `.wco/accepted/<task-id>/<archive-sha256>/`.
-Rejected archives and structured reports are stored under
-`.wco/rejected/<archive-sha256>/`. Temporary quarantine directories are removed
-after every operation.
-
-Schema 1.0 directory bundles remain supported. Schema 1.1 ZIP bundles use the
-canonical uppercase documentation files and require `checksums.json`.
-Schema 1.2 adds the execution, delivery, and Git policy contract. Schema 1.3
-adds structured validation commands and the Phase 4 execution boundary.
-Intake accepts 1.0 through 1.3; Phase 3 prepares 1.2/1.3, while Phase 4
-executes only 1.3.
-
-Phase 3 stores run receipts and isolated worktrees below the configured state
-directory. The registry in `examples/config.example.json` is trusted local
-configuration: bundle manifests contain only logical repository IDs, never
-filesystem paths. Preparation verifies the remote and exact base commit, then
-stops at `READY_FOR_CODEX`; it does not execute payloads or validation commands,
-create commits, push, call GitHub, or invoke Codex.
-
-Preparation uses an isolated Git runtime under `git-runtime/` (empty global
-configuration and hooks), rejects repositories with external smudge/process
-filters, and creates the worktree detached before attaching its validated local
-branch. Credential-bearing HTTP(S) registry URLs are rejected and persisted
-remote URLs are sanitized.
-
-Phase 4 uses injected fake agents and verification sandboxes in normal tests.
-Production uses the pinned `@openai/codex@0.145.0` and
-`@openai/codex-sdk@0.145.0` packages. WCO launches the bundled CLI launcher;
-the user's global `codex` installation and its version are irrelevant. The
-bundled runtime performs bounded `--version` and `login status` preflight
-before any real turn. Authentication is read from the configured `CODEX_HOME`,
-or from inherited HOME behavior when `codex_home` is omitted. The verifier runs
-through the pinned sandbox contract:
-`codex -c sandbox_workspace_write.network_access=false sandbox
---permission-profile :workspace --cd <canonical-cwd> -- <executable> <args>`.
-There is no unsandboxed fallback. The accepted bundle is prompt context, never
-an additional writable SDK directory. Normal CI uses fakes and consumes no
-Codex usage. The optional real sandbox gate is
-`WCO_RUN_SANDBOX_INTEGRATION=1 npm run test:sandbox-integration`; the optional
-real Phase 4 integration consumes Codex usage only when
-`WCO_RUN_CODEX_INTEGRATION=1` is set. Phase 4 never commits, pushes, creates a
-product PR, executes a payload, or contacts the public network.
-
-Production configuration is trusted local input:
-
-```json
-{
-  "runtime": {
-    "source": "bundled",
-    "codex_home": "/home/user/.codex"
-  }
-}
-```
-
-The global `codex` executable is not used, and no executable override
-environment variable is required. For a local Phase 4 release gate:
+Edit `.wco/config.json` so repository paths, remotes, credentials, model policy, and limits match your environment. Then set explicit CLI defaults:
 
 ```bash
-WCO_CODEX_HOME="$HOME/.codex" npm run phase4:release-gate
+export WCO_CONFIG="$PWD/.wco/config.json"
+export WCO_STATE_DIR="$PWD/.wco/state"
 ```
 
-For the Phase 7 release gate:
+Run the preflight:
 
 ```bash
-npm run phase7:release-gate
+wco doctor
 ```
 
-For the Phase 8 release gate, including the full fake same-PR revision loop:
+Once a run exists, set its identity once:
 
 ```bash
-npm run phase8:release-gate
+export WCO_RUN_ID='<task-id>:<task-bundle-sha256>'
+wco status
+wco next
+wco continue
 ```
 
-For the Phase 9 Web Authority Protocol v2 release gate:
+Flags always override the need for environment defaults, so automation can remain fully explicit.
+
+## Common commands
+
+```text
+wco doctor       machine/config/runtime preflight
+wco status       durable run status
+wco next         next durable transition, read-only
+wco continue     advance the workflow within bounded transition limits
+wco pause        prevent new transitions
+wco resume       resume an explicitly paused run
+wco validate     validate a Task Bundle directory
+wco intake       securely ingest a Task Bundle archive
+wco scan/watch   process an inbox of Task Bundles
+```
+
+Use `--json` where supported for machine-readable output. Human output stays concise and diagnostic rather than acting as durable state.
+
+## Development
 
 ```bash
-npm run phase9:release-gate
+npm run check
 ```
 
-Protocol and performance design references are in `PHASE9.md`,
-`WEB-AUTHORITY-CONTRACT.md`, `ARTIFACT-REGISTRY.md`, `PERFORMANCE.md`, and
-`UPSTREAM-COMPATIBILITY.md`.
+`check` runs template validation, strict TypeScript checking, the complete deterministic test suite, end-to-end workflow coverage, the build, and compiled CLI integration tests.
+
+Native opt-in checks are separate because CI must not pretend to prove a developer's local Codex or sandbox environment:
+
+```bash
+WCO_RUN_SANDBOX_INTEGRATION=1 npm run test:native:sandbox
+WCO_RUN_CODEX_INTEGRATION=1 npm run test:native:codex
+```
+
+See [Development](docs/development.md) for repository structure and test policy.
+
+## Architecture and security
+
+WCO follows fail-safe authority rules, end-to-end re-attestation, least privilege, bounded resources, content-addressed evidence, and recovery from durable receipts instead of transcript replay.
+
+- [Architecture](docs/architecture.md)
+- [Protocols and authority](docs/protocols.md)
+- [Operations and packaging](docs/operations.md)
+- [Security policy](SECURITY.md)
+
+## Packaging strategy
+
+Native CLI installation is the primary target. WCO needs tight access to host Git worktrees, local Codex authentication, credentials, and optional browser/bridge tooling, so a Docker image is not the default runtime boundary today. A container can still be useful later for reproducible development and deterministic CI.
+
+The repository already verifies its future distributable surface with `npm pack --dry-run`. The intended release sequence is GitHub release artifacts first, then optional npm publication after native compatibility checks are stable. See [Operations](docs/operations.md).
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
