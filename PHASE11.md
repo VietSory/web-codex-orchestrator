@@ -2,52 +2,58 @@
 
 ## Goal
 
-Phase 11 turns the existing Phase 3–10 primitives into a durable control plane that can survive process restart, transport failures and operator pauses without treating a browser tab, Codex thread, transcript or retry loop as canonical state. The first milestone remains **Verified Task Autopilot / Single-PR Core Alpha**; merge remains human-owned.
+Phase 11 turns Phase 3–10 primitives into a durable single-PR control plane that can survive process restart, transport failures and operator pauses without treating a browser tab, Codex thread, transcript or retry loop as canonical state. Merge remains human-owned.
 
-## Non-negotiable invariants
+## Frozen invariants
 
-1. Durable mission/task state belongs to WCO, not a browser tab, Codex thread or chat session.
+1. WCO owns durable mission/task state; browser/Codex session history is never authority.
 2. Every external/model/network/mutating transition is checkpointed before the call with an exact request SHA-256 and deterministic attempt ID.
-3. Completion/failure is fenced by that exact attempt ID. A late result from an expired/replaced attempt cannot advance state.
-4. Each run has one durable single-writer lock. A live competing writer is backpressured; a stale/malformed lock is never auto-stolen because read/unlink replacement races cannot be made safe with the portable Node filesystem API.
-5. Retry budgets, token/turn budgets and circuit state persist across restart. Retry not-before timestamps are enforced before another attempt can start.
-6. Retryable transport failures use bounded exponential backoff with deterministic jitter/cap. No hot restart/retry loop.
-7. Derived logs/history/caches never authorize a transition. Authorization comes from canonical phase receipts/artifacts and persisted budget/counter state.
-8. History is bounded: the hot ledger stores a hash-chained event tail plus compaction anchor. Retry authority uses persisted counters, never the compacted event window.
-9. Repeated identical diagnostics are deduplicated. Worker concurrency and queues are bounded with explicit backpressure.
-10. Pause prevents new transitions but does not erase a sealed checkpoint. Status/next/doctor stay cheap and must not initialize Codex/browser/network work unless explicitly requested.
-11. Merge, dangerous data operations, breaking product decisions and other human-policy gates remain human decisions.
+3. Completion/failure is fenced by that attempt ID; stale/late results cannot advance a newer attempt.
+4. `orchestrator.lock` serializes durable state mutation. `transition-execution.lock` additionally fences one whole external transition so two `continue` callers cannot concurrently execute the same sealed attempt.
+5. Locks are exclusive-created, file-synced, ownership/identity checked and never auto-stolen. A stale/malformed lock requires explicit operator repair because portable read/unlink cannot safely distinguish replacement races.
+6. Retry budgets, not-before timestamps, token/turn budgets and circuit state persist across restart. Retry authority uses durable counters, not compacted events.
+7. Retry uses bounded exponential backoff with deterministic jitter and cap; no hot loops.
+8. Ledger/event/diagnostic state is bounded. Derived logs/caches/history never authorize transitions.
+9. Selected registered artifacts are exact Phase 9 registrations, bounded/no-follow read, manifest-bound, atomically persisted and file-synced before use.
+10. P10 READY publication is re-attested against canonical Phase 3/9 authority, transaction backups, persisted gate evidence and exact current change-set before Phase 4 publication.
+11. Operator pause blocks new attempts and survives completion/failure of an already-started external attempt.
+12. `next` and absent-state `status` are cheap; `next` is read-only and does not need trusted config. `pause`/`resume` do not need config. `doctor`/`continue` require config.
+13. Merge/dangerous decisions remain human gates.
 
-## Persistence and recovery
+## Lifecycle implemented
 
-Canonical state is `<state>/orchestration/runs/<task-id>/<task-bundle-sha256>/run-ledger.json`. Ledger reads are bounded and reject symlink/non-regular/identity-changing files. Writes use a same-directory exclusive temporary file, `FileHandle.sync()`, atomic rename, and a parent-directory sync on non-Windows platforms. Node exposes `O_NOFOLLOW` only on platforms that support it; WCO therefore keeps lstat/file-identity checks as the portable defense and does not claim Windows directory-entry fsync semantics that Node does not expose portably.
+`wco-control continue` advances at most the bounded `--max-transitions` count and stops at input/Web/human boundaries. The production path now integrates:
 
-A process crash may leave `orchestrator.lock`. WCO deliberately fails closed rather than stealing that lock. `doctor`/Phase 16 recovery UX must surface the precise repair action. This is preferable to an unsafe auto-unlink race that could delete a newly acquired writer lock.
+`REGISTER_WEB_PACK -> EXECUTE_REGISTERED_PACK -> PUBLISH -> OPEN_DRAFT_PR`
 
-## Retry / resource / token policy
+Registration reads and validates the Web implementation pack, checkpoints its exact archive/pack identity, registers through Phase 9, persists the exact selected registration, then completes the attempt. Execution checkpoints the exact artifact/registration manifest pair and delegates only to the canonical Phase 10 constrained executor. Publication first re-attests the exact READY executor snapshot, checkpoints artifact + change-set digest, then delegates to the existing hardened publisher and accepts success only when the remote branch SHA equals the exact pushed commit.
 
-Default retry policy starts at 1s, doubles per durable transition attempt, applies deterministic 75–125% jitter, caps at 60s, opens the circuit after five consecutive failures for 120s, allows at most four attempts per transition and 24 total attempts. All numeric bounds are finite and validated.
+Opening the Draft PR, packaging the Result Bundle and Web verdict/revision integration remain later roadmap surfaces. Phase 11 deliberately stops at `OPEN_DRAFT_PR`; it never merges.
 
-Separate bounded pools remain required for Web/browser turns, Codex/model turns, deterministic verifier processes, Git/network mutations and later mission tasks. Content/evidence is referenced by immutable hashes rather than copied into the hot ledger. Sealed request payloads are reused on retry. Token/turn usage is persisted.
+## Persistence / portability
 
-## Upstream compatibility negative requirements
+Canonical control state is `<state>/orchestration/runs/<task-id>/<task-bundle-sha256>/run-ledger.json`. Ledger and selected-artifact reads are bounded and reject symlink/non-regular/identity-changing files. Same-directory temporary writes are exclusive-created, `FileHandle.sync()`ed, renamed atomically, then parent-directory metadata is synced on non-Windows platforms. Node exposes `O_NOFOLLOW` only where supported; WCO keeps lstat/file-identity checks as the portable defense and does not claim a Windows directory-entry fsync guarantee Node does not expose portably.
 
-WCO must remain correct when Codex session persistence/listing/resume is slow, incomplete or divergent. Upstream reports include openai/codex issues #35385 (rollout persistence errors can create in-memory/on-disk divergence), #19517 and #22037 (resume/thread listing scans many rollout files), #22411 (thread/list can repeatedly deserialize all sessions and consume idle CPU), and #30932 (very large rollout history can cause unbounded resume memory growth). Therefore WCO never uses Codex thread history as recovery authority, never requires global thread/list scans for status, keeps its own bounded checkpoint state, and will prefer direct known session identifiers when Phase 12 can do so safely. WCO does not patch OpenAI internals.
+## Performance / token / session negative requirements
 
-Node filesystem grounding: Node documents `FileHandle.sync()` as requesting that file data be flushed to the storage device, `fsPromises.rename()` as rename only, and `O_NOFOLLOW` as unavailable on Windows. The implementation follows those portability boundaries rather than assuming POSIX behavior everywhere.
+Upstream openai/codex issues #35385, #19517, #22037, #22411 and #30932 report rollout persistence divergence, expensive/global session scans, idle CPU from full thread deserialization and pathological history growth/OOM. WCO therefore keeps its own bounded checkpoint state, does not require `thread/list`/global resume scans for status or recovery, references immutable hashes instead of copying large evidence into the hot ledger, reuses sealed request identity across retries, and treats Codex thread IDs as compatibility handles rather than durable authority. WCO does not patch OpenAI internals.
 
-## UX surface and remaining Phase 11 closure
+Default retry policy starts at 1s, doubles per durable attempt, applies deterministic 75–125% jitter, caps at 60s, opens the circuit after five consecutive failures for 120s, allows four attempts per transition and 24 total attempts. Worker pools and queues remain bounded with explicit backpressure.
 
-The control plane remains centered on `wco-control continue|next|status|doctor|pause|resume`. The next closure batch integrates the exact Phase 9 registration → Phase 10 executor → publish lifecycle into this hardened controller, adds compiled CLI coverage, exact-result adoption/restart regressions and a Phase 11 release gate. `status` and `next` remain read-only/cheap; `continue` must stop at Web/human gates.
+## User surface
 
-## Exit criteria
+`wco-control next --run-id <id> --state-dir <state> [--json]`
 
-- bounded/no-follow durable ledger and lock/state confinement;
-- durable single-writer state transitions and no silent lock stealing;
-- sealed request/attempt identity before external work and attempt-ID fenced result adoption;
-- persisted retry/backoff/circuit/budget state with enforced retry timestamps;
-- pause/resume and bounded resource pools/backpressure;
-- planner/driver integration for the single-PR lifecycle;
-- cheap status/next/doctor and compiled CLI;
-- crash/restart/late-result/retry-budget/concurrency/token regressions;
-- exact-head release gate plus strict maintainer audit.
+`wco-control status --run-id <id> --state-dir <state> [--json]`
+
+`wco-control pause|resume --run-id <id> --state-dir <state> [--json]`
+
+`wco-control doctor --run-id <id> --state-dir <state> --config <config> [--json]`
+
+`wco-control continue --run-id <id> --state-dir <state> --config <config> [--web-pack <zip>] [--max-transitions 1..32] [--json]`
+
+## Release gate
+
+`npm run phase11:release-gate`
+
+The gate covers typecheck, frozen Phase 9/10 tests, Phase 11 tests, the complete unit/fake suite, Phase 8 E2E, build and compiled CLI integration. Native Windows/WSL Codex authentication/runtime behavior remains a later local compatibility gate; GitHub fake/deterministic tests must not pretend to prove it.

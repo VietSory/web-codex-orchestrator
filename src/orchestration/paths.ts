@@ -17,5 +17,6 @@ export function orchestrationPaths(stateDirectory: string, taskId: string, taskB
     directory,
     ledger: path.join(directory, "run-ledger.json"),
     lock: path.join(directory, "orchestrator.lock"),
+    execution_lock: path.join(directory, "transition-execution.lock"),
   };
 }
