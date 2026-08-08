@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added Phase 10 Code-First Constrained Executor (`wco-executor execute|status`): consumes only an exact Phase 9 registered Web implementation pack, revalidates canonical run/tree/spec/preimages, applies the registered create/replace/delete bytes through a write-ahead transaction, runs deterministic verification plus read-only Terra/Sol review, and stops at `READY_FOR_PUBLISH` without commit/push/PR/merge authority.
+- Hardened Phase 10 crash/retry authority with bounded no-follow receipt/backup/evidence reads, state-root confinement, all-preimages-before-write, closed-world changed-path checks, exact transaction-to-pack rebinding, persisted gate-evidence rebinding, and terminal approval identity that includes both postimage bytes and file permission modes.
+- Improved Phase 10 performance/usability: removed the redundant local implementer-model turn, preflights missing registration before expensive Codex startup while still checking auth/sandbox before mutation, reads only bounded `validation.json` for deterministic verification, caps reviewer context/evidence, preserves model usage telemetry, shares one security-critical accepted-task spec reader/hash implementation with Phase 9, and removes duplicated per-commit Phase 9 CI work while retaining explicit release gates.
 - Added Phase 9 Web Authority Protocol v2: bounded Web implementation packs, repository inventory/read coverage/project map/source receipts, frozen architecture and acceptance locks, exact operations/preimages, a generic Web response envelope, and an immutable content-addressed Artifact Registry. Phase 9 registers authority only and never applies code.
 - Hardened Phase 9 registration against stale or self-consistent false claims by re-attesting the canonical Phase 3 run, clean worktree, exact base/tree, actual padded `git ls-tree -l` inventory, accepted Task Bundle spec set, runtime source/project-map/read-coverage semantics and exact file preimages; immutable registry copies are independently re-parsed before registration evidence is created.
 - Added Phase 9 performance/token architecture and upstream compatibility requirements: stable content-addressed project context, bounded concurrency/backpressure, stable prompt prefixes, selective context retrieval, token/cache telemetry, bounded logs/processes, and a negative-requirement matrix for applicable `codex-chatgpt-web` session/bridge failures while treating OpenAI Codex internals as compatibility-only.
@@ -11,26 +14,11 @@
 - Hardened Phase 7 Web Review Verdict Processing with exact Task Bundle vs Result Bundle identity separation, selective bounded ZIP reads, hash-bound embedded review contracts and schemas, canonical trusted-run repository bindings, duplicate run identity rejection, integrity-checked terminal retries, complete GitHub head/base repository and SHA attestation, and bounded production GitHub responses.
 - Added Phase 7 Web Review Verdict Processing (`wco submit-web-verdict`, `wco web-review-status`), providing secure untrusted verdict intake, per-round immutable storage (`handoff/reviews/runs/<task-id>/<archive-sha256>/rounds/<zero-padded-round>/`), Result Bundle verification, mandatory binding assertions, anti-drip policy enforcement, fresh read-only GitHub attestation, and deterministic dispatch (`APPROVED`, `REVISION_REQUESTED`, `ESCALATED`).
 - Added Phase 6 Deterministic Result Bundle Generation and Web Review Handoff, producing a sealed, reproducible ZIP archive containing strictly projected public evidence and safe Git artifact extractions.
-- Added Phase 3 inbox scanning, trusted repository routing, exact-base Git
-  worktree preparation, run receipts, locks, and schema 1.2 execution policy.
-- Hardened Phase 3 worktree ownership cleanup, disabled checkout hooks and
-  external filters, and rejected/redacted credential-bearing remote URLs.
-- Added Phase 4 schema 1.3 structured validation, trusted agent/verifier
-  configuration, isolated execution state machine, dual-review gates, and
-  fail-closed Codex/sandbox adapters.
-- Hardened Phase 4 runtime/auth and sandbox preflight, cancellation and
-  timeout cleanup, Git-ref and bundle immutability checks, bounded/redacted
-  review evidence, generated-artifact receipts, trusted change limits, and
-  resume repair routing.
-- Wired production execution to `@openai/codex-sdk@0.145.0`, including trusted
-  runtime configuration, minimal environment preflight, structured output
-  schemas, and the concrete Codex verifier sandbox. Required verifier failures
-  now produce bounded redacted evidence for the next Terra correction turn.
-- Corrected the verifier invocation to the Codex 0.145.0 sandbox CLI contract,
-  using `--permission-profile :workspace --cd <canonical-cwd> --` and rejecting
-  incompatible Codex CLI versions during preflight.
-- Added a trusted root-level `sandbox_workspace_write.network_access=false`
-  override to every Codex sandbox invocation, with loopback-denial coverage.
-- Switched Phase 4 to the explicitly pinned bundled `@openai/codex@0.145.0`
-  runtime and moved real sandbox/execution integrations out of the normal
-  deterministic test glob. Global Codex installations are ignored.
+- Added Phase 3 inbox scanning, trusted repository routing, exact-base Git worktree preparation, run receipts, locks, and schema 1.2 execution policy.
+- Hardened Phase 3 worktree ownership cleanup, disabled checkout hooks and external filters, and rejected/redacted credential-bearing remote URLs.
+- Added Phase 4 schema 1.3 structured validation, trusted agent/verifier configuration, isolated execution state machine, dual-review gates, and fail-closed Codex/sandbox adapters.
+- Hardened Phase 4 runtime/auth and sandbox preflight, cancellation and timeout cleanup, Git-ref and bundle immutability checks, bounded/redacted review evidence, generated-artifact receipts, trusted change limits, and resume repair routing.
+- Wired production execution to `@openai/codex-sdk@0.145.0`, including trusted runtime configuration, minimal environment preflight, structured output schemas, and the concrete Codex verifier sandbox. Required verifier failures now produce bounded redacted evidence for the next Terra correction turn.
+- Corrected the verifier invocation to the Codex 0.145.0 sandbox CLI contract, using `--permission-profile :workspace --cd <canonical-cwd> --` and rejecting incompatible Codex CLI versions during preflight.
+- Added a trusted root-level `sandbox_workspace_write.network_access=false` override to every Codex sandbox invocation, with loopback-denial coverage.
+- Switched Phase 4 to the explicitly pinned bundled `@openai/codex@0.145.0` runtime and moved real sandbox/execution integrations out of the normal deterministic test glob. Global Codex installations are ignored.
