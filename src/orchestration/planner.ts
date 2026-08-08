@@ -1,0 +1,36 @@
+import { OrchestrationError, type TransitionKind } from "./contracts.js";
+
+export interface LifecycleSnapshot {
+  registered_artifact_sha256: string | null;
+  executor_state: string | null;
+  publish_state: string | null;
+  draft_pr_state: string | null;
+  result_bundle_ready: boolean;
+  web_review_state: "APPROVED" | "REVISION_REQUESTED" | "ESCALATED" | "PENDING" | null;
+  revision_state: string | null;
+  revision_result_ready: boolean;
+}
+
+export interface PlannedTransition {
+  transition: TransitionKind;
+  reason: string;
+  mutating: boolean;
+  requires_human: boolean;
+}
+
+export function deriveNextTransition(snapshot: LifecycleSnapshot): PlannedTransition {
+  if (!snapshot.registered_artifact_sha256) return { transition: "REGISTER_WEB_PACK", reason: "No registered Web implementation pack is bound to the run.", mutating: false, requires_human: false };
+  if (snapshot.executor_state !== "READY_FOR_PUBLISH") return { transition: "EXECUTE_REGISTERED_PACK", reason: `Executor state is ${snapshot.executor_state ?? "missing"}.`, mutating: true, requires_human: false };
+  if (snapshot.publish_state !== "PUSHED") return { transition: "PUBLISH", reason: `Git publication state is ${snapshot.publish_state ?? "missing"}.`, mutating: true, requires_human: false };
+  if (snapshot.draft_pr_state !== "OPEN") return { transition: "OPEN_DRAFT_PR", reason: `Draft PR state is ${snapshot.draft_pr_state ?? "missing"}.`, mutating: true, requires_human: false };
+  if (!snapshot.result_bundle_ready) return { transition: "PACKAGE_RESULT", reason: "Published head has no verified Result Bundle for Web review.", mutating: false, requires_human: false };
+  if (snapshot.web_review_state === null || snapshot.web_review_state === "PENDING") return { transition: "WAIT_WEB_VERDICT", reason: "The exact Result Bundle is waiting for a Web verdict.", mutating: false, requires_human: false };
+  if (snapshot.web_review_state === "APPROVED") return { transition: "WAIT_HUMAN", reason: "Web approved the exact Draft PR head; merge remains a human decision.", mutating: false, requires_human: true };
+  if (snapshot.web_review_state === "ESCALATED") return { transition: "WAIT_HUMAN", reason: "Web escalated a decision that cannot be resolved autonomously.", mutating: false, requires_human: true };
+  if (snapshot.web_review_state === "REVISION_REQUESTED") {
+    if (snapshot.revision_state !== "RESULT_READY") return { transition: "REVISE", reason: `A sealed revision request exists and revision state is ${snapshot.revision_state ?? "missing"}.`, mutating: true, requires_human: false };
+    if (!snapshot.revision_result_ready) throw new OrchestrationError("ORCHESTRATION_SNAPSHOT_INCONSISTENT", "Revision claims RESULT_READY but no revision Result Bundle is available.");
+    return { transition: "WAIT_WEB_VERDICT", reason: "The revision Result Bundle is ready for the next Web review round.", mutating: false, requires_human: false };
+  }
+  throw new OrchestrationError("ORCHESTRATION_SNAPSHOT_INCONSISTENT", "Lifecycle snapshot cannot be mapped to a valid next transition.");
+}
