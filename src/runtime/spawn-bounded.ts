@@ -19,8 +19,8 @@ export interface SpawnBoundedResult {
   signal: NodeJS.Signals | null;
   stdout: string;
   stderr: string;
-  stdoutBuffer: Buffer;
-  stderrBuffer: Buffer;
+  stdoutBuffer?: Buffer;
+  stderrBuffer?: Buffer;
   stdoutBytes: number;
   stderrBytes: number;
   stdoutTruncated: boolean;
