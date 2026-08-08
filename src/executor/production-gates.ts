@@ -3,6 +3,7 @@ import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
 import { reviewWithSol } from "../agent/sol-reviewer.js";
 import { reviewWithTerra } from "../agent/terra-reviewer.js";
 import { loadPhase4Config } from "../execution/execution-config.js";
+import { ExecutionError } from "../execution/errors.js";
 import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
 import { CodexVerificationSandbox } from "../verifier/codex-sandbox.js";
 import { verifyDeterministically } from "../verifier/verifier.js";
@@ -49,6 +50,32 @@ function mappedVerdict(verdict: string): "APPROVE" | "REVISE" | "ESCALATE" {
   if (verdict === "APPROVE") return "APPROVE";
   if (verdict === "REVISE") return "REVISE";
   return "ESCALATE";
+}
+
+async function runReviewerWithDeadline<T>(
+  maximumTurnSeconds: number,
+  externalSignal: AbortSignal | undefined,
+  run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const timeoutMs = Math.max(1, Math.trunc(maximumTurnSeconds * 1000));
+  const controller = new AbortController();
+  const abortFromExternal = () => controller.abort(externalSignal?.reason);
+  if (externalSignal?.aborted) abortFromExternal();
+  else externalSignal?.addEventListener("abort", abortFromExternal, { once: true });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort(new Error("Phase 10 reviewer deadline exceeded."));
+      reject(new ExecutionError("CODEX_TURN_TIMEOUT", `Phase 10 reviewer exceeded the configured ${maximumTurnSeconds}s turn deadline.`));
+    }, timeoutMs);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([run(controller.signal), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    externalSignal?.removeEventListener("abort", abortFromExternal);
+  }
 }
 
 export async function createProductionExecutorGates(options: { runId: string; stateDirectory: string; configPath: string }): Promise<{ verifier: ExecutorVerifierPort; reviewer: ExecutorReviewerPort }> {
@@ -104,9 +131,13 @@ export async function createProductionExecutorGates(options: { runId: string; st
     async review(request: ExecutorReviewRequest) {
       const prompt = reviewPrompt(request);
       const profile = request.reviewer === "terra" ? config.agents.internal_reviewer : config.agents.final_reviewer;
-      const result = request.reviewer === "terra"
-        ? await reviewWithTerra(agentClient, { model: profile.model, reasoning_effort: profile.reasoning_effort, prompt, threadId: undefined, workspacePath: request.worktree_path, acceptedBundlePath: request.accepted_bundle_path, ...(request.signal ? { signal: request.signal } : {}) })
-        : await reviewWithSol(agentClient, { model: profile.model, reasoning_effort: profile.reasoning_effort, prompt, threadId: undefined, workspacePath: request.worktree_path, acceptedBundlePath: request.accepted_bundle_path, ...(request.signal ? { signal: request.signal } : {}) });
+      const result = await runReviewerWithDeadline(
+        config.agents.limits.maximum_turn_seconds,
+        request.signal,
+        async (signal) => request.reviewer === "terra"
+          ? await reviewWithTerra(agentClient, { model: profile.model, reasoning_effort: profile.reasoning_effort, prompt, threadId: undefined, workspacePath: request.worktree_path, acceptedBundlePath: request.accepted_bundle_path, signal })
+          : await reviewWithSol(agentClient, { model: profile.model, reasoning_effort: profile.reasoning_effort, prompt, threadId: undefined, workspacePath: request.worktree_path, acceptedBundlePath: request.accepted_bundle_path, signal }),
+      );
       if (result.review.reviewed_change_set_sha256 !== request.change_set_digest) throw new ExecutorError("EXECUTOR_REVIEW_REJECTED", `${request.reviewer} reviewed stale digest '${result.review.reviewed_change_set_sha256}'.`);
       return {
         verdict: mappedVerdict(result.review.verdict),
