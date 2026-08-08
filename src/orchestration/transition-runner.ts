@@ -105,7 +105,12 @@ export async function runNextTransition(options: {
     const snapshot = await deps.readSnapshot(options.stateDirectory, options.runId);
     const planned = deriveNextTransition(snapshot);
     if (ledger.paused) return { ledger, planned, progressed: false, needs_input: "resume" };
-    if (["WAIT_HUMAN", "DONE"].includes(planned.transition)) return { ledger, planned, progressed: false, needs_input: null };
+    if (["BLOCKED", "FAILED", "COMPLETE"].includes(ledger.status)) {
+      return { ledger, planned, progressed: false, needs_input: null };
+    }
+    if (["WAIT_HUMAN", "DONE"].includes(planned.transition)) {
+      return { ledger, planned, progressed: false, needs_input: null };
+    }
     if (
       !ledger.current_attempt &&
       ledger.retry.next_retry_at &&
