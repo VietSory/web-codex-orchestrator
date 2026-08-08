@@ -44,10 +44,46 @@ function assertArgument(value: string, label: string): void {
   if (value.includes("\u0000")) throw new ExecutionError("OPERATIONAL_ERROR", `${label} contains NUL.`);
 }
 
-function boundedTail(current: Buffer<ArrayBufferLike>, chunk: Buffer<ArrayBufferLike>, maximum: number): { value: Buffer<ArrayBufferLike>; truncated: boolean } {
-  const combined = Buffer.concat([current, chunk]);
-  if (combined.byteLength <= maximum) return { value: combined, truncated: false };
-  return { value: combined.subarray(Math.max(0, combined.byteLength - maximum)), truncated: true };
+class BoundedByteTail {
+  private readonly chunks: Buffer[] = [];
+  private retainedBytes = 0;
+  private wasTruncated = false;
+
+  constructor(private readonly maximumBytes: number) {}
+
+  append(chunk: Buffer): void {
+    if (chunk.byteLength === 0) return;
+    if (this.maximumBytes === 0) {
+      this.wasTruncated = true;
+      return;
+    }
+
+    const exactChunk = Buffer.from(chunk);
+    this.chunks.push(exactChunk);
+    this.retainedBytes += exactChunk.byteLength;
+
+    while (this.retainedBytes > this.maximumBytes && this.chunks.length > 0) {
+      const excess = this.retainedBytes - this.maximumBytes;
+      const first = this.chunks[0]!;
+      this.wasTruncated = true;
+      if (first.byteLength <= excess) {
+        this.chunks.shift();
+        this.retainedBytes -= first.byteLength;
+        continue;
+      }
+      this.chunks[0] = first.subarray(excess);
+      this.retainedBytes -= excess;
+    }
+  }
+
+  get truncated(): boolean {
+    return this.wasTruncated;
+  }
+
+  toBuffer(): Buffer {
+    if (this.retainedBytes === 0) return Buffer.alloc(0);
+    return Buffer.concat(this.chunks, this.retainedBytes);
+  }
 }
 
 async function spawnBoundedBuffers(options: SpawnBoundedOptions): Promise<SpawnBoundedBinaryResult> {
@@ -59,12 +95,10 @@ async function spawnBoundedBuffers(options: SpawnBoundedOptions): Promise<SpawnB
 
   const started = performance.now();
   return await new Promise<SpawnBoundedBinaryResult>((resolve) => {
-    let stdout: Buffer<ArrayBufferLike> = Buffer.alloc(0);
-    let stderr: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+    const stdoutTail = new BoundedByteTail(options.stdoutMaxBytes);
+    const stderrTail = new BoundedByteTail(options.stderrMaxBytes);
     let stdoutBytes = 0;
     let stderrBytes = 0;
-    let stdoutTruncated = false;
-    let stderrTruncated = false;
     let timedOut = false;
     let cancelled = false;
     let spawnError: unknown;
@@ -89,12 +123,12 @@ async function spawnBoundedBuffers(options: SpawnBoundedOptions): Promise<SpawnB
       resolve({
         exitCode,
         signal: exitSignal,
-        stdout: Buffer.from(stdout),
-        stderr: Buffer.from(stderr),
+        stdout: stdoutTail.toBuffer(),
+        stderr: stderrTail.toBuffer(),
         stdoutBytes,
         stderrBytes,
-        stdoutTruncated,
-        stderrTruncated,
+        stdoutTruncated: stdoutTail.truncated,
+        stderrTruncated: stderrTail.truncated,
         timedOut,
         cancelled,
         durationMs: Math.max(0, Math.round(performance.now() - started)),
@@ -116,15 +150,11 @@ async function spawnBoundedBuffers(options: SpawnBoundedOptions): Promise<SpawnB
     });
     child.stdout.on("data", (chunk: Buffer) => {
       stdoutBytes += chunk.byteLength;
-      const bounded = boundedTail(stdout, chunk, options.stdoutMaxBytes);
-      stdout = bounded.value;
-      stdoutTruncated ||= bounded.truncated;
+      stdoutTail.append(chunk);
     });
     child.stderr.on("data", (chunk: Buffer) => {
       stderrBytes += chunk.byteLength;
-      const bounded = boundedTail(stderr, chunk, options.stderrMaxBytes);
-      stderr = bounded.value;
-      stderrTruncated ||= bounded.truncated;
+      stderrTail.append(chunk);
     });
     child.once("error", (error) => { spawnError = error; });
     child.once("close", (exitCode, exitSignal) => finish(exitCode, exitSignal));
