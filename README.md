@@ -1,8 +1,8 @@
 # Web Codex Orchestrator
 
-WCO turns Web-authored software work into **registered, constrained and independently verified local changes**. The Web side owns architecture/specification/implementation authority; the local side applies only registered bytes, verifies them, publishes evidence and keeps Git/GitHub mutations inside explicit phase boundaries.
+WCO turns Web-authored software work into **registered, constrained and independently verified local changes**. The Web side owns architecture/specification/implementation/verdict authority; the local side applies only registered bytes, verifies them, publishes evidence and keeps Git/GitHub mutations inside explicit phase boundaries.
 
-> Current stacked development status: Phase 9 Web Authority Protocol v2 is frozen/green; Phase 10 Code-First Constrained Executor is the active Draft dependency. `main` remains at merged Phase 8 until the user chooses to merge the stacked PRs.
+> Current stacked development status: Phases 9–16 are implemented on stacked Draft branches/PRs. Phase 16 is the final GitHub-side hardening layer. `main` is intentionally not merged by automation; merge remains a user decision after local validation.
 
 ## Core trust model
 
@@ -12,7 +12,7 @@ ChatGPT Web / Web Authority
                   ↓
       registered implementation pack
                   ↓
-WCO local control plane
+WCO durable local control plane
   validate identity/preimages/policy
   apply exact registered bytes
   deterministic verification
@@ -21,21 +21,32 @@ WCO local control plane
                   ↓
         READY_FOR_PUBLISH
                   ↓
-Git/GitHub delivery phases
+     exact non-force Git publish
                   ↓
-          human decides merge
+           Draft PR only
+                  ↓
+         Result Bundle
+                  ↓
+   explicit sealed Web verdict
+      ↙          ↓          ↘
+  APPROVE      REVISE     ESCALATE
+                 ↓
+       same Draft PR branch
+                 ↓
+        new Result Bundle
 ```
 
 Important boundaries:
 
-- loose chat text or a loose patch never becomes implementation authority;
+- loose chat text, browser history or a loose patch never becomes implementation authority;
 - downloaded archives are untrusted until validated/registered;
-- Phase 10 has no local implementer-model turn: it applies exact Web-authored bytes;
-- reviewers are read-only/no-network and must bind one exact change-set digest;
-- WCO never treats model output itself as authorization;
-- merge remains a human decision.
+- reviewers are read-only/no-network and bind one exact change-set digest;
+- WCO never treats model output, session state or transport success itself as authorization;
+- publication is normal fast-forward/non-force Git only;
+- WCO never marks a PR Ready or merges it as part of orchestration;
+- OpenAI Codex app/CLI/agent internals are compatibility boundaries, not WCO patch targets.
 
-See `SECURITY.md`, `ARTIFACT-REGISTRY.md`, `WEB-AUTHORITY-CONTRACT.md` and the phase documents for normative details.
+See `SECURITY.md`, `ARTIFACT-REGISTRY.md`, `WEB-AUTHORITY-CONTRACT.md`, `UPSTREAM-COMPATIBILITY.md`, `PERFORMANCE.md` and the phase documents for normative details.
 
 ## Requirements
 
@@ -55,110 +66,96 @@ npm test
 npm run build
 ```
 
-Useful release gates:
+Final GitHub-side release gate:
 
 ```bash
-npm run phase8:release-gate
-npm run phase9:release-gate
-npm run phase10:release-gate
+npm run phase16:release-gate
 ```
 
-The unit runner executes test files in bounded independent processes so one leaked handle cannot hide the failing suite behind a long global hang.
+Focused earlier gates remain available as `phase8:release-gate` through `phase15:release-gate`. The unit runner executes test files in bounded independent processes so one leaked handle cannot hide a failing suite behind a long global hang.
 
-## Current operator flow
+## Durable operator flow
 
-The long-term UX will be driven by the durable/native control plane in later phases. Until then, these explicit commands are the supported operations/debug surfaces.
-
-### 1. Intake and prepare a task
+Build first:
 
 ```bash
-node dist/cli/index.js intake ./downloads/wco-task.zip \
-  --state-dir ~/.local/state/web-codex-orchestrator
-
-node dist/cli/index.js prepare ./downloads/wco-task.zip \
-  --state-dir ~/.local/state/web-codex-orchestrator \
-  --config ~/.config/web-codex-orchestrator/config.json
+npm run build
 ```
 
-Preparation creates the canonical isolated worktree and run receipt. It does not invoke Codex or execute downloaded payloads.
+The Phase 11–16 control plane is exposed by `wco-control` / `dist/orchestration/standalone-cli.js`.
 
-### 2. Register a Web implementation pack — Phase 9
+Inspect without advancing work:
 
 ```bash
-wco-web-authority register \
+wco-control status \
   --run-id <task-id>:<task-bundle-sha256> \
-  --archive ./downloads/wco-web-implementation-pack.zip \
+  --state-dir ~/.local/state/web-codex-orchestrator \
+  --json
+
+wco-control next \
+  --run-id <task-id>:<task-bundle-sha256> \
+  --state-dir ~/.local/state/web-codex-orchestrator \
+  --json
+```
+
+Advance a run with explicit external inputs only when required:
+
+```bash
+wco-control continue \
+  --run-id <task-id>:<task-bundle-sha256> \
   --state-dir ~/.local/state/web-codex-orchestrator \
   --config ~/.config/web-codex-orchestrator/config.json \
+  --web-pack ./downloads/wco-web-implementation-pack.zip \
   --json
-```
 
-Registration re-attests the canonical run, clean base/tree, repository inventory, Task Bundle spec set and exact operation preimages. The registered ZIP and record are content-addressed/immutable evidence.
-
-### 3. Apply/verify/review the exact registered implementation — Phase 10
-
-```bash
-wco-executor execute \
+wco-control continue \
   --run-id <task-id>:<task-bundle-sha256> \
-  --artifact-sha256 <registered-pack-sha256> \
   --state-dir ~/.local/state/web-codex-orchestrator \
   --config ~/.config/web-codex-orchestrator/config.json \
+  --web-verdict ./downloads/web-verdict.json \
   --json
 ```
 
-Read status without starting Codex/network work:
+`continue` is bounded to at most 32 transitions per invocation, stops on human/input boundaries and does not scrape or fabricate a later Web verdict. After a `REVISE` round returns to `WAIT_WEB_VERDICT`, a new explicit verdict artifact is required.
+
+Pause/resume and diagnostics remain explicit:
 
 ```bash
-wco-executor status \
-  --run-id <task-id>:<task-bundle-sha256> \
-  --artifact-sha256 <registered-pack-sha256> \
-  --state-dir ~/.local/state/web-codex-orchestrator \
-  --json
+wco-control pause --run-id <run-id> --state-dir <state-dir>
+wco-control resume --run-id <run-id> --state-dir <state-dir>
+wco-control doctor --run-id <run-id> --state-dir <state-dir> --config <config.json> --json
 ```
 
-Production `execute` checks cheap artifact identity first, then Codex auth/sandbox availability, then fresh canonical authority, and only then starts product-worktree mutation. Missing artifact/config problems therefore fail quickly; auth/sandbox failures still happen before a partial product edit.
-
-### Existing delivery/review commands
-
-Phases already merged also expose:
-
-```text
-wco execute / execution-status
-wco publish
-wco create-draft-pr
-wco package-result
-wco submit-web-verdict / web-review-status
-wco revise / revision-status
-```
-
-These remain available for the Phase 4–8 path while the later durable control plane is being built.
+The lower-level Phase 4–10 CLIs (`wco`, `wco-web-authority`, `wco-executor`) remain supported debugging/operational surfaces. The durable controller reuses their hardened services rather than duplicating Git, verifier, reviewer or Result Bundle implementations.
 
 ## Performance and token discipline
 
-`PERFORMANCE.md` is part of the architecture, not a post-release wish list. Current rules include:
+`PERFORMANCE.md` is part of the architecture. Current rules include:
 
 - content-addressed repository/project context keyed by Git tree/blob SHA;
 - progressive disclosure instead of resending the whole repo/transcript;
 - stable prompt prefixes where possible;
-- bounded concurrency and backpressure rather than unbounded `Promise.all` fan-out;
+- bounded concurrency/backpressure rather than unbounded fan-out;
 - bounded logs/state/evidence and subprocess output;
 - selective verifier/reviewer context;
-- token/cache/turn/retry telemetry when exposed by the runtime;
-- no redundant local implementation turn in Phase 10;
+- global model/token/turn/retry accounting in durable orchestration;
+- reuse of sealed request/context identity across retryable transport failures;
+- no session-history scan to discover lifecycle state;
 - status reads do not start model/runtime work;
 - Git FSMonitor/untracked-cache support may be detected/recommended, but WCO does not silently rewrite user Git configuration.
 
-`UPSTREAM-COMPATIBILITY.md` converts relevant `codex-chatgpt-web` bridge/session/browser incidents into negative requirements. Problems inside OpenAI Codex internals are compatibility-only: WCO may detect, checkpoint, retry safely or surface diagnostics, but does not fork/patch OpenAI internals.
+`UPSTREAM-COMPATIBILITY.md` converts relevant `codex-chatgpt-web` bridge/session/browser incidents into negative requirements. Problems inside OpenAI Codex internals are compatibility-only: WCO may detect, checkpoint, bound, retry safely or surface diagnostics, but does not fork/patch OpenAI internals.
 
 ## Security summary
 
 - state/worktree/registry trust paths are confined and symlink-aware;
 - sensitive reads are bounded and re-attest file identity/size;
 - registry/workflow artifacts are hash-bound;
-- Git/GitHub publication paths reject force-push/merge authority unless explicitly allowed by the phase contract;
-- Phase 8 uses clean bare Git transports to avoid worktree-local URL rewrite rules redirecting credentials/publication;
-- Phase 10 changed-path, file-byte and permission-mode state are included in exact approval identity;
-- crash recovery accepts only registered preimage/postimage states and rejects unrelated changes;
+- Git/GitHub publication paths reject force-push/merge authority;
+- clean bare Git transports avoid worktree-local URL rewrite rules redirecting credentials/publication;
+- changed-path, file-byte and permission-mode state participate in approval identity;
+- crash recovery accepts only exact durable authority/receipt states and rejects drift;
+- Web verdicts are freshly Draft-PR/head/review-round bound before they can authorize revision/human completion;
 - review/verification approvals are invalidated by digest drift.
 
 See `SECURITY.md` for threat assumptions and exact boundaries.
@@ -166,22 +163,16 @@ See `SECURITY.md` for threat assumptions and exact boundaries.
 ## Documentation map
 
 ```text
-PHASE3.md .. PHASE10.md       normative phase contracts
-PHASE*-COVERAGE.md            executable evidence maps
+PHASE3.md .. PHASE16.md       normative phase contracts
+PHASE*-COVERAGE.md            executable evidence maps where present
 ARTIFACT-REGISTRY.md          registered artifact authority
 WEB-AUTHORITY-CONTRACT.md     Web-side protocol/locks
 PERFORMANCE.md                CPU/RAM/I/O/token/context architecture
 UPSTREAM-COMPATIBILITY.md     bridge/Codex compatibility posture
 SECURITY.md                   trust boundaries/threat assumptions
+LOCAL-FINAL-CHECKLIST.md      native Windows/WSL/Codex/bridge proof still required
 ```
 
-## Optional real-runtime checks
+## Final local-only validation
 
-Real local checks are intentionally opt-in because they consume/require local Codex/runtime state:
-
-```bash
-WCO_RUN_SANDBOX_INTEGRATION=1 npm run test:sandbox-integration
-WCO_RUN_CODEX_INTEGRATION=1 npm run test:codex-integration
-```
-
-The final v1.0 hardening phase will publish `LOCAL-FINAL-CHECKLIST.md` with the exact Windows/WSL/native bridge/Codex smoke commands that cannot be proven by GitHub CI.
+GitHub CI cannot prove the user's real Windows/WSL/native Codex/codex-chatgpt-web behavior. After exact-head CI and the two maintainer audits pass, run **only** the commands/observations in `LOCAL-FINAL-CHECKLIST.md` and return the requested diagnostics. Do not include secrets, cookies, auth headers or tokens.
