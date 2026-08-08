@@ -6,6 +6,7 @@ const REQUEST_TIMEOUT_MS = 15_000;
 const MAXIMUM_RESPONSE_BYTES = 1_048_576;
 const MAXIMUM_ERROR_DIAGNOSTIC_BYTES = 8_192;
 const MAXIMUM_SERVER_RETRY_HINT_MS = 24 * 60 * 60 * 1000;
+const SECONDARY_RATE_LIMIT_FALLBACK_MS = 60_000;
 
 export function parseGitHubRetryAfterMs(headers: Headers, nowMs = Date.now()): number | null {
   const candidates: number[] = [];
@@ -33,6 +34,19 @@ export function parseGitHubRetryAfterMs(headers: Headers, nowMs = Date.now()): n
   return Math.min(MAXIMUM_SERVER_RETRY_HINT_MS, Math.max(...candidates));
 }
 
+function isSecondaryRateLimitDiagnostic(text: string): boolean {
+  let message = text;
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && typeof (parsed as { message?: unknown }).message === "string") {
+      message = (parsed as { message: string }).message;
+    }
+  } catch {
+    // Error bodies are untrusted diagnostics; plain text remains acceptable for classification.
+  }
+  return message.toLowerCase().includes("secondary rate limit");
+}
+
 export class GitHubRestPullRequestClient implements GitHubPullRequestClient {
   private readonly token: string;
   private readonly fetchImplementation: typeof fetch;
@@ -53,10 +67,10 @@ export class GitHubRestPullRequestClient implements GitHubPullRequestClient {
     return text.split(this.token).join("[REDACTED]");
   }
 
-  private mapError(status: number, headers: Headers, isPost: boolean): string {
+  private mapError(status: number, headers: Headers, isPost: boolean, responseText: string): string {
     if (status === 401) return "PR_API_UNAUTHORIZED";
     if (status === 403) {
-      if (headers.get("x-ratelimit-remaining") === "0" || headers.get("retry-after")) {
+      if (headers.get("x-ratelimit-remaining") === "0" || headers.get("retry-after") || isSecondaryRateLimitDiagnostic(responseText)) {
         return "PR_API_RATE_LIMITED";
       }
       return "PR_API_FORBIDDEN";
@@ -127,15 +141,16 @@ export class GitHubRestPullRequestClient implements GitHubPullRequestClient {
       const retryAfterMs = parseGitHubRetryAfterMs(response.headers);
 
       if (method === "GET" && response.status !== 200) {
-        const code = this.mapError(response.status, response.headers, false) as ConstructorParameters<typeof DraftPullRequestError>[0];
+        const code = this.mapError(response.status, response.headers, false, text) as ConstructorParameters<typeof DraftPullRequestError>[0];
         const diag = this.redact(text).substring(0, MAXIMUM_ERROR_DIAGNOSTIC_BYTES);
-        throw new DraftPullRequestError(code, `Request failed with status ${response.status}: ${diag}`, code === "PR_API_RATE_LIMITED" ? retryAfterMs : null);
+        const retryDelay = code === "PR_API_RATE_LIMITED" ? (retryAfterMs ?? SECONDARY_RATE_LIMIT_FALLBACK_MS) : null;
+        throw new DraftPullRequestError(code, `Request failed with status ${response.status}: ${diag}`, retryDelay);
       }
       if (method === "POST" && response.status !== 201) {
         const diag = this.redact(text).substring(0, MAXIMUM_ERROR_DIAGNOSTIC_BYTES);
         let code: ConstructorParameters<typeof DraftPullRequestError>[0] = "PR_API_FAILED";
         if (response.status === 401 || response.status === 403 || response.status === 404) {
-          code = this.mapError(response.status, response.headers, true) as ConstructorParameters<typeof DraftPullRequestError>[0];
+          code = this.mapError(response.status, response.headers, true, text) as ConstructorParameters<typeof DraftPullRequestError>[0];
         } else if (response.status === 429) {
           code = "PR_API_RATE_LIMITED";
         } else if (response.status === 422) {
@@ -145,7 +160,8 @@ export class GitHubRestPullRequestClient implements GitHubPullRequestClient {
         } else {
           throw new DraftPullRequestError("PR_CREATE_UNCERTAIN", `Ambiguous create outcome: ${response.status} ${diag}`);
         }
-        throw new DraftPullRequestError(code, `Request failed with status ${response.status}: ${diag}`, code === "PR_API_RATE_LIMITED" ? retryAfterMs : null);
+        const retryDelay = code === "PR_API_RATE_LIMITED" ? (retryAfterMs ?? SECONDARY_RATE_LIMIT_FALLBACK_MS) : null;
+        throw new DraftPullRequestError(code, `Request failed with status ${response.status}: ${diag}`, retryDelay);
       }
 
       let parsed: unknown;
