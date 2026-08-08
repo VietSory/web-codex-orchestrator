@@ -76,7 +76,7 @@ wco-control continue \
   --json
 ```
 
-`continue` advances only transitions whose authority is already present. Missing Web pack/verdict is an input wait, not a failed retry. `WAIT_HUMAN` is terminal for autonomous operation. Pause/resume, retry backoff, transition locks, bounded budgets and recovery receipts survive process restart. After crash recovery has had a chance to adopt exact completed work, terminal ledgers and unexpired retry deadlines return before external Web pack/verdict bytes are re-read.
+`continue` advances only transitions whose authority is already present. Missing Web pack/verdict is an input wait, not a failed retry. `WAIT_HUMAN` is terminal for autonomous operation. Pause/resume, retry backoff, transition locks, bounded budgets and recovery receipts survive process restart, but pause/resume never clears a durable terminal or budget block. After crash recovery has had a chance to adopt exact completed work, terminal ledgers and unexpired retry deadlines return before external Web pack/verdict bytes are re-read.
 
 Lower-level Phase 4–10 commands remain explicit diagnostic/recovery surfaces, including `wco execute`, `wco publish`, `wco create-draft-pr`, `wco package-result`, `wco submit-web-verdict`, `wco revise`, `wco-web-authority` and `wco-executor`.
 
