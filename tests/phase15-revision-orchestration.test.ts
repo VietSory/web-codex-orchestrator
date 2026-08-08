@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { checkpointAttempt } from "../src/orchestration/controller.js";
+import { recoverCompletedAttempt } from "../src/orchestration/recovery.js";
+import { revisionOrchestrationPayload, type RevisionOrchestrationAuthority } from "../src/orchestration/revise.js";
 import { runNextTransition, type OrchestrationDependencies } from "../src/orchestration/transition-runner.js";
 import { readRunLedger } from "../src/orchestration/ledger.js";
 import type { LifecycleSnapshot } from "../src/orchestration/planner.js";
@@ -13,6 +16,7 @@ const VERDICT = "c".repeat(64);
 const REQUEST = "d".repeat(64);
 const RESULT = "e".repeat(64);
 const MANIFEST = "f".repeat(64);
+const DECISION = "1".repeat(64);
 const OLD_HEAD = "3".repeat(40);
 const NEW_HEAD = "4".repeat(40);
 
@@ -36,10 +40,24 @@ function webReview() {
     review_round: 1,
     verdict_sha256: VERDICT,
     revision_request_sha256: REQUEST,
+    decision_event_sha256: DECISION,
     published_commit_sha: OLD_HEAD,
     pull_request_number: 42,
     fresh_attested_head_sha: OLD_HEAD,
   } as const;
+}
+
+function authority(overrides: Partial<RevisionOrchestrationAuthority> = {}): RevisionOrchestrationAuthority {
+  return {
+    revisionRound: 1,
+    revisionRequestSha256: REQUEST,
+    verdictSha256: VERDICT,
+    decisionEventSha256: DECISION,
+    publishedCommitSha: OLD_HEAD,
+    pullRequestNumber: 42,
+    freshAttestedHeadSha: OLD_HEAD,
+    ...overrides,
+  };
 }
 
 function revisionReceipt(overrides: Record<string, unknown> = {}) {
@@ -132,4 +150,71 @@ test("P15-ORCH-004 revision is limited to Web review rounds 1 through 3 before a
   );
   const ledger = await readRunLedger(root, RUN_ID);
   assert.equal(ledger?.transition_attempts.REVISE, 0);
+});
+
+test("P15-REC-001 completed RESULT_READY revision is adopted after restart and usage is counted exactly once", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-p15-rec-ready-"));
+  t.after(async () => fs.rm(root, { recursive: true, force: true }));
+  const sealed = authority();
+  const started = await checkpointAttempt({
+    stateDirectory: root,
+    runId: RUN_ID,
+    transition: "REVISE",
+    payload: revisionOrchestrationPayload(sealed),
+    now: new Date("2026-08-08T00:00:00.000Z"),
+  });
+  let terminalRevalidations = 0;
+  const recovered = await recoverCompletedAttempt({
+    stateDirectory: root,
+    runId: RUN_ID,
+    configPath: path.join(root, "config.json"),
+    ledger: started,
+    dependencies: {
+      async attestRevisionAuthority() { return sealed; },
+      async getRevisionStatus() { return revisionReceipt(); },
+      async reviseRun() { terminalRevalidations += 1; return revisionReceipt(); },
+    },
+    now: () => new Date("2026-08-08T00:00:01.000Z"),
+  });
+  assert.equal(terminalRevalidations, 1);
+  assert.equal(recovered.current_attempt, null);
+  assert.equal(recovered.transition_attempts.REVISE, 1);
+  assert.equal(recovered.last_completed_transition, "REVISE");
+  assert.equal(recovered.next_transition, "WAIT_WEB_VERDICT");
+  assert.equal(recovered.budget.model_turns, 3);
+  assert.equal(recovered.budget.input_tokens, 1200);
+  assert.equal(recovered.budget.output_tokens, 300);
+
+  const reread = await readRunLedger(root, RUN_ID);
+  assert.equal(reread?.budget.model_turns, 3);
+  assert.equal(reread?.budget.input_tokens, 1200);
+  assert.equal(reread?.budget.output_tokens, 300);
+});
+
+test("P15-REC-002 changed revision authority is rejected before terminal revision adoption", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-p15-rec-conflict-"));
+  t.after(async () => fs.rm(root, { recursive: true, force: true }));
+  const sealed = authority();
+  const started = await checkpointAttempt({
+    stateDirectory: root,
+    runId: RUN_ID,
+    transition: "REVISE",
+    payload: revisionOrchestrationPayload(sealed),
+    now: new Date("2026-08-08T00:00:00.000Z"),
+  });
+  let statusReads = 0;
+  await assert.rejects(
+    () => recoverCompletedAttempt({
+      stateDirectory: root,
+      runId: RUN_ID,
+      configPath: path.join(root, "config.json"),
+      ledger: started,
+      dependencies: {
+        async attestRevisionAuthority() { return authority({ decisionEventSha256: "2".repeat(64) }); },
+        async getRevisionStatus() { statusReads += 1; return revisionReceipt(); },
+      },
+    }),
+    (error: unknown) => error instanceof Error && "code" in error && (error as { code?: unknown }).code === "ORCHESTRATION_RECOVERY_CONFLICT",
+  );
+  assert.equal(statusReads, 0);
 });
