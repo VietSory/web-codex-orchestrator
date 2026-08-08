@@ -10,6 +10,7 @@ import {
   executionPaths,
   readExecutionReceipt,
 } from "../src/execution/execution-store.js";
+import { readRunReceipt, runDirectory } from "../src/run/run-store.js";
 
 const TASK_ID = "TASK-P16-STATE";
 const SHA = "a".repeat(64);
@@ -60,4 +61,13 @@ test("P16-STATE-BOUND-003 corrupted oversized execution receipts fail before unb
   t.after(async () => fs.rm(state, { recursive: true, force: true }));
   await fs.writeFile(paths.execution, `{"padding":"${"z".repeat(4 * 1024 * 1024)}"}`);
   await assert.rejects(readExecutionReceipt(state, TASK_ID, SHA), /JSON file exceeds the 4194304 byte safety limit/);
+});
+
+test("P16-STATE-BOUND-004 corrupted oversized root run receipts are allocation-bounded", async (t) => {
+  const state = await fs.mkdtemp(path.join(os.tmpdir(), "wco-p16-run-receipt-"));
+  t.after(async () => fs.rm(state, { recursive: true, force: true }));
+  const directory = runDirectory(state, TASK_ID, SHA);
+  await fs.mkdir(directory, { recursive: true });
+  await fs.writeFile(path.join(directory, "run.json"), `{"padding":"${"r".repeat(1024 * 1024)}"}`);
+  await assert.rejects(readRunReceipt(state, TASK_ID, SHA), /JSON file exceeds the 1048576 byte safety limit/);
 });
