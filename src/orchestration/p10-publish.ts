@@ -6,7 +6,7 @@ import { GitRunner } from "../git/git-runner.js";
 import { verifyBundleChecksums } from "../intake/checksum-verifier.js";
 import { preparePublishGitSecurity, type PreparedPublishGitSecurity } from "../publish/publish-auth.js";
 import { publishPreparedPhase4Run } from "../publish/phase4-publish-service.js";
-import type { GitPublishReceipt } from "../publish/contracts.js";
+import { GitPublishError, type GitPublishReceipt } from "../publish/contracts.js";
 import { OrchestrationError } from "./contracts.js";
 import { attestReadyExecutorSnapshot } from "./executor-ready.js";
 
@@ -16,6 +16,13 @@ function boundedCommitMessage(taskId: string, title: string): string {
   return `Apply verified task ${normalizedTask}${normalizedTitle ? `: ${normalizedTitle}` : ""}`.slice(0, 4_096);
 }
 
+function mapTimedOutPublish(error: unknown): never {
+  if (error instanceof GitPublishError && error.details?.timed_out === true) {
+    throw new OrchestrationError("ORCHESTRATION_PUBLISH_TIMEOUT", `Bounded Git publication timed out: ${error.message}`);
+  }
+  throw error;
+}
+
 async function verifyConfiguredIdentity(
   runner: GitRunner,
   worktreePath: string,
@@ -23,6 +30,9 @@ async function verifyConfiguredIdentity(
 ): Promise<void> {
   for (const variable of ["GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"] as const) {
     const result = await runner.run(["var", variable], worktreePath);
+    if (result.timed_out === true) {
+      throw new OrchestrationError("ORCHESTRATION_PUBLISH_TIMEOUT", `Timed out while verifying ${variable}.`);
+    }
     if (result.exitCode !== 0) {
       throw new OrchestrationError("ORCHESTRATION_PUBLISH_IDENTITY_INVALID", `Failed to verify ${variable}.`);
     }
@@ -48,10 +58,7 @@ export async function publishReadyExecutorSnapshot(options: {
   const ready = await attestReadyExecutorSnapshot(options);
   const config = await loadPhase4Config(options.configPath);
   if (!config.publish) {
-    throw new OrchestrationError(
-      "ORCHESTRATION_PUBLISH_CONFIG_MISSING",
-      "Trusted publish configuration is required before publication.",
-    );
+    throw new OrchestrationError("ORCHESTRATION_PUBLISH_CONFIG_MISSING", "Trusted publish configuration is required before publication.");
   }
 
   const acceptedBundlePath = ready.source.trusted.runReceipt.accepted_bundle_path;
@@ -75,53 +82,42 @@ export async function publishReadyExecutorSnapshot(options: {
     contract.git_policy.allow_remote_branch_delete !== false ||
     contract.git_policy.allow_merge !== false
   ) {
-    throw new OrchestrationError(
-      "ORCHESTRATION_PUBLISH_AUTHORITY_DRIFT",
-      "Accepted Task Bundle delivery contract no longer matches the canonical run.",
-    );
+    throw new OrchestrationError("ORCHESTRATION_PUBLISH_AUTHORITY_DRIFT", "Accepted Task Bundle delivery contract no longer matches the canonical run.");
   }
 
   const runtimeDirectory = path.join(ready.executorDirectory, "publish", "git-runtime");
-  const auth = await preparePublishGitSecurity(
-    config.publish,
-    run.remote_url,
-    runtimeDirectory,
-    process.env,
-  );
+  const auth = await preparePublishGitSecurity(config.publish, run.remote_url, runtimeDirectory, process.env);
 
   try {
-    const runner = new GitRunner(process.env, runtimeDirectory, {
-      identity: config.publish.identity,
-      auth,
-    });
+    const runner = new GitRunner(process.env, runtimeDirectory, { identity: config.publish.identity, auth });
     await verifyConfiguredIdentity(runner, run.worktree_path, config.publish.identity);
-
-    return await publishPreparedPhase4Run({
-      runId: run.run_id,
-      taskId: run.task_id,
-      archiveSha256: run.archive_sha256,
-      stateDirectory: options.stateDirectory,
-      executionDirectory: ready.executorDirectory,
-      worktreePath: run.worktree_path,
-      baseCommit: run.base_commit,
-      branchName: run.branch_name,
-      remoteName: run.remote,
-      allowedRemoteUrl: run.remote_url,
-      allowedBranchPrefix: contract.git_policy.allowed_branch_prefix,
-      denyDirectPushBranches: [...contract.git_policy.deny_direct_push_branches],
-      expectedChangeSetSha256: ready.changeSetDigest,
-      expectedPaths: ready.changedPaths,
-      commitMessage: boundedCommitMessage(contract.task_id, contract.title),
-      runner,
-      inspectVerifiedChangeSet: async () => {
-        const current = await attestReadyExecutorSnapshot(options);
-        return {
-          change_set_sha256: current.changeSetDigest,
-          paths: current.changedPaths,
-        };
-      },
-      ...(options.now ? { now: options.now } : {}),
-    });
+    try {
+      return await publishPreparedPhase4Run({
+        runId: run.run_id,
+        taskId: run.task_id,
+        archiveSha256: run.archive_sha256,
+        stateDirectory: options.stateDirectory,
+        executionDirectory: ready.executorDirectory,
+        worktreePath: run.worktree_path,
+        baseCommit: run.base_commit,
+        branchName: run.branch_name,
+        remoteName: run.remote,
+        allowedRemoteUrl: run.remote_url,
+        allowedBranchPrefix: contract.git_policy.allowed_branch_prefix,
+        denyDirectPushBranches: [...contract.git_policy.deny_direct_push_branches],
+        expectedChangeSetSha256: ready.changeSetDigest,
+        expectedPaths: ready.changedPaths,
+        commitMessage: boundedCommitMessage(contract.task_id, contract.title),
+        runner,
+        inspectVerifiedChangeSet: async () => {
+          const current = await attestReadyExecutorSnapshot(options);
+          return { change_set_sha256: current.changeSetDigest, paths: current.changedPaths };
+        },
+        ...(options.now ? { now: options.now } : {}),
+      });
+    } catch (error) {
+      mapTimedOutPublish(error);
+    }
   } finally {
     await cleanupPublishAuth(auth);
   }
