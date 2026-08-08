@@ -20,7 +20,7 @@ Phase 11 turns Phase 3–10 primitives into a durable single-PR control plane th
 12. Canonical Phase 9 registry bytes, Phase 10 receipts/backups/gate evidence, and orchestration state are file-synced before they become recovery authority. Immutable evidence is installed by exact bytes and conflicting pre-existing bytes fail closed.
 13. Publish-receipt reads are bounded to 16 MiB and use non-symlink/stable-file identity checks; no recovery path may allocate an unbounded receipt from disk.
 14. Operator pause blocks new attempts and survives completion/failure of an already-started external attempt.
-15. `next` and absent-state `status` are cheap; `next` is read-only and does not need trusted config. `pause`/`resume` do not need config. `doctor`/`continue` require config.
+15. `next` and absent-state `status` are cheap; `next` is read-only and does not need trusted config. `pause`/`resume` do not need config. `doctor` requires config but deliberately does not require an existing run ID; `continue` requires both config and run ID.
 16. Merge/dangerous decisions remain human gates.
 
 ## Lifecycle implemented
@@ -51,6 +51,8 @@ Upstream openai/codex issues #35385, #19517, #22037, #22411, #30932, #34724 and 
 
 Default retry policy starts at 1s, doubles per durable attempt, applies deterministic 75–125% jitter, caps at 60s, opens the circuit after five consecutive failures for 120s, allows four attempts per transition and 24 total attempts. Worker pools and queues remain bounded with explicit backpressure. File-backed authority readers are capped before allocation, and recovery prefers exact receipt adoption over repeating model/reviewer work, reducing CPU, latency and token use after restart.
 
+`doctor` is a bounded machine preflight, not a model operation. It validates Node/state/config, configured credential environment-key presence, Git, the pinned bundled Codex version and Codex login status without printing credential values or starting a model turn.
+
 ## User surface
 
 `wco-control next --run-id <id> --state-dir <state> [--json]`
@@ -59,9 +61,9 @@ Default retry policy starts at 1s, doubles per durable attempt, applies determin
 
 `wco-control pause|resume --run-id <id> --state-dir <state> [--json]`
 
-`wco-control doctor --run-id <id> --state-dir <state> --config <config> [--json]`
+`wco-control doctor --state-dir <state> --config <config> [--json]`
 
-`wco-control continue --run-id <id> --state-dir <state> --config <config> [--web-pack <zip>] [--max-transitions 1..32] [--json]`
+`wco-control continue --run-id <id> --state-dir <state> --config <config> [--web-pack <zip>] [--web-verdict <verdict.json>] [--max-transitions 1..32] [--json]`
 
 ## Release gate
 
