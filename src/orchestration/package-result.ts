@@ -130,7 +130,7 @@ function cleanGitEnvironment(): Record<string, string> {
 
 function createGitRunner(maximumOutputBytes: number): GitRunner {
   const outputCap = Math.max(MIN_GIT_OUTPUT_BYTES, Math.min(MAX_GIT_OUTPUT_BYTES, maximumOutputBytes));
-  async function invoke(args: string[], cwd: string, binary: boolean): Promise<string | Buffer> {
+  async function invoke(args: string[], cwd: string) {
     const result = await spawnBounded({
       executable: "git",
       args,
@@ -145,11 +145,11 @@ function createGitRunner(maximumOutputBytes: number): GitRunner {
       const reason = result.timedOut ? "timed out" : result.stdoutTruncated || result.stderrTruncated ? "exceeded bounded output" : `exited with code ${result.exitCode ?? "null"}`;
       throw new OrchestrationError("ORCHESTRATION_RESULT_GIT_FAILED", `git ${reason}: ${result.stderr.slice(-4096)}`);
     }
-    return binary ? Buffer.from(result.stdout, "utf8") : result.stdout;
+    return result;
   }
   return {
-    async run(args: string[], cwd: string) { return { stdout: await invoke(args, cwd, false) as string }; },
-    async runBinary(args: string[], cwd: string) { return await invoke(args, cwd, true) as Buffer; },
+    async run(args: string[], cwd: string) { return { stdout: (await invoke(args, cwd)).stdout }; },
+    async runBinary(args: string[], cwd: string) { return (await invoke(args, cwd)).stdoutBuffer; },
   };
 }
 
