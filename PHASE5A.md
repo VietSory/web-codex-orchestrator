@@ -2,7 +2,9 @@
 
 Phase 5A consumes a completed Phase 4 execution receipt and publishes exactly
 that approved change set as one Git commit on the prepared delivery branch.
-It then pushes that commit to the one trusted remote without force-push.
+It then pushes that commit to the one trusted remote without destructive
+force-update authority. Initial branch creation uses an empty expected-value
+lease only as an atomic create-if-absent compare-and-swap guard.
 
 ## Production flow
 
@@ -66,7 +68,7 @@ The remote is never pushed again when it already points to the approved commit.
 - The accepted bundle and delivery contract are re-read before publication.
 - The first attempt starts at the exact base commit.
 - No direct push to `main` or another denied branch.
-- No force-push.
+- No destructive force-update of an existing remote branch.
 - No remote branch deletion.
 - No merge.
 - No GitHub API or Draft PR creation in Phase 5A.
@@ -83,10 +85,9 @@ remote ref must not exist at the instant of the push. If another actor creates
 that ref during the race window, the push fails and WCO reports the conflict;
 it cannot update or overwrite that newly existing ref.
 
-This lease does not grant force-update authority to an existing branch and does
-not weaken the `No force-push` invariant above. It is the atomic enforcement of
-the separate frozen invariant that a pre-existing remote branch is never
-silently adopted or overwritten.
+This lease does not grant force-update authority to an existing branch. It is
+the atomic enforcement of the frozen invariant that a pre-existing remote
+branch is never silently adopted or overwritten.
 
 ## State files
 
