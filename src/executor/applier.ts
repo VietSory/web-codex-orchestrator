@@ -1,11 +1,10 @@
-import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
 import type { WebImplementationPack, WebImplementationOperation } from "../web-authority/contracts.js";
 import { ExecutorError, type ExecutorReceipt, type ExecutorTransactionOperation } from "./contracts.js";
 import { executorPaths, prepareExecutorDirectory } from "./paths.js";
-import { ensureSecureExecutorSubdirectory, readStableExecutorStateFile } from "./state-io.js";
+import { ensureSecureExecutorSubdirectory, installImmutableDurableExecutorStateFile, readStableExecutorStateFile } from "./state-io.js";
 import { readExecutorReceipt, writeExecutorReceipt } from "./store.js";
 import { deleteExactWorktreeFile, readStableWorktreeFile, writeExactWorktreeFile } from "./worktree-io.js";
 
@@ -32,12 +31,7 @@ async function installBackup(options: { stateDirectory: string; receipt: Executo
   const digest = sha256(options.bytes);
   const filename = `${options.operation.op_id}-${digest}.bin`;
   const finalPath = path.join(paths.backups, filename);
-  try { await fs.writeFile(finalPath, options.bytes, { flag: "wx", mode: 0o600 }); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    const existing = await readStableExecutorStateFile(finalPath, MAX_BACKUP_BYTES);
-    if (existing.byteLength !== options.bytes.byteLength || sha256(existing) !== digest) throw new ExecutorError("EXECUTOR_TRANSACTION_INVALID", `Existing backup bytes differ for '${options.operation.path}'.`);
-  }
+  await installImmutableDurableExecutorStateFile(finalPath, options.bytes, MAX_BACKUP_BYTES);
   return path.relative(paths.directory, finalPath).split(path.sep).join("/");
 }
 
