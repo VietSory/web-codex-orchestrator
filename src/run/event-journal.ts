@@ -1,3 +1,4 @@
+import { constants } from "node:fs";
 import { lstat, mkdir, open } from "node:fs/promises";
 import path from "node:path";
 import type { RunEvent, RunState } from "./contracts.js";
@@ -67,6 +68,23 @@ async function nextSequence(filePath: string, runId: string): Promise<number> {
   }
 }
 
+async function appendDurably(filePath: string, line: string): Promise<void> {
+  const flags = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW);
+  const handle = await open(filePath, flags, 0o600);
+  try {
+    const opened = await handle.stat();
+    if (!opened.isFile()) throw new Error("Event journal append target is not a regular file.");
+    const current = await lstat(filePath);
+    if (current.isSymbolicLink() || !current.isFile() || current.dev !== opened.dev || current.ino !== opened.ino) {
+      throw new Error("Event journal path changed before append.");
+    }
+    await handle.writeFile(line, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function appendRunEvent(
   stateDirectory: string,
   taskId: string,
@@ -81,13 +99,6 @@ export async function appendRunEvent(
   await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
   const sequence = await nextSequence(filePath, runId);
   const event: RunEvent = { event_version: "1.0", run_id: runId, sequence, from, to, timestamp: now().toISOString(), details };
-  const line = `${JSON.stringify(event)}\n`;
-  const handle = await open(filePath, "a", 0o600);
-  try {
-    await handle.writeFile(line, "utf8");
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
+  await appendDurably(filePath, `${JSON.stringify(event)}\n`);
   return event;
 }
