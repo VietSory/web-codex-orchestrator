@@ -173,9 +173,10 @@ export class GitHubRestAttestationClient implements GitHubAttestationClient {
 
   async getPullRequest(owner: string, repo: string, prNumber: number): Promise<unknown> {
     const url = `${githubApiBaseUrl()}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${prNumber}`;
-    let response: Response;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(new Error("GitHub attestation deadline exceeded.")), this.timeoutMs);
     try {
-      response = await this.fetchImplementation(url, {
+      const response = await this.fetchImplementation(url, {
         method: "GET",
         headers: {
           Authorization: `Bearer ${this.token}`,
@@ -184,33 +185,36 @@ export class GitHubRestAttestationClient implements GitHubAttestationClient {
           "User-Agent": "web-codex-orchestrator/phase6",
         },
         redirect: "manual",
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: controller.signal,
       });
-    } catch (error) {
-      throw new ResultBundleError("RESULT_PR_API_FAILED", `Network error: ${error instanceof Error ? error.message : String(error)}`);
-    }
 
-    if (response.status >= 300 && response.status < 400) throw new ResultBundleError("RESULT_PR_API_REDIRECT_REJECTED", "GitHub response attempted an untrusted redirect.");
-    if (response.status === 401) throw new ResultBundleError("RESULT_PR_API_UNAUTHORIZED", "GitHub returned 401 Unauthorized.");
-    if (response.status === 403) throw new ResultBundleError("RESULT_PR_API_FORBIDDEN", "GitHub returned 403 Forbidden.");
-    if (response.status === 404) throw new ResultBundleError("RESULT_PR_API_NOT_FOUND", `PR not found: ${owner}/${repo}#${prNumber}`);
-    if (response.status === 429 || (response.status >= 400 && response.headers.get("x-ratelimit-remaining") === "0")) {
-      throw new ResultBundleError("RESULT_PR_API_RATE_LIMITED", "GitHub rate limit exceeded.");
-    }
-    if (!response.ok) throw new ResultBundleError("RESULT_PR_API_FAILED", `GitHub returned ${response.status}.`);
+      if (response.status >= 300 && response.status < 400) throw new ResultBundleError("RESULT_PR_API_REDIRECT_REJECTED", "GitHub response attempted an untrusted redirect.");
+      if (response.status === 401) throw new ResultBundleError("RESULT_PR_API_UNAUTHORIZED", "GitHub returned 401 Unauthorized.");
+      if (response.status === 403) throw new ResultBundleError("RESULT_PR_API_FORBIDDEN", "GitHub returned 403 Forbidden.");
+      if (response.status === 404) throw new ResultBundleError("RESULT_PR_API_NOT_FOUND", `PR not found: ${owner}/${repo}#${prNumber}`);
+      if (response.status === 429 || (response.status >= 400 && response.headers.get("x-ratelimit-remaining") === "0")) {
+        throw new ResultBundleError("RESULT_PR_API_RATE_LIMITED", "GitHub rate limit exceeded.");
+      }
+      if (!response.ok) throw new ResultBundleError("RESULT_PR_API_FAILED", `GitHub returned ${response.status}.`);
 
-    let buffer: Buffer;
-    try {
-      buffer = await readBoundedResponse(response, this.maxResponseBytes);
+      let buffer: Buffer;
+      try {
+        buffer = await readBoundedResponse(response, this.maxResponseBytes);
+      } catch (error) {
+        if (error instanceof ResultBundleError) throw error;
+        throw new ResultBundleError("RESULT_PR_API_FAILED", `GitHub response read failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+
+      try {
+        return JSON.parse(buffer.toString("utf8")) as unknown;
+      } catch {
+        throw new ResultBundleError("RESULT_PR_API_RESPONSE_INVALID", "GitHub response is not valid JSON.");
+      }
     } catch (error) {
       if (error instanceof ResultBundleError) throw error;
-      throw new ResultBundleError("RESULT_PR_API_FAILED", `GitHub response read failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
-
-    try {
-      return JSON.parse(buffer.toString("utf8")) as unknown;
-    } catch {
-      throw new ResultBundleError("RESULT_PR_API_RESPONSE_INVALID", "GitHub response is not valid JSON.");
+      throw new ResultBundleError("RESULT_PR_API_FAILED", `Network error: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      clearTimeout(timeout);
     }
   }
 }
