@@ -1,7 +1,9 @@
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { lstat, open, realpath, type Stats } from "node:fs/promises";
 import path from "node:path";
 import type { ConfigErrorCode, TrustedConfig } from "./contracts.js";
 import { validateConfig } from "./config-validator.js";
+
+export const MAXIMUM_TRUSTED_CONFIG_BYTES = 1 * 1024 * 1024;
 
 export class ConfigError extends Error {
   constructor(readonly code: ConfigErrorCode, message: string) {
@@ -63,8 +65,69 @@ function hasDuplicateJsonObjectKey(source: string): boolean {
   try { return parseValue(); } catch { return false; }
 }
 
+function sameFileIdentity(left: Stats, right: Stats): boolean {
+  return left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs;
+}
+
+async function readStableConfigSource(configPath: string, initialInfo: Stats): Promise<string> {
+  if (initialInfo.size > MAXIMUM_TRUSTED_CONFIG_BYTES) {
+    throw new ConfigError(
+      "CONFIG_INVALID",
+      `Config file exceeds the ${MAXIMUM_TRUSTED_CONFIG_BYTES} byte safety limit.`,
+    );
+  }
+
+  let handle;
+  try {
+    handle = await open(configPath, "r");
+    const openedInfo = await handle.stat();
+    if (!openedInfo.isFile() || !sameFileIdentity(initialInfo, openedInfo)) {
+      throw new ConfigError("CONFIG_INVALID", "Config file changed identity before it could be read safely.");
+    }
+    if (openedInfo.size > MAXIMUM_TRUSTED_CONFIG_BYTES) {
+      throw new ConfigError(
+        "CONFIG_INVALID",
+        `Config file exceeds the ${MAXIMUM_TRUSTED_CONFIG_BYTES} byte safety limit.`,
+      );
+    }
+
+    const buffer = Buffer.alloc(openedInfo.size);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
+      if (bytesRead === 0) throw new ConfigError("CONFIG_INVALID", "Config file was truncated during read.");
+      offset += bytesRead;
+    }
+    const probe = Buffer.alloc(1);
+    const { bytesRead: extraBytes } = await handle.read(probe, 0, 1, openedInfo.size);
+    if (extraBytes !== 0) throw new ConfigError("CONFIG_INVALID", "Config file grew during read.");
+
+    const afterHandleInfo = await handle.stat();
+    if (!sameFileIdentity(openedInfo, afterHandleInfo)) {
+      throw new ConfigError("CONFIG_INVALID", "Config file was modified during read.");
+    }
+    const afterPathInfo = await lstat(configPath);
+    if (afterPathInfo.isSymbolicLink() || !afterPathInfo.isFile() || !sameFileIdentity(openedInfo, afterPathInfo)) {
+      throw new ConfigError("CONFIG_INVALID", "Config path changed during read.");
+    }
+    return buffer.toString("utf8");
+  } catch (error) {
+    if (error instanceof ConfigError) throw error;
+    throw new ConfigError(
+      "CONFIG_INVALID",
+      `Config file could not be read safely: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
 export async function loadTrustedConfig(configPath: string): Promise<TrustedConfig> {
-  let info;
+  let info: Stats;
   try {
     info = await lstat(configPath);
   } catch (error) {
@@ -80,13 +143,15 @@ export async function loadTrustedConfig(configPath: string): Promise<TrustedConf
     if (error instanceof ConfigError) throw error;
     throw new ConfigError("CONFIG_INVALID", "Config file could not be resolved safely.");
   }
+
   let source: string;
   let parsed: unknown;
   try {
-    source = await readFile(configPath, "utf8");
+    source = await readStableConfigSource(configPath, info);
     if (hasDuplicateJsonObjectKey(source)) throw new Error("Duplicate JSON object key.");
     parsed = JSON.parse(source) as unknown;
   } catch (error) {
+    if (error instanceof ConfigError) throw error;
     throw new ConfigError("CONFIG_INVALID", `Config is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
   }
   const report = validateConfig(parsed);
