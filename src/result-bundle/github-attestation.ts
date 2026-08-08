@@ -79,11 +79,17 @@ export async function attestGitHubPullRequest(
 
   assertPrResponse(raw);
 
+  if (raw.number !== prNumber) {
+    throw new ResultBundleError("RESULT_PR_IDENTITY_MISMATCH", `PR response number is '${raw.number}', expected '${prNumber}'.`);
+  }
   if (raw.merged || raw.merged_at !== null) {
     throw new ResultBundleError("RESULT_PR_MERGED", `PR #${prNumber} is merged.`);
   }
   if (raw.state !== "open") {
     throw new ResultBundleError("RESULT_PR_NOT_OPEN", `PR #${prNumber} state is '${raw.state}', expected 'open'.`);
+  }
+  if (raw.draft !== true) {
+    throw new ResultBundleError("RESULT_PR_IDENTITY_MISMATCH", `PR #${prNumber} is no longer Draft.`);
   }
   if (raw.head.ref !== expected.headBranch) {
     throw new ResultBundleError("RESULT_PR_IDENTITY_MISMATCH", `PR head branch is '${raw.head.ref}', expected '${expected.headBranch}'.`);
@@ -99,7 +105,7 @@ export async function attestGitHubPullRequest(
     number: raw.number,
     url: raw.html_url,
     state: "open",
-    draft: raw.draft,
+    draft: true,
     head_branch: raw.head.ref,
     head_sha: raw.head.sha,
     base_branch: raw.base.ref,
