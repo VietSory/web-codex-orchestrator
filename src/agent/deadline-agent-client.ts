@@ -29,7 +29,6 @@ export class DeadlineAgentClient implements AgentClient {
         controller.abort(new Error("Agent turn deadline exceeded."));
         reject(new ExecutionError("CODEX_TURN_TIMEOUT", `Agent ${request.role} turn exceeded the configured ${this.maximumTurnSeconds}s deadline.`));
       }, timeoutMs);
-      timer.unref?.();
     });
 
     try {
