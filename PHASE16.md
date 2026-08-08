@@ -7,7 +7,7 @@ Phase 16 freezes the GitHub-verifiable WCO v1 control plane after Phase 9–15. 
 ## Final invariants
 
 1. Browser tabs, ChatGPT conversations, Codex transcripts, session indexes, resume pickers and model output are transport/cache evidence only; none is lifecycle authority.
-2. Every mutating/external transition is hash-bound and durably checkpointed before side effects. Retry preserves the sealed request identity and is bounded by attempt/time/model/token budgets.
+2. Every mutating/external transition is hash-bound and durably checkpointed before side effects. Retry preserves the sealed request identity and is bounded by attempt/time/model/token budgets. Durable orchestration ledgers are runtime-validated on every read for identity, status/pause semantics, transition/attempt lifecycle, retry/circuit shape, budget accounting, bounded diagnostics/events and event-hash continuity; syntactically valid but semantically contradictory state fails closed.
 3. Only explicit Web inputs can satisfy `REGISTER_WEB_PACK` or `WAIT_WEB_VERDICT`. `wco-control continue` accepts `--web-pack` and `--web-verdict` and stops when required input is absent.
 4. Phase 10 applies exact registered bytes; Phase 15 reuses only the sealed Phase 7/8 revision authority. No later phase creates a second implementation or revision authority path.
 5. Status/snapshot reads use bounded receipts and at most the bounded review/revision round set. They do not deserialize whole Codex/browser histories.
@@ -30,7 +30,7 @@ WCO's mitigation is architectural: lifecycle state is its own bounded durable st
 - CPU/RAM: bounded process output, state files, diagnostics, review rounds and worker pools; no global session-history scan.
 - I/O: content-addressed repository/project-map reuse and deterministic evidence avoid repeated full-repository/context assembly where the contract permits reuse; terminal ledger state and retry backoff are checked before re-reading external Web inputs after recovery.
 - Tokens: no redundant local implementation turn for Web-authored Phase 10 changes; revision usage is copied once into the outer budget; stable/bounded authority artifacts replace transcript replay.
-- Recovery: completed lower-layer receipts are re-attested before adoption, so restart does not repeat commit/push/PR/result side effects; pause/resume cannot erase a durable terminal/budget boundary.
+- Recovery: completed lower-layer receipts are re-attested before adoption, so restart does not repeat commit/push/PR/result side effects; pause/resume cannot erase a durable terminal/budget boundary; semantically inconsistent durable state is rejected rather than guessed through.
 - Backpressure: bounded resource pools and circuit/backoff policy prevent retry storms and uncontrolled concurrent sessions.
 
 ## Final GitHub gate
