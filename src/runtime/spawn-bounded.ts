@@ -45,7 +45,8 @@ function assertArgument(value: string, label: string): void {
 }
 
 class BoundedByteTail {
-  private readonly chunks: Buffer[] = [];
+  private chunks: Buffer[] = [];
+  private head = 0;
   private retainedBytes = 0;
   private wasTruncated = false;
 
@@ -62,17 +63,22 @@ class BoundedByteTail {
     this.chunks.push(exactChunk);
     this.retainedBytes += exactChunk.byteLength;
 
-    while (this.retainedBytes > this.maximumBytes && this.chunks.length > 0) {
+    while (this.retainedBytes > this.maximumBytes && this.head < this.chunks.length) {
       const excess = this.retainedBytes - this.maximumBytes;
-      const first = this.chunks[0]!;
+      const first = this.chunks[this.head]!;
       this.wasTruncated = true;
       if (first.byteLength <= excess) {
-        this.chunks.shift();
+        this.head += 1;
         this.retainedBytes -= first.byteLength;
         continue;
       }
-      this.chunks[0] = first.subarray(excess);
+      this.chunks[this.head] = first.subarray(excess);
       this.retainedBytes -= excess;
+    }
+
+    if (this.head > 1024 && this.head * 2 >= this.chunks.length) {
+      this.chunks = this.chunks.slice(this.head);
+      this.head = 0;
     }
   }
 
@@ -82,7 +88,7 @@ class BoundedByteTail {
 
   toBuffer(): Buffer {
     if (this.retainedBytes === 0) return Buffer.alloc(0);
-    return Buffer.concat(this.chunks, this.retainedBytes);
+    return Buffer.concat(this.chunks.slice(this.head), this.retainedBytes);
   }
 }
 
