@@ -52,7 +52,7 @@ function initialSnapshot(): LifecycleSnapshot {
   };
 }
 
-function readySnapshot() {
+function readySnapshot(): any {
   const receipt = {
     state: "READY_FOR_PUBLISH",
     run_id: RUN_ID,
