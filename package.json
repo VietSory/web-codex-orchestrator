@@ -36,6 +36,6 @@
     "phase13:release-gate": "npm run typecheck && npm run test:phase9 && npm run test:phase10 && npm run test:phase11 && npm run test:phase12 && npm run test:phase13 && npm test && npm run test:phase8-e2e && npm run build && npm run test:cli",
     "phase14:release-gate": "npm run typecheck && npm run test:phase9 && npm run test:phase10 && npm run test:phase11 && npm run test:phase12 && npm run test:phase13 && npm run test:phase14 && npm test && npm run test:phase8-e2e && npm run build && npm run test:cli"
   },
-  "devDependencies": { "@types/node": "latest", "@types/yauzl": "3.4.0", "@types/yazl": "3.3.1", "ajv": "^8.20.0", "tsx": "latest", "typescript": "latest", "yazl": "3.3.1" },
+  "devDependencies": { "@types/node": "latest", "@types/yauzl": "3.4.0", "@types/yazl": "3.3.0", "ajv": "^8.20.0", "tsx": "latest", "typescript": "latest", "yazl": "3.3.1" },
   "dependencies": { "@openai/codex": "0.145.0", "@openai/codex-sdk": "0.145.0", "yauzl": "3.4.0" }
 }
