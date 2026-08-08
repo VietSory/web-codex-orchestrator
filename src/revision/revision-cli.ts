@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
+import { DeadlineAgentClient } from "../agent/deadline-agent-client.js";
 import { loadPhase4Config } from "../execution/execution-config.js";
 import { GitRunner } from "../git/git-runner.js";
 import { preparePublishGitSecurity } from "../publish/publish-auth.js";
@@ -100,7 +101,8 @@ export async function runReviseCli(argv: string[], io: RevisionCliIo): Promise<n
     const auth=await preparePublishGitSecurity(config.publish,runContext.runReceipt.remote_url,runtimeDir,process.env);
     if(auth.mode==="https_token") authPath=auth.askpassScriptPath;
     const runner=new GitRunner(process.env,runtimeDir,{identity:config.publish.identity,auth});
-    const receipt=await reviseRun({runId:args.runId,revisionRound:args.round,stateDirectory:args.stateDirectory,configPath:args.configPath,agentClient:new CodexSdkAgentClient(runtime),sandbox:new CodexVerificationSandbox(runtime),gitRunner:runner,secrets:collectSecrets(config)});
+    const agentClient=new DeadlineAgentClient(new CodexSdkAgentClient(runtime),config.agents.limits.maximum_turn_seconds);
+    const receipt=await reviseRun({runId:args.runId,revisionRound:args.round,stateDirectory:args.stateDirectory,configPath:args.configPath,agentClient,sandbox:new CodexVerificationSandbox(runtime),gitRunner:runner,secrets:collectSecrets(config)});
     io.stdout(args.json?JSON.stringify(receipt):`Revision round ${receipt.revision_round}: ${receipt.state}\nPR #${receipt.pull_request_number}\nHead: ${receipt.new_published_commit_sha??"pending"}\nNext Web review round: ${receipt.next_review_round}`);
     return 0;
   } catch(error) {
