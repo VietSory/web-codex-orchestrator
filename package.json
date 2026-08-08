@@ -20,7 +20,7 @@
     "test:phase10": "tsx --test --test-reporter=spec tests/phase10-applier.test.ts tests/phase10-service.test.ts tests/phase10-maintainer-hardening.test.ts tests/phase10-terminal-attestation.test.ts tests/phase10-authority-hardening.test.ts tests/phase10-backup-authority.test.ts",
     "test:phase11": "tsx --test --test-reporter=spec tests/phase11-controller.test.ts tests/phase11-doctor.test.ts tests/phase11-durability-hardening.test.ts tests/phase11-ledger.test.ts tests/phase11-planner.test.ts tests/phase11-resource-pool.test.ts tests/phase11-transition-runner.test.ts",
     "test:phase12": "tsx --test --test-reporter=spec tests/phase12-post-publish-orchestration.test.ts",
-    "test:phase13": "tsx --test --test-reporter=spec tests/phase13-result-bundle-orchestration.test.ts",
+    "test:phase13": "tsx --test --test-reporter=spec tests/phase13-result-bundle-orchestration.test.ts tests/phase13-production-package-adapter.test.ts",
     "test:phase14": "tsx --test --test-reporter=spec tests/phase14-web-verdict-orchestration.test.ts",
     "test:phase15": "tsx --test --test-reporter=spec tests/phase15-revision-orchestration.test.ts tests/phase15-revision-persistence.test.ts tests/phase15-snapshot-binding.test.ts",
     "test:phase16": "tsx --test --test-reporter=spec tests/phase16-final-hardening.test.ts tests/phase16-package-metadata.test.ts",
