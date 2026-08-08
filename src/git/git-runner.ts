@@ -29,6 +29,7 @@ const DEFAULT_LIMITS: GitRunnerLimits = {
 };
 
 const CHECKIN_HELPER_PATTERN = "^filter\\..*\\.(clean|process)$";
+const DIFF_HELPER_PATTERN = "^(diff\\.external|diff\\..*\\.(command|textconv))$";
 const NETWORK_HELPER_PATTERN = "^(credential(\\..*)?\\.helper|remote\\..*\\.(receivepack|uploadpack))$";
 
 export class GitRunner {
@@ -116,6 +117,7 @@ export class GitRunner {
     if (this.runtimeDirectory === undefined) return null;
     if (subcommand === "add") return CHECKIN_HELPER_PATTERN;
     if (subcommand === "hash-object" && args.some((arg) => arg === "--path" || arg.startsWith("--path="))) return CHECKIN_HELPER_PATTERN;
+    if (subcommand === "diff") return DIFF_HELPER_PATTERN;
     if (subcommand === "fetch" || subcommand === "push" || subcommand === "ls-remote") return NETWORK_HELPER_PATTERN;
     return null;
   }
