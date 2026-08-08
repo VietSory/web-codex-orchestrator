@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { ConfigError, loadTrustedConfig, MAXIMUM_TRUSTED_CONFIG_BYTES } from "../src/config/config-loader.js";
+import { parseControlArgs } from "../src/orchestration/control-cli.js";
 import { scanInbox } from "../src/inbox/scanner.js";
 import { watchInbox } from "../src/inbox/watcher.js";
 
@@ -19,8 +20,8 @@ async function createInboxFixture(prefix: string) {
   const inbox = path.join(root, "inbox");
   const state = path.join(root, "state");
   await fs.mkdir(inbox);
-  await fs.writeFile(path.join(inbox, "a.zip"), "a");
-  await fs.writeFile(path.join(inbox, "b.zip"), "b");
+  await fs.writeFile(path.join(inbox, "wco-task-a.zip"), "a");
+  await fs.writeFile(path.join(inbox, "wco-task-b.zip"), "b");
   return { root, inbox, state };
 }
 
@@ -75,4 +76,11 @@ test("P16-PRODUCT-004 trusted config reads are allocation-bounded", async (t) =>
     loadTrustedConfig(configPath),
     (error: unknown) => error instanceof ConfigError && error.code === "CONFIG_INVALID" && /safety limit/.test(error.message),
   );
+});
+
+test("P16-PRODUCT-005 doctor is a machine preflight and does not require an existing run id", () => {
+  const parsed = parseControlArgs("doctor", ["--state-dir", "./state", "--config", "./config.json"]);
+  assert.equal(parsed.runId, undefined);
+  assert.equal(parsed.json, false);
+  assert.equal(parsed.maxTransitions, 8);
 });
