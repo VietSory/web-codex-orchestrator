@@ -1,4 +1,5 @@
-import { lstat, open, realpath, type Stats } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import { lstat, open, realpath } from "node:fs/promises";
 import path from "node:path";
 import type { ConfigErrorCode, TrustedConfig } from "./contracts.js";
 import { validateConfig } from "./config-validator.js";
