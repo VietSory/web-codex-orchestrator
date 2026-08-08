@@ -37,6 +37,7 @@ function printUsage(): void {
   console.log(SUBMIT_WEB_VERDICT_USAGE.trim());
   console.log("  wco revise --run-id <task-id:archive-sha256> --state-dir <directory> --config <config.json> --round <1-3> [--json]");
   console.log("  wco revision-status --run-id <task-id:archive-sha256> --state-dir <directory> [--round <1-3>] [--json]");
+  console.log("\nFor the durable Phase 9–16 product flow, use wco-control (or `npm run control -- ...` from a source checkout).");
 }
 
 function parseIntakeArguments(args: string[]): { archivePath: string; stateDirectory: string; json: boolean } | null {
@@ -91,7 +92,7 @@ async function runValidate(target: string | undefined): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  console.log("\nBundle is ready for execution.");
+  console.log("\nBundle contract is valid. Secure intake/preparation still determines execution eligibility.");
 }
 
 async function runIntake(args: string[]): Promise<void> {
@@ -119,134 +120,92 @@ async function runIntake(args: string[]): Promise<void> {
   }
 }
 
-interface Phase3Arguments {
-  archivePath: string | undefined;
-  inboxDirectory: string | undefined;
-  stateDirectory: string;
-  configPath: string;
-  json: boolean;
-  jsonl: boolean;
-}
-
-function parsePhase3Arguments(args: string[], mode: "prepare" | "scan" | "watch"): Phase3Arguments | null {
-  let archivePath: string | undefined;
-  let inboxDirectory: string | undefined;
+function parsePrepareArguments(args: string[]): { archivePath: string; stateDirectory: string; configPath: string; json: boolean } | null {
+  const archivePath = args[0];
+  if (!archivePath) return null;
   let stateDirectory: string | undefined;
   let configPath: string | undefined;
   let json = false;
-  let jsonl = false;
-  let positional = 0;
-  for (let index = 0; index < args.length; index += 1) {
+  for (let index = 1; index < args.length; index += 1) {
     const argument = args[index];
-    if (argument === undefined) return null;
-    if (argument === "--json") { if (json || jsonl) return null; json = true; continue; }
-    if (argument === "--jsonl") { if (json || jsonl) return null; jsonl = true; continue; }
-    if (argument === "--state-dir" || argument === "--config" || argument === "--inbox") {
-      const value = args[index + 1];
-      if (!value || value.startsWith("--")) return null;
-      if (argument === "--state-dir" && stateDirectory === undefined) stateDirectory = value;
-      else if (argument === "--config" && configPath === undefined) configPath = value;
-      else if (argument === "--inbox" && inboxDirectory === undefined) inboxDirectory = value;
-      else return null;
-      index += 1;
-      continue;
+    if (argument === "--json") { if (json) return null; json = true; continue; }
+    if ((argument === "--state-dir" || argument === "--config") && args[index + 1] && !args[index + 1]!.startsWith("--")) {
+      const value = args[index + 1]!;
+      if (argument === "--state-dir") { if (stateDirectory !== undefined) return null; stateDirectory = value; }
+      else { if (configPath !== undefined) return null; configPath = value; }
+      index += 1; continue;
     }
-    if (!argument.startsWith("-") && mode === "prepare" && positional === 0) { archivePath = argument; positional += 1; continue; }
     return null;
   }
-  if (mode === "prepare" && !archivePath) return null;
-  if (mode !== "prepare" && !inboxDirectory) return null;
-  if (!stateDirectory || !configPath) return null;
-  if (mode !== "watch" && jsonl) return null;
-  if (mode === "watch" && json) return null;
-  return { archivePath, inboxDirectory, stateDirectory, configPath, json, jsonl };
+  return stateDirectory && configPath ? { archivePath, stateDirectory, configPath, json } : null;
 }
 
-function phase3ExitCode(code: string): number {
-  const policyCodes = new Set(["EXECUTION_CONTRACT_REQUIRED", "DELIVERY_CONTRACT_INVALID", "GIT_POLICY_INVALID", "BRANCH_POLICY_VIOLATION", "BASE_COMMIT_INVALID", "FETCH_DISABLED", "REPOSITORY_NOT_REGISTERED", "REMOTE_NOT_ALLOWED", "WORKTREE_PATH_UNSAFE", "GIT_CHECKOUT_FILTER_UNSAFE"]);
-  return policyCodes.has(code) ? 1 : 3;
+function errorCode(error: unknown): string {
+  if (error instanceof PreparationError || error instanceof CandidatePolicyError) return error.code;
+  if (error && typeof error === "object" && "code" in error && typeof (error as { code?: unknown }).code === "string") return (error as { code: string }).code;
+  return "OPERATIONAL_ERROR";
+}
+function statusForError(code: string): "rejected" | "blocked" | "failed" {
+  if (code.startsWith("ZIP_") || code.startsWith("BUNDLE_") || code.startsWith("CHECKSUM_") || code.startsWith("PAYLOAD_") || code === "EXECUTION_CONTRACT_REQUIRED") return "rejected";
+  if (["OPERATIONAL_ERROR", "CONFIG_NOT_FOUND", "CONFIG_NOT_REGULAR_FILE", "CONFIG_SYMLINK", "CONFIG_INVALID", "REPOSITORY_PATH_UNSAFE", "REPOSITORY_NOT_GIT", "REPOSITORY_BARE", "REMOTE_NOT_FOUND", "REMOTE_URL_MISMATCH", "FETCH_FAILED", "BASE_COMMIT_NOT_FOUND", "BASE_COMMIT_NOT_ANCESTOR", "BRANCH_ALREADY_EXISTS", "WORKTREE_ALREADY_EXISTS", "WORKTREE_CREATE_FAILED", "WORKTREE_VERIFY_FAILED", "RUN_RECEIPT_INCONSISTENT", "RUN_LOCKED"].includes(code)) return "failed";
+  return "blocked";
 }
 
 async function runPrepare(args: string[]): Promise<void> {
-  const parsed = parsePhase3Arguments(args, "prepare");
-  if (!parsed || !parsed.archivePath) { printUsage(); process.exitCode = 2; return; }
+  const parsed = parsePrepareArguments(args); if (!parsed) { printUsage(); process.exitCode = 2; return; }
   try {
     const receipt = await prepareTask({ archivePath: parsed.archivePath, stateDirectory: parsed.stateDirectory, configPath: parsed.configPath });
-    if (parsed.json) process.stdout.write(`${JSON.stringify(receipt)}\n`);
-    else {
-      for (const check of receipt.checks) console.log(`✓ ${check}`);
-      console.log(`\n${receipt.status}`);
-      console.log(receipt.worktree_path);
-    }
+    if (parsed.json) process.stdout.write(`${JSON.stringify(receipt)}\n`); else { for (const check of receipt.checks) console.log(`✓ ${check}`); console.log(`\nPrepared: ${receipt.run_id}`); console.log(`Worktree: ${receipt.worktree_path}`); }
   } catch (error) {
-    const code = error instanceof PreparationError ? error.code : "OPERATIONAL_ERROR";
-    const message = error instanceof Error ? error.message : String(error);
-    if (parsed.json) process.stdout.write(`${JSON.stringify({ status: "BLOCKED", error: { code, message } })}\n`);
-    else console.error(`${code}: ${message}`);
-    process.exitCode = phase3ExitCode(code);
+    const code = errorCode(error); const message = error instanceof Error ? error.message : String(error); const state = statusForError(code);
+    if (parsed.json) process.stdout.write(`${JSON.stringify({ status: state, error: { code, message } })}\n`); else console.error(`${code}: ${message}`);
+    process.exitCode = state === "failed" ? 3 : 1;
   }
+}
+
+function parseScanArguments(args: string[]): { inboxDirectory: string; stateDirectory: string; configPath: string; json: boolean } | null {
+  let inboxDirectory: string | undefined; let stateDirectory: string | undefined; let configPath: string | undefined; let json = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]; if (argument === "--json") { if (json) return null; json = true; continue; }
+    if ((argument === "--inbox" || argument === "--state-dir" || argument === "--config") && args[index + 1] && !args[index + 1]!.startsWith("--")) {
+      const value = args[index + 1]!;
+      if (argument === "--inbox") { if (inboxDirectory) return null; inboxDirectory = value; }
+      else if (argument === "--state-dir") { if (stateDirectory) return null; stateDirectory = value; }
+      else { if (configPath) return null; configPath = value; }
+      index += 1; continue;
+    }
+    return null;
+  }
+  return inboxDirectory && stateDirectory && configPath ? { inboxDirectory, stateDirectory, configPath, json } : null;
 }
 
 async function runScan(args: string[]): Promise<void> {
-  const parsed = parsePhase3Arguments(args, "scan");
-  if (!parsed || !parsed.inboxDirectory) { printUsage(); process.exitCode = 2; return; }
+  const parsed = parseScanArguments(args); if (!parsed) { printUsage(); process.exitCode = 2; return; }
   try {
-    const summary = await scanInbox({ inboxDirectory: parsed.inboxDirectory, stateDirectory: parsed.stateDirectory, configPath: parsed.configPath });
-    if (parsed.json) {
-      process.stdout.write(`${JSON.stringify(summary)}\n`);
-    } else {
-      console.log(`Discovered: ${summary.discovered}`);
-      console.log(`Ready for Codex: ${summary.ready_for_codex}`);
-      console.log(`Rejected: ${summary.rejected}`);
-      console.log(`Blocked: ${summary.blocked}`);
-      console.log(`Failed: ${summary.failed}`);
-      console.log(`Skipped: ${summary.skipped}`);
-      console.log(`Unstable: ${summary.unstable}`);
-    }
-    if (summary.failed > 0) process.exitCode = 3;
-    else if (summary.rejected > 0 || summary.blocked > 0) process.exitCode = 1;
-  } catch (error) {
-    const code = error instanceof CandidatePolicyError ? error.code : "OPERATIONAL_ERROR";
-    const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`${code}: ${message}\n`);
-    process.exitCode = code === "INBOX_LIMIT_EXCEEDED" ? 1 : 3;
-  }
+    const summary = await scanInbox(parsed);
+    if (parsed.json) process.stdout.write(`${JSON.stringify(summary)}\n`); else { console.log(`Discovered ${summary.discovered}; unstable ${summary.unstable}; skipped ${summary.skipped}; ready ${summary.ready_for_codex}; rejected ${summary.rejected}; blocked ${summary.blocked}; failed ${summary.failed}.`); for (const result of summary.results) console.log(`${result.result.toUpperCase()}: ${result.path}${result.error ? ` -> ${result.error.code}: ${result.error.message}` : ""}`); }
+    if (summary.failed > 0) process.exitCode = 3; else if (summary.rejected > 0 || summary.blocked > 0) process.exitCode = 1;
+  } catch (error) { console.error(error instanceof Error ? `${errorCode(error)}: ${error.message}` : String(error)); process.exitCode = 3; }
 }
 
 async function runWatch(args: string[]): Promise<void> {
-  const parsed = parsePhase3Arguments(args, "watch");
-  if (!parsed || !parsed.inboxDirectory) { printUsage(); process.exitCode = 2; return; }
-  const controller = new AbortController();
-  const stop = () => controller.abort();
-  process.once("SIGINT", stop);
-  process.once("SIGTERM", stop);
-  try {
-    await watchInbox({ inboxDirectory: parsed.inboxDirectory, stateDirectory: parsed.stateDirectory, configPath: parsed.configPath, signal: controller.signal, onScan: (summary) => {
-      if (parsed.jsonl) process.stdout.write(`${JSON.stringify(summary)}\n`);
-      else console.log(JSON.stringify(summary));
-    }});
-  } catch (error) {
-    const code = error instanceof CandidatePolicyError ? error.code : error instanceof Error && "code" in error ? String((error as { code: unknown }).code) : "OPERATIONAL_ERROR";
-    const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`${code}: ${message}\n`);
-    process.exitCode = 3;
-  } finally {
-    process.removeListener("SIGINT", stop);
-    process.removeListener("SIGTERM", stop);
-  }
+  const parsed = parseScanArguments(args.map((value) => value === "--jsonl" ? "--json" : value)); if (!parsed) { printUsage(); process.exitCode = 2; return; }
+  const controller = new AbortController(); const stop = () => controller.abort(); process.once("SIGINT", stop); process.once("SIGTERM", stop);
+  try { await watchInbox({ ...parsed, signal: controller.signal, onScan: async (summary) => { process.stdout.write(`${JSON.stringify(summary)}\n`); } }); }
+  catch (error) { console.error(error instanceof Error ? `${errorCode(error)}: ${error.message}` : String(error)); process.exitCode = 3; }
+  finally { process.removeListener("SIGINT", stop); process.removeListener("SIGTERM", stop); }
 }
 
-function parseExecutionArguments(args: string[], requireConfig: boolean): { runId: string; stateDirectory: string; configPath?: string | undefined; json: boolean } | null {
+function parseExecutionArguments(args: string[], requireConfig: boolean): { runId: string; stateDirectory: string; configPath?: string; json: boolean } | null {
   let runId: string | undefined; let stateDirectory: string | undefined; let configPath: string | undefined; let json = false;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === "--json") { if (json) return null; json = true; continue; }
-    if (argument === "--run-id" || argument === "--state-dir" || argument === "--config") {
-      const value = args[index + 1]; if (!value || value.startsWith("--")) return null;
-      if (argument === "--run-id" && runId === undefined) runId = value;
-      else if (argument === "--state-dir" && stateDirectory === undefined) stateDirectory = value;
-      else if (argument === "--config" && configPath === undefined) configPath = value;
-      else return null;
+    if ((argument === "--run-id" || argument === "--state-dir" || argument === "--config") && args[index + 1] && !args[index + 1]!.startsWith("--")) {
+      const value = args[index + 1]!;
+      if (argument === "--run-id") { if (runId) return null; runId = value; }
+      else if (argument === "--state-dir") { if (stateDirectory) return null; stateDirectory = value; }
+      else { if (configPath) return null; configPath = value; }
       index += 1; continue;
     }
     return null;
@@ -294,6 +253,7 @@ async function runExecutionStatus(args: string[]): Promise<void> {
 
 async function main(): Promise<void> {
   const [, , command, ...args] = process.argv;
+  if (command === "--help" || command === "-h" || command === "help") { printUsage(); return; }
   if (command === "validate") return runValidate(args[0]);
   if (command === "intake") return runIntake(args);
   if (command === "prepare") return runPrepare(args);
@@ -314,7 +274,9 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.stack ?? error.message : String(error);
-  console.error(message);
+  const value = error instanceof Error
+    ? process.env.WCO_DEBUG === "1" ? error.stack ?? error.message : error.message
+    : String(error);
+  console.error(value);
   process.exitCode = 3;
 });
