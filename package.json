@@ -22,7 +22,7 @@
     "test:phase12": "tsx --test --test-reporter=spec tests/phase12-post-publish-orchestration.test.ts",
     "test:phase13": "tsx --test --test-reporter=spec tests/phase13-result-bundle-orchestration.test.ts",
     "test:phase14": "tsx --test --test-reporter=spec tests/phase14-web-verdict-orchestration.test.ts",
-    "test:phase15": "tsx --test --test-reporter=spec tests/phase15-revision-orchestration.test.ts",
+    "test:phase15": "tsx --test --test-reporter=spec tests/phase15-revision-orchestration.test.ts tests/phase15-revision-persistence.test.ts tests/phase15-snapshot-binding.test.ts",
     "test:phase16": "tsx --test --test-reporter=spec tests/phase16-final-hardening.test.ts",
     "test:phase8-e2e": "tsx --test --test-reporter=spec tests/integration/phase8-e2e.integration.ts",
     "test:cli": "tsx --test tests/integration/cli-phase6.integration.test.ts tests/integration/cli-phase7.integration.test.ts tests/integration/cli-phase8.integration.test.ts tests/integration/cli-phase9.integration.test.ts tests/integration/cli-phase10.integration.test.ts tests/integration/cli-phase11.integration.test.ts",
