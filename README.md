@@ -12,7 +12,7 @@ Web Authority registered implementation pack
   → deterministic verification
   → independent Terra review
   → independent Sol review
-  → normal commit + fast-forward push
+  → normal commit + protected branch publication
   → one Draft Pull Request
   → verified Result Bundle
   → explicit Web verdict
@@ -29,7 +29,7 @@ Hard boundaries:
 - Phase 10 has no redundant local implementer turn: exact registered Web bytes are applied and reviewed;
 - reviewers are independent, read-only/no-network and bind the exact change-set digest;
 - revision authority comes only from the sealed Web Review receipt/request chain;
-- publication is normal fast-forward only: no amend/rebase/force-push;
+- publication never amends/rebases or destructively force-updates an existing branch; Phase 5A's empty expected-value lease is only an atomic create-if-absent race guard, and Phase 8 revisions are ordinary exact-head fast-forwards;
 - WCO never marks a PR Ready, enables auto-merge, deletes the delivery branch or merges `main`;
 - merge remains a human decision.
 
@@ -76,7 +76,7 @@ wco-control continue \
   --json
 ```
 
-`continue` advances only transitions whose authority is already present. Missing Web pack/verdict is an input wait, not a failed retry. `WAIT_HUMAN` is terminal for autonomous operation. Pause/resume, retry backoff, transition locks, bounded budgets and recovery receipts survive process restart.
+`continue` advances only transitions whose authority is already present. Missing Web pack/verdict is an input wait, not a failed retry. `WAIT_HUMAN` is terminal for autonomous operation. Pause/resume, retry backoff, transition locks, bounded budgets and recovery receipts survive process restart. After crash recovery has had a chance to adopt exact completed work, terminal ledgers and unexpired retry deadlines return before external Web pack/verdict bytes are re-read.
 
 Lower-level Phase 4–10 commands remain explicit diagnostic/recovery surfaces, including `wco execute`, `wco publish`, `wco create-draft-pr`, `wco package-result`, `wco submit-web-verdict`, `wco revise`, `wco-web-authority` and `wco-executor`.
 
