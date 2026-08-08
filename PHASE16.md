@@ -2,7 +2,7 @@
 
 ## Goal
 
-Phase 16 freezes the GitHub-verifiable WCO v1 control plane after Phase 9–15. The durable path now connects registered Web authority, exact application, deterministic verification, independent reviews, normal Git publication, one Draft PR, Result Bundle handoff, explicit Web verdict ingestion, and bounded same-PR revisions. Merge remains human-only.
+Phase 16 freezes the GitHub-verifiable WCO v1 control plane after Phase 9–15 and adds a final professional-user product audit across Phase 1–16. The durable path connects registered Web authority, exact application, deterministic verification, independent reviews, normal Git publication, one Draft PR, Result Bundle handoff, explicit Web verdict ingestion, and bounded same-PR revisions. Merge remains human-only.
 
 ## Final invariants
 
@@ -14,8 +14,29 @@ Phase 16 freezes the GitHub-verifiable WCO v1 control plane after Phase 9–15. 
 6. Concurrency stays bounded/backpressured. Crash recovery is attempted first; then paused or terminal (`BLOCKED`, `FAILED`, `COMPLETE`) ledgers and unexpired retry deadlines return before external Web pack/verdict input is re-read or canonicalized. `pause` cannot hide a terminal status, and `resume` cannot turn a non-paused terminal run active; a legitimately paused run restores `WAITING`, `ACTIVE`, `BLOCKED`, or `COMPLETE` from durable retry/next-transition/budget state. Retryable transport/rate-limit failures use typed backoff; policy/authority failures are not hot-retried.
 7. Logs, diagnostics, event history, subprocess output, Web inputs and receipts remain bounded/compacted. Expensive browser screenshots/traces are diagnostics, not normal polling state.
 8. Model/token accounting prevents a new model-bearing transition when the outer budget is exhausted. Completed external side effects remain checkpointed even when a budget boundary is crossed.
-9. Git publication is normal fast-forward only. WCO does not amend, rebase, destructively force-update an existing branch, delete the branch, mark the PR Ready, enable auto-merge or merge `main`; the Phase 5A empty expected-value lease remains only an atomic create-if-absent race guard.
-10. The only remaining release evidence that GitHub CI cannot prove is native Windows/WSL/Codex/bridge behavior listed in `LOCAL-FINAL-CHECKLIST.md`.
+9. Git publication does not amend, rebase, destructively force-update an existing branch, delete the branch, mark the PR Ready, enable auto-merge or merge `main`; the Phase 5A empty expected-value lease remains only an atomic create-if-absent race guard, and Phase 8 revisions use exact-head fast-forward publication.
+10. The remaining evidence GitHub CI cannot prove is native Windows/WSL/Codex/bridge behavior in `LOCAL-FINAL-CHECKLIST.md`. Public distribution also remains blocked until the maintainer selects an explicit license/distribution policy; the root `LICENSE` is intentionally not auto-filled by WCO.
+
+## Professional-user product hardening
+
+A fresh Phase 1–16 audit discarded the previous maintainer-audit conclusions and re-read code, tests, raw GitHub Actions output and normative phase documents from a user/operator perspective. The audit added or corrected:
+
+- exact PR-head checkout and SHA assertion in CI; prior default PR-merge-ref execution is no longer accepted as exact-head evidence;
+- shared-round inbox stabilization with bounded metadata concurrency, eliminating candidate-by-candidate stability sleeps while keeping repository preparation/Git mutation serial;
+- watch-mode reuse of stability observations across scans;
+- allocation-bounded, identity-stable trusted-config reads and hard safety ceilings for inbox/model/token/Result-Bundle resource knobs;
+- bounded Git subprocess time/output for local and network commands, plus a shared exact-binary bounded subprocess path for Phase 6 Git evidence;
+- normal cleanup of temporary Phase 5A askpass helpers; credentials remain environment-only;
+- bounded Phase 3 root-run and Phase 4 execution-receipt reads;
+- bounded execution/agent diagnostic event lines and bounded-tail event sequencing instead of rereading the whole append-only journal on each transition;
+- canonical Phase 9 `wco-web-authority register|status` commands with legacy aliases preserved;
+- `wco-control doctor` as a run-independent bounded machine preflight for Node/state/config/credential-key presence/Git/pinned Codex/login status;
+- concise human control-plane output while preserving full `--json` machine contracts;
+- source-checkout npm wrappers so a user does not need a global install or `npm link` merely to operate the private source project;
+- accurate root `validate` wording: schema/contract validation does not claim execution eligibility;
+- production/test AJV configuration convergence so schema warnings do not pollute CI while semantic assertions remain unchanged.
+
+The executable regressions live in the Phase 16 product/Git/state-bound suites and are part of `test:phase16` and the final release gate.
 
 ## Codex/bridge compatibility boundary
 
@@ -28,10 +49,14 @@ WCO's mitigation is architectural: lifecycle state is its own bounded durable st
 ## Performance and operations freeze
 
 - CPU/RAM: bounded process output, state files, diagnostics, review rounds and worker pools; no global session-history scan.
-- I/O: content-addressed repository/project-map reuse and deterministic evidence avoid repeated full-repository/context assembly where the contract permits reuse; terminal ledger state and retry backoff are checked before re-reading external Web inputs after recovery.
-- Tokens: no redundant local implementation turn for Web-authored Phase 10 changes; revision usage is copied once into the outer budget; stable/bounded authority artifacts replace transcript replay.
+- Inbox latency: unchanged candidates are observed in shared rounds, with metadata reads chunked to bounded concurrency; expensive prepare/Git work remains deterministic and serial.
+- Git/process I/O: local Git has a hard deadline, network Git has a larger hard deadline, output is bounded, and binary evidence uses the same process-tree timeout/cap engine without text conversion.
+- Durable state: root/execution receipts are allocation-bounded; append-only execution journal sequencing reads only a bounded tail, and oversized diagnostic events degrade to bounded metadata rather than ballooning one line.
+- Tokens/cost: no redundant local implementation turn for Web-authored Phase 10 changes; revision usage is copied once into the outer budget; stable/bounded authority artifacts replace transcript replay; trusted config can tighten but cannot exceed hard product ceilings.
 - Recovery: completed lower-layer receipts are re-attested before adoption, so restart does not repeat commit/push/PR/result side effects; pause/resume cannot erase a durable terminal/budget boundary; semantically inconsistent durable state is rejected rather than guessed through.
 - Backpressure: bounded resource pools and circuit/backoff policy prevent retry storms and uncontrolled concurrent sessions.
+
+Measured raw GitHub Actions evidence before the added product regressions showed roughly 3–4s dependency install, ~0.5s typecheck, ~78s full unit/fake suite, ~2.2s Phase 8 fake E2E, ~0.6s build and ~2.9s compiled CLI integration on the hosted Ubuntu/Node 20 runner. The slow tests are primarily intentional crash/lock/Git-race hardening, not normal status/control hot paths. Exact timings vary by hosted runner load.
 
 ## Final GitHub gate
 
@@ -39,8 +64,8 @@ WCO's mitigation is architectural: lifecycle state is its own bounded durable st
 npm run phase16:release-gate
 ```
 
-The exact final head must also have green GitHub CI. After that head is fixed, two independent maintainer-style audits are required: architecture/security/correctness and runtime/performance/operations. Any blocker invalidates both audits; after a fix and new exact-head CI, both audits restart from zero.
+GitHub CI must check out and assert the exact PR head SHA before running template validation, typecheck, the complete unit/fake suite, Phase 8 fake E2E, build and compiled CLI integration. `PRODUCT-AUDIT.md` records the evidence classification and product-quality report.
 
 ## Completion boundary
 
-Phase 16 is GitHub-complete only when the exact head is green, both audits pass, docs/code/tests agree, the PR remains Draft, and `LOCAL-FINAL-CHECKLIST.md` contains the only remaining native checks.
+Phase 16 is GitHub-complete only when the exact head is green, docs/code/tests agree, the PR remains Draft, and the only unresolved release decisions are explicitly external to deterministic GitHub CI: the local native checklist and maintainer-owned licensing/distribution decision.
