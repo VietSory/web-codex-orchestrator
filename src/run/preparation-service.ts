@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, mkdir, readFile, realpath, rm } from "node:fs/promises";
+import { lstat, mkdir, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 import type { BundleManifest } from "../bundle/contracts.js";
 import { loadTrustedConfig } from "../config/config-loader.js";
@@ -15,6 +15,7 @@ import { createIsolatedWorktree } from "../git/worktree-manager.js";
 import { ensureGitRuntime } from "../git/git-runtime.js";
 import { intakeArchive, type IntakeOptions } from "../intake/intake-service.js";
 import type { AcceptedIntakeReceipt, IntakeReceipt } from "../intake/contracts.js";
+import { readJsonFile } from "../shared/read-json.js";
 import { appendRunEvent } from "./event-journal.js";
 import { acquireExclusiveLock, runLockPath, type LockHandle } from "./locks.js";
 import type { PreparationResult, RunReceipt, RunState } from "./contracts.js";
@@ -118,9 +119,18 @@ function isBlockedCode(code: PreparationErrorCode): boolean {
   return !failedCodes.has(code);
 }
 
+function canonicalAcceptedBundlePath(stateDirectory: string, taskId: string, archiveSha256: string): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(taskId) || !/^[a-f0-9]{64}$/.test(archiveSha256)) {
+    throw new PreparationError("OPERATIONAL_ERROR", "Accepted bundle identity is unsafe.");
+  }
+  return path.resolve(stateDirectory, "accepted", taskId, archiveSha256, "bundle");
+}
+
 async function acceptedBundlePath(stateDirectory: string, receipt: AcceptedIntakeReceipt): Promise<string> {
   const acceptedRoot = path.resolve(stateDirectory, "accepted");
+  const expected = canonicalAcceptedBundlePath(stateDirectory, receipt.task_id, receipt.archive_sha256);
   const candidate = path.resolve(stateDirectory, receipt.stored_bundle);
+  if (candidate !== expected) throw new PreparationError("OPERATIONAL_ERROR", "Accepted bundle receipt is not bound to the canonical task/archive bundle path.");
   const relative = path.relative(acceptedRoot, candidate);
   if (!relative || relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) throw new PreparationError("OPERATIONAL_ERROR", "Accepted bundle path escapes accepted storage.");
   const info = await lstat(candidate);
@@ -128,7 +138,7 @@ async function acceptedBundlePath(stateDirectory: string, receipt: AcceptedIntak
   const canonical = await realpath(candidate);
   const canonicalRoot = await realpath(acceptedRoot);
   const canonicalRelative = path.relative(canonicalRoot, canonical);
-  if (!canonicalRelative || canonicalRelative.startsWith(`..${path.sep}`) || canonicalRelative === ".." || path.isAbsolute(canonicalRelative)) throw new PreparationError("OPERATIONAL_ERROR", "Accepted bundle real path escapes accepted storage.");
+  if (canonical !== expected || !canonicalRelative || canonicalRelative.startsWith(`..${path.sep}`) || canonicalRelative === ".." || path.isAbsolute(canonicalRelative)) throw new PreparationError("OPERATIONAL_ERROR", "Accepted bundle real path does not match canonical accepted authority.");
   return canonical;
 }
 
@@ -139,6 +149,10 @@ function safeGitArguments(runner: GitRunner, stateDirectory: string, args: reado
 
 async function verifyExistingRun(receipt: RunReceipt, stateDirectory: string, runner: GitRunner): Promise<void> {
   if (receipt.status !== "READY_FOR_CODEX" || receipt.state !== "READY_FOR_CODEX") throw new PreparationError("RUN_RECEIPT_INCONSISTENT", "Existing run receipt is not complete.", receipt);
+  const expectedBundle = canonicalAcceptedBundlePath(stateDirectory, receipt.task_id, receipt.archive_sha256);
+  if (path.resolve(receipt.accepted_bundle_path) !== expectedBundle) throw new PreparationError("RUN_RECEIPT_INCONSISTENT", "Existing run receipt is not bound to its canonical accepted bundle.", receipt);
+  const bundleInfo = await lstat(expectedBundle).catch(() => undefined);
+  if (!bundleInfo || bundleInfo.isSymbolicLink() || !bundleInfo.isDirectory() || await realpath(expectedBundle).catch(() => "") !== expectedBundle) throw new PreparationError("RUN_RECEIPT_INCONSISTENT", "Existing run accepted bundle is missing or unsafe.", receipt);
   const worktreesRoot = path.resolve(stateDirectory, "worktrees");
   const candidate = path.resolve(receipt.worktree_path);
   const relative = path.relative(worktreesRoot, candidate);
@@ -255,7 +269,7 @@ export async function prepareTask(options: PreparationOptions): Promise<Preparat
     const bundleDirectory = await acceptedBundlePath(stateDirectory, intake);
     receipt.accepted_bundle_path = bundleDirectory;
     await writeRunReceipt(stateDirectory, receipt);
-    const manifest = JSON.parse(await readFile(path.join(bundleDirectory, "manifest.json"), "utf8")) as BundleManifest;
+    const manifest = await readJsonFile(path.join(bundleDirectory, "manifest.json"), 1024 * 1024) as BundleManifest;
     const execution = validateExecutionContract(manifest);
     if (!execution.ok || !execution.contract) throw firstIssue(execution.issues);
     receipt.repository_id = execution.contract.repository.id;
