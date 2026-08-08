@@ -9,47 +9,10 @@ import { OrchestrationError } from "../src/orchestration/contracts.js";
 
 const RUN_ID = `TASK-P11-CTRL:${"b".repeat(64)}`;
 
-test("P11-CTRL-001 pause prevents a new transition and resume preserves durable next action", async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-p11-pause-")); t.after(async () => fs.rm(root, { recursive: true, force: true }));
-  await pauseRun(root, RUN_ID, "operator pause", new Date("2026-08-08T00:00:00.000Z"));
-  await assert.rejects(() => checkpointAttempt({ stateDirectory: root, runId: RUN_ID, transition: "REGISTER_WEB_PACK", payload: { archive: "x" }, now: new Date("2026-08-08T00:00:01.000Z") }), (error: unknown) => error instanceof OrchestrationError && error.code === "ORCHESTRATION_PAUSED");
-  const resumed = await resumeRun(root, RUN_ID, new Date("2026-08-08T00:00:02.000Z"));
-  assert.equal(resumed.paused, false);
-  assert.equal(resumed.next_transition, "REGISTER_WEB_PACK");
-});
+test("P11-CTRL-001 pause prevents a new transition and resume preserves durable next action", async (t) => { const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-p11-pause-")); t.after(async () => fs.rm(root, { recursive: true, force: true })); await pauseRun(root, RUN_ID, "operator pause", new Date("2026-08-08T00:00:00.000Z")); await assert.rejects(() => checkpointAttempt({ stateDirectory: root, runId: RUN_ID, transition: "REGISTER_WEB_PACK", payload: { archive: "x" }, now: new Date("2026-08-08T00:00:01.000Z") }), (error: unknown) => error instanceof OrchestrationError && error.code === "ORCHESTRATION_PAUSED"); const resumed = await resumeRun(root, RUN_ID, new Date("2026-08-08T00:00:02.000Z")); assert.equal(resumed.paused, false); assert.equal(resumed.next_transition, "REGISTER_WEB_PACK"); });
 
-test("P11-CTRL-002 identical sealed transition checkpoint is idempotent; different payload conflicts", async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-p11-checkpoint-")); t.after(async () => fs.rm(root, { recursive: true, force: true }));
-  const first = await checkpointAttempt({ stateDirectory: root, runId: RUN_ID, transition: "EXECUTE_REGISTERED_PACK", payload: { artifact: "c".repeat(64) }, now: new Date("2026-08-08T00:00:00.000Z") });
-  const second = await checkpointAttempt({ stateDirectory: root, runId: RUN_ID, transition: "EXECUTE_REGISTERED_PACK", payload: { artifact: "c".repeat(64) }, now: new Date("2026-08-08T00:00:05.000Z") });
-  assert.equal(second.current_attempt?.attempt_id, first.current_attempt?.attempt_id);
-  assert.equal(second.budget.total_attempts, 1);
-  await assert.rejects(() => checkpointAttempt({ stateDirectory: root, runId: RUN_ID, transition: "EXECUTE_REGISTERED_PACK", payload: { artifact: "d".repeat(64) }, now: new Date("2026-08-08T00:00:06.000Z") }), (error: unknown) => error instanceof OrchestrationError && error.code === "ORCHESTRATION_ATTEMPT_CONFLICT");
-});
+test("P11-CTRL-002 identical sealed transition checkpoint is idempotent; different payload conflicts", async (t) => { const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-p11-checkpoint-")); t.after(async () => fs.rm(root, { recursive: true, force: true })); const first = await checkpointAttempt({ stateDirectory: root, runId: RUN_ID, transition: "EXECUTE_REGISTERED_PACK", payload: { artifact: "c".repeat(64) }, now: new Date("2026-08-08T00:00:00.000Z") }); const second = await checkpointAttempt({ stateDirectory: root, runId: RUN_ID, transition: "EXECUTE_REGISTERED_PACK", payload: { artifact: "c".repeat(64) }, now: new Date("2026-08-08T00:00:05.000Z") }); assert.equal(second.current_attempt?.attempt_id, first.current_attempt?.attempt_id); assert.equal(second.budget.total_attempts, 1); await assert.rejects(() => checkpointAttempt({ stateDirectory: root, runId: RUN_ID, transition: "EXECUTE_REGISTERED_PACK", payload: { artifact: "d".repeat(64) }, now: new Date("2026-08-08T00:00:06.000Z") }), (error: unknown) => error instanceof OrchestrationError && error.code === "ORCHESTRATION_ATTEMPT_CONFLICT"); });
 
-test("P11-CTRL-003 retry backoff is deterministic and retry budget persists across restart", async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-p11-retry-")); t.after(async () => fs.rm(root, { recursive: true, force: true }));
-  const payload = { artifact: "e".repeat(64) };
-  const requestHash = sealTransitionRequest("EXECUTE_REGISTERED_PACK", payload);
-  assert.equal(computeRetryDelay(requestHash, 2), computeRetryDelay(requestHash, 2));
-  await checkpointAttempt({ stateDirectory: root, runId: RUN_ID, transition: "EXECUTE_REGISTERED_PACK", payload, now: new Date("2026-08-08T00:00:00.000Z") });
-  const failed = await failAttempt({ stateDirectory: root, runId: RUN_ID, failureCode: "NETWORK_UNAVAILABLE", message: "bridge unavailable", now: new Date("2026-08-08T00:00:01.000Z") });
-  assert.equal(failed.status, "WAITING");
-  assert.ok(failed.retry.next_retry_at);
-  const recovered = await ensureRunLedger(root, RUN_ID, new Date("2026-08-08T00:00:02.000Z"));
-  assert.equal(recovered.budget.total_attempts, 1);
-  assert.equal(recovered.transition_attempts.EXECUTE_REGISTERED_PACK, 1);
-});
+test("P11-CTRL-003 retry backoff is deterministic, enforced, and persists across restart", async (t) => { const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-p11-retry-")); t.after(async () => fs.rm(root, { recursive: true, force: true })); const payload = { artifact: "e".repeat(64) }; const requestHash = sealTransitionRequest("EXECUTE_REGISTERED_PACK", payload); assert.equal(computeRetryDelay(requestHash, 2), computeRetryDelay(requestHash, 2)); const started = await checkpointAttempt({ stateDirectory: root, runId: RUN_ID, transition: "EXECUTE_REGISTERED_PACK", payload, now: new Date("2026-08-08T00:00:00.000Z") }); const failed = await failAttempt({ stateDirectory: root, runId: RUN_ID, attemptId: started.current_attempt!.attempt_id, failureCode: "NETWORK_UNAVAILABLE", message: "bridge unavailable", now: new Date("2026-08-08T00:00:01.000Z") }); assert.equal(failed.status, "WAITING"); assert.ok(failed.retry.next_retry_at); await assert.rejects(() => checkpointAttempt({ stateDirectory: root, runId: RUN_ID, transition: "EXECUTE_REGISTERED_PACK", payload, now: new Date("2026-08-08T00:00:01.100Z") }), (error: unknown) => error instanceof OrchestrationError && error.code === "ORCHESTRATION_RETRY_NOT_DUE"); const recovered = await ensureRunLedger(root, RUN_ID, new Date("2026-08-08T00:00:02.000Z")); assert.equal(recovered.budget.total_attempts, 1); assert.equal(recovered.transition_attempts.EXECUTE_REGISTERED_PACK, 1); });
 
-test("P11-CTRL-004 completed external side effect is checkpointed even when token budget crosses limit", async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-p11-budget-")); t.after(async () => fs.rm(root, { recursive: true, force: true }));
-  const ledger = await checkpointAttempt({ stateDirectory: root, runId: RUN_ID, transition: "EXECUTE_REGISTERED_PACK", payload: { artifact: "f".repeat(64) }, now: new Date("2026-08-08T00:00:00.000Z") });
-  ledger.budget.max_input_tokens = 10;
-  // Persist custom budget before the external result arrives.
-  const { writeRunLedger } = await import("../src/orchestration/ledger.js");
-  await writeRunLedger(root, ledger);
-  const done = await completeAttempt({ stateDirectory: root, runId: RUN_ID, result: { state: "READY_FOR_PUBLISH" }, nextTransition: "PUBLISH", usage: { input_tokens: 11 }, now: new Date("2026-08-08T00:00:02.000Z") });
-  assert.equal(done.last_completed_transition, "EXECUTE_REGISTERED_PACK");
-  assert.equal(done.status, "BLOCKED");
-  assert.equal(done.current_attempt, null);
-});
+test("P11-CTRL-004 completed external side effect is checkpointed even when token budget crosses limit", async (t) => { const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-p11-budget-")); t.after(async () => fs.rm(root, { recursive: true, force: true })); const ledger = await checkpointAttempt({ stateDirectory: root, runId: RUN_ID, transition: "EXECUTE_REGISTERED_PACK", payload: { artifact: "f".repeat(64) }, now: new Date("2026-08-08T00:00:00.000Z") }); const attemptId = ledger.current_attempt!.attempt_id; ledger.budget.max_input_tokens = 10; const { writeRunLedger } = await import("../src/orchestration/ledger.js"); await writeRunLedger(root, ledger); const done = await completeAttempt({ stateDirectory: root, runId: RUN_ID, attemptId, result: { state: "READY_FOR_PUBLISH" }, nextTransition: "PUBLISH", usage: { input_tokens: 11 }, now: new Date("2026-08-08T00:00:02.000Z") }); assert.equal(done.last_completed_transition, "EXECUTE_REGISTERED_PACK"); assert.equal(done.status, "BLOCKED"); assert.equal(done.current_attempt, null); });
