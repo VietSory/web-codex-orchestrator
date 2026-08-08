@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { intakeArchive } from "../intake/intake-service.js";
 import type { IntakeReceipt } from "../intake/contracts.js";
 import { isIntakeError } from "../intake/errors.js";
@@ -21,24 +23,68 @@ import { runDraftPrCommand, DRAFT_PR_USAGE } from "../pull-request/draft-pr-cli.
 import { runPackageResultCommand, runResultBundleStatusCommand, PACKAGE_RESULT_USAGE } from "../result-bundle/result-bundle-cli.js";
 import { runSubmitWebVerdictCommand, runWebReviewStatusCommand, SUBMIT_WEB_VERDICT_USAGE } from "../web-review/web-review-cli.js";
 import { runReviseCli, runRevisionStatusCli } from "../revision/revision-cli.js";
+import { runControlCommand } from "../orchestration/control-cli.js";
+
+const CONTROL_COMMANDS = new Set(["doctor", "status", "next", "continue", "pause", "resume"]);
 
 function printUsage(): void {
+  console.log("Web Codex Orchestrator (wco)");
+  console.log("");
   console.log("Usage:");
+  console.log("  wco <command> [options]");
+  console.log("");
+  console.log("Workflow:");
+  console.log("  wco doctor --state-dir <directory> --config <config.json> [--json]");
+  console.log("  wco status --run-id <run-id> --state-dir <directory> [--json]");
+  console.log("  wco next --run-id <run-id> --state-dir <directory> [--json]");
+  console.log("  wco continue --run-id <run-id> --state-dir <directory> --config <config.json> [--web-pack <zip>] [--web-verdict <json>] [--max-transitions <1-32>] [--json]");
+  console.log("  wco pause|resume --run-id <run-id> --state-dir <directory> [--json]");
+  console.log("");
+  console.log("Intake and lower-level operations:");
   console.log("  wco validate <task-bundle-directory>");
   console.log("  wco intake <task-bundle.zip> --state-dir <directory> [--json]");
   console.log("  wco prepare <task-bundle.zip> --state-dir <directory> --config <config.json> [--json]");
   console.log("  wco scan --inbox <directory> --state-dir <directory> --config <config.json> [--json]");
   console.log("  wco watch --inbox <directory> --state-dir <directory> --config <config.json> [--jsonl]");
-  console.log("  wco execute --run-id <task-id:archive-sha256> --state-dir <directory> --config <config.json> [--json]");
-  console.log("  wco execution-status --run-id <task-id:archive-sha256> --state-dir <directory> [--json]");
+  console.log("  wco execute --run-id <run-id> --state-dir <directory> --config <config.json> [--json]");
+  console.log("  wco execution-status --run-id <run-id> --state-dir <directory> [--json]");
   console.log(PUBLISH_USAGE);
   console.log(DRAFT_PR_USAGE.trim());
   console.log(PACKAGE_RESULT_USAGE.trim());
   console.log(SUBMIT_WEB_VERDICT_USAGE.trim());
-  console.log("  wco revise --run-id <task-id:archive-sha256> --state-dir <directory> --config <config.json> --round <1-3> [--json]");
-  console.log("  wco revision-status --run-id <task-id:archive-sha256> --state-dir <directory> [--round <1-3>] [--json]");
-  console.log("\nFor the durable Phase 9–16 product flow, use wco-control (or `npm run control -- ...` from a source checkout).");
+  console.log("  wco revise --run-id <run-id> --state-dir <directory> --config <config.json> --round <1-3> [--json]");
+  console.log("  wco revision-status --run-id <run-id> --state-dir <directory> [--round <1-3>] [--json]");
+  console.log("");
+  console.log("Routine workflow commands may use WCO_RUN_ID, WCO_STATE_DIR, and WCO_CONFIG instead of repeating the matching flags.");
+  console.log("Use --json where supported for stable machine-readable output.");
 }
+
+async function packageVersion(): Promise<string> {
+  const packagePath = fileURLToPath(new URL("../../package.json", import.meta.url));
+  const parsed = JSON.parse(await readFile(packagePath, "utf8")) as { version?: unknown };
+  return typeof parsed.version === "string" ? parsed.version : "unknown";
+}
+
+function hasFlag(args: string[], flag: string): boolean {
+  return args.includes(flag);
+}
+
+function controlArgumentsWithEnvironment(command: string, args: string[]): string[] {
+  const resolved = [...args];
+  const addDefault = (flag: string, envKey: "WCO_RUN_ID" | "WCO_STATE_DIR" | "WCO_CONFIG"): void => {
+    const value = process.env[envKey];
+    if (!hasFlag(resolved, flag) && value) resolved.push(flag, value);
+  };
+  if (command !== "doctor") addDefault("--run-id", "WCO_RUN_ID");
+  addDefault("--state-dir", "WCO_STATE_DIR");
+  if (command === "doctor" || command === "continue") addDefault("--config", "WCO_CONFIG");
+  return resolved;
+}
+
+const controlIo = {
+  stdout: (value: string) => process.stdout.write(`${value}\n`),
+  stderr: (value: string) => process.stderr.write(`${value}\n`),
+};
 
 function parseIntakeArguments(args: string[]): { archivePath: string; stateDirectory: string; json: boolean } | null {
   const archivePath = args[0];
@@ -232,6 +278,11 @@ async function runExecutionStatus(args: string[]): Promise<void> {
 async function main(): Promise<void> {
   const [, , command, ...args] = process.argv;
   if (command === "--help" || command === "-h" || command === "help") { printUsage(); return; }
+  if (command === "--version" || command === "-V" || command === "version") { console.log(await packageVersion()); return; }
+  if (command && CONTROL_COMMANDS.has(command)) {
+    process.exitCode = await runControlCommand(command, controlArgumentsWithEnvironment(command, args), controlIo);
+    return;
+  }
   if (command === "validate") return runValidate(args[0]);
   if (command === "intake") return runIntake(args);
   if (command === "prepare") return runPrepare(args);
@@ -245,8 +296,8 @@ async function main(): Promise<void> {
   if (command === "result-bundle-status") { process.exitCode = await runResultBundleStatusCommand(args); return; }
   if (command === "submit-web-verdict") { process.exitCode = await runSubmitWebVerdictCommand(args); return; }
   if (command === "web-review-status") { process.exitCode = await runWebReviewStatusCommand(args); return; }
-  if (command === "revise") { process.exitCode = await runReviseCli(args, { stdout: (value) => process.stdout.write(`${value}\n`), stderr: (value) => process.stderr.write(`${value}\n`) }); return; }
-  if (command === "revision-status") { process.exitCode = await runRevisionStatusCli(args, { stdout: (value) => process.stdout.write(`${value}\n`), stderr: (value) => process.stderr.write(`${value}\n`) }); return; }
+  if (command === "revise") { process.exitCode = await runReviseCli(args, controlIo); return; }
+  if (command === "revision-status") { process.exitCode = await runRevisionStatusCli(args, controlIo); return; }
   printUsage();
   process.exitCode = 2;
 }

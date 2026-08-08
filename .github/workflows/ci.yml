@@ -46,30 +46,29 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Confirm pinned Codex packages
+      - name: Confirm pinned Codex runtime
         run: |
           npm ls @openai/codex
           npm ls @openai/codex-sdk
 
       - name: Validate bundle template
-        run: npm run validate -- ./templates/task-bundle
+        run: npm run validate:template
 
       - name: Typecheck
         run: npm run typecheck
 
-      # The unit runner already executes each top-level test file in its own
-      # bounded process and prints the file name before execution. Avoid
-      # duplicating Phase 9/10 suites here on every commit; explicit phase
-      # release gates still run their targeted suites before a phase is frozen.
-      - name: Unit and fake integration tests
+      - name: Unit and deterministic integration tests
         run: npm test
 
-      - name: Phase 8 fake end-to-end
-        run: npm run test:phase8-e2e
+      - name: End-to-end workflow test
+        run: npm run test:e2e
         timeout-minutes: 2
 
       - name: Build
         run: npm run build
 
-      - name: Compiled CLI integration test
+      - name: Compiled CLI integration tests
         run: npm run test:cli
+
+      - name: Verify distributable package surface
+        run: npm run pack:check
