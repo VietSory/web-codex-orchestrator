@@ -172,7 +172,8 @@ The final repository gate covers the performance/token invariants that WCO can p
 - no redundant local implementer turn for Phase 10 Web-authored bytes;
 - revision model/token usage charged once into the outer orchestration budget;
 - reviewer context separated from implementation transcript and bound to the exact change-set;
-- retry classification for timeout/network/rate-limit/unavailable classes without hot-retrying policy failures.
+- retry classification for timeout/network/rate-limit/unavailable classes without hot-retrying policy failures;
+- unexpired retry backoff is enforced before external Web pack/verdict files are re-read or canonicalized, after completed-side-effect recovery has had a chance to adopt exact receipts.
 
 Content-addressed repository inventory/project-map and source-read receipts remain the reusable context mechanism established by the Web Authority protocol. Cache reuse is never authorization; exact source/tree identity remains mandatory.
 
