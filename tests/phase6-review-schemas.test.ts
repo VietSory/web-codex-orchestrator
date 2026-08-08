@@ -14,6 +14,13 @@ async function loadSchema(name: string) {
   return JSON.parse(content);
 }
 
+function createAjv() {
+  // Match the production embedded-contract compiler. These schemas deliberately
+  // express some type constraints across allOf branches, so Ajv strictTypes
+  // warnings are not product validation failures and should not pollute CI.
+  return new Ajv({ allErrors: true, strict: false });
+}
+
 function createValidBaseVerdict(): any {
   return {
     schema_version: "1.1",
@@ -35,7 +42,7 @@ function createValidBaseVerdict(): any {
     revision_request_sha256: null,
     previous_published_commit_sha: null,
     comprehensive_review_complete: true,
-    criterion_results: [{ 
+    criterion_results: [{
       criterion_id: "REQ-001",
       required: true,
       status: "PASS",
@@ -50,17 +57,17 @@ function createValidBaseVerdict(): any {
 
 test("Phase 6 Schema: verdict schema rejects APPROVE with any FAIL/UNVERIFIED criterion", async () => {
   const schema = await loadSchema("web-review-verdict.schema.json");
-  const ajv = new Ajv({ allErrors: true });
+  const ajv = createAjv();
   const validate = ajv.compile(schema);
-  
+
   const obj = createValidBaseVerdict();
-  obj.criterion_results = [{ 
+  obj.criterion_results = [{
     criterion_id: "REQ-001", required: true, evidence_refs: ["ref"], notes: "ok",
     status: "FAIL"
   }];
-  
+
   assert.equal(validate(obj), false);
-  
+
   obj.criterion_results[0].status = "UNVERIFIED";
   assert.equal(validate(obj), false);
 
@@ -70,7 +77,7 @@ test("Phase 6 Schema: verdict schema rejects APPROVE with any FAIL/UNVERIFIED cr
 
 test("Phase 6 Schema: verdict schema rejects REVISE with escalation-only classifications", async () => {
   const schema = await loadSchema("web-review-verdict.schema.json");
-  const ajv = new Ajv({ allErrors: true });
+  const ajv = createAjv();
   const validate = ajv.compile(schema);
 
   const obj = createValidBaseVerdict();
@@ -90,9 +97,9 @@ test("Phase 6 Schema: verdict schema rejects REVISE with escalation-only classif
     minimal_required_fix: "fix",
     revision_changed_paths: []
   }];
-  
+
   assert.equal(validate(obj), false);
-  
+
   obj.blocking_findings[0].classification = "SPEC_VIOLATION";
   if (!validate(obj)) {
     console.error("AJV errors (test 2):", ajv.errorsText(validate.errors));
@@ -102,7 +109,7 @@ test("Phase 6 Schema: verdict schema rejects REVISE with escalation-only classif
 
 test("Phase 6 Schema: revision REVISE rejects INITIAL_DISCOVERY findings", async () => {
   const schema = await loadSchema("web-review-verdict.schema.json");
-  const ajv = new Ajv({ allErrors: true });
+  const ajv = createAjv();
   const validate = ajv.compile(schema);
 
   const obj = createValidBaseVerdict();
@@ -114,7 +121,7 @@ test("Phase 6 Schema: revision REVISE rejects INITIAL_DISCOVERY findings", async
   obj.previous_verdict_sha256 = "0".repeat(64);
   obj.revision_request_sha256 = "0".repeat(64);
   obj.previous_published_commit_sha = "0".repeat(40);
-  
+
   obj.blocking_findings = [{
     finding_id: "WEB-FIND-001",
     classification: "SPEC_VIOLATION",
@@ -129,9 +136,9 @@ test("Phase 6 Schema: revision REVISE rejects INITIAL_DISCOVERY findings", async
     minimal_required_fix: "fix",
     revision_changed_paths: []
   }];
-  
+
   assert.equal(validate(obj), false);
-  
+
   obj.blocking_findings[0].finding_origin = "PREVIOUS_UNRESOLVED";
   if (!validate(obj)) {
     console.error("AJV errors (test 3):", ajv.errorsText(validate.errors));
@@ -141,19 +148,19 @@ test("Phase 6 Schema: revision REVISE rejects INITIAL_DISCOVERY findings", async
 
 test("Phase 6 Schema: initial review bindings require null previous hashes", async () => {
   const schema = await loadSchema("web-review-verdict.schema.json");
-  const ajv = new Ajv({ allErrors: true });
+  const ajv = createAjv();
   const validate = ajv.compile(schema);
 
   const obj = createValidBaseVerdict();
   obj.review_mode = "INITIAL";
   obj.previous_result_bundle_sha256 = "0".repeat(64); // Invalid
-  
+
   assert.equal(validate(obj), false);
 });
 
 test("Phase 6 Schema: revision review bindings require all previous hashes", async () => {
   const schema = await loadSchema("web-review-verdict.schema.json");
-  const ajv = new Ajv({ allErrors: true });
+  const ajv = createAjv();
   const validate = ajv.compile(schema);
 
   const obj = createValidBaseVerdict();
@@ -161,7 +168,7 @@ test("Phase 6 Schema: revision review bindings require all previous hashes", asy
   obj.review_round = 2;
   // Missing hashes should fail
   assert.equal(validate(obj), false);
-  
+
   obj.previous_result_bundle_sha256 = "0".repeat(64);
   obj.previous_verdict_sha256 = "0".repeat(64);
   obj.revision_request_sha256 = "0".repeat(64);

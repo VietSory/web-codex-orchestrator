@@ -1,4 +1,5 @@
 import path from "node:path";
+import { unlink } from "node:fs/promises";
 import { assertPhase4ExecutionContract } from "../execution/execution-validator.js";
 import {
   loadPhase4Config,
@@ -75,8 +76,7 @@ function exactApprovedDigest(receipt: ExecutionReceipt): string {
     !receipt.final_reviewer.latest_thread_id ||
     receipt.internal_reviewer.latest_thread_id === receipt.implementer.thread_id ||
     receipt.final_reviewer.latest_thread_id === receipt.implementer.thread_id ||
-    receipt.internal_reviewer.latest_thread_id ===
-      receipt.final_reviewer.latest_thread_id
+    receipt.internal_reviewer.latest_thread_id === receipt.final_reviewer.latest_thread_id
   ) {
     throw new GitPublishError(
       "PUBLISH_PHASE4_NOT_READY",
@@ -89,20 +89,14 @@ function exactApprovedDigest(receipt: ExecutionReceipt): string {
 
 export function pathsFromApprovedChangeSet(changeSet: ChangeSet): string[] {
   const paths = new Set<string>();
-
   for (const entry of changeSet.entries) {
     paths.add(entry.path);
     if (entry.old_path) paths.add(entry.old_path);
   }
-
   return [...paths].sort((left, right) => left.localeCompare(right));
 }
 
-function assertCurrentChangeSet(
-  changeSet: ChangeSet,
-  receipt: ExecutionReceipt,
-  expectedDigest: string,
-): string[] {
+function assertCurrentChangeSet(changeSet: ChangeSet, receipt: ExecutionReceipt, expectedDigest: string): string[] {
   if (
     changeSet.base_commit !== receipt.base_commit ||
     changeSet.branch_name !== receipt.branch_name ||
@@ -113,7 +107,6 @@ function assertCurrentChangeSet(
       "The current worktree does not match the exact Phase 4 approved digest.",
     );
   }
-
   const paths = pathsFromApprovedChangeSet(changeSet);
   if (paths.length === 0) {
     throw new GitPublishError(
@@ -121,7 +114,6 @@ function assertCurrentChangeSet(
       "Phase 4 approved an empty change set, so no product commit can be published.",
     );
   }
-
   return paths;
 }
 
@@ -132,20 +124,13 @@ function boundedCommitMessage(taskId: string, title: string): string {
   return `Apply verified task ${normalizedTask}${suffix}`.slice(0, 4_096);
 }
 
-export async function publishPreparedPhase4Run(
-  context: PreparedPhase4PublishContext,
-): Promise<GitPublishReceipt> {
-  const receiptPath = path.join(
-    context.executionDirectory,
-    "publish",
-    "git-publish.json",
-  );
+export async function publishPreparedPhase4Run(context: PreparedPhase4PublishContext): Promise<GitPublishReceipt> {
+  const receiptPath = path.join(context.executionDirectory, "publish", "git-publish.json");
   const previousReceipt = await readGitPublishReceipt(receiptPath);
   const publisher = new GitPublisher({
     runner: context.runner,
     inspectVerifiedChangeSet: context.inspectVerifiedChangeSet,
-    persistReceipt: (receipt) =>
-      writeGitPublishReceipt(receiptPath, receipt),
+    persistReceipt: (receipt) => writeGitPublishReceipt(receiptPath, receipt),
     ...(context.now ? { now: context.now } : {}),
   });
 
@@ -169,26 +154,14 @@ export async function publishPreparedPhase4Run(
   );
 }
 
-export async function publishPhase4Run(
-  options: Phase4PublishOptions,
-): Promise<GitPublishReceipt> {
+export async function publishPhase4Run(options: Phase4PublishOptions): Promise<GitPublishReceipt> {
   const stateDirectory = path.resolve(options.stateDirectory);
-  const preparation = await readPreparationForExecution(
-    stateDirectory,
-    options.runId,
-  );
-  const lock = await acquireExecutionLock(
-    stateDirectory,
-    preparation.archiveSha256,
-  );
+  const preparation = await readPreparationForExecution(stateDirectory, options.runId);
+  const lock = await acquireExecutionLock(stateDirectory, preparation.archiveSha256);
+  let askpassHelperPath: string | undefined;
 
   try {
-    const execution = await readExecutionReceipt(
-      stateDirectory,
-      preparation.taskId,
-      preparation.archiveSha256,
-    );
-
+    const execution = await readExecutionReceipt(stateDirectory, preparation.taskId, preparation.archiveSha256);
     if (!execution || execution.run_id !== options.runId) {
       throw new GitPublishError(
         "PUBLISH_PHASE4_NOT_READY",
@@ -227,8 +200,6 @@ export async function publishPhase4Run(
     }
 
     const runtimeDirectory = path.join(stateDirectory, "git-runtime");
-    
-    // Preflight Identity Checks
     if (!config.publish?.identity) {
       throw new GitPublishError("PUBLISH_IDENTITY_UNAVAILABLE", "Publish identity configuration is missing.");
     }
@@ -239,6 +210,7 @@ export async function publishPhase4Run(
       runtimeDirectory,
       process.env,
     );
+    if (auth.mode === "https_token") askpassHelperPath = auth.askpassScriptPath;
 
     const runner = new GitRunner(process.env, runtimeDirectory, {
       identity: config.publish.identity,
@@ -254,7 +226,6 @@ export async function publishPhase4Run(
       if (result.exitCode !== 0) {
         throw new GitPublishError("PUBLISH_IDENTITY_UNAVAILABLE", `Failed to verify ${envVar}.`);
       }
-      // format is "Name <email> timestamp tz"
       const output = result.stdout.trim();
       const match = /^(.*)\s+<([^>]+)>\s+\d+\s+[+-]\d+$/.exec(output);
       if (!match || match[1] !== expectedName || match[2] !== expectedEmail) {
@@ -265,14 +236,8 @@ export async function publishPhase4Run(
     await verifyIdentity("GIT_AUTHOR_IDENT");
     await verifyIdentity("GIT_COMMITTER_IDENT");
 
-    const executionDirectory = executionPaths(
-      stateDirectory,
-      preparation.taskId,
-      preparation.archiveSha256,
-    ).directory;
-    const priorPublishReceipt = await readGitPublishReceipt(
-      path.join(executionDirectory, "publish", "git-publish.json"),
-    );
+    const executionDirectory = executionPaths(stateDirectory, preparation.taskId, preparation.archiveSha256).directory;
+    const priorPublishReceipt = await readGitPublishReceipt(path.join(executionDirectory, "publish", "git-publish.json"));
 
     const inspect = async (): Promise<VerifiedChangeSet> => {
       const current = await calculateChangeSet({
@@ -282,16 +247,8 @@ export async function publishPhase4Run(
         runner,
         allowedGeneratedPaths: config.verification.allowed_generated_paths,
       });
-      const paths = assertCurrentChangeSet(
-        current,
-        execution,
-        expectedDigest,
-      );
-
-      return {
-        change_set_sha256: current.change_set_sha256,
-        paths,
-      };
+      const paths = assertCurrentChangeSet(current, execution, expectedDigest);
+      return { change_set_sha256: current.change_set_sha256, paths };
     };
 
     let expectedPaths: string[];
@@ -305,11 +262,7 @@ export async function publishPhase4Run(
         runner,
         allowedGeneratedPaths: config.verification.allowed_generated_paths,
       });
-      expectedPaths = assertCurrentChangeSet(
-        initialChangeSet,
-        execution,
-        expectedDigest,
-      );
+      expectedPaths = assertCurrentChangeSet(initialChangeSet, execution, expectedDigest);
     }
 
     return await publishPreparedPhase4Run({
@@ -324,20 +277,16 @@ export async function publishPhase4Run(
       remoteName: contract.delivery.remote,
       allowedRemoteUrl: preparation.receipt.remote_url,
       allowedBranchPrefix: contract.git_policy.allowed_branch_prefix,
-      denyDirectPushBranches: [
-        ...contract.git_policy.deny_direct_push_branches,
-      ],
+      denyDirectPushBranches: [...contract.git_policy.deny_direct_push_branches],
       expectedChangeSetSha256: expectedDigest,
       expectedPaths,
-      commitMessage: boundedCommitMessage(
-        contract.task_id,
-        contract.title,
-      ),
+      commitMessage: boundedCommitMessage(contract.task_id, contract.title),
       runner,
       inspectVerifiedChangeSet: inspect,
       ...(options.now ? { now: options.now } : {}),
     });
   } finally {
+    if (askpassHelperPath) await unlink(askpassHelperPath).catch(() => undefined);
     await lock.release();
   }
 }

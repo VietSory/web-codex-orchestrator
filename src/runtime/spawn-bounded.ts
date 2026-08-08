@@ -14,11 +14,9 @@ export interface SpawnBoundedOptions {
   signal?: AbortSignal;
 }
 
-export interface SpawnBoundedResult {
+interface SpawnBoundedBaseResult {
   exitCode: number | null;
   signal: NodeJS.Signals | null;
-  stdout: string;
-  stderr: string;
   stdoutBytes: number;
   stderrBytes: number;
   stdoutTruncated: boolean;
@@ -29,7 +27,18 @@ export interface SpawnBoundedResult {
   spawnError?: unknown;
 }
 
+export interface SpawnBoundedResult extends SpawnBoundedBaseResult {
+  stdout: string;
+  stderr: string;
+}
+
+export interface SpawnBoundedBinaryResult extends SpawnBoundedBaseResult {
+  stdout: Buffer;
+  stderr: Buffer;
+}
+
 export type SpawnBounded = (options: SpawnBoundedOptions) => Promise<SpawnBoundedResult>;
+export type SpawnBoundedBinary = (options: SpawnBoundedOptions) => Promise<SpawnBoundedBinaryResult>;
 
 function assertArgument(value: string, label: string): void {
   if (value.includes("\u0000")) throw new ExecutionError("OPERATIONAL_ERROR", `${label} contains NUL.`);
@@ -41,7 +50,7 @@ function boundedTail(current: Buffer<ArrayBufferLike>, chunk: Buffer<ArrayBuffer
   return { value: combined.subarray(Math.max(0, combined.byteLength - maximum)), truncated: true };
 }
 
-export const spawnBounded: SpawnBounded = async (options) => {
+async function spawnBoundedBuffers(options: SpawnBoundedOptions): Promise<SpawnBoundedBinaryResult> {
   assertArgument(options.executable, "Executable");
   for (const argument of options.args) assertArgument(argument, "Argument");
   if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0 || !Number.isFinite(options.stdoutMaxBytes) || options.stdoutMaxBytes < 0 || !Number.isFinite(options.stderrMaxBytes) || options.stderrMaxBytes < 0) {
@@ -49,7 +58,7 @@ export const spawnBounded: SpawnBounded = async (options) => {
   }
 
   const started = performance.now();
-  return await new Promise<SpawnBoundedResult>((resolve) => {
+  return await new Promise<SpawnBoundedBinaryResult>((resolve) => {
     let stdout: Buffer<ArrayBufferLike> = Buffer.alloc(0);
     let stderr: Buffer<ArrayBufferLike> = Buffer.alloc(0);
     let stdoutBytes = 0;
@@ -80,8 +89,8 @@ export const spawnBounded: SpawnBounded = async (options) => {
       resolve({
         exitCode,
         signal: exitSignal,
-        stdout: stdout.toString("utf8"),
-        stderr: stderr.toString("utf8"),
+        stdout: Buffer.from(stdout),
+        stderr: Buffer.from(stderr),
         stdoutBytes,
         stderrBytes,
         stdoutTruncated,
@@ -127,6 +136,26 @@ export const spawnBounded: SpawnBounded = async (options) => {
     if (options.signal?.aborted) abort();
     else options.signal?.addEventListener("abort", abort, { once: true });
   });
+}
+
+export const spawnBoundedBinary: SpawnBoundedBinary = spawnBoundedBuffers;
+
+export const spawnBounded: SpawnBounded = async (options) => {
+  const result = await spawnBoundedBuffers(options);
+  return {
+    exitCode: result.exitCode,
+    signal: result.signal,
+    stdout: result.stdout.toString("utf8"),
+    stderr: result.stderr.toString("utf8"),
+    stdoutBytes: result.stdoutBytes,
+    stderrBytes: result.stderrBytes,
+    stdoutTruncated: result.stdoutTruncated,
+    stderrTruncated: result.stderrTruncated,
+    timedOut: result.timedOut,
+    cancelled: result.cancelled,
+    durationMs: result.durationMs,
+    ...(result.spawnError ? { spawnError: result.spawnError } : {}),
+  };
 };
 
 export const defaultSpawnBounded = spawnBounded;

@@ -4,6 +4,7 @@ import path from "node:path";
 import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
 import { REVISION_STATES, RevisionError, type RevisionReceipt, type RevisionResumeState, type RevisionState } from "./contracts.js";
 import { assertExistingRevisionPathSafe } from "./revision-paths.js";
+import { installImmutableDurableRevisionStateFile, writeDurableRevisionStateFile } from "./revision-state-io.js";
 
 export const MAX_REVISION_ARTIFACT_BYTES = 2 * 1024 * 1024;
 const VALID_STATES = new Set<RevisionState>(REVISION_STATES);
@@ -137,9 +138,7 @@ export async function writeRevisionReceipt(receiptPath: string, receipt: Revisio
   assertRevisionReceipt(receipt); await assertSafeParent(receiptPath);
   const content = Buffer.from(JSON.stringify(receipt, null, 2) + "\n", "utf8");
   if (content.byteLength > MAX_REVISION_ARTIFACT_BYTES) throw new RevisionError("REVISION_STATE_INVALID", "Revision receipt exceeds the artifact cap.");
-  const temporary = `${receiptPath}.tmp.${process.pid}.${crypto.randomUUID()}`;
-  try { await fs.writeFile(temporary, content, { flag: "wx", mode: 0o600 }); await fs.rename(temporary, receiptPath); }
-  catch (error) { await fs.unlink(temporary).catch(() => undefined); throw new RevisionError("REVISION_OPERATIONAL_ERROR", `Cannot persist revision receipt: ${error instanceof Error ? error.message : String(error)}`); }
+  await writeDurableRevisionStateFile(receiptPath, content, MAX_REVISION_ARTIFACT_BYTES);
 }
 
 export async function writeCanonicalRevisionArtifact(filePath: string, value: unknown | Buffer): Promise<{ buffer: Buffer; sha256: string }> {
@@ -147,12 +146,12 @@ export async function writeCanonicalRevisionArtifact(filePath: string, value: un
   const buffer = Buffer.isBuffer(value) ? value : canonicalJsonBuffer(value);
   if (buffer.byteLength > MAX_REVISION_ARTIFACT_BYTES) throw new RevisionError("REVISION_STATE_INVALID", `Canonical revision artifact exceeds ${MAX_REVISION_ARTIFACT_BYTES} bytes.`);
   const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
-  try { await fs.writeFile(filePath, buffer, { flag: "wx", mode: 0o600 }); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw new RevisionError("REVISION_OPERATIONAL_ERROR", `Cannot write revision artifact: ${error instanceof Error ? error.message : String(error)}`);
-    const existing = await readBounded(filePath, false);
-    if (!existing?.equals(buffer)) throw new RevisionError("REVISION_STATE_INVALID", `Immutable revision artifact already exists with different bytes: ${filePath}`);
-  }
+  await installImmutableDurableRevisionStateFile(
+    filePath,
+    buffer,
+    MAX_REVISION_ARTIFACT_BYTES,
+    async (candidate) => await readBounded(candidate, false),
+  );
   return { buffer, sha256 };
 }
 export async function readCanonicalRevisionArtifact(filePath: string): Promise<Buffer | null> { return readBounded(filePath, true); }

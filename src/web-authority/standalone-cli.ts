@@ -5,15 +5,20 @@ function usage(): void {
   process.stdout.write("Usage:\n");
   process.stdout.write(`${REGISTER_WEB_PACK_USAGE}\n`);
   process.stdout.write(`${WEB_PACK_STATUS_USAGE}\n`);
+  process.stdout.write("\nCompatibility aliases: register-web-pack, web-pack-status\n");
 }
 
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
-  if (command === "register-web-pack") {
+  if (command === "--help" || command === "-h" || command === "help") {
+    usage();
+    return;
+  }
+  if (command === "register" || command === "register-web-pack") {
     if (!await runRegisterWebPackCommand(args)) { usage(); process.exitCode = 2; }
     return;
   }
-  if (command === "web-pack-status") {
+  if (command === "status" || command === "web-pack-status") {
     if (!await runWebPackStatusCommand(args)) { usage(); process.exitCode = 2; }
     return;
   }
@@ -22,6 +27,9 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+  const value = error instanceof Error
+    ? process.env.WCO_DEBUG === "1" ? error.stack ?? error.message : error.message
+    : String(error);
+  process.stderr.write(`${value}\n`);
   process.exitCode = 3;
 });

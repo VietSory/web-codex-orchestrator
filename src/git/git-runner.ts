@@ -1,7 +1,6 @@
-import { spawn } from "node:child_process";
 import path from "node:path";
 import type { GitCommandResult } from "./contracts.js";
-
+import { spawnBounded } from "../runtime/spawn-bounded.js";
 import type { PublishIdentityConfig } from "../config/contracts.js";
 import type { PreparedPublishGitSecurity } from "../publish/publish-auth.js";
 
@@ -10,12 +9,39 @@ export interface GitRunnerSecurityOptions {
   auth?: PreparedPublishGitSecurity;
 }
 
+export interface GitRunnerLimits {
+  localTimeoutMs: number;
+  networkTimeoutMs: number;
+  stdoutMaxBytes: number;
+  stderrMaxBytes: number;
+}
+
+export const GIT_LOCAL_TIMEOUT_MS = 120_000;
+export const GIT_NETWORK_TIMEOUT_MS = 300_000;
+export const GIT_STDOUT_MAX_BYTES = 16 * 1024 * 1024;
+export const GIT_STDERR_MAX_BYTES = 16 * 1024 * 1024;
+
+const DEFAULT_LIMITS: GitRunnerLimits = {
+  localTimeoutMs: GIT_LOCAL_TIMEOUT_MS,
+  networkTimeoutMs: GIT_NETWORK_TIMEOUT_MS,
+  stdoutMaxBytes: GIT_STDOUT_MAX_BYTES,
+  stderrMaxBytes: GIT_STDERR_MAX_BYTES,
+};
+
 export class GitRunner {
+  private readonly limits: GitRunnerLimits;
+
   constructor(
     private readonly env: NodeJS.ProcessEnv = process.env,
     readonly runtimeDirectory?: string,
     private readonly security?: GitRunnerSecurityOptions,
-  ) {}
+    limits?: Partial<GitRunnerLimits>,
+  ) {
+    this.limits = { ...DEFAULT_LIMITS, ...limits };
+    for (const [name, value] of Object.entries(this.limits)) {
+      if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`Invalid GitRunner limit '${name}'.`);
+    }
+  }
 
   private getCommandTarget(args: readonly string[]): { subcommand: string | undefined; varTarget: string | undefined } {
     let i = 0;
@@ -38,16 +64,16 @@ export class GitRunner {
     return { subcommand: undefined, varTarget: undefined };
   }
 
-  private safeEnvironment(subcommand: string | undefined, varTarget: string | undefined): NodeJS.ProcessEnv {
-    const result: NodeJS.ProcessEnv = {
+  private safeEnvironment(subcommand: string | undefined, varTarget: string | undefined): Record<string, string> {
+    const result: Record<string, string> = {
       GIT_TERMINAL_PROMPT: "0",
       GIT_CONFIG_NOSYSTEM: "1",
     };
-    
+
     if (this.runtimeDirectory !== undefined) {
       result.GIT_CONFIG_GLOBAL = path.join(this.runtimeDirectory, "empty-config");
     }
-    
+
     for (const key of ["PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "WCO_GIT_EXECUTABLE"]) {
       const value = this.env[key];
       if (value !== undefined) result[key] = value;
@@ -72,7 +98,6 @@ export class GitRunner {
   }
 
   async run(args: readonly string[], cwd: string): Promise<GitCommandResult> {
-    const started = Date.now();
     const { subcommand, varTarget } = this.getCommandTarget(args);
     const effectiveArgs = this.runtimeDirectory === undefined
       ? [...args]
@@ -83,46 +108,48 @@ export class GitRunner {
           "core.fsmonitor=false",
           ...args,
         ];
-        
+
     const env = this.safeEnvironment(subcommand, varTarget);
-        
-    return await new Promise<GitCommandResult>((resolve, reject) => {
-      const gitExecutable = env.WCO_GIT_EXECUTABLE || "git";
-      const child = spawn(gitExecutable, effectiveArgs, {
-        cwd,
-        shell: false,
-        env,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      const stdoutBufs: Buffer[] = [];
-      const stderrBufs: Buffer[] = [];
-      child.stdout.on("data", (chunk: Buffer) => stdoutBufs.push(chunk));
-      child.stderr.on("data", (chunk: Buffer) => stderrBufs.push(chunk));
-      child.once("error", reject);
-      child.once("close", (exitCode) => {
-        let stdoutStr = Buffer.concat(stdoutBufs).toString("utf8");
-        let stderrStr = Buffer.concat(stderrBufs).toString("utf8");
-        
-        if (this.security?.auth?.mode === "https_token") {
-          const token = this.security.auth.askpassToken;
-          if (token && token.length > 0) {
-            // exact secret redaction
-            stdoutStr = stdoutStr.split(token).join("[REDACTED]");
-            stderrStr = stderrStr.split(token).join("[REDACTED]");
-          }
-        }
-        
-        resolve({
-          executable: "git",
-          args: effectiveArgs,
-          cwd,
-          exitCode: exitCode ?? 3,
-          stdout: stdoutStr,
-          stderr: stderrStr,
-          duration_ms: Date.now() - started,
-        });
-      });
+    const gitExecutable = env.WCO_GIT_EXECUTABLE || "git";
+    const networkCommand = subcommand === "fetch" || subcommand === "push" || subcommand === "ls-remote";
+    const timeoutMs = networkCommand ? this.limits.networkTimeoutMs : this.limits.localTimeoutMs;
+    const result = await spawnBounded({
+      executable: gitExecutable,
+      args: effectiveArgs,
+      cwd,
+      environment: env,
+      timeoutMs,
+      stdoutMaxBytes: this.limits.stdoutMaxBytes,
+      stderrMaxBytes: this.limits.stderrMaxBytes,
+      shell: false,
     });
+
+    let stdout = result.stdout;
+    let stderr = result.stderr;
+    if (this.security?.auth?.mode === "https_token") {
+      const token = this.security.auth.askpassToken;
+      if (token.length > 0) {
+        stdout = stdout.split(token).join("[REDACTED]");
+        stderr = stderr.split(token).join("[REDACTED]");
+      }
+    }
+
+    const diagnostics: string[] = [];
+    if (result.timedOut) diagnostics.push(`WCO_GIT_TIMEOUT: command exceeded ${timeoutMs}ms`);
+    if (result.stdoutTruncated || result.stderrTruncated) diagnostics.push("WCO_GIT_OUTPUT_LIMIT: command output exceeded the bounded Git output limit");
+    if (result.spawnError) diagnostics.push(`WCO_GIT_SPAWN_ERROR: ${result.spawnError instanceof Error ? result.spawnError.message : String(result.spawnError)}`);
+    if (diagnostics.length > 0) stderr = [stderr.trim(), ...diagnostics].filter(Boolean).join("\n");
+
+    const failedByBoundary = result.timedOut || result.stdoutTruncated || result.stderrTruncated || result.spawnError !== undefined;
+    return {
+      executable: "git",
+      args: effectiveArgs,
+      cwd,
+      exitCode: failedByBoundary ? (result.timedOut ? 124 : 3) : result.exitCode ?? 3,
+      stdout,
+      stderr,
+      duration_ms: result.durationMs,
+    };
   }
 
   async expect(args: readonly string[], cwd: string): Promise<GitCommandResult> {

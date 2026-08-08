@@ -9,9 +9,48 @@ const REPOSITORY_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const REMOTE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const AGENT_FIELDS = new Set(["implementer", "internal_reviewer", "final_reviewer", "limits"]);
 const AGENT_PROFILE_FIELDS = new Set(["model", "reasoning_effort"]);
-const AGENT_LIMIT_FIELDS = new Set(["maximum_implementation_iterations", "maximum_internal_review_rounds", "maximum_sol_review_rounds", "maximum_total_agent_turns", "maximum_turn_seconds", "maximum_total_seconds", "maximum_total_input_tokens", "maximum_total_output_tokens"]);
+const AGENT_LIMIT_KEYS = [
+  "maximum_implementation_iterations",
+  "maximum_internal_review_rounds",
+  "maximum_sol_review_rounds",
+  "maximum_total_agent_turns",
+  "maximum_turn_seconds",
+  "maximum_total_seconds",
+  "maximum_total_input_tokens",
+  "maximum_total_output_tokens",
+] as const;
+const AGENT_LIMIT_FIELDS = new Set<string>(AGENT_LIMIT_KEYS);
 const VERIFICATION_FIELDS = new Set(["allowed_executables", "allowed_environment_keys", "maximum_command_seconds", "maximum_output_bytes", "maximum_file_bytes", "maximum_changed_files", "maximum_diff_lines", "allowed_generated_paths"]);
 const RUNTIME_FIELDS = new Set(["source", "codex_home"]);
+
+export const TRUSTED_CONFIG_HARD_LIMITS = {
+  inbox: {
+    poll_interval_ms: 60_000,
+    stable_age_ms: 3_600_000,
+    stable_observations: 16,
+    maximum_candidates_per_scan: 10_000,
+  },
+  agents: {
+    maximum_implementation_iterations: 64,
+    maximum_internal_review_rounds: 32,
+    maximum_sol_review_rounds: 16,
+    maximum_total_agent_turns: 128,
+    maximum_turn_seconds: 7_200,
+    maximum_total_seconds: 86_400,
+    maximum_total_input_tokens: 20_000_000,
+    maximum_total_output_tokens: 4_000_000,
+  },
+  result_bundle: {
+    maximum_entries: 4_096,
+    maximum_entry_bytes: 67_108_864,
+    maximum_source_file_bytes: 67_108_864,
+    maximum_diff_bytes: 67_108_864,
+    maximum_total_uncompressed_bytes: 536_870_912,
+    maximum_archive_bytes: 268_435_456,
+    maximum_public_output_bytes_per_command: 4_194_304,
+    maximum_github_response_bytes: 8_388_608,
+  },
+} as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -29,6 +68,10 @@ function positiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
 
+function positiveIntegerWithin(value: unknown, maximum: number): value is number {
+  return positiveInteger(value) && value <= maximum;
+}
+
 export function validateConfig(value: unknown): ConfigValidationReport {
   const issues: ConfigIssue[] = [];
   if (!isRecord(value)) {
@@ -43,7 +86,8 @@ export function validateConfig(value: unknown): ConfigValidationReport {
   } else {
     for (const key of unknownFields(inbox, INBOX_FIELDS)) add(issues, `Unknown inbox configuration field: ${key}`);
     for (const key of ["poll_interval_ms", "stable_age_ms", "stable_observations", "maximum_candidates_per_scan"] as const) {
-      if (!positiveInteger(inbox[key])) add(issues, `inbox.${key} must be a positive integer.`);
+      const maximum = TRUSTED_CONFIG_HARD_LIMITS.inbox[key];
+      if (!positiveIntegerWithin(inbox[key], maximum)) add(issues, `inbox.${key} must be a positive integer <= ${maximum}.`);
     }
   }
   const repositories = value.repositories;
@@ -92,7 +136,10 @@ export function validateConfig(value: unknown): ConfigValidationReport {
       if (!isRecord(limits)) add(issues, "agents.limits must be an object.");
       else {
         for (const field of unknownFields(limits, AGENT_LIMIT_FIELDS)) add(issues, `Unknown agents.limits field: ${field}`);
-        for (const field of AGENT_LIMIT_FIELDS) if (!positiveInteger(limits[field])) add(issues, `agents.limits.${field} must be a positive integer.`);
+        for (const field of AGENT_LIMIT_KEYS) {
+          const maximum = TRUSTED_CONFIG_HARD_LIMITS.agents[field];
+          if (!positiveIntegerWithin(limits[field], maximum)) add(issues, `agents.limits.${field} must be a positive integer <= ${maximum}.`);
+        }
       }
     }
   }
@@ -120,7 +167,6 @@ export function validateConfig(value: unknown): ConfigValidationReport {
     if (!isRecord(publish)) add(issues, "publish must be an object.");
     else {
       for (const key of unknownFields(publish, new Set(["identity", "authentication"]))) add(issues, `Unknown publish field: ${key}`);
-      
       const identity = publish.identity;
       if (!isRecord(identity)) add(issues, "publish.identity must be an object.");
       else {
@@ -128,7 +174,6 @@ export function validateConfig(value: unknown): ConfigValidationReport {
         if (typeof identity.name !== "string" || identity.name !== identity.name.trim() || identity.name.length < 1 || identity.name.length > 128 || /[\x00-\x1F\x7F<>]/.test(identity.name)) add(issues, "publish.identity.name is invalid.");
         if (typeof identity.email !== "string" || identity.email !== identity.email.trim() || identity.email.length < 3 || identity.email.length > 320 || /[\x00-\x1F\x7F]/.test(identity.email) || !/^[^@\s<>]+@[^@\s<>]+$/.test(identity.email)) add(issues, "publish.identity.email is invalid.");
       }
-      
       const authentication = publish.authentication;
       if (!isRecord(authentication)) add(issues, "publish.authentication must be an object.");
       else {
@@ -152,16 +197,13 @@ export function validateConfig(value: unknown): ConfigValidationReport {
     else {
       for (const key of unknownFields(githubPullRequest, new Set(["provider", "authentication"]))) add(issues, `Unknown github_pull_request field: ${key}`);
       if (githubPullRequest.provider !== "github.com") add(issues, "github_pull_request.provider must be github.com.");
-      
       const auth = githubPullRequest.authentication;
       if (!isRecord(auth)) add(issues, "github_pull_request.authentication must be an object.");
       else {
         for (const key of unknownFields(auth, new Set(["mode", "token_environment_key"]))) add(issues, `Unknown github_pull_request.authentication field: ${key}`);
         if ("token" in auth) add(issues, "github_pull_request.authentication cannot have token field directly.");
         if (auth.mode !== "https_token") add(issues, "github_pull_request.authentication.mode must be https_token.");
-        else {
-          if (typeof auth.token_environment_key !== "string" || !/^WCO_GITHUB_[A-Z0-9_]{1,48}$/.test(auth.token_environment_key)) add(issues, "github_pull_request.authentication.token_environment_key is invalid.");
-        }
+        else if (typeof auth.token_environment_key !== "string" || !/^WCO_GITHUB_[A-Z0-9_]{1,48}$/.test(auth.token_environment_key)) add(issues, "github_pull_request.authentication.token_environment_key is invalid.");
       }
     }
   }
@@ -177,9 +219,9 @@ export function validateConfig(value: unknown): ConfigValidationReport {
         "github_attestation"
       ]);
       for (const key of unknownFields(resultBundle, allowedFields)) add(issues, `Unknown result_bundle field: ${key}`);
-      for (const field of allowedFields) {
-        if (field !== "github_attestation" && resultBundle[field] !== undefined && !positiveInteger(resultBundle[field])) {
-          add(issues, `result_bundle.${field} must be a positive integer.`);
+      for (const [field, maximum] of Object.entries(TRUSTED_CONFIG_HARD_LIMITS.result_bundle)) {
+        if (resultBundle[field] !== undefined && !positiveIntegerWithin(resultBundle[field], maximum)) {
+          add(issues, `result_bundle.${field} must be a positive integer <= ${maximum}.`);
         }
       }
       if (resultBundle.github_attestation !== undefined && resultBundle.github_attestation !== "required" && resultBundle.github_attestation !== "optional") {
@@ -189,9 +231,5 @@ export function validateConfig(value: unknown): ConfigValidationReport {
   }
 
   if (issues.length > 0) return { ok: false, issues };
-  return {
-    ok: true,
-    issues: [],
-    config: value as unknown as TrustedConfig,
-  };
+  return { ok: true, issues: [], config: value as unknown as TrustedConfig };
 }
