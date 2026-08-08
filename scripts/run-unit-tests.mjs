@@ -8,6 +8,7 @@ const FAILURE_LOG = path.resolve(".wco-ci-unit-failure.log");
 const PER_FILE_TIMEOUT_MS = 90_000;
 const KILL_GRACE_MS = 5_000;
 const MAX_FAILURE_STREAM_BYTES = 1024 * 1024;
+const MAX_ANNOTATION_CHARS = 48_000;
 const tsxCli = fileURLToPath(import.meta.resolve("tsx/cli"));
 
 function boundedTail(current, chunk, maximumBytes) {
@@ -15,6 +16,14 @@ function boundedTail(current, chunk, maximumBytes) {
   return combined.byteLength <= maximumBytes
     ? combined
     : combined.subarray(combined.byteLength - maximumBytes);
+}
+
+function workflowEscape(value) {
+  return value
+    .replaceAll("%", "%25")
+    .replaceAll("\r", "%0D")
+    .replaceAll("\n", "%0A")
+    .slice(0, MAX_ANNOTATION_CHARS);
 }
 
 const files = (await readdir(TEST_DIRECTORY, { withFileTypes: true }))
@@ -95,6 +104,8 @@ for (const file of files) {
       Buffer.from("\n", "utf8"),
     ]);
     await writeFile(FAILURE_LOG, diagnostic, { mode: 0o600 });
+    const annotationBody = workflowEscape(diagnostic.toString("utf8"));
+    process.stderr.write(`::error file=tests/${file},title=Unit test failure::${annotationBody}\n`);
     console.error(result.message);
     process.exit(1);
   }
