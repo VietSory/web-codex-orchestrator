@@ -38,7 +38,7 @@ function webReview() {
     published_commit_sha: OLD_HEAD,
     pull_request_number: 42,
     fresh_attested_head_sha: OLD_HEAD,
-  } as never;
+  } as const;
 }
 
 function revisionReceipt(overrides: Record<string, unknown> = {}) {
@@ -63,7 +63,7 @@ function revisionReceipt(overrides: Record<string, unknown> = {}) {
 function dependencies(state: LifecycleSnapshot, revise: OrchestrationDependencies["reviseRun"]): OrchestrationDependencies {
   return {
     async readSnapshot() { return { ...state }; },
-    async readWebReview() { return webReview(); },
+    async readWebReview() { return webReview() as never; },
     reviseRun: revise,
   } as unknown as OrchestrationDependencies;
 }
