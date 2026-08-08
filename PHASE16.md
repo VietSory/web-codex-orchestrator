@@ -10,7 +10,7 @@ Phase 16 closes the GitHub/CI side of the stacked v1 control plane. It adds no n
 2. `continue --web-verdict <path>` may feed only the existing `WAIT_WEB_VERDICT` transition. It does not bypass verdict validation, Draft-PR/head attestation, review-round binding, or canonical receipt creation.
 3. A supplied verdict is not replayed automatically into a later review round. After a revision returns to `WAIT_WEB_VERDICT`, the control command stops and requires a new explicit verdict artifact.
 4. Git publication remains normal fast-forward/non-force and exact-head bound. WCO never marks a PR Ready, merges, rebases/amends published history, deletes phase branches, or weakens tests/contracts to make CI green.
-5. GitHub rate-limit failures remain retryable only within the durable attempt/time budget. `Retry-After` and primary reset hints are bounded metadata, never authority. A server wait longer than the remaining orchestration time budget blocks instead of creating an unbounded sleeper/retry loop.
+5. GitHub rate-limit failures remain retryable only within the durable attempt/time budget. `Retry-After`, primary reset hints and a documented secondary-limit fallback are bounded metadata, never authority. A server wait longer than the remaining orchestration time budget blocks instead of creating an unbounded sleeper/retry loop.
 6. Codex/ChatGPT bridge, browser, session and runtime failures are compatibility boundaries. WCO may detect, checkpoint, bound, retry safely or surface diagnostics, but does not modify OpenAI Codex app/CLI/agent internals.
 
 ## Runtime, performance and token posture
@@ -25,7 +25,7 @@ The final control loop preserves the Phase 11–15 bounds:
 - explicit direct session/thread handles where the upstream SDK exposes them; no interactive picker/global session-history scan is used to discover WCO lifecycle state;
 - `continue` is capped to 1..32 transitions per invocation and stops on human/input boundaries;
 - GitHub REST response bodies are capped at 1 MiB and accumulated without repeated whole-buffer concatenation;
-- GitHub mutating work remains serialized by WCO transition ownership; rate-limit server hints become a durable retry floor rather than a hot loop.
+- GitHub mutating work remains serialized by WCO transition ownership; rate-limit delays become a durable retry floor rather than a hot loop.
 
 Outer orchestration exactly records the model/input/output usage exposed by completed Phase 8 revision receipts and blocks a new model-bearing transition when the corresponding outer budget is already exhausted. Phase 10 executor receipts do **not** expose token counters in the frozen contract, so Phase 16 does not invent fields or claim that the outer ledger measures every lower-layer model call. Phase 10 reviewer/verifier limits remain enforced by their own bounded gate/runtime policies.
 
@@ -37,6 +37,8 @@ GitHub documents both primary and secondary rate limits. WCO therefore:
 
 - preserves serial orchestration rather than creating concurrent mutation fan-out;
 - parses a valid `Retry-After` delay and `X-RateLimit-Reset` timestamp;
+- recognizes a bounded 403 secondary-rate-limit diagnostic without turning ordinary permission-denied 403 responses into retries;
+- when GitHub identifies a rate-limit response but provides neither retry header nor an exhausted primary counter, applies GitHub's documented minimum one-minute secondary-limit wait;
 - uses the longer valid server hint as a bounded retry floor;
 - refuses to wait beyond the remaining orchestration elapsed budget;
 - keeps response/error retention bounded and redacts the configured token from diagnostics;
@@ -53,7 +55,9 @@ These behaviors reduce API hammering and memory copying without changing GitHub/
 - server retry-hint parsing;
 - durable retry-floor enforcement;
 - elapsed-budget refusal;
-- the GitHub 1 MiB response cap.
+- the GitHub 1 MiB response cap;
+- secondary-rate-limit 403 recognition plus the one-minute no-header fallback;
+- preservation of terminal ordinary permission-denied 403 behavior.
 
 Earlier phase suites remain authoritative for the underlying security/recovery behavior and are rerun by the release gate rather than duplicated or weakened.
 
