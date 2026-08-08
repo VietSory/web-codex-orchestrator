@@ -15,9 +15,8 @@ class MockGitHubClient implements GitHubAttestationClient {
   }
 }
 
-test("Phase 6 GitHub Attestation: success path", async () => {
-  const client = new MockGitHubClient();
-  client.mockResponse = {
+function openDraft(overrides: Record<string, unknown> = {}) {
+  return {
     number: 123,
     html_url: "https://github.com/owner/repo/pull/123",
     state: "open",
@@ -26,8 +25,14 @@ test("Phase 6 GitHub Attestation: success path", async () => {
     merged_at: null,
     title: "Test PR",
     head: { ref: "codex/task", sha: "abc123def456" },
-    base: { ref: "main" }
+    base: { ref: "main" },
+    ...overrides,
   };
+}
+
+test("Phase 6 GitHub Attestation: success path", async () => {
+  const client = new MockGitHubClient();
+  client.mockResponse = openDraft();
 
   const expected = { headBranch: "codex/task", headSha: "abc123def456", baseBranch: "main" };
   const att = await attestGitHubPullRequest(client, "owner", "repo", 123, expected);
@@ -42,12 +47,8 @@ test("Phase 6 GitHub Attestation: success path", async () => {
 
 test("Phase 6 GitHub Attestation: rejects merged PR", async () => {
   const client = new MockGitHubClient();
-  client.mockResponse = {
-    number: 123, html_url: "url", state: "open", draft: false,
-    merged: true, merged_at: "2026-01-01T00:00:00Z", title: "Test",
-    head: { ref: "branch", sha: "sha" }, base: { ref: "main" }
-  };
-  const expected = { headBranch: "branch", headSha: "sha", baseBranch: "main" };
+  client.mockResponse = openDraft({ merged: true, merged_at: "2026-01-01T00:00:00Z" });
+  const expected = { headBranch: "codex/task", headSha: "abc123def456", baseBranch: "main" };
 
   await assert.rejects(
     attestGitHubPullRequest(client, "owner", "repo", 123, expected),
@@ -55,13 +56,32 @@ test("Phase 6 GitHub Attestation: rejects merged PR", async () => {
   );
 });
 
-test("Phase 6 GitHub Attestation: rejects mismatching identity", async () => {
+test("Phase 6 GitHub Attestation: rejects mismatching branch identity", async () => {
   const client = new MockGitHubClient();
-  client.mockResponse = {
-    number: 123, html_url: "url", state: "open", draft: false, merged: false, merged_at: null, title: "Test",
-    head: { ref: "wrong-branch", sha: "sha" }, base: { ref: "main" }
-  };
-  const expected = { headBranch: "right-branch", headSha: "sha", baseBranch: "main" };
+  client.mockResponse = openDraft({ head: { ref: "wrong-branch", sha: "abc123def456" } });
+  const expected = { headBranch: "codex/task", headSha: "abc123def456", baseBranch: "main" };
+
+  await assert.rejects(
+    attestGitHubPullRequest(client, "owner", "repo", 123, expected),
+    (err: any) => err instanceof ResultBundleError && err.code === "RESULT_PR_IDENTITY_MISMATCH"
+  );
+});
+
+test("Phase 6 GitHub Attestation: rejects a response for a different PR number", async () => {
+  const client = new MockGitHubClient();
+  client.mockResponse = openDraft({ number: 124 });
+  const expected = { headBranch: "codex/task", headSha: "abc123def456", baseBranch: "main" };
+
+  await assert.rejects(
+    attestGitHubPullRequest(client, "owner", "repo", 123, expected),
+    (err: any) => err instanceof ResultBundleError && err.code === "RESULT_PR_IDENTITY_MISMATCH"
+  );
+});
+
+test("Phase 6 GitHub Attestation: rejects a PR that is no longer Draft", async () => {
+  const client = new MockGitHubClient();
+  client.mockResponse = openDraft({ draft: false });
+  const expected = { headBranch: "codex/task", headSha: "abc123def456", baseBranch: "main" };
 
   await assert.rejects(
     attestGitHubPullRequest(client, "owner", "repo", 123, expected),
