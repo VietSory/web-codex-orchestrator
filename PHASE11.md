@@ -12,13 +12,14 @@ Phase 11 turns Phase 3–10 primitives into a durable single-PR control plane th
 4. `orchestrator.lock` serializes durable state mutation. `transition-execution.lock` additionally fences one whole external transition so two `continue` callers cannot concurrently execute the same sealed attempt.
 5. Locks are exclusive-created, file-synced, ownership/identity checked and never auto-stolen. A stale/malformed lock requires explicit operator repair because portable read/unlink cannot safely distinguish replacement races.
 6. Retry budgets, not-before timestamps, token/turn budgets and circuit state persist across restart. Retry authority uses durable counters, not compacted events.
-7. Retry uses bounded exponential backoff with deterministic jitter and cap; no hot loops.
+7. Retry uses bounded exponential backoff with deterministic jitter and cap; retryable external failure stops the current `continue` call instead of creating a hot loop.
 8. Ledger/event/diagnostic state is bounded. Derived logs/caches/history never authorize transitions.
 9. Selected registered artifacts are exact Phase 9 registrations, bounded/no-follow read, manifest-bound, atomically persisted and file-synced before use.
-10. P10 READY publication is re-attested against canonical Phase 3/9 authority, transaction backups, persisted gate evidence and exact current change-set before Phase 4 publication.
-11. Operator pause blocks new attempts and survives completion/failure of an already-started external attempt.
-12. `next` and absent-state `status` are cheap; `next` is read-only and does not need trusted config. `pause`/`resume` do not need config. `doctor`/`continue` require config.
-13. Merge/dangerous decisions remain human gates.
+10. Crash recovery may adopt an already-completed external result only when canonical Phase 9/10/publish evidence re-attests to the exact sealed request and active attempt ID. Recovery never advances from a transcript, session history, log line or unverified remote observation.
+11. P10 READY publication is re-attested against canonical Phase 3/9 authority, transaction backups, persisted gate evidence and exact current change-set before Phase 4 publication.
+12. Operator pause blocks new attempts and survives completion/failure of an already-started external attempt.
+13. `next` and absent-state `status` are cheap; `next` is read-only and does not need trusted config. `pause`/`resume` do not need config. `doctor`/`continue` require config.
+14. Merge/dangerous decisions remain human gates.
 
 ## Lifecycle implemented
 
@@ -28,6 +29,10 @@ Phase 11 turns Phase 3–10 primitives into a durable single-PR control plane th
 
 Registration reads and validates the Web implementation pack, checkpoints its exact archive/pack identity, registers through Phase 9, persists the exact selected registration, then completes the attempt. Execution checkpoints the exact artifact/registration manifest pair and delegates only to the canonical Phase 10 constrained executor. Publication first re-attests the exact READY executor snapshot, checkpoints artifact + change-set digest, then delegates to the existing hardened publisher and accepts success only when the remote branch SHA equals the exact pushed commit.
 
+### Crash-window reconciliation
+
+A process can die after an external side effect has committed but before the orchestration ledger records completion. On restart WCO checks the still-`STARTED` attempt before planning another action. It adopts a Phase 9 registration only when the selected artifact reconstructs the same sealed archive/pack request; adopts a terminal Phase 10 result only after canonical run/registration/worktree/transaction/evidence attestation; and adopts publication only when the persisted publish receipt is `PUSHED` with `remote_branch_sha === commit_sha` and the READY executor digest still re-attests. Any identity mismatch fails closed as `ORCHESTRATION_RECOVERY_CONFLICT`. Incomplete evidence is not treated as success; the existing idempotent phase primitive remains responsible for resuming its own incomplete operation.
+
 Opening the Draft PR, packaging the Result Bundle and Web verdict/revision integration remain later roadmap surfaces. Phase 11 deliberately stops at `OPEN_DRAFT_PR`; it never merges.
 
 ## Persistence / portability
@@ -36,7 +41,7 @@ Canonical control state is `<state>/orchestration/runs/<task-id>/<task-bundle-sh
 
 ## Performance / token / session negative requirements
 
-Upstream openai/codex issues #35385, #19517, #22037, #22411 and #30932 report rollout persistence divergence, expensive/global session scans, idle CPU from full thread deserialization and pathological history growth/OOM. WCO therefore keeps its own bounded checkpoint state, does not require `thread/list`/global resume scans for status or recovery, references immutable hashes instead of copying large evidence into the hot ledger, reuses sealed request identity across retries, and treats Codex thread IDs as compatibility handles rather than durable authority. WCO does not patch OpenAI internals.
+Upstream openai/codex issues #35385, #19517, #22037, #22411, #30932, #34724 and #34972 report rollout persistence divergence, expensive/global session scans, idle CPU from full thread deserialization, pathological history growth/OOM, blank long-thread resume and resume unexpectedly forking thread identity. WCO therefore keeps its own bounded checkpoint state, does not require `thread/list`/global resume scans for status or recovery, adopts completed work from its own exact receipts rather than replaying model turns, references immutable hashes instead of copying large evidence into the hot ledger, reuses sealed request identity across retries, and treats Codex thread IDs as compatibility handles rather than durable authority. WCO does not patch OpenAI internals.
 
 Default retry policy starts at 1s, doubles per durable attempt, applies deterministic 75–125% jitter, caps at 60s, opens the circuit after five consecutive failures for 120s, allows four attempts per transition and 24 total attempts. Worker pools and queues remain bounded with explicit backpressure.
 
