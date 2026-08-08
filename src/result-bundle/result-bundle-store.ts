@@ -1,6 +1,7 @@
 // Atomic receipt read/write for deterministic Result Bundles.
 import crypto from "node:crypto";
 import fs from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { ResultBundleError } from "./contracts.js";
 import type { ResultBundleReceipt, ResultBundleState } from "./contracts.js";
@@ -124,7 +125,7 @@ export async function writeResultBundleReceipt(receiptPath: string, receipt: Res
   const content = Buffer.from(JSON.stringify(receipt, null, 2) + "\n", "utf8");
   if (content.byteLength > MAX_RECEIPT_BYTES) throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle receipt exceeds 2 MiB.");
   const tmp = `${resolved}.tmp.${process.pid}.${crypto.randomUUID()}`;
-  let handle: fs.promises.FileHandle | null = null;
+  let handle: FileHandle | null = null;
   try {
     handle = await fs.promises.open(tmp, "wx", 0o600);
     await handle.writeFile(content);
