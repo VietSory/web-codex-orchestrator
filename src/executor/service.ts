@@ -5,7 +5,7 @@ import { applyExecutorTransaction, prepareExecutorTransaction } from "./applier.
 import { attestExecutorChangeSet, attestExecutorResumeChangedPaths } from "./change-set.js";
 import { boundedEvidence, type ExecutorReviewerPort, type ExecutorVerifierPort } from "./gates.js";
 import { attestPersistedExecutorGateEvidence, persistExecutorEvidence } from "./evidence-store.js";
-import { assertExecutorTransactionBoundToPack } from "./transaction-authority.js";
+import { assertExecutorTransactionBoundToPack, attestExecutorTransactionBackups } from "./transaction-authority.js";
 import { ExecutorError, type ExecutorReceipt } from "./contracts.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -62,6 +62,7 @@ export async function executeRegisteredWebPack(options: {
     if (receipt) {
       assertReceiptAuthority(receipt, source);
       assertExecutorTransactionBoundToPack(receipt, source.pack);
+      await attestExecutorTransactionBackups(options.stateDirectory, receipt);
       await attestPersistedExecutorGateEvidence(options.stateDirectory, receipt);
       if (receipt.state === "READY_FOR_PUBLISH") {
         await reattestDigest(receipt, receipt.change_set_digest);
