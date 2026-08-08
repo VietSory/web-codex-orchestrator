@@ -51,8 +51,12 @@ function selectedResultPaths(
     throw resultBundleInvalid(`Web review round must be an integer between 1 and 4; got ${reviewRound}`);
   }
   if (reviewRound === 1) {
-    const initial = resultBundlePaths(stateDirectory, taskId, taskBundleArchiveSha);
-    return { directory: initial.directory, receiptPath: initial.receiptPath, label: "initial Phase 6 Result Bundle receipt" };
+    try {
+      const initial = resultBundlePaths(stateDirectory, taskId, taskBundleArchiveSha);
+      return { directory: initial.directory, receiptPath: initial.receiptPath, label: "initial Phase 6 Result Bundle receipt" };
+    } catch (error) {
+      throw resultBundleInvalid("Initial Phase 6 Result Bundle path contains a symbolic link or unsafe state ancestor", error);
+    }
   }
   const revisionRound = reviewRound - 1;
   const padded = String(revisionRound).padStart(2, "0");
