@@ -86,3 +86,22 @@ test("GIT-HELPER-003 blocks local external diff and textconv programs before dif
   assert.match(textconvResult.stderr, /WCO_GIT_UNSAFE_CONFIG/);
   assert.match(textconvResult.stderr, /diff\.wco\.textconv/);
 });
+
+test("GIT-HELPER-004 authenticated network commands use the exact trusted URL instead of mutable remote config", async (t) => {
+  const { root, repo, runtime, bootstrap } = await fixture(t);
+  const trustedRemote = path.join(root, "trusted.git");
+  await expectGit(bootstrap, root, ["init", "--bare", trustedRemote]);
+  await expectGit(bootstrap, repo, ["remote", "add", "origin", path.join(root, "missing-attacker.git")]);
+
+  const hardened = new GitRunner(process.env, runtime, { allowedRemoteUrl: trustedRemote });
+  const result = await hardened.run(["ls-remote", "--heads", "origin"], repo);
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.ok(result.args.includes(trustedRemote));
+  assert.equal(result.args.includes("origin"), false);
+
+  await expectGit(bootstrap, repo, ["config", "url.file:///tmp/rewritten.insteadOf", trustedRemote]);
+  const rewriteResult = await hardened.run(["ls-remote", "--heads", "origin"], repo);
+  assert.equal(rewriteResult.exitCode, 3);
+  assert.match(rewriteResult.stderr, /WCO_GIT_UNSAFE_CONFIG/);
+  assert.match(rewriteResult.stderr, /url\..*\.insteadof/i);
+});
