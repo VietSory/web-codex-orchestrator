@@ -161,7 +161,7 @@ async function runScan(args: string[]): Promise<void> {
   const parsed = parseScanArguments(args); if (!parsed) { printUsage(); process.exitCode = 2; return; }
   try {
     const summary = await scanInbox(parsed);
-    if (parsed.json) process.stdout.write(`${JSON.stringify(summary)}\n`); else { console.log(`Discovered ${summary.discovered}; unstable ${summary.unstable}; skipped ${summary.skipped}; ready ${summary.ready_for_codex}; rejected ${summary.rejected}; blocked ${summary.blocked}; failed ${summary.failed}.`); for (const result of summary.results) console.log(`${result.result.toUpperCase()}: ${result.path}${result.error ? ` -> ${result.error.code}: ${result.error.message}` : ""}`); }
+    if (parsed.json) process.stdout.write(`${JSON.stringify(summary)}\n`); else { console.log(`Discovered: ${summary.discovered}; unstable ${summary.unstable}; skipped ${summary.skipped}; ready ${summary.ready_for_codex}; rejected ${summary.rejected}; blocked ${summary.blocked}; failed ${summary.failed}.`); for (const result of summary.results) console.log(`${result.result.toUpperCase()}: ${result.path}${result.error ? ` -> ${result.error.code}: ${result.error.message}` : ""}`); }
     if (summary.failed > 0) process.exitCode = 3; else if (summary.rejected > 0 || summary.blocked > 0) process.exitCode = 1;
   } catch (error) { console.error(error instanceof Error ? `${errorCode(error)}: ${error.message}` : String(error)); process.exitCode = 3; }
 }
