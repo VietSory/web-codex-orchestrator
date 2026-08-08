@@ -1,6 +1,7 @@
 import { constants as fsConstants, type Stats } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import crypto from "node:crypto";
 import { ExecutorError } from "./contracts.js";
 
 export async function ensureSecureExecutorSubdirectory(rootDirectory: string, directory: string): Promise<void> {
@@ -77,5 +78,88 @@ export async function readStableExecutorStateFile(filePath: string, maximumBytes
     return bytes;
   } finally {
     await handle.close();
+  }
+}
+
+async function syncExecutorDirectory(directory: string): Promise<void> {
+  if (process.platform === "win32") return;
+  const directoryFlag = typeof fsConstants.O_DIRECTORY === "number" ? fsConstants.O_DIRECTORY : 0;
+  let handle: fs.FileHandle | null = null;
+  try {
+    handle = await fs.open(directory, fsConstants.O_RDONLY | directoryFlag);
+    await handle.sync();
+  } catch (error) {
+    throw new ExecutorError(
+      "EXECUTOR_STATE_DURABILITY",
+      `Failed to sync executor directory metadata '${directory}': ${error instanceof Error ? error.message : String(error)}`,
+    );
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+async function writeSyncedTemp(finalPath: string, bytes: Buffer, maximumBytes: number): Promise<string> {
+  if (bytes.byteLength > maximumBytes) {
+    throw new ExecutorError("EXECUTOR_STATE_INVALID", `Executor state write exceeds ${maximumBytes} bytes: ${finalPath}`);
+  }
+  const directory = path.dirname(finalPath);
+  const tempPath = path.join(directory, `.${path.basename(finalPath)}.${process.pid}.${crypto.randomUUID()}.tmp`);
+  let handle: fs.FileHandle | null = null;
+  try {
+    handle = await fs.open(tempPath, "wx", 0o600);
+    await handle.writeFile(bytes);
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    return tempPath;
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
+    await fs.unlink(tempPath).catch(() => undefined);
+    throw error;
+  }
+}
+
+export async function writeDurableExecutorStateFile(
+  finalPath: string,
+  bytes: Buffer,
+  maximumBytes: number,
+): Promise<void> {
+  const tempPath = await writeSyncedTemp(finalPath, bytes, maximumBytes);
+  try {
+    const existing = await fs.lstat(finalPath).catch((error) =>
+      (error as NodeJS.ErrnoException).code === "ENOENT" ? null : Promise.reject(error),
+    );
+    if (existing?.isSymbolicLink()) {
+      throw new ExecutorError("EXECUTOR_STATE_INVALID", `Executor state destination is a symlink: ${finalPath}`);
+    }
+    await fs.rename(tempPath, finalPath);
+    await syncExecutorDirectory(path.dirname(finalPath));
+  } finally {
+    await fs.unlink(tempPath).catch(() => undefined);
+  }
+}
+
+export async function installImmutableDurableExecutorStateFile(
+  finalPath: string,
+  bytes: Buffer,
+  maximumBytes: number,
+): Promise<void> {
+  const tempPath = await writeSyncedTemp(finalPath, bytes, maximumBytes);
+  try {
+    try {
+      await fs.link(tempPath, finalPath);
+      await syncExecutorDirectory(path.dirname(finalPath));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const existing = await readStableExecutorStateFile(finalPath, maximumBytes);
+      if (!existing.equals(bytes)) {
+        throw new ExecutorError(
+          "EXECUTOR_STATE_INVALID",
+          `Immutable executor state path already exists with different bytes: ${finalPath}`,
+        );
+      }
+    }
+  } finally {
+    await fs.unlink(tempPath).catch(() => undefined);
   }
 }

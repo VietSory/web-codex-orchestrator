@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
 import { ExecutorError, type ExecutorReceipt, type ExecutorState } from "./contracts.js";
 import { executorPaths, prepareExecutorDirectory } from "./paths.js";
-import { readStableExecutorStateFile } from "./state-io.js";
+import { readStableExecutorStateFile, writeDurableExecutorStateFile } from "./state-io.js";
 
 const MAX_RECEIPT_BYTES = 2 * 1024 * 1024;
 const MAX_LOCK_BYTES = 8 * 1024;
@@ -63,13 +63,7 @@ export async function writeExecutorReceipt(stateDirectory: string, receipt: Exec
   await prepareExecutorDirectory(stateDirectory, paths.directory);
   const bytes = canonicalJsonBuffer(receipt);
   if (bytes.byteLength > MAX_RECEIPT_BYTES) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor receipt exceeds byte cap.");
-  const temp = path.join(paths.directory, `.executor-receipt.${process.pid}.${crypto.randomUUID()}.tmp`);
-  await fs.writeFile(temp, bytes, { flag: "wx", mode: 0o600 });
-  try {
-    const existing = await fs.lstat(paths.receipt).catch((error) => (error as NodeJS.ErrnoException).code === "ENOENT" ? null : Promise.reject(error));
-    if (existing?.isSymbolicLink()) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor receipt path is a symlink.");
-    await fs.rename(temp, paths.receipt);
-  } finally { await fs.unlink(temp).catch(() => undefined); }
+  await writeDurableExecutorStateFile(paths.receipt, bytes, MAX_RECEIPT_BYTES);
 }
 
 export interface ExecutorLock { nonce: string; path: string; }
@@ -78,12 +72,18 @@ export async function acquireExecutorLock(stateDirectory: string, taskId: string
   const paths = executorPaths(stateDirectory, taskId, taskBundleSha256, artifactSha256);
   await prepareExecutorDirectory(stateDirectory, paths.directory);
   const nonce = crypto.randomBytes(24).toString("hex");
+  const bytes = canonicalJsonBuffer({ pid: process.pid, nonce, created_at: new Date().toISOString() });
+  let handle: fs.FileHandle | null = null;
   try {
-    await fs.writeFile(paths.lock, canonicalJsonBuffer({ pid: process.pid, nonce, created_at: new Date().toISOString() }), { flag: "wx", mode: 0o600 });
+    handle = await fs.open(paths.lock, "wx", 0o600);
+    await handle.writeFile(bytes);
+    await handle.sync();
   } catch (error) {
+    await handle?.close().catch(() => undefined);
     if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new ExecutorError("EXECUTOR_LOCKED", "Executor artifact is already locked; stale locks are never auto-stolen.");
     throw error;
   }
+  await handle.close();
   return { nonce, path: paths.lock };
 }
 

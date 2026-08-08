@@ -1,9 +1,8 @@
-import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { ExecutorError, type ExecutorReceipt } from "./contracts.js";
 import { executorPaths, prepareExecutorDirectory } from "./paths.js";
-import { ensureSecureExecutorSubdirectory, readStableExecutorStateFile } from "./state-io.js";
+import { ensureSecureExecutorSubdirectory, installImmutableDurableExecutorStateFile, readStableExecutorStateFile } from "./state-io.js";
 
 const MAX_EVIDENCE_BYTES = 512 * 1024;
 
@@ -21,12 +20,7 @@ export async function persistExecutorEvidence(options: { stateDirectory: string;
   const directory = evidenceDirectory(options.stateDirectory, options.receipt);
   await ensureSecureExecutorSubdirectory(paths.directory, directory);
   const finalPath = path.join(directory, `${options.name}-${actual}.json`);
-  try { await fs.writeFile(finalPath, options.bytes, { flag: "wx", mode: 0o600 }); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    const existing = await readStableExecutorStateFile(finalPath, MAX_EVIDENCE_BYTES);
-    if (existing.byteLength !== options.bytes.byteLength || crypto.createHash("sha256").update(existing).digest("hex") !== actual) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Immutable executor evidence path contains different bytes.");
-  }
+  await installImmutableDurableExecutorStateFile(finalPath, options.bytes, MAX_EVIDENCE_BYTES);
   return path.relative(paths.directory, finalPath).split(path.sep).join("/");
 }
 
