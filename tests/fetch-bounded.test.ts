@@ -23,7 +23,7 @@ test("FETCH-BOUND-002 relays caller cancellation", async () => {
   const bounded = createBoundedFetch({
     timeoutMs: 5_000,
     fetchImpl: async (_input, init) => {
-      await new Promise<void>((resolve) => init?.signal?.addEventListener("abort", resolve, { once: true }));
+      await new Promise<void>((resolve) => init?.signal?.addEventListener("abort", () => resolve(), { once: true }));
       throw init?.signal?.reason ?? new Error("aborted");
     },
   });
