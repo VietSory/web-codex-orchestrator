@@ -17,8 +17,11 @@ function boundedCommitMessage(taskId: string, title: string): string {
 }
 
 function mapTimedOutPublish(error: unknown): never {
-  if (error instanceof GitPublishError && error.details?.timed_out === true) {
-    throw new OrchestrationError("ORCHESTRATION_PUBLISH_TIMEOUT", `Bounded Git publication timed out: ${error.message}`);
+  if (error instanceof GitPublishError) {
+    const stderrTail = typeof error.details?.stderr_tail === "string" ? error.details.stderr_tail : "";
+    if (error.details?.timed_out === true || stderrTail.includes("[WCO git command timed out]")) {
+      throw new OrchestrationError("ORCHESTRATION_PUBLISH_TIMEOUT", `Bounded Git publication timed out: ${error.message}`);
+    }
   }
   throw error;
 }
