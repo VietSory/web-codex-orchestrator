@@ -48,12 +48,20 @@ export async function prepareWebVerdictForRun(options: {
   runId: string;
   stateDirectory: string;
   verdictPath: string;
+  expectedRequestSha256?: string;
 }): Promise<PreparedWebVerdict> {
   const ingested = await readAndCanonicalizeVerdict(options.verdictPath);
   const raw = ingested.parsedVerdict as { review_round?: unknown } | null;
   const reviewRound = raw?.review_round;
   if (!Number.isInteger(reviewRound) || (reviewRound as number) < 1 || (reviewRound as number) > 4) {
     throw new OrchestrationError("ORCHESTRATION_VERDICT_INVALID", "Web verdict review_round must be an integer from 1 through 4.");
+  }
+  const sealedRequest = sealTransitionRequest("WAIT_WEB_VERDICT", {
+    verdict_sha256: ingested.verdictSha256,
+    review_round: reviewRound as number,
+  });
+  if (options.expectedRequestSha256 && sealedRequest !== options.expectedRequestSha256) {
+    throw new OrchestrationError("ORCHESTRATION_ATTEMPT_CONFLICT", "Supplied Web verdict differs from the already-sealed transition attempt.");
   }
 
   const id = splitRunId(options.runId);
