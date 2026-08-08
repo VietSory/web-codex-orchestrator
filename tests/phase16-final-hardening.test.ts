@@ -115,3 +115,31 @@ test("P16-OPS-005 GitHub response body is rejected at the 1 MiB hard cap", async
     (error: unknown) => error instanceof DraftPullRequestError && error.code === "PR_API_RESPONSE_TOO_LARGE",
   );
 });
+
+test("P16-OPS-006 secondary GitHub rate limit without headers gets the documented one-minute retry floor", async () => {
+  const fakeFetch = (async () => new Response(JSON.stringify({ message: "You have exceeded a secondary rate limit." }), {
+    status: 403,
+    headers: { "content-type": "application/json" },
+  })) as unknown as typeof fetch;
+  const client = new GitHubRestPullRequestClient("token-value", fakeFetch);
+  await assert.rejects(
+    () => client.listByHead({ owner: "o", repository: "r", headOwner: "o", headBranch: "b" }),
+    (error: unknown) => error instanceof DraftPullRequestError
+      && error.code === "PR_API_RATE_LIMITED"
+      && error.retryAfterMs === 60_000,
+  );
+});
+
+test("P16-OPS-007 ordinary GitHub 403 remains terminal and is not mistaken for a rate limit", async () => {
+  const fakeFetch = (async () => new Response(JSON.stringify({ message: "Resource not accessible by personal access token" }), {
+    status: 403,
+    headers: { "content-type": "application/json" },
+  })) as unknown as typeof fetch;
+  const client = new GitHubRestPullRequestClient("token-value", fakeFetch);
+  await assert.rejects(
+    () => client.listByHead({ owner: "o", repository: "r", headOwner: "o", headBranch: "b" }),
+    (error: unknown) => error instanceof DraftPullRequestError
+      && error.code === "PR_API_FORBIDDEN"
+      && error.retryAfterMs === null,
+  );
+});
