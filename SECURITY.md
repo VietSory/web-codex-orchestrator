@@ -117,6 +117,20 @@ Reviewer workspace access is read-only/no-network through the existing reviewer 
 
 Phase 10 has no commit, push, create/update PR, mark-ready or merge capability.
 
+## Phases 11–16 — Durable orchestration and external mutation safety
+
+The outer controller is a state machine over canonical lower-layer receipts, not a replacement authority source. Before an external transition it SHA-256 seals the canonical request and persists a `STARTED` attempt. A late result must match the exact active attempt ID before it can advance the ledger.
+
+One run has one transition-execution fence, with lower-layer locks still applied inside their own mutation boundaries. Retryable failures become durable `WAITING` state with a retry-not-before timestamp; they are not implemented as a polling loop. Total/per-transition attempts, elapsed time, recent events and diagnostics remain bounded.
+
+Crash recovery does not equate missing tool/chat continuation with failure or success. It reconciles exact WCO/external evidence and adopts only terminal state bound to the same sealed request. This applies to registered artifacts, executor terminal receipts, pushed Git commits, Draft PR state, Result Bundles, Web verdict decisions and same-PR revision `RESULT_READY` receipts. Ambiguous or drifted evidence fails closed rather than blindly repeating an external mutation.
+
+GitHub Draft-PR creation is intentionally Draft-only with `maintainer_can_modify=false`. Redirects are rejected rather than forwarding credentials across a changed destination. Response bodies and retained diagnostics are bounded and configured tokens are redacted from error text. GitHub primary/secondary rate-limit signals affect only retry timing: valid `Retry-After` is honored, primary reset time is used only when `X-RateLimit-Remaining` is `0`, and a recognized secondary limit without either condition receives the documented one-minute minimum wait. Required waits cannot exceed the remaining outer elapsed budget.
+
+Phase 14 Web verdict authority remains bound to a freshly attested open/unmerged Draft PR head. Phase 15 revision authority additionally reloads the sealed Revision Request and binds review round, verdict digest, decision-event digest, prior published head and PR number. Revision crash adoption is permitted only for the exact durable `RESULT_READY` round; incomplete revision work remains on Phase 8's normal bounded resume path.
+
+The outer ledger records model/input/output usage exactly where a lower-layer frozen receipt exposes it (currently completed Phase 8 revision receipts). Phase 10's frozen executor receipt does not expose token counters, so WCO does not fabricate them or claim global accounting for every lower-layer model call.
+
 ## Locks and crash recovery
 
 Security-sensitive lifecycle locks use create-only ownership with a random nonce. Existing locks are not automatically stolen based on age because stale-lock deletion creates a replacement race. Manual recovery must establish that no live owner is using the state first.
@@ -125,9 +139,9 @@ Crash recovery is conservative: an ambiguous filesystem/Git/authority state esca
 
 ## Resource exhaustion and performance security
 
-Performance limits are security limits. WCO applies hard caps to archive entries/bytes, receipts, evidence, diagnostics, process output, retries/turns and later mission concurrency. `PERFORMANCE.md` defines the architecture for bounded worker pools, backpressure, content-addressed caches and context/token budgets.
+Performance limits are security limits. WCO applies hard caps to archive entries/bytes, receipts, evidence, diagnostics, process output, retries/turns, orchestration events and state reads. The GitHub REST client has a 1 MiB response-body cap; revision canonical artifacts have a 2 MiB cap. `continue` has a bounded transition count per invocation and durable retry/backpressure prevents hot loops.
 
-A cache or derived index is never authority. Deleting it may cost performance but must not change an authorization decision.
+`PERFORMANCE.md` defines the implemented concurrency, backpressure, session, context and token boundaries. WCO v1 reuses existing immutable/hash-bound artifacts but does **not** claim a separate repository-wide project-map cache subsystem where no executable implementation exists. Any future cache or derived index must remain non-authoritative, bounded and safely deletable/rebuildable.
 
 ## Upstream/native boundaries
 
