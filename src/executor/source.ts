@@ -30,15 +30,9 @@ export async function loadExecutorSource(options: { runId: string; artifactSha25
   if (registration.run_id !== options.runId || registration.artifact_sha256 !== options.artifactSha256) throw new ExecutorError("EXECUTOR_REGISTRATION_INVALID", "Phase 9 registration identity does not match the requested executor source.");
   const paths = webAuthorityPaths(options.stateDirectory, identity.taskId, identity.taskBundleSha256, options.artifactSha256);
 
-  // Phase 10 does not trust a previously successful Phase 9 decision forever.
-  // Re-registering the immutable registry copy performs the full canonical run,
-  // Git tree/spec/preimage attestation and idempotently adopts the same record.
-  const revalidated = await registerWebImplementationPack({
-    runId: options.runId,
-    stateDirectory: options.stateDirectory,
-    configPath: options.configPath,
-    archivePath: paths.archivePath,
-  });
+  // Fresh execution starts only after the full Phase 9 canonical authority check
+  // succeeds again. This intentionally fails on a dirty/stale base before any write.
+  const revalidated = await registerWebImplementationPack({ runId: options.runId, stateDirectory: options.stateDirectory, configPath: options.configPath, archivePath: paths.archivePath });
   if (revalidated.artifact_sha256 !== registration.artifact_sha256 || revalidated.manifest_sha256 !== registration.manifest_sha256 || revalidated.registered_at !== registration.registered_at) throw new ExecutorError("EXECUTOR_REGISTRATION_INVALID", "Phase 9 registration changed during Phase 10 revalidation.");
 
   const pack = await readAndValidateWebImplementationPack(paths.archivePath);
@@ -47,10 +41,5 @@ export async function loadExecutorSource(options: { runId: string; artifactSha25
   const trusted = await resolveTrustedRunContext(options.runId, options.stateDirectory, options.configPath).catch((error) => {
     throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", `Canonical run authority drifted: ${error instanceof Error ? error.message : String(error)}`);
   });
-  if (trusted.runReceipt.worktree_path !== registration.repository.id && false) {
-    // Deliberately unreachable: repository path is canonical local authority and
-    // is never compared with logical repository_id. Kept out of persisted pack.
-    throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", "Unreachable repository identity guard.");
-  }
   return { registration, pack, trusted, archivePath: paths.archivePath };
 }

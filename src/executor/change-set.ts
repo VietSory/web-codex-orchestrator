@@ -9,6 +9,7 @@ function cleanGitEnvironment(): Record<string, string> {
   for (const key of ["PATH", "Path", "PATHEXT", "SYSTEMROOT", "SystemRoot", "COMSPEC", "TMP", "TEMP"]) if (typeof process.env[key] === "string") environment[key] = process.env[key]!;
   environment.GIT_TERMINAL_PROMPT = "0";
   environment.GIT_OPTIONAL_LOCKS = "0";
+  environment.GIT_CONFIG_NOSYSTEM = "1";
   return environment;
 }
 
@@ -31,11 +32,28 @@ function parseStatusPaths(raw: string): string[] {
   return paths.sort();
 }
 
-export async function attestExecutorChangeSet(receipt: ExecutorReceipt): Promise<string> {
+async function attestBaseHead(receipt: ExecutorReceipt): Promise<void> {
   const head = (await git(receipt.worktree_path, ["rev-parse", "HEAD"], 1024)).trim();
   if (head !== receipt.base_commit) throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", `Worktree HEAD '${head}' moved from Phase 10 base '${receipt.base_commit}'.`);
+}
+
+async function currentChangedPaths(receipt: ExecutorReceipt): Promise<string[]> {
+  await attestBaseHead(receipt);
   const raw = await git(receipt.worktree_path, ["-c", "status.renames=false", "status", "--porcelain=v1", "-z", "--untracked-files=all"]);
-  const actual = parseStatusPaths(raw);
+  return parseStatusPaths(raw);
+}
+
+export async function attestExecutorResumeChangedPaths(receipt: ExecutorReceipt): Promise<void> {
+  const actual = await currentChangedPaths(receipt);
+  const allowed = new Set(receipt.operations.map((operation) => operation.path));
+  const unexpected = actual.filter((filePath) => !allowed.has(filePath));
+  if (unexpected.length > 0) {
+    throw new ExecutorError("EXECUTOR_UNREGISTERED_CHANGE", `Crash-resume worktree contains unregistered changes: [${unexpected.join(", ")}].`);
+  }
+}
+
+export async function attestExecutorChangeSet(receipt: ExecutorReceipt): Promise<string> {
+  const actual = await currentChangedPaths(receipt);
   const expected = receipt.operations.map((operation) => operation.path).sort();
   if (actual.length !== expected.length || actual.some((value, index) => value !== expected[index])) throw new ExecutorError("EXECUTOR_UNREGISTERED_CHANGE", `Worktree changed-path set differs from registered operations. Expected [${expected.join(", ")}], observed [${actual.join(", ")}].`);
 
