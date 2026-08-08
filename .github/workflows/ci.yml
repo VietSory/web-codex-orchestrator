@@ -18,9 +18,25 @@ jobs:
       CI: "true"
       WCO_RUN_CODEX_INTEGRATION: "0"
       WCO_RUN_SANDBOX_INTEGRATION: "0"
+      WCO_EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout exact event head
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.WCO_EXPECTED_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Confirm exact checkout identity
+        shell: bash
+        run: |
+          actual_sha="$(git rev-parse HEAD)"
+          if [ "$actual_sha" != "$WCO_EXPECTED_SHA" ]; then
+            echo "Expected exact head $WCO_EXPECTED_SHA but checked out $actual_sha" >&2
+            exit 1
+          fi
+          echo "Exact head: $actual_sha"
 
       - uses: actions/setup-node@v5
         with:
