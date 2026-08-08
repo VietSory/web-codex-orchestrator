@@ -1,5 +1,5 @@
 // Path helpers for Phase 6 result bundle output
-import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import path from "node:path";
 import { ResultBundleError } from "./contracts.js";
 
@@ -14,6 +14,24 @@ export const RESULT_BUNDLE_LOCK_NAME = "result-bundle.lock";
 
 const SAFE_TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
+
+function assertExistingAncestorsSafe(target: string): void {
+  const resolved = path.resolve(target);
+  const parsed = path.parse(resolved);
+  let current = parsed.root;
+  for (const segment of path.relative(parsed.root, resolved).split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    let info;
+    try { info = fsSync.lstatSync(current); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw new ResultBundleError("RESULT_STATE_DIR_UNSAFE", `Cannot inspect Result Bundle state ancestor '${current}'.`);
+    }
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      throw new ResultBundleError("RESULT_STATE_DIR_UNSAFE", `Unsafe Result Bundle state ancestor: ${current}`);
+    }
+  }
+}
 
 /** Archive filename template */
 export function resultBundleArchiveFilename(taskId: string, publishedCommitSha: string): string {
@@ -42,6 +60,10 @@ export function resultBundlePaths(stateDirectory: string, taskId: string, archiv
   if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     throw new ResultBundleError("RESULT_STATE_DIR_UNSAFE", "Result Bundle directory escapes the WCO state root.");
   }
+  // packageResultBundle creates this directory immediately after resolving the
+  // path. Reject any already-existing symlink/non-directory ancestor before
+  // recursive mkdir can follow it outside WCO state.
+  assertExistingAncestorsSafe(directory);
   return {
     directory,
     receiptPath: path.join(directory, RESULT_BUNDLE_RECEIPT_NAME),
@@ -53,47 +75,6 @@ export function resultBundlePaths(stateDirectory: string, taskId: string, archiv
       return path.join(directory, filename);
     },
   };
-}
-
-/** Create/attest every Result Bundle state ancestor without following symlinks. */
-export async function prepareResultBundleDirectory(stateDirectory: string, directory: string): Promise<void> {
-  const requestedRoot = path.resolve(stateDirectory);
-  await fs.mkdir(requestedRoot, { recursive: true, mode: 0o700 });
-  const rootInfo = await fs.lstat(requestedRoot);
-  if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
-    throw new ResultBundleError("RESULT_STATE_DIR_UNSAFE", "WCO state root must be a real directory.");
-  }
-  const root = await fs.realpath(requestedRoot);
-  if (root !== requestedRoot) {
-    throw new ResultBundleError("RESULT_STATE_DIR_UNSAFE", "WCO state root must be a canonical non-symlink directory.");
-  }
-  const target = path.resolve(directory);
-  const relative = path.relative(root, target);
-  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    throw new ResultBundleError("RESULT_STATE_DIR_UNSAFE", "Result Bundle directory escapes the WCO state root.");
-  }
-  let current = root;
-  for (const segment of relative.split(path.sep).filter(Boolean)) {
-    current = path.join(current, segment);
-    let info;
-    try {
-      info = await fs.lstat(current);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      try { await fs.mkdir(current, { mode: 0o700 }); }
-      catch (mkdirError) {
-        if ((mkdirError as NodeJS.ErrnoException).code !== "EEXIST") throw mkdirError;
-      }
-      info = await fs.lstat(current);
-    }
-    if (info.isSymbolicLink() || !info.isDirectory()) {
-      throw new ResultBundleError("RESULT_STATE_DIR_UNSAFE", `Unsafe Result Bundle state ancestor: ${current}`);
-    }
-  }
-  const canonical = await fs.realpath(target);
-  if (canonical !== target) {
-    throw new ResultBundleError("RESULT_STATE_DIR_UNSAFE", "Result Bundle directory resolves through a symbolic link.");
-  }
 }
 
 /** Required entries that must be present in every result bundle */
