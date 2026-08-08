@@ -4,6 +4,7 @@ import path from "node:path";
 import type { RunEvent, RunState } from "./contracts.js";
 
 const JOURNAL_SCAN_CHUNK_BYTES = 64 * 1024;
+const MAX_EVENT_BYTES = 1024 * 1024;
 
 function eventsPath(stateDirectory: string, taskId: string, archiveSha256: string): string {
   return path.join(path.resolve(stateDirectory), "runs", taskId, archiveSha256, "events.jsonl");
@@ -42,6 +43,7 @@ async function nextSequence(filePath: string, runId: string): Promise<number> {
       const newline = suffix.lastIndexOf(0x0a, end - 1);
       if (newline >= 0 || position === 0) {
         const start = newline >= 0 ? newline + 1 : 0;
+        if (end - start > MAX_EVENT_BYTES) throw new Error(`Event journal final record exceeds ${MAX_EVENT_BYTES} bytes.`);
         const line = suffix.subarray(start, end).toString("utf8");
         if (line.length === 0) return 1;
         let previous: unknown;
@@ -61,6 +63,9 @@ async function nextSequence(filePath: string, runId: string): Promise<number> {
         }
         return record.sequence + 1;
       }
+      if (suffix.byteLength > MAX_EVENT_BYTES + JOURNAL_SCAN_CHUNK_BYTES) {
+        throw new Error(`Event journal final record exceeds ${MAX_EVENT_BYTES} bytes.`);
+      }
     }
     return 1;
   } finally {
@@ -69,6 +74,7 @@ async function nextSequence(filePath: string, runId: string): Promise<number> {
 }
 
 async function appendDurably(filePath: string, line: string): Promise<void> {
+  if (Buffer.byteLength(line, "utf8") > MAX_EVENT_BYTES + 1) throw new Error(`Event journal record exceeds ${MAX_EVENT_BYTES} bytes.`);
   const flags = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW);
   const handle = await open(filePath, flags, 0o600);
   try {
