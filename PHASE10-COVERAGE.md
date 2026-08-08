@@ -21,6 +21,7 @@ The gate includes Phase 9 authority regressions, targeted Phase 10 transaction/s
 | Crash recovery accepts only exact registered preimage/postimage states | `applier.ts` | `P10-APPLY-003`, `P10-APPLY-004` |
 | Crash resume rejects unregistered changed paths before continuing product writes | `change-set.ts`, `service.ts` | `P10-MAINT-001` |
 | Persisted transaction is rebound to the exact registered Phase 9 operation/payload set | `transaction-authority.ts`, `service.ts` | `P10-MAINT-006` |
+| Persisted replace/delete backups must retain their canonical path and exact sealed preimage bytes | `transaction-authority.ts`, `state-io.ts`, `service.ts` | `P10-MAINT-008` |
 | Apply consumes exact payload bytes and never executes payload entries | `applier.ts`, `worktree-io.ts` | `P10-APPLY-001` |
 | Changed-path set after apply equals registered operation set exactly | `change-set.ts` | `P10-SVC-003`, `P10-SVC-004` |
 | Exact approval identity binds postimage bytes **and permission modes** | `change-set.ts` | `P10-MAINT-005` |
@@ -31,7 +32,7 @@ The gate includes Phase 9 authority regressions, targeted Phase 10 transaction/s
 | Reviewer context is selective/capped rather than an implementation transcript | `production-gates.ts` | prompt-size guard; static maintainer audit |
 | Production verifier reads only the accepted `validation.json` needed for deterministic verification | `production-gates.ts`, shared authority reader | typecheck/unit regression + static audit |
 | Runtime/auth/sandbox availability is checked before product mutation | `executor-cli.ts`, `production-gates.ts` | `CLI-P10-002` plus existing runtime/sandbox tests |
-| Terminal READY retry re-attests transaction/evidence/exact digest instead of trusting stale success | `service.ts` | `P10-SVC-005`, `P10-MAINT-005..007` |
+| Terminal READY retry re-attests transaction/backups/evidence/exact digest instead of trusting stale success | `service.ts` | `P10-SVC-005`, `P10-MAINT-005..008` |
 | Compiled status is read-only and bounded | `executor-cli.ts`, `store.ts` | `CLI-P10-001` |
 | Phase 10 never commits, pushes, opens/updates PRs, marks Ready or merges | entire `src/executor/**` production diff | forbidden-capability maintainer audit |
 
@@ -59,5 +60,5 @@ Before Phase 10 becomes the dependency base for Phase 11:
 3. PR remains Draft/open/unmerged;
 4. no duplicate production executor service remains;
 5. `PHASE10.md`, this coverage file, `SECURITY.md`, `PERFORMANCE.md`, `UPSTREAM-COMPATIBILITY.md` and README describe the same boundary;
-6. maintainer audit challenges state symlinks, partial writes, transaction tamper, changed-path/mode drift, stale/missing gate evidence, runtime preflight order and forbidden Git/GitHub capabilities;
+6. maintainer audit challenges state symlinks, partial writes, transaction/backup tamper, changed-path/mode drift, stale/missing gate evidence, runtime preflight order and forbidden Git/GitHub capabilities;
 7. no known merge-blocking Phase 10 contract violation remains.
