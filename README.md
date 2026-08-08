@@ -1,169 +1,137 @@
 # Web Codex Orchestrator
 
-WCO turns Web-authored software work into **registered, constrained, independently verified and durably orchestrated changes**. Web authority supplies exact implementation/revision inputs; WCO owns lifecycle state, applies only registered authority, verifies exact changes, publishes evidence to one Draft PR and never treats browser/session/model output as merge authority.
+[![CI](https://github.com/VietSory/web-codex-orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/VietSory/web-codex-orchestrator/actions/workflows/ci.yml)
 
-Phase 1 through Phase 16 are implemented in the current stacked development line. The repository is still a private `0.1.0` source project: no release, package publication, Ready-for-review transition or merge is performed automatically.
+Web Codex Orchestrator (WCO) is a security-focused CLI that turns externally authored implementation evidence into a durable, reviewable Git workflow. It validates untrusted handoffs, operates in isolated worktrees, runs deterministic verification and independent model review, publishes only exact approved changes, opens a Draft pull request, and keeps merge authority with a human.
 
-## What the product does
+> Status: pre-release. The repository is suitable for development and technical evaluation; a stable binary/package release has not been published yet.
+
+## What WCO does
 
 ```text
 Task Bundle
-  → secure validation/intake/preparation
-  → registered Web implementation pack
-  → exact constrained application
-  → deterministic verification
-  → independent Terra review
-  → independent Sol review
-  → commit + protected branch publication
-  → one Draft Pull Request
-  → verified Result Bundle
-  → explicit Web verdict
-       APPROVE / ESCALATE → WAIT_HUMAN
-       REVISE → bounded same-PR revision
-                → next Result Bundle
-                → next explicit Web verdict
+    ↓
+secure intake + isolated worktree
+    ↓
+registered Web implementation authority
+    ↓
+deterministic apply + verification
+    ↓
+Terra review → Sol review
+    ↓
+exact Git publication → Draft PR
+    ↓
+Result Bundle → explicit Web verdict
+    ↓
+bounded same-PR revision loop
+    ↓
+human merge decision
 ```
 
-Hard boundaries:
-
-- loose chat text, loose patches, browser state and transcripts are never implementation authority;
-- downloaded archives remain untrusted until validated/registered;
-- Phase 10 has no redundant local implementation-model turn: exact registered Web bytes are applied and reviewed;
-- reviewers are independent, read-only/no-network and bind the exact change-set digest;
-- revision authority comes only from the sealed Web Review receipt/request chain;
-- publication never amends/rebases or destructively force-updates an existing branch; Phase 5A's empty expected-value lease is only an atomic create-if-absent race guard, and Phase 8 revisions are ordinary exact-head fast-forwards;
-- WCO never marks a PR Ready, enables auto-merge, deletes the delivery branch or merges `main`;
-- merge remains a human decision.
-
-See `SECURITY.md`, `WEB-AUTHORITY-CONTRACT.md`, `ARTIFACT-REGISTRY.md`, `PERFORMANCE.md`, `UPSTREAM-COMPATIBILITY.md` and the phase documents.
+WCO deliberately does not treat browser tabs, chat transcripts, model sessions, or a previous success message as lifecycle authority. Durable receipts and exact content identities drive recovery and continuation.
 
 ## Requirements
 
-- Node.js 20+
+- Node.js 20 or newer
 - Git
-- npm
-- for real Codex verification/review: the WCO-pinned Codex runtime and authenticated local Codex state
+- a local repository registered in WCO configuration
+- Codex authentication for model-backed execution/review paths
+- GitHub credentials only for operations that attest or create a Draft pull request
 
-Normal GitHub CI uses fake model/sandbox adapters and consumes no Codex quota.
+Linux and WSL are the primary development environments today. Native platform behavior that depends on local Codex/browser tooling should be validated on the target machine before release use.
 
-## Start from a source checkout
-
-Install and build once:
+## Quick start from source
 
 ```bash
+git clone https://github.com/VietSory/web-codex-orchestrator.git
+cd web-codex-orchestrator
 npm ci
 npm run build
+npm link
+wco --help
 ```
 
-You do **not** need a global install to use the source checkout. The supported local wrappers are:
+`npm link` is optional. Without it, use `npm run wco -- <command>` from the checkout.
+
+Create a local configuration without adding it to Git:
 
 ```bash
-npm run wco -- --help
-npm run control -- --help
-npm run web-authority -- --help
-npm run executor -- --help
+mkdir -p .wco
+cp examples/config.example.json .wco/config.json
 ```
 
-If you prefer direct `wco`, `wco-control`, `wco-web-authority` and `wco-executor` commands on your PATH, `npm link` is optional after the build.
-
-Before a real run, use the machine preflight. It does not require an existing run ID:
+Edit `.wco/config.json` so repository paths, remotes, credentials, model policy, and limits match your environment. Then set explicit CLI defaults:
 
 ```bash
-npm run doctor -- \
-  --state-dir <state-dir> \
-  --config <config.json>
+export WCO_CONFIG="$PWD/.wco/config.json"
+export WCO_STATE_DIR="$PWD/.wco/state"
 ```
 
-`doctor` checks Node, state-directory access, trusted-config validity, configured credential environment keys, Git, the pinned bundled Codex version and local Codex authentication. It performs no model turn and prints no credential values. Add `--json` for automation.
-
-## Primary durable workflow
-
-1. Validate/intake/prepare the Task Bundle with `npm run wco -- ...`.
-2. Register the exact Web implementation pack:
+Run the preflight:
 
 ```bash
-npm run web-authority -- register \
-  --run-id <task-id>:<sha256> \
-  --state-dir <state-dir> \
-  --config <config.json> \
-  --pack <implementation-pack.zip>
+wco doctor
 ```
 
-3. Let the durable controller advance as far as existing authority permits:
+Once a run exists, set its identity once:
 
 ```bash
-npm run control -- continue \
-  --run-id <task-id>:<sha256> \
-  --state-dir <state-dir> \
-  --config <config.json> \
-  [--web-pack <implementation-pack.zip>] \
-  [--web-verdict <verdict.json>] \
-  [--max-transitions <1..32>]
+export WCO_RUN_ID='<task-id>:<task-bundle-sha256>'
+wco status
+wco next
+wco continue
 ```
 
-4. Inspect the run without starting model/network work:
+Flags always override the need for environment defaults, so automation can remain fully explicit.
+
+## Common commands
+
+```text
+wco doctor       machine/config/runtime preflight
+wco status       durable run status
+wco next         next durable transition, read-only
+wco continue     advance the workflow within bounded transition limits
+wco pause        prevent new transitions
+wco resume       resume an explicitly paused run
+wco validate     validate a Task Bundle directory
+wco intake       securely ingest a Task Bundle archive
+wco scan/watch   process an inbox of Task Bundles
+```
+
+Use `--json` where supported for machine-readable output. Human output stays concise and diagnostic rather than acting as durable state.
+
+## Development
 
 ```bash
-npm run control -- status \
-  --run-id <task-id>:<sha256> \
-  --state-dir <state-dir>
-
-npm run control -- next \
-  --run-id <task-id>:<sha256> \
-  --state-dir <state-dir>
+npm run check
 ```
 
-Human output is concise by default. Add `--json` when a script needs the complete machine-readable receipt/ledger.
+`check` runs template validation, strict TypeScript checking, the complete deterministic test suite, end-to-end workflow coverage, the build, and compiled CLI integration tests.
 
-`continue` advances only transitions whose authority is already present. Missing Web pack/verdict is an input wait, not a failed retry. `WAIT_HUMAN` is the autonomous boundary. Pause/resume, retry backoff, transition locks, bounded budgets and recovery receipts survive restart; pause/resume never clears a durable terminal/budget block. Crash recovery runs before new input is read and adopts only exact already-completed lower-layer work.
-
-Lower-level Phase 4–10 commands remain diagnostic/recovery surfaces (`wco execute`, `publish`, `create-draft-pr`, `package-result`, `submit-web-verdict`, `revise`, plus `wco-executor`).
-
-## Performance and cost profile
-
-The product is intentionally conservative at trust boundaries, but hot paths are bounded:
-
-- inbox stability is observed in shared rounds rather than sleeping once per candidate; filesystem refresh is chunked with bounded concurrency;
-- Git commands have hard local/network deadlines and bounded stdout/stderr; binary Git evidence uses the same bounded subprocess engine without UTF-8 conversion;
-- archive/config/GitHub/model/result limits have trusted hard ceilings, and Task Bundle limits may only tighten effective work;
-- model prompts/evidence are bounded and reviewers use fresh read-only threads; the implementer thread is resumed rather than replaying whole transcripts;
-- durable ledger/event/diagnostic state is compacted and bounded;
-- status/next commands do not start model work or enumerate Codex/browser history.
-
-The full CI suite is intentionally heavier than normal operator reads because it exercises crash windows, locks, Git races and archive integrity in separate bounded test processes. See `PERFORMANCE.md` and `PRODUCT-AUDIT.md` for measured CI evidence and trade-offs.
-
-## Validation gates
-
-Fast development checks:
+Native opt-in checks are separate because CI must not pretend to prove a developer's local Codex or sandbox environment:
 
 ```bash
-npm run typecheck
-npm test
-npm run build
+WCO_RUN_SANDBOX_INTEGRATION=1 npm run test:native:sandbox
+WCO_RUN_CODEX_INTEGRATION=1 npm run test:native:codex
 ```
 
-Full final gate:
+See [Development](docs/development.md) for repository structure and test policy.
 
-```bash
-npm run phase16:release-gate
-```
+## Architecture and security
 
-GitHub CI checks out the **exact PR head SHA**, asserts `git rev-parse HEAD` matches it, then runs template validation, typecheck, the full unit/fake suite, Phase 8 fake E2E, build and compiled CLI integrations.
+WCO follows fail-safe authority rules, end-to-end re-attestation, least privilege, bounded resources, content-addressed evidence, and recovery from durable receipts instead of transcript replay.
 
-## Security and recovery summary
+- [Architecture](docs/architecture.md)
+- [Protocols and authority](docs/protocols.md)
+- [Operations and packaging](docs/operations.md)
+- [Security policy](SECURITY.md)
 
-- state/worktree/registry paths are confinement- and symlink-aware;
-- untrusted and authority-defining reads are allocation-bounded and stable-read where applicable;
-- selected Web authority and execution/review evidence are hash-bound;
-- crash recovery adopts only exact registered/attested lower-layer states;
-- stale/late results cannot complete a newer attempt;
-- GitHub head/Draft/PR identity is freshly attested at publication/review boundaries;
-- same-PR revision reuses the frozen accepted bundle and original path/verification/reviewer policy;
-- subprocess output, diagnostics and state growth are bounded; secrets are excluded from result archives;
-- trusted configuration may tighten resource/token limits but cannot exceed hard product safety ceilings.
+## Packaging strategy
 
-## Local-only final checks
+Native CLI installation is the primary target. WCO needs tight access to host Git worktrees, local Codex authentication, credentials, and optional browser/bridge tooling, so a Docker image is not the default runtime boundary today. A container can still be useful later for reproducible development and deterministic CI.
 
-GitHub CI cannot prove native Windows/WSL/Codex/bridge behavior. Run `LOCAL-FINAL-CHECKLIST.md` on the target machine before calling the product locally release-ready.
+The repository already verifies its future distributable surface with `npm pack --dry-run`. The intended release sequence is GitHub release artifacts first, then optional npm publication after native compatibility checks are stable. See [Operations](docs/operations.md).
 
-`LICENSE`/distribution policy and any actual version/release publication remain explicit maintainer decisions; this repository does not choose or publish them automatically.
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
