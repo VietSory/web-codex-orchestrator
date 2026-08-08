@@ -9,11 +9,11 @@ function normalizeBin(value: unknown): Record<string, string> {
   assert.equal(Array.isArray(value), false);
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>)
-      .map(([name, target]) => {
+      .map(([name, target]): [string, string] => {
         assert.equal(typeof target, "string");
         return [name, String(target).replace(/^\.\//, "")];
       })
-      .sort(([left], [right]) => left.localeCompare(right)),
+      .sort((left, right) => left[0].localeCompare(right[0])),
   );
 }
 
