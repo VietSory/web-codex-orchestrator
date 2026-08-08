@@ -26,12 +26,46 @@ export interface RevisionOrchestrationAuthority {
   freshAttestedHeadSha: string;
 }
 
+export function revisionOrchestrationPayload(authority: RevisionOrchestrationAuthority): Record<string, unknown> {
+  return {
+    review_round: authority.revisionRound,
+    verdict_sha256: authority.verdictSha256,
+    revision_request_sha256: authority.revisionRequestSha256,
+    decision_event_sha256: authority.decisionEventSha256,
+    published_commit_sha: authority.publishedCommitSha,
+    pull_request_number: authority.pullRequestNumber,
+  };
+}
+
 export function revisionOrchestrationUsage(receipt: RevisionReceipt): { model_turns: number; input_tokens: number; output_tokens: number } {
   return {
     model_turns: receipt.usage.total_turns,
     input_tokens: receipt.usage.input_tokens,
     output_tokens: receipt.usage.output_tokens,
   };
+}
+
+export function assertRevisionResultForOrchestration(
+  runId: string,
+  receipt: RevisionReceipt,
+  authority: RevisionOrchestrationAuthority,
+): void {
+  if (
+    receipt.run_id !== runId ||
+    receipt.revision_round !== authority.revisionRound ||
+    receipt.state !== "RESULT_READY" ||
+    receipt.previous_verdict_sha256 !== authority.verdictSha256 ||
+    receipt.revision_request_sha256 !== authority.revisionRequestSha256 ||
+    receipt.previous_pr_head_sha !== authority.freshAttestedHeadSha ||
+    receipt.pull_request_number !== authority.pullRequestNumber ||
+    receipt.new_published_commit_sha === null ||
+    receipt.remote_branch_sha !== receipt.new_published_commit_sha ||
+    receipt.result_bundle_sha256 === null || !SHA256.test(receipt.result_bundle_sha256) ||
+    receipt.result_manifest_sha256 === null || !SHA256.test(receipt.result_manifest_sha256) ||
+    receipt.next_review_round !== authority.revisionRound + 1
+  ) {
+    throw new OrchestrationError("ORCHESTRATION_REVISION_INCOMPLETE", "Revision did not produce an exact same-PR fast-forward Result Bundle bound to the sealed Web request.");
+  }
 }
 
 export async function attestRevisionAuthorityForOrchestration(options: {
