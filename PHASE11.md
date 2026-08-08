@@ -17,9 +17,11 @@ Phase 11 turns Phase 3–10 primitives into a durable single-PR control plane th
 9. Selected registered artifacts are exact Phase 9 registrations, bounded/no-follow read, manifest-bound, atomically persisted and file-synced before use. The binding timestamp distinguishes a prior Web round from evidence produced by the active registration attempt.
 10. Crash recovery may adopt an already-completed external result only when canonical Phase 9/10/publish evidence re-attests to the exact sealed request and active attempt ID. A prior selection older than the active attempt is treated as stale history, never current completion evidence.
 11. P10 READY publication is re-attested against canonical Phase 3/9 authority, transaction backups, persisted gate evidence and exact current change-set before Phase 4 publication. Pushed-result adoption additionally binds run ID, base commit, delivery branch, remote name/URL, changed paths, exact digest and exact remote commit.
-12. Operator pause blocks new attempts and survives completion/failure of an already-started external attempt.
-13. `next` and absent-state `status` are cheap; `next` is read-only and does not need trusted config. `pause`/`resume` do not need config. `doctor`/`continue` require config.
-14. Merge/dangerous decisions remain human gates.
+12. Canonical Phase 9 registry bytes, Phase 10 receipts/backups/gate evidence, and orchestration state are file-synced before they become recovery authority. Immutable evidence is installed by exact bytes and conflicting pre-existing bytes fail closed.
+13. Publish-receipt reads are bounded to 16 MiB and use non-symlink/stable-file identity checks; no recovery path may allocate an unbounded receipt from disk.
+14. Operator pause blocks new attempts and survives completion/failure of an already-started external attempt.
+15. `next` and absent-state `status` are cheap; `next` is read-only and does not need trusted config. `pause`/`resume` do not need config. `doctor`/`continue` require config.
+16. Merge/dangerous decisions remain human gates.
 
 ## Lifecycle implemented
 
@@ -37,13 +39,17 @@ Opening the Draft PR, packaging the Result Bundle and Web verdict/revision integ
 
 ## Persistence / portability
 
-Canonical control state is `<state>/orchestration/runs/<task-id>/<task-bundle-sha256>/run-ledger.json`. Ledger and selected-artifact reads are bounded and reject symlink/non-regular/identity-changing files. Same-directory temporary writes are exclusive-created, `FileHandle.sync()`ed, renamed atomically, then parent-directory metadata is synced on non-Windows platforms. Node exposes `O_NOFOLLOW` only where supported; WCO keeps lstat/file-identity checks as the portable defense and does not claim a Windows directory-entry fsync guarantee Node does not expose portably.
+Canonical control state is `<state>/orchestration/runs/<task-id>/<task-bundle-sha256>/run-ledger.json`. Ledger and selected-artifact reads are bounded and reject symlink/non-regular/identity-changing files. Same-directory temporary writes are exclusive-created, `FileHandle.sync()`ed, renamed atomically, then parent-directory metadata is synced on non-Windows platforms.
+
+The same durability rule now extends down the recovery authority chain. Phase 9 archive/registration temporary files are synced before immutable hard-link installation; Phase 10 mutable receipts use synced temporary files before rename; immutable backups and verifier/reviewer evidence use synced temporary files before immutable installation and reject conflicting existing bytes. Publish receipts retain their synced writer and are read through a 16 MiB cap with no-follow/file-identity checks. These are durability and bounded-memory strengthenings only; frozen Phase 9/10 schemas and approval semantics are unchanged.
+
+Node exposes `O_NOFOLLOW` only where supported; WCO therefore keeps lstat/file-identity checks as the portable defense and does not claim a Windows directory-entry fsync guarantee Node does not expose portably. Parent-directory syncing is used where the runtime/platform exposes a usable directory handle; Windows/native compatibility is verified separately rather than overstated in the contract.
 
 ## Performance / token / session negative requirements
 
 Upstream openai/codex issues #35385, #19517, #22037, #22411, #30932, #34724 and #34972 report rollout persistence divergence, expensive/global session scans, idle CPU from full thread deserialization, pathological history growth/OOM, blank long-thread resume and resume unexpectedly forking thread identity. WCO therefore keeps its own bounded checkpoint state, does not require `thread/list`/global resume scans for status or recovery, adopts completed work from its own exact receipts rather than replaying model turns, references immutable hashes instead of copying large evidence into the hot ledger, reuses sealed request identity across retries, and treats Codex thread IDs as compatibility handles rather than durable authority. WCO does not patch OpenAI internals.
 
-Default retry policy starts at 1s, doubles per durable attempt, applies deterministic 75–125% jitter, caps at 60s, opens the circuit after five consecutive failures for 120s, allows four attempts per transition and 24 total attempts. Worker pools and queues remain bounded with explicit backpressure.
+Default retry policy starts at 1s, doubles per durable attempt, applies deterministic 75–125% jitter, caps at 60s, opens the circuit after five consecutive failures for 120s, allows four attempts per transition and 24 total attempts. Worker pools and queues remain bounded with explicit backpressure. File-backed authority readers are capped before allocation, and recovery prefers exact receipt adoption over repeating model/reviewer work, reducing CPU, latency and token use after restart.
 
 ## User surface
 
@@ -61,4 +67,4 @@ Default retry policy starts at 1s, doubles per durable attempt, applies determin
 
 `npm run phase11:release-gate`
 
-The gate covers typecheck, frozen Phase 9/10 tests, Phase 11 tests, the complete unit/fake suite, Phase 8 E2E, build and compiled CLI integration. Native Windows/WSL Codex authentication/runtime behavior remains a later local compatibility gate; GitHub fake/deterministic tests must not pretend to prove it.
+The gate covers typecheck, frozen Phase 9/10 tests, Phase 11 tests, lower-layer durability regressions, the complete unit/fake suite, Phase 8 E2E, build and compiled CLI integration. Native Windows/WSL Codex authentication/runtime behavior remains a later local compatibility gate; GitHub fake/deterministic tests must not pretend to prove it.
