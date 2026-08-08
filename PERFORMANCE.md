@@ -1,191 +1,115 @@
-# WCO Performance and Token Architecture
+# WCO Performance, Resource and Token Architecture
 
-Performance is a product invariant, not a Phase 16 cleanup task. WCO must remain bounded and observable as repositories, missions, evidence and model context grow.
+Performance is a correctness property for WCO because unbounded CPU/RAM/process/session/state growth can turn retry/recovery into duplicated external work or make authority evidence unavailable. This document distinguishes executable v1 guarantees from future/native optimization opportunities.
 
-## Primary goals
+## Implemented v1 guarantees
 
-1. Never create unbounded hot browser/agent/process concurrency.
-2. Never rescan/reload/resend stable repository context solely because a new turn starts.
-3. Separate stable, cacheable context from dynamic task context.
-4. Make every expensive operation attributable in telemetry: wall time, bytes, tokens, cache hit/miss and retry reason.
-5. Prefer content-addressed reuse over mutable polling caches.
-6. Use backpressure: queued work is cheaper and safer than resource collapse.
+### Concurrency and backpressure
 
-## Upstream lessons incorporated
+WCO does not fan out a run with unbounded `Promise.all` work. The durable controller serializes external transitions with a per-run execution fence, while lower layers retain their own operation/worktree locks. Retryable work is represented as durable `WAITING` state with `next_retry_at`; it is not implemented as a busy polling loop.
 
-### codex-chatgpt-web
+`continue` is bounded to 1..32 transitions per invocation and stops at external-input/human boundaries. A run cannot start a different sealed attempt while another attempt is still `STARTED`.
 
-Relevant public incidents/limitations are tracked in `UPSTREAM-COMPATIBILITY.md`. WCO treats applicable bridge/session issues as negative requirements. Examples include stale tab ownership/cleanup, concurrent-session resource pressure, browser disconnects, runtime restart loops, cold-turn failures and command-capability mismatch.
+GitHub mutation work is therefore serialized by transition ownership. This follows GitHub's REST guidance to avoid concurrent requests and reduces secondary-rate-limit pressure.
 
-### OpenAI Codex guidance
+### Retry behavior
 
-OpenAI recommends well-scoped tasks, a configured development environment, durable repository guidance through `AGENTS.md`, and a task queue/backlog. OpenAI's harness-engineering guidance explicitly argues for giving agents a repository map instead of a giant instruction manual because context is scarce and monolithic guidance becomes stale/noisy.
+Retry identity is deterministic: the transition kind plus canonical payload is SHA-256 sealed before external work. Retryable transport failures reuse that identity instead of regenerating a different request.
 
-### Prompt caching
+The controller has bounded total-attempt, per-transition, elapsed-time and consecutive-failure budgets. Retry delay is deterministic exponential backoff with jitter. GitHub `Retry-After` and `X-RateLimit-Reset` values are parsed as bounded server hints and act only as a minimum delay; if the requested wait exceeds the remaining orchestration elapsed budget, WCO blocks rather than sleeping past its budget.
 
-Stable prompt prefixes should be kept stable; per-task values belong late in the prompt/context. WCO records cached vs uncached input usage when the model/runtime exposes those counters. Cache hits are an optimization only, never authority.
+Authority/policy failures are terminal and are not converted into retries to make progress appear green.
 
-### Git
+### Process and output bounds
 
-For large repositories, `git status` may benefit from Git's untracked cache and FSMonitor where the installed Git/platform supports them. WCO must detect support before recommending/enabling these features and must not silently change a user's repository configuration in normal execution.
+WCO process execution uses explicit executable/argument vectors, deadlines/cancellation and bounded stdout/stderr retention. Shell interpolation is not the default execution model. Where the runtime exposes only parent-process cancellation, WCO documents that boundary instead of claiming guaranteed descendant/process-tree termination on every platform.
 
-## Content-addressed project context
+The GitHub REST client retains at most 1 MiB of response body. Chunks are accumulated with a byte counter and concatenated once, avoiding repeated whole-buffer copies. Error diagnostics are separately bounded and the configured token is redacted from retained error text.
 
-Stable repository context is keyed by immutable identity:
+Revision state/evidence reads are bounded and identity-stable. Revision canonical artifacts are capped at 2 MiB. Mutable revision receipts use synced temporary writes plus atomic rename; immutable artifacts use synced temporary bytes plus atomic hard-link installation and exact-byte idempotency.
 
-```text
-repo tree SHA
-  ├─ repository inventory
-  ├─ project map
-  ├─ symbol/module map
-  ├─ persistent docs index
-  └─ source/read receipts
-```
+### Durable state growth
 
-A tree SHA hit reuses the map. A changed tree invalidates only data whose source object changed. Blob/object SHA is preferred to mtime.
+The orchestration ledger keeps bounded recent events and diagnostics rather than raw unbounded process/model transcripts. Canonical evidence is stored in purpose-specific receipts/artifacts. Status/next reads derive lifecycle from bounded receipts and do not deserialize Codex/ChatGPT session history.
 
-Derived caches are never authority. They may always be deleted/rebuilt without changing decisions.
+Crash recovery adopts only exact terminal canonical evidence. In particular, revision recovery does not start another model turn merely because the outer process restarted: an exact `RESULT_READY` Phase 8 receipt must already exist before the outer ledger can adopt it.
 
-## Agent context policy
+### Session lifecycle
 
-A normal implementation/review turn should contain:
+Codex/browser/session identifiers are transport handles, not WCO authority. WCO persists direct handles where its adapter needs them and does not use an interactive/global resume picker to discover lifecycle state.
 
-- immutable run/task/spec/implementation-pack identities;
-- relevant architecture/acceptance/prohibited-change decisions;
-- exact operation paths and relevant source chunks;
-- bounded verification failures that require action;
-- remaining token/turn/time budget.
+This shields WCO from a class of upstream session-list/history problems without modifying Codex internals. Public Codex issue reports have described large-session picker stalls, huge rollout OOM during resume, local index/session visibility divergence and persistence failures. WCO's response is bounded independent state plus exact receipt recovery, not a private fork of Codex.
 
-It should not automatically contain:
+### Token accounting
 
-- the entire repository;
-- complete prior chat transcripts;
-- complete raw test logs;
-- unchanged source files already available through a stable project map;
-- all persistent project memory;
-- evidence unrelated to the current operation/finding.
+The outer orchestration ledger exactly records the model-turn/input/output usage exposed by completed Phase 8 revision receipts. A new model-bearing transition is refused when the corresponding outer budget is already exhausted, and completing a revision that crosses the outer budget blocks subsequent automatic work.
 
-Additional context is retrieved on demand and receipt-bound.
+The frozen Phase 10 executor receipt does not expose token counters. WCO therefore does not fabricate usage and does not claim that the outer ledger measures every lower-layer reviewer/verifier token. Those lower layers remain governed by their own bounded agent/reviewer/verifier policies.
 
-## Token budget
+Cached-input counters are retained when a lower-level runtime exposes them, but a cache hit is never authority and cache telemetry is not required for correctness.
 
-Track at minimum:
+## Context assembly and reuse
 
-```text
-input_tokens
-cached_input_tokens (when exposed)
-output_tokens
-reasoning_tokens (when exposed)
-turn_count
-retry_count
-```
+WCO v1 reuses immutable/hash-bound artifacts that already exist in the protocol: task bundle identity, registered implementation-pack identity, operation/evidence digests, sealed transition requests, Result Bundle manifests and review/revision receipts. Retry/recovery references those identities instead of replaying whole browser/model transcripts.
 
-Budgets exist at:
+Model-facing work should receive the narrow authority/evidence required by the current stage rather than a complete historical transcript. Reviewer roles receive the approved change/evidence surface, not an implementation conversation as authority.
 
-- one agent turn;
-- one task/revision;
-- one mission;
-- one review stage.
+### Project-map boundary
 
-A retry caused by transport/session failure should reuse sealed context/evidence rather than regenerate repository summaries.
+The repository currently does **not** contain a separate repository-wide project-map/index cache subsystem with executable cache-hit/invalidation tests. Phase 16 therefore does not claim one exists.
 
-## Stable-prefix layout
+If a future project-map/index is introduced, it must be derived/non-authoritative, keyed by immutable Git object/tree identity where practical, invalidated by source identity rather than wall-clock age, bounded in storage, and safely deletable/rebuildable. Until then, documentation must not use hypothetical project-map reuse as evidence for v1 performance.
 
-Model-facing context should be ordered approximately as:
+## Native browser/bridge boundary
 
-```text
-stable WCO role/policy
-stable repository conventions / selected project-map material
-stable locked architecture/spec references
---- dynamic boundary ---
-current task/operation
-current relevant source/diff
-current verifier/reviewer findings
-current budget/state
-```
+The current `codex-chatgpt-web` README describes fresh ChatGPT Temporary Chat browser turns, Codex-local task history as the task source of truth, serialized browser turns, explicit `doctor`/service/browser diagnostics and fail-closed behavior on UI/capability drift. It also currently documents managed background installation as macOS-only.
 
-Do not inject timestamps/random IDs into the stable prefix unless required for correctness.
+Those are upstream properties, not WCO guarantees. WCO treats bridge health/capability as transport compatibility, keeps its own durable mission/run state, and requires native/local verification before claiming a specific Windows/WSL bridge setup works.
 
-## Concurrency and backpressure
+## Performance evidence and regression expectations
 
-Concurrency is a configured bounded resource pool, not `Promise.all(all tasks)`.
+GitHub CI is responsible for deterministic properties that WCO owns:
 
-Separate limits are required for:
+- concurrency/attempt fencing and retry-not-before behavior;
+- bounded ledger/state diagnostics;
+- bounded process and GitHub response retention;
+- crash recovery without blind side-effect replay;
+- exact retry/server-hint behavior;
+- token-budget preflight for model-bearing outer transitions;
+- revision usage accounted once across crash adoption;
+- immutable state idempotency/conflict rejection;
+- status/next paths that do not start model work.
 
-- Web/browser turns;
-- Codex agent turns;
-- deterministic verifier child processes;
-- Git/network operations;
-- mission-level runnable tasks.
+Native/local testing is responsible for properties GitHub CI cannot honestly prove:
 
-Queued tasks consume minimal resources. Idle browser/session/worker resources have a TTL and are released. Cancellation must propagate to subprocesses.
+- actual Windows/WSL sandbox behavior;
+- authenticated native Codex model/session behavior;
+- browser/bridge capability and cleanup on the user's installed version;
+- CPU/RAM/wall-time under the user's real machine/account/runtime;
+- upstream bridge support or incompatibility on Windows/WSL.
 
-Default policy should be conservative until native benchmarks are available. Phase 16 local performance smoke tests will establish platform-specific recommended defaults rather than assuming that a fixed concurrency is optimal for every machine/account/model.
+Those checks are intentionally isolated in `LOCAL-FINAL-CHECKLIST.md`.
 
-## Process and output bounds
+## Optimization rules for later work
 
-Every child process must have:
+Any future optimization must preserve these rules:
 
-- timeout/deadline;
-- cancellation;
-- bounded stdout/stderr retention;
-- process-tree termination where supported;
-- explicit executable and argument vector (no shell interpolation by default).
-
-WCO already uses bounded asynchronous spawning for execution paths; later orchestration must reuse it rather than introduce unbounded `exec`/sync polling loops.
-
-## State/log bounds
-
-Persistent state must not grow without a retention policy.
-
-- receipts contain bounded diagnostics, not raw unbounded logs;
-- raw logs/evidence are stored separately and content-addressed where useful;
-- UI/status reads use summaries/indexes rather than deserializing every historical artifact;
-- mission history is paginated/bounded;
-- repeated identical errors are deduplicated with counters;
-- completed temporary transport/session state is deleted.
-
-## Incremental verification
-
-A verification result may be reused only when all relevant identity inputs match exactly:
-
-```text
-command + argv
-working-directory identity
-environment-policy hash
-relevant file/blob hashes
-lock/dependency identity
-verifier version/config
-```
-
-If any required identity is unknown, rerun. Never reuse merely because a command string looks the same.
-
-## Performance regression requirements
-
-Later phases must add executable coverage for at least:
-
-- `PERF-001`: concurrency cap/backpressure prevents worker explosion.
-- `PERF-002`: unchanged repository tree reuses project-map/inventory cache.
-- `PERF-003`: one-blob change does not force full content re-ingestion.
-- `PERF-004`: completed/cancelled worker releases process/session ownership.
-- `PERF-005`: bounded status polling does not deserialize whole mission history.
-- `PERF-006`: repeated identical diagnostics remain bounded.
-- `PERF-007`: restart/backoff cannot become a hot restart loop.
-- `TOKEN-001`: stable context is not duplicated inside one assembled prompt.
-- `TOKEN-002`: context assembly honors byte/token approximation caps before model invocation.
-- `TOKEN-003`: reviewer receives relevant diff/evidence, not implementation transcript by default.
-- `TOKEN-004`: cache/usage telemetry distinguishes cached and uncached input when exposed.
-- `TOKEN-005`: a transport retry reuses the same frozen request payload/hash.
-
-## Native measurement
-
-Repository CI can test algorithms and synthetic load, but final performance claims require native/local measurements on supported Windows/WSL/Linux configurations with the actual bridge/Codex runtime. `LOCAL-FINAL-CHECKLIST.md` will contain those commands before v1.0.
+1. Never replace canonical authority with a cache.
+2. Never widen concurrency merely because a machine appears idle.
+3. Never replay an uncertain external mutation without reconciliation.
+4. Prefer bounded incremental reads over loading complete histories/logs.
+5. Prefer direct immutable identity over mutable timestamps for reusable derived context.
+6. Keep stable context separate from dynamic task/error context when the model adapter allows it.
+7. Measure native CPU/RAM/token/wall-time before changing default concurrency.
+8. Keep diagnostics useful but bounded; raw traces/screenshots are failure artifacts, not normal polling state.
 
 ## References
 
-- OpenAI, "How OpenAI uses Codex": https://openai.com/business/guides-and-resources/how-openai-uses-codex/
-- OpenAI, "Harness engineering: leveraging Codex in an agent-first world": https://openai.com/index/harness-engineering/
-- OpenAI, "Prompt Caching in the API": https://openai.com/index/api-prompt-caching/
-- Git `git-status` documentation (untracked cache / FSMonitor): https://git-scm.com/docs/git-status
-- Node.js child process documentation: https://nodejs.org/api/child_process.html
-- `codex-chatgpt-web` public issue tracker: https://github.com/miuuyy/codex-chatgpt-web/issues
+- GitHub REST API rate limits: https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api
+- GitHub REST API best practices: https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api
+- Node.js file-system promises/FileHandle documentation: https://nodejs.org/api/fs.html
+- OpenAI Codex issue #25430, large-session resume picker stall: https://github.com/openai/codex/issues/25430
+- OpenAI Codex issue #30932, huge rollout resume OOM/SIGKILL report: https://github.com/openai/codex/issues/30932
+- OpenAI Codex issue #32061, resume model/reasoning configuration report: https://github.com/openai/codex/issues/32061
+- OpenAI Codex issue #35385, rollout persistence error report: https://github.com/openai/codex/issues/35385
+- `codex-chatgpt-web` README/operations/limitations: https://github.com/miuuyy/codex-chatgpt-web
