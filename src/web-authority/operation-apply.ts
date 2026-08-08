@@ -7,7 +7,6 @@ import {
   assertNoSymlinkAncestors,
   payloadForOperation,
   readObservedPreimage,
-  sha256,
   type WebOperationPreflightPlan,
 } from "./operation-preflight.js";
 
@@ -73,6 +72,19 @@ async function atomicWrite(filePath: string, bytes: Buffer, mode = 0o600): Promi
   }
   try {
     await fs.rename(temporary, filePath);
+  } catch (error) {
+    await fs.rm(temporary, { force: true });
+    throw error;
+  }
+}
+
+async function atomicCopy(sourcePath: string, targetPath: string): Promise<void> {
+  const directory = path.dirname(targetPath);
+  const temporary = path.join(directory, `.${path.basename(targetPath)}.${crypto.randomBytes(8).toString("hex")}.tmp`);
+  try {
+    await fs.copyFile(sourcePath, temporary);
+    await syncFile(temporary);
+    await fs.rename(temporary, targetPath);
   } catch (error) {
     await fs.rm(temporary, { force: true });
     throw error;
@@ -147,12 +159,12 @@ export async function recoverWebOperationTransaction(options: {
     if (!backup.backup_relative_path || !backup.backup_sha256) {
       throw new WebAuthorityError("WEB_AUTHORITY_OPERATIONAL_ERROR", "Rollback backup metadata is incomplete.");
     }
-    const backupPath = path.join(transactionDirectory, backup.backup_relative_path);
-    const backupBytes = await fs.readFile(backupPath);
-    if (sha256(backupBytes) !== backup.backup_sha256 || backup.backup_sha256 !== backup.original_sha256) {
+    const backupObserved = await readObservedPreimage(transactionDirectory, backup.backup_relative_path);
+    if (backupObserved.sha256 !== backup.backup_sha256 || backup.backup_sha256 !== backup.original_sha256) {
       throw new WebAuthorityError("WEB_AUTHORITY_OPERATIONAL_ERROR", `Rollback backup checksum mismatch: ${backup.relative_path}`);
     }
-    await atomicWrite(target, backupBytes);
+    const backupPath = path.join(transactionDirectory, ...backup.backup_relative_path.split("/"));
+    await atomicCopy(backupPath, target);
     const restored = await readObservedPreimage(root, backup.relative_path);
     if (restored.sha256 !== backup.original_sha256) {
       throw new WebAuthorityError("WEB_AUTHORITY_OPERATIONAL_ERROR", `Rollback verification failed: ${backup.relative_path}`);
@@ -183,8 +195,10 @@ export async function applyWebOperations(options: {
   }
 
   const stateRoot = await ensureRealDirectory(options.stateDirectory);
-  const transactionDirectory = path.join(stateRoot, "operation-transactions", safeToken(options.plan.plan_sha256));
-  await fs.mkdir(transactionDirectory, { recursive: false, mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
+  const transactionsRoot = path.join(stateRoot, "operation-transactions");
+  await fs.mkdir(transactionsRoot, { recursive: true, mode: 0o700 });
+  const transactionDirectory = path.join(transactionsRoot, safeToken(options.plan.plan_sha256));
+  await fs.mkdir(transactionDirectory, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "EEXIST") {
       throw new WebAuthorityError("WEB_AUTHORITY_OPERATIONAL_ERROR", "A transaction already exists for this exact preflight plan; recover or inspect it instead of replaying blindly.");
     }
@@ -224,8 +238,8 @@ export async function applyWebOperations(options: {
         const backupPath = path.join(transactionDirectory, ...backupRelativePath.split("/"));
         await fs.copyFile(target, backupPath);
         await syncFile(backupPath);
-        const backupBytes = await fs.readFile(backupPath);
-        backupSha256 = sha256(backupBytes);
+        const backupObserved = await readObservedPreimage(transactionDirectory, backupRelativePath);
+        backupSha256 = backupObserved.sha256;
         if (backupSha256 !== observed.sha256) {
           throw new WebAuthorityError("WEB_AUTHORITY_OPERATIONAL_ERROR", `Backup verification failed: ${prepared.relative_path}`);
         }
