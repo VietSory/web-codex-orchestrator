@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { GitCommandResult } from "./contracts.js";
-import { spawnBounded } from "../runtime/spawn-bounded.js";
+import { spawnBounded, spawnBoundedBinary } from "../runtime/spawn-bounded.js";
 import type { PublishIdentityConfig } from "../config/contracts.js";
 import type { PreparedPublishGitSecurity } from "../publish/publish-auth.js";
 
@@ -156,24 +156,28 @@ export class GitRunner {
     return { unsafe: true, diagnostic: `executable local Git helper is forbidden (${key})` };
   }
 
+  private async blockedHelperDiagnostic(args: readonly string[], cwd: string, subcommand: string | undefined, env: Record<string, string>, gitExecutable: string): Promise<string | null> {
+    const helperPattern = this.helperPatternFor(subcommand, args);
+    if (!helperPattern) return null;
+    const helper = await this.unsafeLocalHelper(gitExecutable, cwd, env, helperPattern);
+    return helper.unsafe ? `WCO_GIT_UNSAFE_CONFIG: ${helper.diagnostic ?? "unsafe local Git helper configuration"}` : null;
+  }
+
   async run(args: readonly string[], cwd: string): Promise<GitCommandResult> {
     const { subcommand, varTarget } = this.getCommandTarget(args);
     const env = this.safeEnvironment(subcommand, varTarget);
     const gitExecutable = env.WCO_GIT_EXECUTABLE || "git";
-    const helperPattern = this.helperPatternFor(subcommand, args);
-    if (helperPattern) {
-      const helper = await this.unsafeLocalHelper(gitExecutable, cwd, env, helperPattern);
-      if (helper.unsafe) {
-        return {
-          executable: "git",
-          args: [...this.runtimePrefix(), ...args],
-          cwd,
-          exitCode: 3,
-          stdout: "",
-          stderr: `WCO_GIT_UNSAFE_CONFIG: ${helper.diagnostic ?? "unsafe local Git helper configuration"}`,
-          duration_ms: 0,
-        };
-      }
+    const blocked = await this.blockedHelperDiagnostic(args, cwd, subcommand, env, gitExecutable);
+    if (blocked) {
+      return {
+        executable: "git",
+        args: [...this.runtimePrefix(), ...args],
+        cwd,
+        exitCode: 3,
+        stdout: "",
+        stderr: blocked,
+        duration_ms: 0,
+      };
     }
 
     const effectiveArgs = [...this.runtimePrefix(), ...args];
@@ -216,6 +220,34 @@ export class GitRunner {
       stderr,
       duration_ms: result.durationMs,
     };
+  }
+
+  async runBinary(args: readonly string[], cwd: string): Promise<Buffer> {
+    const { subcommand, varTarget } = this.getCommandTarget(args);
+    const env = this.safeEnvironment(subcommand, varTarget);
+    const gitExecutable = env.WCO_GIT_EXECUTABLE || "git";
+    const blocked = await this.blockedHelperDiagnostic(args, cwd, subcommand, env, gitExecutable);
+    if (blocked) throw new Error(blocked);
+
+    const effectiveArgs = [...this.runtimePrefix(), ...args];
+    const networkCommand = subcommand === "fetch" || subcommand === "push" || subcommand === "ls-remote";
+    if (networkCommand) throw new Error("WCO_GIT_BINARY_NETWORK_FORBIDDEN: binary Git runner is restricted to local evidence commands.");
+    const result = await spawnBoundedBinary({
+      executable: gitExecutable,
+      args: effectiveArgs,
+      cwd,
+      environment: env,
+      timeoutMs: this.limits.localTimeoutMs,
+      stdoutMaxBytes: this.limits.stdoutMaxBytes,
+      stderrMaxBytes: this.limits.stderrMaxBytes,
+      shell: false,
+    });
+    if (result.spawnError || result.timedOut || result.stdoutTruncated || result.stderrTruncated || result.exitCode !== 0) {
+      const stderr = result.stderr.toString("utf8").slice(-4096);
+      const boundary = result.timedOut ? "timeout" : result.stdoutTruncated || result.stderrTruncated ? "output limit" : result.spawnError ? "spawn failure" : `exit ${result.exitCode ?? "null"}`;
+      throw new Error(`WCO_GIT_BINARY_FAILED: ${boundary}${stderr ? `: ${stderr}` : ""}`);
+    }
+    return result.stdout;
   }
 
   async expect(args: readonly string[], cwd: string): Promise<GitCommandResult> {
