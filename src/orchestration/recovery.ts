@@ -11,6 +11,7 @@ import type { GitPublishReceipt } from "../publish/contracts.js";
 import { completeAttempt } from "./controller.js";
 import { OrchestrationError, type RunLedger, type TransitionAttempt, type TransitionKind } from "./contracts.js";
 import { attestReadyExecutorSnapshot } from "./executor-ready.js";
+import { openDraftPullRequestForExecutorSnapshot } from "./draft-pr.js";
 import { readSelectedArtifact, readSelectedArtifactSelection } from "./artifact-binding.js";
 import { sealTransitionRequest } from "./retry-policy.js";
 
@@ -98,6 +99,7 @@ export interface RecoveryDependencies {
   readPublishReceiptForRun: typeof readPublishReceiptForRun;
   attestTerminalExecutorSnapshot: typeof attestTerminalExecutorSnapshot;
   attestReadyExecutorSnapshot: typeof attestReadyExecutorSnapshot;
+  openDraftPr: typeof openDraftPullRequestForExecutorSnapshot;
   completeAttempt: typeof completeAttempt;
 }
 
@@ -108,6 +110,7 @@ const productionDependencies: RecoveryDependencies = {
   readPublishReceiptForRun,
   attestTerminalExecutorSnapshot,
   attestReadyExecutorSnapshot,
+  openDraftPr: openDraftPullRequestForExecutorSnapshot,
   completeAttempt,
 };
 
@@ -290,6 +293,65 @@ export async function recoverCompletedAttempt(options: {
         adopted_after_restart: true,
       },
       nextTransition: "OPEN_DRAFT_PR",
+      now: now(),
+    });
+  }
+
+  if (attempt.transition === "OPEN_DRAFT_PR") {
+    const selected = await deps.readSelectedArtifact(options.stateDirectory, options.runId);
+    if (!selected) {
+      throw new OrchestrationError(
+        "ORCHESTRATION_RECOVERY_CONFLICT",
+        "A sealed Draft PR attempt exists without its selected Phase 9 artifact binding.",
+      );
+    }
+    const ready = await deps.attestReadyExecutorSnapshot({
+      runId: options.runId,
+      artifactSha256: selected.artifact_sha256,
+      stateDirectory: options.stateDirectory,
+      configPath: options.configPath,
+    });
+    assertSealedRequest(attempt, "OPEN_DRAFT_PR", {
+      artifact_sha256: selected.artifact_sha256,
+      change_set_digest: ready.changeSetDigest,
+    });
+
+    const draft = await deps.openDraftPr({
+      runId: options.runId,
+      artifactSha256: selected.artifact_sha256,
+      stateDirectory: options.stateDirectory,
+      configPath: options.configPath,
+      now,
+    });
+    if (
+      draft.run_id !== options.runId ||
+      draft.state !== "OPEN" ||
+      draft.draft_required !== true ||
+      draft.observed_draft !== true ||
+      draft.observed_state !== "open" ||
+      draft.observed_head_sha !== draft.expected_head_sha ||
+      draft.observed_base_branch !== draft.base_branch ||
+      draft.pull_number === null ||
+      !SHA256.test(draft.request_sha256)
+    ) {
+      throw new OrchestrationError(
+        "ORCHESTRATION_RECOVERY_CONFLICT",
+        "Draft PR recovery did not re-attest the exact open Draft request and head.",
+      );
+    }
+
+    return await deps.completeAttempt({
+      stateDirectory: options.stateDirectory,
+      runId: options.runId,
+      attemptId: attempt.attempt_id,
+      result: {
+        state: draft.state,
+        pull_number: draft.pull_number,
+        expected_head_sha: draft.expected_head_sha,
+        request_sha256: draft.request_sha256,
+        adopted_after_restart: true,
+      },
+      nextTransition: "PACKAGE_RESULT",
       now: now(),
     });
   }
