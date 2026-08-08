@@ -29,7 +29,7 @@ const DEFAULT_LIMITS: GitRunnerLimits = {
 };
 
 const CHECKIN_HELPER_PATTERN = "^filter\\..*\\.(clean|process)$";
-const NETWORK_HELPER_PATTERN = "^(credential(\\..*)?\\.helper|remote\\..*\\.receivepack)$";
+const NETWORK_HELPER_PATTERN = "^(credential(\\..*)?\\.helper|remote\\..*\\.(receivepack|uploadpack))$";
 
 export class GitRunner {
   private readonly limits: GitRunnerLimits;
@@ -91,7 +91,7 @@ export class GitRunner {
       }
     }
 
-    if (this.security?.auth?.mode === "https_token" && (subcommand === "push" || subcommand === "ls-remote")) {
+    if (this.security?.auth?.mode === "https_token" && (subcommand === "fetch" || subcommand === "push" || subcommand === "ls-remote")) {
       result.GIT_ASKPASS = this.security.auth.askpassScriptPath;
       result.GIT_ASKPASS_REQUIRE = "force";
       result.WCO_GIT_ASKPASS_TOKEN = this.security.auth.askpassToken;
@@ -116,7 +116,7 @@ export class GitRunner {
     if (this.runtimeDirectory === undefined) return null;
     if (subcommand === "add") return CHECKIN_HELPER_PATTERN;
     if (subcommand === "hash-object" && args.some((arg) => arg === "--path" || arg.startsWith("--path="))) return CHECKIN_HELPER_PATTERN;
-    if (subcommand === "push" || subcommand === "ls-remote") return NETWORK_HELPER_PATTERN;
+    if (subcommand === "fetch" || subcommand === "push" || subcommand === "ls-remote") return NETWORK_HELPER_PATTERN;
     return null;
   }
 
