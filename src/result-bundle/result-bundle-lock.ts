@@ -16,6 +16,8 @@ interface LockData {
   nonce: string;
 }
 
+class LockMissingError extends Error {}
+
 export interface ResultBundleLockHandle {
   release(): Promise<void>;
 }
@@ -43,14 +45,18 @@ function assertLockData(value: unknown): LockData {
 }
 
 async function readStableLock(lockPath: string): Promise<{ lock: LockData; stat: Stats }> {
-  const pathBefore = await fs.lstat(lockPath).catch((error) => {
+  let pathBefore: Stats;
+  try { pathBefore = await fs.lstat(lockPath); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new LockMissingError();
     throw new ResultBundleError("RESULT_OPERATIONAL_ERROR", `Cannot inspect Result Bundle lock: ${error instanceof Error ? error.message : String(error)}`);
-  });
+  }
   if (pathBefore.isSymbolicLink() || !pathBefore.isFile() || pathBefore.size > MAX_LOCK_BYTES) {
     throw new ResultBundleError("RESULT_OPERATIONAL_ERROR", "Result Bundle lock must be a bounded regular non-symlink file.");
   }
   const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
   const handle = await fs.open(lockPath, fsConstants.O_RDONLY | noFollow).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new LockMissingError();
     throw new ResultBundleError("RESULT_OPERATIONAL_ERROR", `Cannot safely open Result Bundle lock: ${error instanceof Error ? error.message : String(error)}`);
   });
   try {
@@ -65,11 +71,14 @@ async function readStableLock(lockPath: string): Promise<{ lock: LockData; stat:
       if (bytesRead === 0) throw new ResultBundleError("RESULT_OPERATIONAL_ERROR", "Result Bundle lock was truncated while reading.");
       offset += bytesRead;
     }
-    if ((await handle.read(Buffer.alloc(1), 0, 1, offset)).bytesRead !== 0) {
-      throw new ResultBundleError("RESULT_OPERATIONAL_ERROR", "Result Bundle lock grew while reading.");
-    }
+    if ((await handle.read(Buffer.alloc(1), 0, 1, offset)).bytesRead !== 0) throw new ResultBundleError("RESULT_OPERATIONAL_ERROR", "Result Bundle lock grew while reading.");
     const afterHandle = await handle.stat();
-    const afterPath = await fs.lstat(lockPath);
+    let afterPath: Stats;
+    try { afterPath = await fs.lstat(lockPath); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new LockMissingError();
+      throw error;
+    }
     if (
       afterPath.isSymbolicLink() || !afterPath.isFile() ||
       afterHandle.dev !== before.dev || afterHandle.ino !== before.ino || afterHandle.size !== before.size ||
@@ -101,21 +110,11 @@ async function syncDirectory(directory: string): Promise<void> {
   }
 }
 
-/**
- * Acquires the lock with one create-only write. Existing locks are diagnosed
- * but never deleted automatically, including stale locks.
- */
 export async function acquireResultBundleLock(lockPath: string, runId: string): Promise<ResultBundleLockHandle> {
   const directory = path.dirname(lockPath);
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   const nonce = crypto.randomBytes(32).toString("hex");
-  const lock: LockData = {
-    version: "1.0",
-    pid: process.pid,
-    created_at: new Date().toISOString(),
-    run_id: runId,
-    nonce,
-  };
+  const lock: LockData = { version: "1.0", pid: process.pid, created_at: new Date().toISOString(), run_id: runId, nonce };
   const bytes = Buffer.from(`${JSON.stringify(lock, null, 2)}\n`, "utf8");
   let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
   try {
@@ -130,20 +129,24 @@ export async function acquireResultBundleLock(lockPath: string, runId: string): 
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
       throw new ResultBundleError("RESULT_OPERATIONAL_ERROR", `Cannot create Result Bundle lock: ${error instanceof Error ? error.message : String(error)}`);
     }
-    const existing = await readStableLock(lockPath);
-    if (isLockStale(existing.lock)) {
-      throw new ResultBundleError(
-        "RESULT_STALE_LOCK",
-        `A stale lock from PID ${existing.lock.pid} exists for run ${existing.lock.run_id}. Verify no live owner exists before removing it manually.`,
-      );
+    let existing;
+    try { existing = await readStableLock(lockPath); }
+    catch (readError) {
+      if (readError instanceof LockMissingError) throw new ResultBundleError("RESULT_OPERATIONAL_ERROR", "Result Bundle lock disappeared during acquisition conflict resolution.");
+      throw readError;
     }
-    throw new ResultBundleError(
-      "RESULT_LOCKED",
-      `Another process (PID ${existing.lock.pid}) is building the result bundle for run ${existing.lock.run_id}.`,
-    );
+    if (isLockStale(existing.lock)) {
+      throw new ResultBundleError("RESULT_STALE_LOCK", `A stale lock from PID ${existing.lock.pid} exists for run ${existing.lock.run_id}. Verify no live owner exists before removing it manually.`);
+    }
+    throw new ResultBundleError("RESULT_LOCKED", `Another process (PID ${existing.lock.pid}) is building the result bundle for run ${existing.lock.run_id}.`);
   }
 
-  const owned = await readStableLock(lockPath);
+  let owned;
+  try { owned = await readStableLock(lockPath); }
+  catch (error) {
+    if (error instanceof LockMissingError) throw new ResultBundleError("RESULT_OPERATIONAL_ERROR", "Result Bundle lock disappeared immediately after acquisition.");
+    throw error;
+  }
   if (owned.lock.nonce !== nonce || owned.lock.run_id !== runId || owned.lock.pid !== process.pid) {
     throw new ResultBundleError("RESULT_OPERATIONAL_ERROR", "Result Bundle lock ownership changed immediately after acquisition.");
   }
@@ -153,18 +156,13 @@ export async function acquireResultBundleLock(lockPath: string, runId: string): 
     async release() {
       if (released) return;
       released = true;
-      let current: Awaited<ReturnType<typeof readStableLock>>;
+      let current;
       try { current = await readStableLock(lockPath); }
       catch (error) {
-        if (error instanceof ResultBundleError && (error.message.includes("Cannot inspect") || error.message.includes("ENOENT"))) return;
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+        if (error instanceof LockMissingError) return;
         throw error;
       }
-      if (
-        current.lock.nonce !== nonce ||
-        current.stat.dev !== owned.stat.dev ||
-        current.stat.ino !== owned.stat.ino
-      ) {
+      if (current.lock.nonce !== nonce || current.stat.dev !== owned.stat.dev || current.stat.ino !== owned.stat.ino) {
         throw new ResultBundleError("RESULT_OPERATIONAL_ERROR", "Refusing to release a Result Bundle lock no longer owned by this process.");
       }
       await fs.unlink(lockPath);
