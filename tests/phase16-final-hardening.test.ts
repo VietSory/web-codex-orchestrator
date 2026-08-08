@@ -50,10 +50,11 @@ test("P16-OPS-001 common GitHub rate-limit spelling variants remain retryable", 
   assert.equal(retryableFailureCode("ORCHESTRATION_POLICY_BLOCKED"), false);
 });
 
-test("P16-OPS-002 GitHub retry hints prefer the longer valid server delay", () => {
+test("P16-OPS-002 primary GitHub reset may extend Retry-After only when primary quota is exhausted", () => {
   const now = Date.parse("2026-08-08T00:00:00.000Z");
   const headers = new Headers({
     "retry-after": "5",
+    "x-ratelimit-remaining": "0",
     "x-ratelimit-reset": String(Math.floor(now / 1000) + 10),
   });
   assert.equal(parseGitHubRetryAfterMs(headers, now), 10_000);
@@ -142,4 +143,14 @@ test("P16-OPS-007 ordinary GitHub 403 remains terminal and is not mistaken for a
       && error.code === "PR_API_FORBIDDEN"
       && error.retryAfterMs === null,
   );
+});
+
+test("P16-OPS-008 secondary Retry-After ignores unrelated primary reset while primary quota remains", () => {
+  const now = Date.parse("2026-08-08T00:00:00.000Z");
+  const headers = new Headers({
+    "retry-after": "5",
+    "x-ratelimit-remaining": "4999",
+    "x-ratelimit-reset": String(Math.floor(now / 1000) + 3600),
+  });
+  assert.equal(parseGitHubRetryAfterMs(headers, now), 5_000);
 });
