@@ -6,6 +6,7 @@ import { readDraftPullRequestReceipt } from "../pull-request/draft-pr-store.js";
 import { readResultBundleReceipt } from "../result-bundle/result-bundle-store.js";
 import { resultBundlePaths } from "../result-bundle/result-bundle-paths.js";
 import { getWebReviewStatus } from "../web-review/web-review-service.js";
+import { getRevisionStatus } from "../revision/revision-service.js";
 import { readSelectedArtifact } from "./artifact-binding.js";
 import type { LifecycleSnapshot } from "./planner.js";
 import { OrchestrationError } from "./contracts.js";
@@ -26,15 +27,17 @@ export async function readLifecycleSnapshot(stateDirectory: string, runId: strin
   const directory = executorPaths(stateDirectory, id.taskId, id.taskBundleSha256, selected.artifact_sha256).directory;
   const publishDirectory = path.join(directory, "publish");
   const resultPaths = resultBundlePaths(stateDirectory, id.taskId, id.taskBundleSha256);
-  const [publish, draft, result, review] = await Promise.all([
+  const [publish, draft, result, review, revision] = await Promise.all([
     readGitPublishReceipt(path.join(publishDirectory, "git-publish.json")),
     readDraftPullRequestReceipt(path.join(publishDirectory, "github-draft-pr.json")),
     readResultBundleReceipt(resultPaths.receiptPath),
     getWebReviewStatus({ runId, stateDirectory }),
+    getRevisionStatus(stateDirectory, runId),
   ]);
   const webReviewState = review?.state === "APPROVED" || review?.state === "REVISION_REQUESTED" || review?.state === "ESCALATED"
     ? review.state
     : review ? "PENDING" : null;
+  const relevantRevision = review?.state === "REVISION_REQUESTED" && revision?.revision_round === review.review_round ? revision : null;
   return {
     registered_artifact_sha256: selected.artifact_sha256,
     executor_state: executor?.state ?? null,
@@ -42,7 +45,7 @@ export async function readLifecycleSnapshot(stateDirectory: string, runId: strin
     draft_pr_state: draft?.state ?? null,
     result_bundle_ready: result?.state === "READY_FOR_WEB_REVIEW" && result.run_id === runId,
     web_review_state: webReviewState,
-    revision_state: null,
-    revision_result_ready: false,
+    revision_state: relevantRevision?.state ?? null,
+    revision_result_ready: relevantRevision?.state === "RESULT_READY",
   };
 }
