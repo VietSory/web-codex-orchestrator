@@ -149,7 +149,10 @@ function createGitRunner(maximumOutputBytes: number): GitRunner {
   }
   return {
     async run(args: string[], cwd: string) { return { stdout: (await invoke(args, cwd)).stdout }; },
-    async runBinary(args: string[], cwd: string) { return (await invoke(args, cwd)).stdoutBuffer; },
+    async runBinary(args: string[], cwd: string) {
+      const result = await invoke(args, cwd);
+      return result.stdoutBuffer ?? Buffer.from(result.stdout, "utf8");
+    },
   };
 }
 
@@ -175,6 +178,8 @@ function compatibilityExecutionReceipt(
   const receipt = ready.receipt;
   const run = ready.source.trusted.runReceipt;
   const digest = ready.changeSetDigest;
+  const agents = config.agents;
+  if (!agents) throw new OrchestrationError("ORCHESTRATION_RESULT_CONFIG_INVALID", "Agent profiles are required to project Phase 10 review evidence into the Result Bundle.");
   return {
     execution_version: "1.0",
     projection_version: "phase13-executor-v1",
@@ -188,16 +193,16 @@ function compatibilityExecutionReceipt(
     accepted_bundle_path: run.accepted_bundle_path,
     implementer: { model: "web-authority", reasoning_effort: "deterministic", iterations: 0, thread_id: "" },
     internal_reviewer: {
-      model: config.agents.internal_reviewer.model,
-      reasoning_effort: config.agents.internal_reviewer.reasoning_effort,
+      model: agents.internal_reviewer.model,
+      reasoning_effort: agents.internal_reviewer.reasoning_effort,
       rounds: receipt.terra_review.rounds,
       latest_thread_id: null,
       verdict: receipt.terra_review.verdict,
       reviewed_change_set_sha256: digest,
     },
     final_reviewer: {
-      model: config.agents.final_reviewer.model,
-      reasoning_effort: config.agents.final_reviewer.reasoning_effort,
+      model: agents.final_reviewer.model,
+      reasoning_effort: agents.final_reviewer.reasoning_effort,
       rounds: receipt.sol_review.rounds,
       latest_thread_id: null,
       verdict: receipt.sol_review.verdict,
