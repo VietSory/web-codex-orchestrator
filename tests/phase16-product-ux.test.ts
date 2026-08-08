@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { ConfigError, loadTrustedConfig, MAXIMUM_TRUSTED_CONFIG_BYTES } from "../src/config/config-loader.js";
 import { scanInbox } from "../src/inbox/scanner.js";
 import { watchInbox } from "../src/inbox/watcher.js";
 
@@ -63,4 +64,15 @@ test("P16-PRODUCT-003 CI checks out and asserts the exact event head", async () 
   assert.match(workflow, /ref: \$\{\{ env\.WCO_EXPECTED_SHA \}\}/);
   assert.match(workflow, /persist-credentials: false/);
   assert.match(workflow, /git rev-parse HEAD/);
+});
+
+test("P16-PRODUCT-004 trusted config reads are allocation-bounded", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-p16-config-bound-"));
+  t.after(async () => fs.rm(root, { recursive: true, force: true }));
+  const configPath = path.join(root, "config.json");
+  await fs.writeFile(configPath, Buffer.alloc(MAXIMUM_TRUSTED_CONFIG_BYTES + 1, 0x20));
+  await assert.rejects(
+    loadTrustedConfig(configPath),
+    (error: unknown) => error instanceof ConfigError && error.code === "CONFIG_INVALID" && /safety limit/.test(error.message),
+  );
 });
