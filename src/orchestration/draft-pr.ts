@@ -9,9 +9,12 @@ import { parseGitHubRepositoryRemote } from "../pull-request/github-remote.js";
 import { GitHubRestPullRequestClient } from "../pull-request/github-rest-client.js";
 import { createPreparedDraftPullRequest } from "../pull-request/phase5b-service.js";
 import { readDraftPullRequestReceipt } from "../pull-request/draft-pr-store.js";
-import type { DraftPullRequestReceipt } from "../pull-request/contracts.js";
+import { DraftPullRequestError, type DraftPullRequestReceipt } from "../pull-request/contracts.js";
+import { createBoundedFetch } from "../runtime/fetch-bounded.js";
 import { attestReadyExecutorSnapshot } from "./executor-ready.js";
 import { OrchestrationError } from "./contracts.js";
+
+const GITHUB_REQUEST_TIMEOUT_MS = 30_000;
 
 function canonicalDigestGitPublishReceipt(receipt: any): string {
   const explicit = JSON.stringify([
@@ -38,6 +41,13 @@ function canonicalDigestGitPublishReceipt(receipt: any): string {
 async function cleanupPublishAuth(auth: PreparedPublishGitSecurity): Promise<void> {
   if (auth.mode !== "https_token") return;
   await unlink(auth.askpassScriptPath).catch(() => undefined);
+}
+
+function mapGitHubTimeout(error: unknown): never {
+  if (error instanceof DraftPullRequestError && /deadline|timed? out|abort/i.test(error.message)) {
+    throw new OrchestrationError("ORCHESTRATION_DRAFT_PR_TIMEOUT", `Bounded GitHub Draft PR request timed out: ${error.message}`);
+  }
+  throw error;
 }
 
 export async function openDraftPullRequestForExecutorSnapshot(options: {
@@ -74,35 +84,39 @@ export async function openDraftPullRequestForExecutorSnapshot(options: {
   const auth = await preparePublishGitSecurity(config.publish, publish.allowed_remote_url, runtimeDirectory, process.env);
   try {
     const gitRunner = new GitRunner(process.env, runtimeDirectory, { identity: config.publish.identity, auth });
-    const client = new GitHubRestPullRequestClient(token);
+    const client = new GitHubRestPullRequestClient(token, createBoundedFetch({ timeoutMs: GITHUB_REQUEST_TIMEOUT_MS }));
     const receiptPath = path.join(ready.executorDirectory, "publish", "github-draft-pr.json");
     const existingReceipt = await readDraftPullRequestReceipt(receiptPath);
-    const receipt = await createPreparedDraftPullRequest({
-      runId: options.runId,
-      taskId: run.task_id,
-      owner: repo.owner,
-      repository: repo.repository,
-      baseBranch: run.base_branch,
-      headBranch: publish.branch_name,
-      expectedHeadSha: publish.remote_branch_sha,
-      changeSetSha256: ready.changeSetDigest,
-      gitPublishReceiptSha256: canonicalDigestGitPublishReceipt(publish),
-      client,
-      existingReceipt,
-      stateDirectory: ready.executorDirectory,
-      gitRunner,
-      worktreePath: run.worktree_path,
-      remoteName: publish.remote_name,
-      ...(options.now ? { now: options.now } : {}),
-    });
-    if (
-      receipt.state !== "OPEN" || receipt.observed_draft !== true ||
-      receipt.observed_state !== "open" || receipt.observed_head_sha !== publish.remote_branch_sha ||
-      receipt.expected_head_sha !== publish.remote_branch_sha
-    ) {
-      throw new OrchestrationError("ORCHESTRATION_DRAFT_PR_INCOMPLETE", "Draft PR operation did not end at the exact open Draft PR head.");
+    try {
+      const receipt = await createPreparedDraftPullRequest({
+        runId: options.runId,
+        taskId: run.task_id,
+        owner: repo.owner,
+        repository: repo.repository,
+        baseBranch: run.base_branch,
+        headBranch: publish.branch_name,
+        expectedHeadSha: publish.remote_branch_sha,
+        changeSetSha256: ready.changeSetDigest,
+        gitPublishReceiptSha256: canonicalDigestGitPublishReceipt(publish),
+        client,
+        existingReceipt,
+        stateDirectory: ready.executorDirectory,
+        gitRunner,
+        worktreePath: run.worktree_path,
+        remoteName: publish.remote_name,
+        ...(options.now ? { now: options.now } : {}),
+      });
+      if (
+        receipt.state !== "OPEN" || receipt.observed_draft !== true ||
+        receipt.observed_state !== "open" || receipt.observed_head_sha !== publish.remote_branch_sha ||
+        receipt.expected_head_sha !== publish.remote_branch_sha
+      ) {
+        throw new OrchestrationError("ORCHESTRATION_DRAFT_PR_INCOMPLETE", "Draft PR operation did not end at the exact open Draft PR head.");
+      }
+      return receipt;
+    } catch (error) {
+      mapGitHubTimeout(error);
     }
-    return receipt;
   } finally {
     await cleanupPublishAuth(auth);
   }
