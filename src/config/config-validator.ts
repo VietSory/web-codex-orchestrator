@@ -43,7 +43,7 @@ export const TRUSTED_CONFIG_HARD_LIMITS = {
   result_bundle: {
     maximum_entries: 4_096,
     maximum_entry_bytes: 67_108_864,
-    maximum_source_file_bytes: 33_554_432,
+    maximum_source_file_bytes: 67_108_864,
     maximum_diff_bytes: 67_108_864,
     maximum_total_uncompressed_bytes: 536_870_912,
     maximum_archive_bytes: 268_435_456,
