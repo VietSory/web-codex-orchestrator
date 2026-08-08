@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
@@ -10,6 +11,7 @@ import {
 } from "./contracts.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
+export const DEFAULT_MAXIMUM_PREIMAGE_BYTES = 67_108_864;
 
 export interface PreparedWebOperation {
   op_id: string;
@@ -17,6 +19,7 @@ export interface PreparedWebOperation {
   relative_path: string;
   absolute_path: string;
   observed_preimage_sha256: string | null;
+  observed_preimage_size_bytes: number;
   payload_sha256: string | null;
   payload_size_bytes: number;
 }
@@ -30,11 +33,11 @@ export interface WebOperationPreflightPlan {
   plan_sha256: string;
 }
 
-function sha256(bytes: Buffer): string {
+export function sha256(bytes: Buffer): string {
   return crypto.createHash("sha256").update(bytes).digest("hex");
 }
 
-function assertSafeRelativePath(relativePath: string): void {
+export function assertSafeRelativePath(relativePath: string): void {
   if (
     !relativePath ||
     path.posix.isAbsolute(relativePath) ||
@@ -48,7 +51,7 @@ function assertSafeRelativePath(relativePath: string): void {
   }
 }
 
-async function assertNoSymlinkAncestors(root: string, relativePath: string): Promise<void> {
+export async function assertNoSymlinkAncestors(root: string, relativePath: string): Promise<void> {
   const parts = relativePath.split("/");
   let current = root;
   for (const part of parts.slice(0, -1)) {
@@ -64,18 +67,42 @@ async function assertNoSymlinkAncestors(root: string, relativePath: string): Pro
   }
 }
 
-async function readObservedPreimage(root: string, relativePath: string): Promise<string | null> {
+export async function readObservedPreimage(
+  root: string,
+  relativePath: string,
+  maximumBytes = DEFAULT_MAXIMUM_PREIMAGE_BYTES,
+): Promise<{ sha256: string | null; sizeBytes: number }> {
   await assertNoSymlinkAncestors(root, relativePath);
   const target = path.join(root, ...relativePath.split("/"));
   const stat = await fs.lstat(target).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;
     throw error;
   });
-  if (stat === null) return null;
+  if (stat === null) return { sha256: null, sizeBytes: 0 };
   if (stat.isSymbolicLink() || !stat.isFile()) {
     throw new WebAuthorityError("WEB_AUTHORITY_PREIMAGE_INVALID", `Operation target is not a regular non-symlink file: ${relativePath}`);
   }
-  return sha256(await fs.readFile(target));
+  if (!Number.isSafeInteger(stat.size) || stat.size > maximumBytes) {
+    throw new WebAuthorityError(
+      "WEB_AUTHORITY_PREIMAGE_INVALID",
+      `Operation target exceeds the bounded preimage limit: ${relativePath}`,
+    );
+  }
+
+  const digest = crypto.createHash("sha256");
+  let observedBytes = 0;
+  for await (const chunk of createReadStream(target, { highWaterMark: 64 * 1024 })) {
+    const bytes = chunk as Buffer;
+    observedBytes += bytes.byteLength;
+    if (observedBytes > maximumBytes) {
+      throw new WebAuthorityError(
+        "WEB_AUTHORITY_PREIMAGE_INVALID",
+        `Operation target exceeded the bounded preimage limit while reading: ${relativePath}`,
+      );
+    }
+    digest.update(bytes);
+  }
+  return { sha256: digest.digest("hex"), sizeBytes: observedBytes };
 }
 
 function assertRegistrationMatchesPack(record: ArtifactRegistrationRecord, pack: WebImplementationPack): void {
@@ -90,7 +117,7 @@ function assertRegistrationMatchesPack(record: ArtifactRegistrationRecord, pack:
   }
 }
 
-function payloadForOperation(pack: WebImplementationPack, operation: WebImplementationOperation): Buffer | null {
+export function payloadForOperation(pack: WebImplementationPack, operation: WebImplementationOperation): Buffer | null {
   if (operation.kind === "delete_file") {
     if (operation.payload_entry !== undefined || operation.payload_sha256 !== undefined) {
       throw new WebAuthorityError("WEB_AUTHORITY_OPERATION_INVALID", `Delete operation '${operation.op_id}' cannot carry payload fields.`);
@@ -111,12 +138,18 @@ export async function preflightWebOperations(options: {
   worktreeRoot: string;
   registration: ArtifactRegistrationRecord;
   pack: WebImplementationPack;
+  maximumPreimageBytes?: number;
 }): Promise<WebOperationPreflightPlan> {
   assertRegistrationMatchesPack(options.registration, options.pack);
   const root = path.resolve(options.worktreeRoot);
   const rootStat = await fs.lstat(root).catch(() => null);
   if (!rootStat || rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
     throw new WebAuthorityError("WEB_AUTHORITY_OPERATION_INVALID", "Web operation worktree root must be a real directory.");
+  }
+
+  const maximumPreimageBytes = options.maximumPreimageBytes ?? DEFAULT_MAXIMUM_PREIMAGE_BYTES;
+  if (!Number.isSafeInteger(maximumPreimageBytes) || maximumPreimageBytes < 0) {
+    throw new WebAuthorityError("WEB_AUTHORITY_OPERATION_INVALID", "maximumPreimageBytes must be a non-negative safe integer.");
   }
 
   const seenPaths = new Set<string>();
@@ -128,14 +161,14 @@ export async function preflightWebOperations(options: {
     }
     seenPaths.add(operation.path);
 
-    const observed = await readObservedPreimage(root, operation.path);
-    if (observed !== operation.preimage_sha256) {
+    const observed = await readObservedPreimage(root, operation.path, maximumPreimageBytes);
+    if (observed.sha256 !== operation.preimage_sha256) {
       throw new WebAuthorityError("WEB_AUTHORITY_PREIMAGE_INVALID", `Preimage mismatch for '${operation.path}'.`);
     }
-    if (operation.kind === "create_file" && observed !== null) {
+    if (operation.kind === "create_file" && observed.sha256 !== null) {
       throw new WebAuthorityError("WEB_AUTHORITY_PREIMAGE_INVALID", `Create target already exists: ${operation.path}`);
     }
-    if ((operation.kind === "replace_file" || operation.kind === "delete_file") && observed === null) {
+    if ((operation.kind === "replace_file" || operation.kind === "delete_file") && observed.sha256 === null) {
       throw new WebAuthorityError("WEB_AUTHORITY_PREIMAGE_INVALID", `Required target is missing: ${operation.path}`);
     }
 
@@ -145,7 +178,8 @@ export async function preflightWebOperations(options: {
       kind: operation.kind,
       relative_path: operation.path,
       absolute_path: path.join(root, ...operation.path.split("/")),
-      observed_preimage_sha256: observed,
+      observed_preimage_sha256: observed.sha256,
+      observed_preimage_size_bytes: observed.sizeBytes,
       payload_sha256: payload ? sha256(payload) : null,
       payload_size_bytes: payload?.byteLength ?? 0,
     });
