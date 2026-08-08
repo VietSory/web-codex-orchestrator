@@ -55,6 +55,7 @@ async function createTestEnv() {
   }
   fs.writeFileSync(path.join(bundleDir, "checksums.json"), JSON.stringify({ algorithm: "sha256", files: filesMap }));
 
+  const timestamp = new Date().toISOString();
   fs.writeFileSync(path.join(runsDir, "run.json"), JSON.stringify({
     run_version: "1.0",
     run_id: runId,
@@ -74,6 +75,8 @@ async function createTestEnv() {
     accepted_bundle_path: bundleDir,
     checks: [],
     errors: [],
+    created_at: timestamp,
+    updated_at: timestamp,
   }));
 
   fs.writeFileSync(path.join(executionDir, "execution.json"), JSON.stringify({
@@ -91,8 +94,8 @@ async function createTestEnv() {
     errors: [],
     usage: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0 },
     change_set_sha256: changeSetSha256,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
+    created_at: timestamp,
+    updated_at: timestamp,
   }));
 
   const phase5aReceipt = {
@@ -108,10 +111,10 @@ async function createTestEnv() {
     approved_snapshot_sha256: changeSetSha256,
     commit_sha: "1".repeat(40),
     remote_branch_sha: "1".repeat(40),
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    committed_at: new Date().toISOString(),
-    pushed_at: new Date().toISOString(),
+    created_at: timestamp,
+    updated_at: timestamp,
+    committed_at: timestamp,
+    pushed_at: timestamp,
   };
   const p5aPath = path.join(phase5aPublishDir, "git-publish.json");
   fs.writeFileSync(p5aPath, JSON.stringify(phase5aReceipt));
@@ -198,7 +201,6 @@ test("P5B-001: phase-boundary rejects a mismatched canonical Phase 5A receipt", 
   const p5a = JSON.parse(fs.readFileSync(env.p5aPath, "utf8"));
   p5a.run_id = `wrong-run-id:${"f".repeat(64)}`;
   fs.writeFileSync(env.p5aPath, JSON.stringify(p5a));
-
   await assert.rejects(
     createDraftPullRequestForRun({ runId: env.runId, stateDirectory: env.stateDirectory, configPath: env.configPath }),
     (err: unknown) => err instanceof DraftPullRequestError && err.code === "PR_PHASE5A_NOT_PUSHED",
@@ -214,10 +216,7 @@ test("P5B-002: remote-attestation rejects a mismatched remote head", async (t) =
       return { stdout: `${"3".repeat(40)}\trefs/heads/main\n` };
     },
   });
-  await assert.rejects(
-    createPreparedDraftPullRequest(context),
-    (err: unknown) => err instanceof DraftPullRequestError && err.code === "PR_REMOTE_BRANCH_MISMATCH",
-  );
+  await assert.rejects(createPreparedDraftPullRequest(context), (err: unknown) => err instanceof DraftPullRequestError && err.code === "PR_REMOTE_BRANCH_MISMATCH");
 });
 
 test("P5B-003: base-attestation rejects a missing remote base branch", async (t) => {
@@ -229,10 +228,7 @@ test("P5B-003: base-attestation rejects a missing remote base branch", async (t)
       return { stdout: "" };
     },
   });
-  await assert.rejects(
-    createPreparedDraftPullRequest(context),
-    (err: unknown) => err instanceof DraftPullRequestError && err.code === "PR_BASE_BRANCH_MISSING",
-  );
+  await assert.rejects(createPreparedDraftPullRequest(context), (err: unknown) => err instanceof DraftPullRequestError && err.code === "PR_BASE_BRANCH_MISSING");
 });
 
 test("P5B-005: authentication missing token throws and cleans temporary Git auth", async (t) => {
@@ -283,10 +279,7 @@ test("P5B-036: execution lock rejects concurrent mutation ownership", async (t) 
   t.after(async () => fs.promises.rm(root, { recursive: true, force: true }));
   const first = await acquireExecutionLock(root, "a".repeat(64));
   t.after(async () => first.release().catch(() => undefined));
-  await assert.rejects(
-    acquireExecutionLock(root, "a".repeat(64)),
-    (err: unknown) => err instanceof ExecutionError && err.code === "EXECUTION_LOCKED",
-  );
+  await assert.rejects(acquireExecutionLock(root, "a".repeat(64)), (err: unknown) => err instanceof ExecutionError && err.code === "EXECUTION_LOCKED");
 });
 
 test("P5B-039: GitHub diagnostics redact configured bearer token", async () => {
