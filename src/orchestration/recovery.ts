@@ -8,6 +8,7 @@ import { assertExecutorTransactionBoundToPack, attestExecutorTransactionBackups 
 import type { ExecutorReceipt } from "../executor/contracts.js";
 import { readGitPublishReceipt } from "../publish/publish-store.js";
 import type { GitPublishReceipt } from "../publish/contracts.js";
+import { getRevisionStatus } from "../revision/revision-service.js";
 import { getWebReviewStatus, submitWebVerdict } from "../web-review/web-review-service.js";
 import { completeAttempt } from "./controller.js";
 import { OrchestrationError, type RunLedger, type TransitionAttempt, type TransitionKind } from "./contracts.js";
@@ -16,6 +17,13 @@ import { readSelectedArtifact, readSelectedArtifactSelection } from "./artifact-
 import { sealTransitionRequest } from "./retry-policy.js";
 import { openDraftPullRequestForExecutorSnapshot } from "./draft-pr.js";
 import { packageResultForRun } from "./package-result.js";
+import {
+  assertRevisionResultForOrchestration,
+  attestRevisionAuthorityForOrchestration,
+  revisionOrchestrationPayload,
+  revisionOrchestrationUsage,
+  reviseRunForOrchestration,
+} from "./revise.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
 
@@ -62,6 +70,9 @@ export interface RecoveryDependencies {
   packageResult: typeof packageResultForRun;
   getWebReviewStatus: typeof getWebReviewStatus;
   submitWebVerdict: typeof submitWebVerdict;
+  getRevisionStatus: typeof getRevisionStatus;
+  attestRevisionAuthority: typeof attestRevisionAuthorityForOrchestration;
+  reviseRun: typeof reviseRunForOrchestration;
   completeAttempt: typeof completeAttempt;
 }
 
@@ -76,6 +87,9 @@ const productionDependencies: RecoveryDependencies = {
   packageResult: packageResultForRun,
   getWebReviewStatus,
   submitWebVerdict,
+  getRevisionStatus,
+  attestRevisionAuthority: attestRevisionAuthorityForOrchestration,
+  reviseRun: reviseRunForOrchestration,
   completeAttempt,
 };
 
@@ -165,6 +179,39 @@ export async function recoverCompletedAttempt(options: { stateDirectory: string;
     if (revalidated.verdict_sha256 !== review.verdict_sha256 || revalidated.fresh_attested_head_sha === null || revalidated.fresh_attested_head_sha !== revalidated.published_commit_sha || revalidated.decision_event_sha256 === null) throw new OrchestrationError("ORCHESTRATION_RECOVERY_CONFLICT", "Recovered Web verdict no longer passes exact fresh-head attestation.");
     const nextTransition: TransitionKind = revalidated.state === "REVISION_REQUESTED" ? "REVISE" : "WAIT_HUMAN";
     return await deps.completeAttempt({ stateDirectory: options.stateDirectory, runId: options.runId, attemptId: attempt.attempt_id, result: { state: revalidated.state, review_round: revalidated.review_round, verdict_sha256: revalidated.verdict_sha256, decision_event_sha256: revalidated.decision_event_sha256, revision_request_sha256: revalidated.revision_request_sha256, published_commit_sha: revalidated.published_commit_sha, pull_request_number: revalidated.pull_request_number, fresh_attested_head_sha: revalidated.fresh_attested_head_sha, adopted_after_restart: true }, nextTransition, now: now() });
+  }
+
+  if (attempt.transition === "REVISE") {
+    const authority = await deps.attestRevisionAuthority({ runId: options.runId, stateDirectory: options.stateDirectory });
+    assertSealedRequest(attempt, "REVISE", revisionOrchestrationPayload(authority));
+    const existing = await deps.getRevisionStatus(options.stateDirectory, options.runId, authority.revisionRound);
+    if (!existing || existing.state !== "RESULT_READY") return options.ledger;
+    const revision = await deps.reviseRun({ runId: options.runId, revisionRound: authority.revisionRound, stateDirectory: options.stateDirectory, configPath: options.configPath, now });
+    try {
+      assertRevisionResultForOrchestration(options.runId, revision, authority);
+    } catch (error) {
+      throw new OrchestrationError("ORCHESTRATION_RECOVERY_CONFLICT", `Recovered revision result no longer matches sealed authority: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return await deps.completeAttempt({
+      stateDirectory: options.stateDirectory,
+      runId: options.runId,
+      attemptId: attempt.attempt_id,
+      result: {
+        state: revision.state,
+        revision_round: revision.revision_round,
+        previous_pr_head_sha: revision.previous_pr_head_sha,
+        new_published_commit_sha: revision.new_published_commit_sha,
+        remote_branch_sha: revision.remote_branch_sha,
+        pull_request_number: revision.pull_request_number,
+        result_bundle_sha256: revision.result_bundle_sha256,
+        result_manifest_sha256: revision.result_manifest_sha256,
+        next_review_round: revision.next_review_round,
+        adopted_after_restart: true,
+      },
+      nextTransition: "WAIT_WEB_VERDICT",
+      usage: revisionOrchestrationUsage(revision),
+      now: now(),
+    });
   }
 
   return options.ledger;
