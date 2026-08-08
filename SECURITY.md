@@ -117,6 +117,26 @@ Reviewer workspace access is read-only/no-network through the existing reviewer 
 
 Phase 10 has no commit, push, create/update PR, mark-ready or merge capability.
 
+## Phases 11–16 — durable control plane
+
+The outer controller does not create new implementation/review/revision authority. It composes the hardened lower-layer services and checkpoints one exact transition request before side effects.
+
+- A transition attempt is sealed by transition kind plus canonical request payload hash. A different request cannot reuse a `STARTED` attempt.
+- Per-run transition execution is serialized by WCO locks. Bounded attempt/time/model/token budgets, circuit state and retry deadlines prevent unbounded retry loops.
+- Crash recovery runs before new transition work. It may adopt an already-completed lower-layer side effect only after re-attesting the exact persisted receipt/authority and proving it matches the sealed attempt. Ambiguous or changed authority fails closed.
+- An unexpired retry deadline returns before untrusted Web pack/verdict input is re-read or canonicalized, after recovery has had its chance to adopt exact completed work. This prevents hot callers from turning backoff into repeated I/O/CPU work.
+- `REGISTER_WEB_PACK` and `WAIT_WEB_VERDICT` require explicit external Web inputs. Browser/chat/session history is never searched to synthesize missing authority.
+- `OPEN_DRAFT_PR` accepts only an open, unmerged Draft PR at the exact expected head/base. The GitHub create request is fixed to `draft: true` and `maintainer_can_modify: false`.
+- `WAIT_WEB_VERDICT` accepts only a hardened Phase 7 terminal decision bound to the exact Result Bundle and freshly attested Draft PR head. `APPROVED` and `ESCALATED` stop at human authority; `REVISION_REQUESTED` advances only to the sealed Phase 8 revision path.
+- `REVISE` seals the exact Phase 7 revision authority, reuses Phase 8, requires a single-parent append-only revision commit on the same branch/PR, and charges returned model/token usage into the outer budget once. Completed revision results are re-attested before crash adoption.
+- The control loop is bounded by `--max-transitions` and stops at missing external input, retry backoff, pause, terminal human authority, or completion. It does not busy-poll browser/session state.
+
+No Phase 11–16 transition introduces merge, mark-ready, auto-merge, branch deletion, rebase/amend, or authority to rewrite an existing remote branch.
+
+## Git publication race semantics
+
+Phase 5A initial delivery-branch creation uses Git's empty expected-value lease syntax (`--force-with-lease=<ref>:`) only as an atomic **create-if-absent** compare-and-swap. The lease requires the remote ref to be absent; if another actor creates it first, WCO fails instead of updating it. This is remote-race protection, not authority to force-update an existing ref. Phase 8 revisions use ordinary clean-transport push only after proving the remote still equals the exact previous PR head.
+
 ## Locks and crash recovery
 
 Security-sensitive lifecycle locks use create-only ownership with a random nonce. Existing locks are not automatically stolen based on age because stale-lock deletion creates a replacement race. Manual recovery must establish that no live owner is using the state first.
