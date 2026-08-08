@@ -60,10 +60,10 @@ class BoundedByteTail {
     }
 
     if (chunk.byteLength >= this.maximumBytes) {
+      this.wasTruncated ||= this.retainedBytes > 0 || chunk.byteLength > this.maximumBytes;
       this.chunks = [Buffer.from(chunk.subarray(chunk.byteLength - this.maximumBytes))];
       this.head = 0;
       this.retainedBytes = this.maximumBytes;
-      this.wasTruncated ||= chunk.byteLength > this.maximumBytes;
       return;
     }
 
