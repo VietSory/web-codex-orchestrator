@@ -9,17 +9,39 @@ export interface GitRunnerSecurityOptions {
   auth?: PreparedPublishGitSecurity;
 }
 
+export interface GitRunnerLimits {
+  localTimeoutMs: number;
+  networkTimeoutMs: number;
+  stdoutMaxBytes: number;
+  stderrMaxBytes: number;
+}
+
 export const GIT_LOCAL_TIMEOUT_MS = 120_000;
 export const GIT_NETWORK_TIMEOUT_MS = 300_000;
 export const GIT_STDOUT_MAX_BYTES = 16 * 1024 * 1024;
 export const GIT_STDERR_MAX_BYTES = 16 * 1024 * 1024;
 
+const DEFAULT_LIMITS: GitRunnerLimits = {
+  localTimeoutMs: GIT_LOCAL_TIMEOUT_MS,
+  networkTimeoutMs: GIT_NETWORK_TIMEOUT_MS,
+  stdoutMaxBytes: GIT_STDOUT_MAX_BYTES,
+  stderrMaxBytes: GIT_STDERR_MAX_BYTES,
+};
+
 export class GitRunner {
+  private readonly limits: GitRunnerLimits;
+
   constructor(
     private readonly env: NodeJS.ProcessEnv = process.env,
     readonly runtimeDirectory?: string,
     private readonly security?: GitRunnerSecurityOptions,
-  ) {}
+    limits?: Partial<GitRunnerLimits>,
+  ) {
+    this.limits = { ...DEFAULT_LIMITS, ...limits };
+    for (const [name, value] of Object.entries(this.limits)) {
+      if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`Invalid GitRunner limit '${name}'.`);
+    }
+  }
 
   private getCommandTarget(args: readonly string[]): { subcommand: string | undefined; varTarget: string | undefined } {
     let i = 0;
@@ -90,14 +112,15 @@ export class GitRunner {
     const env = this.safeEnvironment(subcommand, varTarget);
     const gitExecutable = env.WCO_GIT_EXECUTABLE || "git";
     const networkCommand = subcommand === "fetch" || subcommand === "push" || subcommand === "ls-remote";
+    const timeoutMs = networkCommand ? this.limits.networkTimeoutMs : this.limits.localTimeoutMs;
     const result = await spawnBounded({
       executable: gitExecutable,
       args: effectiveArgs,
       cwd,
       environment: env,
-      timeoutMs: networkCommand ? GIT_NETWORK_TIMEOUT_MS : GIT_LOCAL_TIMEOUT_MS,
-      stdoutMaxBytes: GIT_STDOUT_MAX_BYTES,
-      stderrMaxBytes: GIT_STDERR_MAX_BYTES,
+      timeoutMs,
+      stdoutMaxBytes: this.limits.stdoutMaxBytes,
+      stderrMaxBytes: this.limits.stderrMaxBytes,
       shell: false,
     });
 
@@ -112,7 +135,7 @@ export class GitRunner {
     }
 
     const diagnostics: string[] = [];
-    if (result.timedOut) diagnostics.push(`WCO_GIT_TIMEOUT: command exceeded ${networkCommand ? GIT_NETWORK_TIMEOUT_MS : GIT_LOCAL_TIMEOUT_MS}ms`);
+    if (result.timedOut) diagnostics.push(`WCO_GIT_TIMEOUT: command exceeded ${timeoutMs}ms`);
     if (result.stdoutTruncated || result.stderrTruncated) diagnostics.push("WCO_GIT_OUTPUT_LIMIT: command output exceeded the bounded Git output limit");
     if (result.spawnError) diagnostics.push(`WCO_GIT_SPAWN_ERROR: ${result.spawnError instanceof Error ? result.spawnError.message : String(result.spawnError)}`);
     if (diagnostics.length > 0) stderr = [stderr.trim(), ...diagnostics].filter(Boolean).join("\n");
