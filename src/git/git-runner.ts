@@ -1,13 +1,20 @@
-import { spawn } from "node:child_process";
 import path from "node:path";
 import type { GitCommandResult } from "./contracts.js";
-
 import type { PublishIdentityConfig } from "../config/contracts.js";
 import type { PreparedPublishGitSecurity } from "../publish/publish-auth.js";
+import { spawnBounded } from "../runtime/spawn-bounded.js";
+
+const GIT_TIMEOUT_MS = 120_000;
+const GIT_STDOUT_MAX_BYTES = 64 * 1024 * 1024;
+const GIT_STDERR_MAX_BYTES = 4 * 1024 * 1024;
 
 export interface GitRunnerSecurityOptions {
   identity?: PublishIdentityConfig;
   auth?: PreparedPublishGitSecurity;
+}
+
+function definedEnvironment(value: NodeJS.ProcessEnv): Record<string, string> {
+  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
 }
 
 export class GitRunner {
@@ -43,11 +50,11 @@ export class GitRunner {
       GIT_TERMINAL_PROMPT: "0",
       GIT_CONFIG_NOSYSTEM: "1",
     };
-    
+
     if (this.runtimeDirectory !== undefined) {
       result.GIT_CONFIG_GLOBAL = path.join(this.runtimeDirectory, "empty-config");
     }
-    
+
     for (const key of ["PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "WCO_GIT_EXECUTABLE"]) {
       const value = this.env[key];
       if (value !== undefined) result[key] = value;
@@ -72,7 +79,6 @@ export class GitRunner {
   }
 
   async run(args: readonly string[], cwd: string): Promise<GitCommandResult> {
-    const started = Date.now();
     const { subcommand, varTarget } = this.getCommandTarget(args);
     const effectiveArgs = this.runtimeDirectory === undefined
       ? [...args]
@@ -83,46 +89,45 @@ export class GitRunner {
           "core.fsmonitor=false",
           ...args,
         ];
-        
+
     const env = this.safeEnvironment(subcommand, varTarget);
-        
-    return await new Promise<GitCommandResult>((resolve, reject) => {
-      const gitExecutable = env.WCO_GIT_EXECUTABLE || "git";
-      const child = spawn(gitExecutable, effectiveArgs, {
-        cwd,
-        shell: false,
-        env,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      const stdoutBufs: Buffer[] = [];
-      const stderrBufs: Buffer[] = [];
-      child.stdout.on("data", (chunk: Buffer) => stdoutBufs.push(chunk));
-      child.stderr.on("data", (chunk: Buffer) => stderrBufs.push(chunk));
-      child.once("error", reject);
-      child.once("close", (exitCode) => {
-        let stdoutStr = Buffer.concat(stdoutBufs).toString("utf8");
-        let stderrStr = Buffer.concat(stderrBufs).toString("utf8");
-        
-        if (this.security?.auth?.mode === "https_token") {
-          const token = this.security.auth.askpassToken;
-          if (token && token.length > 0) {
-            // exact secret redaction
-            stdoutStr = stdoutStr.split(token).join("[REDACTED]");
-            stderrStr = stderrStr.split(token).join("[REDACTED]");
-          }
-        }
-        
-        resolve({
-          executable: "git",
-          args: effectiveArgs,
-          cwd,
-          exitCode: exitCode ?? 3,
-          stdout: stdoutStr,
-          stderr: stderrStr,
-          duration_ms: Date.now() - started,
-        });
-      });
+    const gitExecutable = env.WCO_GIT_EXECUTABLE || "git";
+    const result = await spawnBounded({
+      executable: gitExecutable,
+      args: effectiveArgs,
+      cwd,
+      shell: false,
+      environment: definedEnvironment(env),
+      timeoutMs: GIT_TIMEOUT_MS,
+      stdoutMaxBytes: GIT_STDOUT_MAX_BYTES,
+      stderrMaxBytes: GIT_STDERR_MAX_BYTES,
     });
+
+    let stdoutStr = result.stdout;
+    let stderrStr = result.stderr;
+    if (result.timedOut) stderrStr = `${stderrStr}${stderrStr ? "\n" : ""}[WCO git command timed out]`;
+    if (result.cancelled) stderrStr = `${stderrStr}${stderrStr ? "\n" : ""}[WCO git command cancelled]`;
+    if (result.stdoutTruncated || result.stderrTruncated) stderrStr = `${stderrStr}${stderrStr ? "\n" : ""}[WCO git output exceeded bounded retention]`;
+    if (result.spawnError) stderrStr = `${stderrStr}${stderrStr ? "\n" : ""}[WCO could not start git]`;
+
+    if (this.security?.auth?.mode === "https_token") {
+      const token = this.security.auth.askpassToken;
+      if (token && token.length > 0) {
+        stdoutStr = stdoutStr.split(token).join("[REDACTED]");
+        stderrStr = stderrStr.split(token).join("[REDACTED]");
+      }
+    }
+
+    const boundedFailure = result.spawnError || result.timedOut || result.cancelled || result.stdoutTruncated || result.stderrTruncated;
+    return {
+      executable: "git",
+      args: effectiveArgs,
+      cwd,
+      exitCode: boundedFailure ? 3 : result.exitCode ?? 3,
+      stdout: stdoutStr,
+      stderr: stderrStr,
+      duration_ms: result.durationMs,
+    };
   }
 
   async expect(args: readonly string[], cwd: string): Promise<GitCommandResult> {
