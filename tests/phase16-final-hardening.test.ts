@@ -37,10 +37,11 @@ function webVerdictSnapshot(): LifecycleSnapshot {
   };
 }
 
-async function createRetryBackoff(options: {
+async function createFailedAttempt(options: {
   root: string;
   runId: string;
   transition: "REGISTER_WEB_PACK" | "WAIT_WEB_VERDICT";
+  failureCode: string;
   now: Date;
 }): Promise<void> {
   const started = await checkpointAttempt({
@@ -48,7 +49,7 @@ async function createRetryBackoff(options: {
     runId: options.runId,
     transition: options.transition,
     payload: options.transition === "REGISTER_WEB_PACK"
-      ? { archive_sha256: HASH, pack_id: "P16-BACKOFF" }
+      ? { archive_sha256: HASH, pack_id: "P16-GUARD" }
       : { verdict_sha256: HASH },
     now: options.now,
   });
@@ -56,10 +57,19 @@ async function createRetryBackoff(options: {
     stateDirectory: options.root,
     runId: options.runId,
     attemptId: started.current_attempt!.attempt_id,
-    failureCode: "MODEL_TIMEOUT",
-    message: "retry later",
+    failureCode: options.failureCode,
+    message: "guarded failure",
     now: options.now,
   });
+}
+
+async function createRetryBackoff(options: {
+  root: string;
+  runId: string;
+  transition: "REGISTER_WEB_PACK" | "WAIT_WEB_VERDICT";
+  now: Date;
+}): Promise<void> {
+  await createFailedAttempt({ ...options, failureCode: "MODEL_TIMEOUT" });
 }
 
 test("P16-CLI-001 durable continue accepts an explicit Web verdict input", async (t) => {
@@ -154,4 +164,72 @@ test("P16-OPS-003 retry backoff returns before canonicalizing a Web verdict", as
   assert.equal(result.planned.transition, "WAIT_WEB_VERDICT");
   assert.equal(result.needs_input, null);
   assert.ok(result.ledger.retry.next_retry_at);
+});
+
+test("P16-OPS-004 terminal blocked ledger returns before re-reading a Web implementation pack", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-p16-pack-terminal-"));
+  t.after(async () => fs.rm(root, { recursive: true, force: true }));
+  const runId = `TASK-P16-PACK-TERMINAL:${HASH}`;
+  const now = new Date("2026-08-08T00:00:00.000Z");
+  await createFailedAttempt({
+    root,
+    runId,
+    transition: "REGISTER_WEB_PACK",
+    failureCode: "ORCHESTRATION_POLICY_BLOCKED",
+    now,
+  });
+  let reads = 0;
+  const result = await runNextTransition({
+    runId,
+    stateDirectory: root,
+    configPath: path.join(root, "config.json"),
+    inputs: { web_pack_path: path.join(root, "untrusted-pack.zip") },
+    now: () => new Date("2026-08-08T00:00:01.000Z"),
+    dependencies: {
+      async readSnapshot() { return registerSnapshot(); },
+      async readPack() {
+        reads += 1;
+        throw new Error("pack should not be read after terminal block");
+      },
+    },
+  });
+  assert.equal(reads, 0);
+  assert.equal(result.ledger.status, "BLOCKED");
+  assert.equal(result.progressed, false);
+  assert.equal(result.planned.transition, "REGISTER_WEB_PACK");
+  assert.equal(result.needs_input, null);
+});
+
+test("P16-OPS-005 terminal blocked ledger returns before canonicalizing a Web verdict", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-p16-verdict-terminal-"));
+  t.after(async () => fs.rm(root, { recursive: true, force: true }));
+  const runId = `TASK-P16-VERDICT-TERMINAL:${HASH}`;
+  const now = new Date("2026-08-08T00:00:00.000Z");
+  await createFailedAttempt({
+    root,
+    runId,
+    transition: "WAIT_WEB_VERDICT",
+    failureCode: "ORCHESTRATION_POLICY_BLOCKED",
+    now,
+  });
+  let reads = 0;
+  const result = await runNextTransition({
+    runId,
+    stateDirectory: root,
+    configPath: path.join(root, "config.json"),
+    inputs: { web_verdict_path: path.join(root, "untrusted-verdict.json") },
+    now: () => new Date("2026-08-08T00:00:01.000Z"),
+    dependencies: {
+      async readSnapshot() { return webVerdictSnapshot(); },
+      async readVerdict() {
+        reads += 1;
+        throw new Error("verdict should not be read after terminal block");
+      },
+    },
+  });
+  assert.equal(reads, 0);
+  assert.equal(result.ledger.status, "BLOCKED");
+  assert.equal(result.progressed, false);
+  assert.equal(result.planned.transition, "WAIT_WEB_VERDICT");
+  assert.equal(result.needs_input, null);
 });
