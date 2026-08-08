@@ -226,10 +226,11 @@ export async function appendAgentEvent(stateDirectory: string, taskId: string, a
   await ensureExecutionDirectory(paths);
   await assertRegularAppendTarget(paths.agentEvents);
   const sanitized = sanitizeDiagnostic(event);
-  const eventType = sanitized && typeof sanitized === "object" && typeof (sanitized as { event_type?: unknown }).event_type === "string"
-    ? (sanitized as { event_type: string }).event_type
-    : "agent-event";
-  await appendFile(paths.agentEvents, boundedJournalLine({ event: sanitized }, { event_type: eventType }), { encoding: "utf8", mode: 0o600 });
+  const sanitizedRecord = sanitized && typeof sanitized === "object" && !Array.isArray(sanitized)
+    ? sanitized as Record<string, unknown>
+    : { value: sanitized };
+  const eventType = typeof sanitizedRecord.event_type === "string" ? sanitizedRecord.event_type : "agent-event";
+  await appendFile(paths.agentEvents, boundedJournalLine(sanitizedRecord, { event_type: eventType }), { encoding: "utf8", mode: 0o600 });
 }
 
 export async function readPreparationForExecution(stateDirectory: string, runId: string): Promise<{ receipt: RunReceipt; taskId: string; archiveSha256: string }> {
