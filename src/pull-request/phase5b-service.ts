@@ -1,5 +1,6 @@
 import path from "node:path";
 import crypto from "node:crypto";
+import { unlink } from "node:fs/promises";
 import { acquireExecutionLock } from "../execution/execution-lock.js";
 import { readExecutionReceipt, readPreparationForExecution } from "../execution/execution-store.js";
 import { loadPhase4Config, readBundleJson } from "../execution/execution-config.js";
@@ -74,7 +75,7 @@ export async function createPreparedDraftPullRequest(context: PreparedDraftPullR
     changeSetSha256: context.changeSetSha256,
     gitPublishReceiptSha256: context.gitPublishReceiptSha256,
     existingReceipt: context.existingReceipt,
-    verifyRemoteHead
+    verifyRemoteHead,
   });
 }
 
@@ -95,7 +96,7 @@ function canonicalDigestGitPublishReceipt(receipt: any): string {
     "created_at", receipt.created_at,
     "updated_at", receipt.updated_at,
     "committed_at", receipt.committed_at,
-    "pushed_at", receipt.pushed_at
+    "pushed_at", receipt.pushed_at,
   ]);
   return crypto.createHash("sha256").update(explicit, "utf8").digest("hex");
 }
@@ -114,11 +115,11 @@ export async function createDraftPullRequestForRun(options: Phase5BDraftPrOption
     await verifyBundleChecksums(preparation.receipt.accepted_bundle_path);
     const [bundleData, config] = await Promise.all([
       readBundleJson(preparation.receipt.accepted_bundle_path),
-      loadPhase4Config(options.configPath)
+      loadPhase4Config(options.configPath),
     ]);
-    
+
     const contract = assertPhase4ExecutionContract(bundleData.manifest);
-    
+
     if (
       contract.task_id !== preparation.taskId ||
       contract.repository.id !== preparation.receipt.repository_id ||
@@ -137,7 +138,17 @@ export async function createDraftPullRequestForRun(options: Phase5BDraftPrOption
       throw new DraftPullRequestError("PR_REQUEST_INVALID", "Contract validation failed.");
     }
 
-    const p5aReceiptPath = path.join(stateDirectory, "publish", "git-publish.json");
+    // Phase 5A persists beneath the exact Phase 4 execution directory. Never
+    // adopt a similarly named receipt from a state-root compatibility path.
+    const p5aReceiptPath = path.join(
+      stateDirectory,
+      "runs",
+      preparation.taskId,
+      preparation.archiveSha256,
+      "execution",
+      "publish",
+      "git-publish.json",
+    );
     const p5aReceipt = await readGitPublishReceipt(p5aReceiptPath);
     if (!p5aReceipt) {
       throw new DraftPullRequestError("PR_PHASE5A_NOT_PUSHED", "Phase 5A receipt missing.");
@@ -169,38 +180,40 @@ export async function createDraftPullRequestForRun(options: Phase5BDraftPrOption
 
     const runtimeDirectory = path.join(stateDirectory, "git-runtime");
     const gitAuth = await preparePublishGitSecurity(config.publish, p5aReceipt.allowed_remote_url, runtimeDirectory, process.env);
-    const gitRunner = new GitRunner(process.env, runtimeDirectory, { identity: config.publish.identity, auth: gitAuth });
+    try {
+      const gitRunner = new GitRunner(process.env, runtimeDirectory, { identity: config.publish.identity, auth: gitAuth });
 
-    const githubEnvKey = config.github_pull_request.authentication.token_environment_key;
-    const githubToken = process.env[githubEnvKey];
-    if (!githubToken) {
-      throw new DraftPullRequestError("PR_AUTH_UNAVAILABLE", `Missing GitHub token at ${githubEnvKey}`);
+      const githubEnvKey = config.github_pull_request.authentication.token_environment_key;
+      const githubToken = process.env[githubEnvKey];
+      if (!githubToken) {
+        throw new DraftPullRequestError("PR_AUTH_UNAVAILABLE", `Missing GitHub token at ${githubEnvKey}`);
+      }
+
+      const client = new GitHubRestPullRequestClient(githubToken);
+      const storePath = path.join(stateDirectory, "publish", "github-draft-pr.json");
+      const existingReceipt = await readDraftPullRequestReceipt(storePath);
+
+      return await createPreparedDraftPullRequest({
+        runId: options.runId,
+        taskId: preparation.taskId,
+        owner: repoIdentity.owner,
+        repository: repoIdentity.repository,
+        baseBranch: contract.delivery.base_branch,
+        headBranch: p5aReceipt.branch_name,
+        expectedHeadSha: p5aReceipt.remote_branch_sha,
+        changeSetSha256: p5aReceipt.change_set_sha256,
+        gitPublishReceiptSha256,
+        client,
+        existingReceipt,
+        stateDirectory,
+        gitRunner,
+        worktreePath: execution.worktree_path,
+        remoteName: p5aReceipt.remote_name,
+        ...(options.now ? { now: options.now } : {}),
+      });
+    } finally {
+      if (gitAuth.mode === "https_token") await unlink(gitAuth.askpassScriptPath).catch(() => undefined);
     }
-
-    const client = new GitHubRestPullRequestClient(githubToken);
-
-    const storePath = path.join(stateDirectory, "publish", "github-draft-pr.json");
-    const existingReceipt = await readDraftPullRequestReceipt(storePath);
-
-    return await createPreparedDraftPullRequest({
-      runId: options.runId,
-      taskId: preparation.taskId,
-      owner: repoIdentity.owner,
-      repository: repoIdentity.repository,
-      baseBranch: contract.delivery.base_branch,
-      headBranch: p5aReceipt.branch_name,
-      expectedHeadSha: p5aReceipt.remote_branch_sha,
-      changeSetSha256: p5aReceipt.change_set_sha256,
-      gitPublishReceiptSha256,
-      client,
-      existingReceipt,
-      stateDirectory,
-      gitRunner,
-      worktreePath: execution.worktree_path,
-      remoteName: p5aReceipt.remote_name,
-      ...(options.now ? { now: options.now } : {})
-    });
-
   } finally {
     await lock.release();
   }
