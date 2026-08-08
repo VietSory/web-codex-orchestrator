@@ -89,6 +89,8 @@ Budgets exist at:
 
 A retry caused by transport/session failure should reuse sealed context/evidence rather than regenerate repository summaries.
 
+Trusted configuration can tighten model/resource budgets but cannot raise them beyond the product hard ceilings validated in `src/config/config-validator.ts`. This protects a technical operator from accidental typo-scale token/time/archive grants while still permitting much larger profiles than the repository defaults. These ceilings are safety rails, not usage recommendations.
+
 ## Stable-prefix layout
 
 Model-facing context should be ordered approximately as:
@@ -122,6 +124,10 @@ Queued work consumes minimal resources. Cancellation must propagate to subproces
 
 The repository-side default policy stays conservative. Platform-specific concurrency recommendations require the native measurements in `LOCAL-FINAL-CHECKLIST.md`; WCO does not claim one fixed browser/session concurrency value is optimal for every machine/account/model.
 
+### Inbox stability batching
+
+Phase 3 candidate-stability checks use shared observation rounds. The old candidate-serial shape could spend one full `poll_interval_ms` per candidate; at the default 2-second poll and 100 candidates, one extra observation round could therefore approach 200 seconds before repository preparation began. The current scanner sleeps once per observation round and refreshes metadata in chunks of at most 32 concurrent stats. Expensive `prepareTask`/Git mutation remains sequential and deterministic. Watch mode reuses candidate observations between scans and resets an observation when file metadata changes.
+
 ## Process and output bounds
 
 Every child process must have:
@@ -132,7 +138,9 @@ Every child process must have:
 - process-tree termination where supported;
 - explicit executable and argument vector (no shell interpolation by default).
 
-WCO uses bounded asynchronous spawning and phase-specific bounded process adapters for controlled execution paths. New orchestration paths must reuse those boundaries rather than introduce unbounded `exec`/sync polling loops.
+WCO uses one bounded asynchronous subprocess engine for both text and exact binary callers. The shared `GitRunner` defaults to a 120-second local-Git deadline, 300-second network-Git deadline and 16 MiB retained stdout/stderr per stream. Phase 6 binary Git evidence reuses the same process-tree boundary without decoding source/diff bytes as text and fails closed if the exact output exceeds the configured evidence limit.
+
+No production source path should introduce raw unbounded `spawn`/`exec` merely because an older phase predates the durable controller.
 
 ## State/log bounds
 
@@ -141,10 +149,16 @@ Persistent hot state must not grow without a retention/compaction policy.
 - receipts contain bounded diagnostics, not raw unbounded logs;
 - raw logs/evidence are stored separately and content-addressed where useful;
 - UI/status reads use bounded receipts/indexes rather than deserializing every historical artifact or Codex rollout;
+- trusted config reads are allocation-bounded to 1 MiB and re-attest file identity while reading;
+- Phase 3 root run receipts are capped at 1 MiB and Phase 4 execution receipts at 4 MiB;
 - orchestration run-ledger reads are capped at 2 MiB and semantic validation walks only the bounded transition counters, diagnostics and compacted event tail before state can drive work;
 - orchestration event history is compacted and repeated diagnostics are deduplicated with counters;
+- Phase 4 execution/agent JSONL diagnostic lines are bounded to 256 KiB; oversized single diagnostics are represented by bounded truncation metadata rather than giant lines;
+- execution journal sequencing reads only a bounded tail to validate the last sequence instead of rereading the full append-only journal on every transition;
 - Web review/revision round discovery is bounded by the protocol's fixed round limits;
 - completed temporary transport/session state is not lifecycle authority.
+
+`agent-events.jsonl` remains append-only and does not yet have a total-file retention policy. Per-line size and total model work are bounded, so this is a forensic-storage lifecycle concern rather than an unbounded in-memory read path. Any future archive/retention policy must be explicit; WCO does not silently delete evidence to improve a benchmark.
 
 ## Incremental verification
 
@@ -161,15 +175,33 @@ verifier version/config
 
 If any required identity is unknown, rerun. Never reuse merely because a command string looks the same.
 
+## Measured GitHub runner profile
+
+Raw GitHub Actions logs observed a representative pre-product-regression baseline on hosted Ubuntu/Node 20 of approximately:
+
+- `npm ci`: 3–4s;
+- TypeScript typecheck: ~0.5–0.6s;
+- repository-wide unit/fake suite: ~78s;
+- Phase 8 fake E2E: ~2.2s;
+- build: ~0.6s;
+- compiled CLI integration: ~2.9s;
+- total: roughly ~98s, depending on hosted-runner load.
+
+The longest files are mainly intentional lock/crash/Git-race tests (commonly 5–8s/file). This CI cost is not representative of read-only `status`/`next` operator latency.
+
 ## Phase 16 regression coverage
 
 The final repository gate covers the performance/token invariants that WCO can prove without a user's native browser/Codex environment:
 
-- concurrency caps and explicit backpressure through the bounded resource-pool regressions;
+- concurrency caps and explicit backpressure through bounded resource-pool regressions;
+- shared-round inbox stabilization and watch observation reuse;
+- bounded Git deadlines/output and exact binary Git evidence;
+- bounded trusted config/root-run/execution-receipt reads;
+- bounded execution/agent diagnostic lines and bounded-tail event sequencing;
+- trusted resource/token hard ceilings;
 - bounded ledger/event/diagnostic state and durable retry/circuit behavior;
 - semantic ledger tamper cases are rejected before contradictory status/retry/budget state can trigger external work;
 - exact sealed request hashes across retry/recovery paths;
-- bounded/stable authority file reads and durable revision state writes;
 - status/snapshot discovery from bounded protocol receipts rather than whole session history;
 - no redundant local implementer turn for Phase 10 Web-authored bytes;
 - revision model/token usage charged once into the outer orchestration budget;
