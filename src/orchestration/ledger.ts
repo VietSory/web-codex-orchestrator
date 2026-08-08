@@ -11,10 +11,18 @@ const MAX_EVENTS = 128;
 const MAX_DIAGNOSTICS = 64;
 const MAX_DIAGNOSTIC_CHARS = 4096;
 const SHA256 = /^[a-f0-9]{64}$/;
+const ATTEMPT_ID = /^[a-f0-9]{32}$/;
 const ZERO_HASH = "0".repeat(64);
 const TRANSITIONS: TransitionKind[] = ["REGISTER_WEB_PACK","EXECUTE_REGISTERED_PACK","PUBLISH","OPEN_DRAFT_PR","PACKAGE_RESULT","WAIT_WEB_VERDICT","REVISE","WAIT_HUMAN","DONE"];
+const STATUSES = new Set(["IDLE", "ACTIVE", "WAITING", "PAUSED", "BLOCKED", "FAILED", "COMPLETE"]);
+const CIRCUIT_STATES = new Set(["CLOSED", "OPEN", "HALF_OPEN"]);
+const TERMINAL_STATUSES = new Set(["BLOCKED", "FAILED", "COMPLETE"]);
 
 function emptyAttemptCounters(): TransitionAttemptCounters { return Object.fromEntries(TRANSITIONS.map((value) => [value, 0])) as TransitionAttemptCounters; }
+function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
+function isTimestamp(value: unknown): value is string { return typeof value === "string" && Number.isFinite(Date.parse(value)); }
+function isNullableTimestamp(value: unknown): value is string | null { return value === null || isTimestamp(value); }
+function invalid(message: string): never { throw new OrchestrationError("ORCHESTRATION_STATE_INVALID", message); }
 
 export async function prepareOrchestrationDirectory(stateDirectory: string, directory: string): Promise<void> {
   await fs.mkdir(path.resolve(stateDirectory), { recursive: true, mode: 0o700 });
@@ -72,21 +80,52 @@ function hashEvent(event: Omit<OrchestrationEvent, "event_hash">): string { retu
 function validateEventChain(ledger: RunLedger): void {
   let previous = ledger.history_anchor_hash; let expectedSequence = ledger.compacted_event_count + 1;
   for (const event of ledger.events) {
+    if (!isRecord(event) || !Number.isSafeInteger(event.sequence) || typeof event.kind !== "string" || event.kind.length < 1 || event.kind.length > 128 || !isTimestamp(event.at) || typeof event.data_sha256 !== "string" || typeof event.previous_hash !== "string" || typeof event.event_hash !== "string") invalid("Run ledger event structure is invalid.");
     const withoutHash = { sequence: event.sequence, kind: event.kind, at: event.at, data_sha256: event.data_sha256, previous_hash: event.previous_hash };
-    if (event.sequence !== expectedSequence || event.previous_hash !== previous || !SHA256.test(event.data_sha256) || event.event_hash !== hashEvent(withoutHash)) throw new OrchestrationError("ORCHESTRATION_STATE_INVALID", "Run ledger event hash chain is invalid.");
+    if (event.sequence !== expectedSequence || event.previous_hash !== previous || !SHA256.test(event.data_sha256) || event.event_hash !== hashEvent(withoutHash)) invalid("Run ledger event hash chain is invalid.");
     previous = event.event_hash; expectedSequence += 1;
   }
 }
 
 function validateLedger(ledger: RunLedger): void {
-  if (ledger.ledger_version !== "1.0" || ledger.run_id !== `${ledger.task_id}:${ledger.task_bundle_sha256}` || !SHA256.test(ledger.task_bundle_sha256) || !SHA256.test(ledger.history_anchor_hash)) throw new OrchestrationError("ORCHESTRATION_STATE_INVALID", "Run ledger identity is invalid.");
-  if (!TRANSITIONS.includes(ledger.next_transition) || ledger.last_completed_transition !== null && !TRANSITIONS.includes(ledger.last_completed_transition)) throw new OrchestrationError("ORCHESTRATION_STATE_INVALID", "Run ledger transition state is invalid.");
-  if (!Number.isSafeInteger(ledger.compacted_event_count) || ledger.compacted_event_count < 0 || ledger.events.length > MAX_EVENTS || ledger.diagnostics.length > MAX_DIAGNOSTICS) throw new OrchestrationError("ORCHESTRATION_STATE_INVALID", "Run ledger bounded collections are invalid.");
-  if (!Number.isFinite(Date.parse(ledger.created_at)) || !Number.isFinite(Date.parse(ledger.updated_at)) || !Number.isFinite(Date.parse(ledger.budget.started_at))) throw new OrchestrationError("ORCHESTRATION_STATE_INVALID", "Run ledger timestamps are invalid.");
-  for (const transition of TRANSITIONS) if (!Number.isSafeInteger(ledger.transition_attempts[transition]) || ledger.transition_attempts[transition] < 0) throw new OrchestrationError("ORCHESTRATION_STATE_INVALID", "Per-transition attempt counters are invalid.");
-  for (const diagnostic of ledger.diagnostics) if (!diagnostic.code || diagnostic.code.length > 128 || diagnostic.message.length > MAX_DIAGNOSTIC_CHARS || !Number.isSafeInteger(diagnostic.count) || diagnostic.count < 1 || !Number.isFinite(Date.parse(diagnostic.first_at)) || !Number.isFinite(Date.parse(diagnostic.last_at))) throw new OrchestrationError("ORCHESTRATION_STATE_INVALID", "Run ledger diagnostic is invalid.");
-  for (const value of [ledger.budget.max_attempts_per_transition, ledger.budget.max_total_attempts, ledger.budget.max_elapsed_ms, ledger.budget.max_model_turns, ledger.budget.max_input_tokens, ledger.budget.max_output_tokens, ledger.budget.total_attempts, ledger.budget.model_turns, ledger.budget.input_tokens, ledger.budget.output_tokens]) if (!Number.isSafeInteger(value) || value < 0) throw new OrchestrationError("ORCHESTRATION_STATE_INVALID", "Run ledger budget is invalid.");
-  if (ledger.current_attempt && (!TRANSITIONS.includes(ledger.current_attempt.transition) || !SHA256.test(ledger.current_attempt.request_sha256) || ledger.current_attempt.result_sha256 !== null && !SHA256.test(ledger.current_attempt.result_sha256) || !Number.isSafeInteger(ledger.current_attempt.attempt_number) || ledger.current_attempt.attempt_number < 1 || typeof ledger.current_attempt.attempt_id !== "string" || ledger.current_attempt.attempt_id.length !== 32)) throw new OrchestrationError("ORCHESTRATION_STATE_INVALID", "Current transition attempt is invalid.");
+  if (!isRecord(ledger) || !isRecord(ledger.transition_attempts) || !isRecord(ledger.budget) || !isRecord(ledger.retry) || !Array.isArray(ledger.events) || !Array.isArray(ledger.diagnostics)) invalid("Run ledger top-level structure is invalid.");
+  if (ledger.ledger_version !== "1.0" || typeof ledger.task_id !== "string" || ledger.task_id.length < 1 || ledger.run_id !== `${ledger.task_id}:${ledger.task_bundle_sha256}` || typeof ledger.task_bundle_sha256 !== "string" || !SHA256.test(ledger.task_bundle_sha256) || typeof ledger.history_anchor_hash !== "string" || !SHA256.test(ledger.history_anchor_hash)) invalid("Run ledger identity is invalid.");
+  if (typeof ledger.status !== "string" || !STATUSES.has(ledger.status) || typeof ledger.paused !== "boolean" || ledger.paused !== (ledger.status === "PAUSED") || ledger.pause_reason !== null && (typeof ledger.pause_reason !== "string" || ledger.pause_reason.length > 4096) || !ledger.paused && ledger.pause_reason !== null) invalid("Run ledger status/pause state is invalid.");
+  if (!TRANSITIONS.includes(ledger.next_transition) || ledger.last_completed_transition !== null && !TRANSITIONS.includes(ledger.last_completed_transition)) invalid("Run ledger transition state is invalid.");
+  if (!Number.isSafeInteger(ledger.compacted_event_count) || ledger.compacted_event_count < 0 || ledger.events.length > MAX_EVENTS || ledger.diagnostics.length > MAX_DIAGNOSTICS) invalid("Run ledger bounded collections are invalid.");
+  if (!isTimestamp(ledger.created_at) || !isTimestamp(ledger.updated_at) || !isTimestamp(ledger.budget.started_at) || Date.parse(ledger.updated_at) < Date.parse(ledger.created_at)) invalid("Run ledger timestamps are invalid.");
+
+  let attemptCountSum = 0;
+  for (const transition of TRANSITIONS) {
+    const count = ledger.transition_attempts[transition];
+    if (!Number.isSafeInteger(count) || count < 0) invalid("Per-transition attempt counters are invalid.");
+    attemptCountSum += count;
+  }
+
+  for (const diagnostic of ledger.diagnostics) {
+    if (!isRecord(diagnostic) || typeof diagnostic.code !== "string" || diagnostic.code.length < 1 || diagnostic.code.length > 128 || typeof diagnostic.message !== "string" || diagnostic.message.length > MAX_DIAGNOSTIC_CHARS || !Number.isSafeInteger(diagnostic.count) || diagnostic.count < 1 || !isTimestamp(diagnostic.first_at) || !isTimestamp(diagnostic.last_at) || Date.parse(diagnostic.last_at) < Date.parse(diagnostic.first_at)) invalid("Run ledger diagnostic is invalid.");
+  }
+
+  for (const value of [ledger.budget.max_attempts_per_transition, ledger.budget.max_total_attempts, ledger.budget.max_elapsed_ms, ledger.budget.max_model_turns, ledger.budget.max_input_tokens, ledger.budget.max_output_tokens, ledger.budget.total_attempts, ledger.budget.model_turns, ledger.budget.input_tokens, ledger.budget.output_tokens]) if (!Number.isSafeInteger(value) || value < 0) invalid("Run ledger budget is invalid.");
+  if (ledger.budget.total_attempts !== attemptCountSum || ledger.budget.total_attempts > ledger.budget.max_total_attempts) invalid("Run ledger attempt budget accounting is inconsistent.");
+
+  if (!Number.isSafeInteger(ledger.retry.consecutive_failures) || ledger.retry.consecutive_failures < 0 || typeof ledger.retry.circuit_state !== "string" || !CIRCUIT_STATES.has(ledger.retry.circuit_state) || !isNullableTimestamp(ledger.retry.next_retry_at) || !isNullableTimestamp(ledger.retry.circuit_opened_at) || ledger.retry.last_failure_code !== null && (typeof ledger.retry.last_failure_code !== "string" || ledger.retry.last_failure_code.length < 1 || ledger.retry.last_failure_code.length > 256)) invalid("Run ledger retry/circuit state is invalid.");
+  if (ledger.retry.circuit_state === "CLOSED" && ledger.retry.circuit_opened_at !== null || ledger.retry.circuit_state === "OPEN" && (ledger.retry.circuit_opened_at === null || ledger.retry.next_retry_at === null)) invalid("Run ledger circuit timing is invalid.");
+  if (ledger.retry.consecutive_failures === 0 && (ledger.retry.last_failure_code !== null || ledger.retry.next_retry_at !== null || ledger.retry.circuit_state !== "CLOSED")) invalid("Run ledger cleared retry state is inconsistent.");
+
+  if (ledger.current_attempt !== null) {
+    const attempt = ledger.current_attempt;
+    if (!isRecord(attempt) || !TRANSITIONS.includes(attempt.transition) || attempt.status !== "STARTED" || typeof attempt.request_sha256 !== "string" || !SHA256.test(attempt.request_sha256) || attempt.result_sha256 !== null || attempt.finished_at !== null || attempt.failure_code !== null || !isTimestamp(attempt.started_at) || !Number.isSafeInteger(attempt.attempt_number) || attempt.attempt_number < 1 || ledger.transition_attempts[attempt.transition] !== attempt.attempt_number || typeof attempt.attempt_id !== "string" || !ATTEMPT_ID.test(attempt.attempt_id)) invalid("Current transition attempt is invalid.");
+    if (!ledger.paused && ledger.status !== "ACTIVE") invalid("Active transition attempt has inconsistent ledger status.");
+  } else if (TERMINAL_STATUSES.has(ledger.status) && ledger.paused) invalid("Terminal ledger cannot also be paused.");
+
+  if (!ledger.paused && ledger.current_attempt === null && ledger.retry.next_retry_at !== null && ledger.status !== "WAITING") invalid("Retry deadline requires WAITING status.");
+  if (!ledger.paused && ledger.current_attempt === null && ledger.retry.last_failure_code !== null && ledger.retry.next_retry_at === null && ledger.status !== "BLOCKED" && ledger.status !== "FAILED") invalid("Terminal failure metadata requires terminal status.");
+  if (!ledger.paused && ledger.current_attempt === null && ledger.next_transition === "DONE" && ledger.status !== "COMPLETE" && ledger.status !== "FAILED") invalid("DONE transition requires a terminal ledger status.");
+  if (!ledger.paused && ledger.current_attempt === null && (ledger.next_transition === "WAIT_HUMAN" || ledger.next_transition === "WAIT_WEB_VERDICT") && ledger.retry.next_retry_at === null && ledger.status !== "WAITING" && ledger.status !== "BLOCKED" && ledger.status !== "FAILED") invalid("Wait transition has inconsistent ledger status.");
+  const budgetExceeded = ledger.budget.model_turns > ledger.budget.max_model_turns || ledger.budget.input_tokens > ledger.budget.max_input_tokens || ledger.budget.output_tokens > ledger.budget.max_output_tokens;
+  if (budgetExceeded && !ledger.paused && ledger.current_attempt === null && ledger.next_transition !== "DONE" && ledger.status !== "BLOCKED" && ledger.status !== "FAILED") invalid("Exceeded model/token budget requires terminal status.");
+
   validateEventChain(ledger);
 }
 
