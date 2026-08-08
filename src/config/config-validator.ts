@@ -9,7 +9,17 @@ const REPOSITORY_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const REMOTE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const AGENT_FIELDS = new Set(["implementer", "internal_reviewer", "final_reviewer", "limits"]);
 const AGENT_PROFILE_FIELDS = new Set(["model", "reasoning_effort"]);
-const AGENT_LIMIT_FIELDS = new Set(["maximum_implementation_iterations", "maximum_internal_review_rounds", "maximum_sol_review_rounds", "maximum_total_agent_turns", "maximum_turn_seconds", "maximum_total_seconds", "maximum_total_input_tokens", "maximum_total_output_tokens"]);
+const AGENT_LIMIT_KEYS = [
+  "maximum_implementation_iterations",
+  "maximum_internal_review_rounds",
+  "maximum_sol_review_rounds",
+  "maximum_total_agent_turns",
+  "maximum_turn_seconds",
+  "maximum_total_seconds",
+  "maximum_total_input_tokens",
+  "maximum_total_output_tokens",
+] as const;
+const AGENT_LIMIT_FIELDS = new Set<string>(AGENT_LIMIT_KEYS);
 const VERIFICATION_FIELDS = new Set(["allowed_executables", "allowed_environment_keys", "maximum_command_seconds", "maximum_output_bytes", "maximum_file_bytes", "maximum_changed_files", "maximum_diff_lines", "allowed_generated_paths"]);
 const RUNTIME_FIELDS = new Set(["source", "codex_home"]);
 
@@ -126,7 +136,7 @@ export function validateConfig(value: unknown): ConfigValidationReport {
       if (!isRecord(limits)) add(issues, "agents.limits must be an object.");
       else {
         for (const field of unknownFields(limits, AGENT_LIMIT_FIELDS)) add(issues, `Unknown agents.limits field: ${field}`);
-        for (const field of AGENT_LIMIT_FIELDS) {
+        for (const field of AGENT_LIMIT_KEYS) {
           const maximum = TRUSTED_CONFIG_HARD_LIMITS.agents[field];
           if (!positiveIntegerWithin(limits[field], maximum)) add(issues, `agents.limits.${field} must be a positive integer <= ${maximum}.`);
         }
