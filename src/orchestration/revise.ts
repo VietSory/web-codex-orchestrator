@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
+import { DeadlineAgentClient } from "../agent/deadline-agent-client.js";
 import { loadPhase4Config } from "../execution/execution-config.js";
 import { GitRunner } from "../git/git-runner.js";
 import { preparePublishGitSecurity } from "../publish/publish-auth.js";
@@ -155,12 +156,13 @@ export async function reviseRunForOrchestration(options: {
     const auth = await preparePublishGitSecurity(config.publish, runContext.runReceipt.remote_url, runtimeDirectory, process.env);
     if (auth.mode === "https_token") authPath = auth.askpassScriptPath;
     const runner = new GitRunner(process.env, runtimeDirectory, { identity: config.publish.identity, auth });
+    const agentClient = new DeadlineAgentClient(new CodexSdkAgentClient(runtime), config.agents.limits.maximum_turn_seconds);
     return await reviseRun({
       runId: options.runId,
       revisionRound: options.revisionRound,
       stateDirectory: options.stateDirectory,
       configPath: options.configPath,
-      agentClient: new CodexSdkAgentClient(runtime),
+      agentClient,
       sandbox: new CodexVerificationSandbox(runtime),
       gitRunner: runner,
       secrets: collectSecrets(config),
