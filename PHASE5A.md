@@ -74,6 +74,20 @@ The remote is never pushed again when it already points to the approved commit.
 - A pre-existing remote branch is never overwritten unless it already points to
   the exact persisted product commit during recovery.
 
+### Atomic initial-branch creation
+
+The implementation uses Git's explicit empty expected-value lease spelling,
+`--force-with-lease=refs/heads/<branch>:`, only as a compare-and-swap guard for
+the **initial creation** of the delivery ref. The empty expected value means the
+remote ref must not exist at the instant of the push. If another actor creates
+that ref during the race window, the push fails and WCO reports the conflict;
+it cannot update or overwrite that newly existing ref.
+
+This lease does not grant force-update authority to an existing branch and does
+not weaken the `No force-push` invariant above. It is the atomic enforcement of
+the separate frozen invariant that a pre-existing remote branch is never
+silently adopted or overwritten.
+
 ## State files
 
 The Git publish receipt is stored under the Phase 4 execution directory:
