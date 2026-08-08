@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 
 export type LockCode = "RUN_LOCKED" | "WATCH_LOCKED";
@@ -42,7 +42,7 @@ export async function acquireExclusiveLock(lockPath: string, code: LockCode): Pr
   const parentPath = path.dirname(resolved);
   await mkdir(parentPath, { recursive: true, mode: 0o700 });
   const parent = await lstat(parentPath);
-  if (parent.isSymbolicLink() || !parent.isDirectory() || await import("node:fs/promises").then(({ realpath }) => realpath(parentPath)) !== parentPath) {
+  if (parent.isSymbolicLink() || !parent.isDirectory() || await realpath(parentPath) !== parentPath) {
     throw new LockError(code, `Lock directory is unsafe: ${parentPath}`);
   }
 
