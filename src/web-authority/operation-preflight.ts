@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { createReadStream } from "node:fs";
+import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
@@ -74,35 +74,79 @@ export async function readObservedPreimage(
 ): Promise<{ sha256: string | null; sizeBytes: number }> {
   await assertNoSymlinkAncestors(root, relativePath);
   const target = path.join(root, ...relativePath.split("/"));
-  const stat = await fs.lstat(target).catch((error: NodeJS.ErrnoException) => {
+  const before = await fs.lstat(target).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;
     throw error;
   });
-  if (stat === null) return { sha256: null, sizeBytes: 0 };
-  if (stat.isSymbolicLink() || !stat.isFile()) {
+  if (before === null) return { sha256: null, sizeBytes: 0 };
+  if (before.isSymbolicLink() || !before.isFile()) {
     throw new WebAuthorityError("WEB_AUTHORITY_PREIMAGE_INVALID", `Operation target is not a regular non-symlink file: ${relativePath}`);
   }
-  if (!Number.isSafeInteger(stat.size) || stat.size > maximumBytes) {
+  if (!Number.isSafeInteger(before.size) || before.size > maximumBytes) {
     throw new WebAuthorityError(
       "WEB_AUTHORITY_PREIMAGE_INVALID",
       `Operation target exceeds the bounded preimage limit: ${relativePath}`,
     );
   }
 
-  const digest = crypto.createHash("sha256");
-  let observedBytes = 0;
-  for await (const chunk of createReadStream(target, { highWaterMark: 64 * 1024 })) {
-    const bytes = chunk as Buffer;
-    observedBytes += bytes.byteLength;
-    if (observedBytes > maximumBytes) {
-      throw new WebAuthorityError(
-        "WEB_AUTHORITY_PREIMAGE_INVALID",
-        `Operation target exceeded the bounded preimage limit while reading: ${relativePath}`,
-      );
+  const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+  const handle = await fs.open(target, fsConstants.O_RDONLY | noFollow).catch((error) => {
+    throw new WebAuthorityError(
+      "WEB_AUTHORITY_PREIMAGE_INVALID",
+      `Cannot safely open operation target '${relativePath}': ${error instanceof Error ? error.message : String(error)}`,
+    );
+  });
+  try {
+    const opened = await handle.stat();
+    if (
+      !opened.isFile() ||
+      opened.dev !== before.dev ||
+      opened.ino !== before.ino ||
+      opened.size !== before.size ||
+      opened.size > maximumBytes
+    ) {
+      throw new WebAuthorityError("WEB_AUTHORITY_PREIMAGE_INVALID", `Operation target changed before hashing: ${relativePath}`);
     }
-    digest.update(bytes);
+
+    const digest = crypto.createHash("sha256");
+    const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, Math.max(1, opened.size)));
+    let offset = 0;
+    while (offset < opened.size) {
+      const toRead = Math.min(buffer.byteLength, opened.size - offset);
+      const { bytesRead } = await handle.read(buffer, 0, toRead, offset);
+      if (bytesRead === 0) {
+        throw new WebAuthorityError("WEB_AUTHORITY_PREIMAGE_INVALID", `Operation target was truncated while hashing: ${relativePath}`);
+      }
+      digest.update(buffer.subarray(0, bytesRead));
+      offset += bytesRead;
+      if (offset > maximumBytes) {
+        throw new WebAuthorityError("WEB_AUTHORITY_PREIMAGE_INVALID", `Operation target exceeded the bounded preimage limit while hashing: ${relativePath}`);
+      }
+    }
+    const probe = Buffer.alloc(1);
+    const extra = await handle.read(probe, 0, 1, offset);
+    if (extra.bytesRead !== 0) {
+      throw new WebAuthorityError("WEB_AUTHORITY_PREIMAGE_INVALID", `Operation target grew while hashing: ${relativePath}`);
+    }
+
+    const afterHandle = await handle.stat();
+    const afterPath = await fs.lstat(target);
+    if (
+      afterHandle.dev !== before.dev ||
+      afterHandle.ino !== before.ino ||
+      afterHandle.size !== before.size ||
+      afterPath.isSymbolicLink() ||
+      !afterPath.isFile() ||
+      afterPath.dev !== before.dev ||
+      afterPath.ino !== before.ino ||
+      afterPath.size !== before.size
+    ) {
+      throw new WebAuthorityError("WEB_AUTHORITY_PREIMAGE_INVALID", `Operation target changed while hashing: ${relativePath}`);
+    }
+    return { sha256: digest.digest("hex"), sizeBytes: offset };
+  } finally {
+    await handle.close();
   }
-  return { sha256: digest.digest("hex"), sizeBytes: observedBytes };
 }
 
 function assertRegistrationMatchesPack(record: ArtifactRegistrationRecord, pack: WebImplementationPack): void {
