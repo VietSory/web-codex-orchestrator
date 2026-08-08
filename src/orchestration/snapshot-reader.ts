@@ -21,7 +21,14 @@ function splitRunId(runId: string): { taskId: string; taskBundleSha256: string }
 
 function webReviewState(receipt: WebReviewReceipt | null): LifecycleSnapshot["web_review_state"] {
   if (!receipt) return null;
-  if (receipt.state === "APPROVED" || receipt.state === "REVISION_REQUESTED" || receipt.state === "ESCALATED" || receipt.state === "BLOCKED" || receipt.state === "FAILED") return receipt.state;
+  if (
+    receipt.state === "APPROVED" ||
+    receipt.state === "REVISION_REQUESTED" ||
+    receipt.state === "ESCALATED" ||
+    receipt.state === "BLOCKED" ||
+    receipt.state === "FAILED" ||
+    receipt.state === "RETRYABLE"
+  ) return receipt.state;
   return "PENDING";
 }
 
