@@ -6,10 +6,76 @@ import { GitRunner } from "../git/git-runner.js";
 import { preparePublishGitSecurity } from "../publish/publish-auth.js";
 import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
 import { CodexVerificationSandbox } from "../verifier/codex-sandbox.js";
-import { resolveTrustedRunContext } from "../web-review/trusted-run-context.js";
+import { loadSealedRevisionSource } from "../revision/revision-source.js";
 import { reviseRun } from "../revision/revision-service.js";
 import type { RevisionReceipt } from "../revision/contracts.js";
+import { getWebReviewStatus } from "../web-review/web-review-service.js";
+import { resolveTrustedRunContext } from "../web-review/trusted-run-context.js";
 import { OrchestrationError } from "./contracts.js";
+
+const SHA256 = /^[a-f0-9]{64}$/;
+const GIT_SHA = /^[a-f0-9]{40}$/;
+
+export interface RevisionOrchestrationAuthority {
+  revisionRound: number;
+  revisionRequestSha256: string;
+  verdictSha256: string;
+  decisionEventSha256: string;
+  publishedCommitSha: string;
+  pullRequestNumber: number;
+  freshAttestedHeadSha: string;
+}
+
+export function revisionOrchestrationUsage(receipt: RevisionReceipt): { model_turns: number; input_tokens: number; output_tokens: number } {
+  return {
+    model_turns: receipt.usage.total_turns,
+    input_tokens: receipt.usage.input_tokens,
+    output_tokens: receipt.usage.output_tokens,
+  };
+}
+
+export async function attestRevisionAuthorityForOrchestration(options: {
+  runId: string;
+  stateDirectory: string;
+}): Promise<RevisionOrchestrationAuthority> {
+  const review = await getWebReviewStatus({ runId: options.runId, stateDirectory: options.stateDirectory });
+  if (!review || review.run_id !== options.runId || review.state !== "REVISION_REQUESTED") {
+    throw new OrchestrationError("ORCHESTRATION_REVISION_AUTHORITY_INVALID", "No terminal REVISION_REQUESTED Web Review receipt authorizes a revision.");
+  }
+  if (!Number.isInteger(review.review_round) || review.review_round < 1 || review.review_round > 3) {
+    throw new OrchestrationError("ORCHESTRATION_REVISION_AUTHORITY_INVALID", "Revision-requested review round is outside the supported 1..3 revision window.");
+  }
+  if (!review.revision_request_sha256 || !SHA256.test(review.revision_request_sha256) || !review.verdict_sha256 || !SHA256.test(review.verdict_sha256) || !review.decision_event_sha256 || !SHA256.test(review.decision_event_sha256)) {
+    throw new OrchestrationError("ORCHESTRATION_REVISION_AUTHORITY_INVALID", "Web Review revision authority is missing sealed SHA-256 bindings.");
+  }
+  if (!review.fresh_attested_head_sha || !GIT_SHA.test(review.fresh_attested_head_sha) || review.fresh_attested_head_sha !== review.published_commit_sha || !GIT_SHA.test(review.published_commit_sha)) {
+    throw new OrchestrationError("ORCHESTRATION_REVISION_AUTHORITY_INVALID", "Web Review revision authority is not bound to the freshly attested published head.");
+  }
+  if (!Number.isInteger(review.pull_request_number) || review.pull_request_number < 1) {
+    throw new OrchestrationError("ORCHESTRATION_REVISION_AUTHORITY_INVALID", "Web Review revision authority has an invalid pull request number.");
+  }
+
+  const source = await loadSealedRevisionSource(options.stateDirectory, options.runId, review.review_round);
+  if (
+    source.requestSha256 !== review.revision_request_sha256 ||
+    source.request.previous_verdict_sha256 !== review.verdict_sha256 ||
+    source.request.previous_published_commit_sha !== review.published_commit_sha ||
+    source.request.previous_pr_head_sha !== review.fresh_attested_head_sha ||
+    source.request.pull_request_number !== review.pull_request_number
+  ) {
+    throw new OrchestrationError("ORCHESTRATION_REVISION_AUTHORITY_INVALID", "Sealed Phase 7 revision request no longer matches its terminal Web Review authority.");
+  }
+
+  return {
+    revisionRound: review.review_round,
+    revisionRequestSha256: source.requestSha256,
+    verdictSha256: review.verdict_sha256,
+    decisionEventSha256: review.decision_event_sha256,
+    publishedCommitSha: review.published_commit_sha,
+    pullRequestNumber: review.pull_request_number,
+    freshAttestedHeadSha: review.fresh_attested_head_sha,
+  };
+}
 
 async function prepareRuntimeDirectory(stateDirectory: string): Promise<string> {
   const runtime = path.resolve(stateDirectory, "revision-runtime");
