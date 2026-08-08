@@ -7,6 +7,8 @@ import type { PreparedPublishGitSecurity } from "../publish/publish-auth.js";
 export interface GitRunnerSecurityOptions {
   identity?: PublishIdentityConfig;
   auth?: PreparedPublishGitSecurity;
+  /** Exact transport URL used for authenticated publish/attestation commands. */
+  allowedRemoteUrl?: string;
 }
 
 export interface GitRunnerLimits {
@@ -30,7 +32,7 @@ const DEFAULT_LIMITS: GitRunnerLimits = {
 
 const CHECKIN_HELPER_PATTERN = "^filter\\..*\\.(clean|process)$";
 const DIFF_HELPER_PATTERN = "^(diff\\.external|diff\\..*\\.(command|textconv))$";
-const NETWORK_HELPER_PATTERN = "^(credential(\\..*)?\\.helper|remote\\..*\\.(receivepack|uploadpack))$";
+const NETWORK_HELPER_PATTERN = "^(credential(\\..*)?\\.helper|remote\\..*\\.(receivepack|uploadpack)|url\\..*\\.(insteadof|pushinsteadof)|http\\..*|core\\.(sshcommand|gitproxy))$";
 
 export class GitRunner {
   private readonly limits: GitRunnerLimits;
@@ -47,7 +49,7 @@ export class GitRunner {
     }
   }
 
-  private getCommandTarget(args: readonly string[]): { subcommand: string | undefined; varTarget: string | undefined } {
+  private getCommandTarget(args: readonly string[]): { subcommand: string | undefined; varTarget: string | undefined; subcommandIndex: number } {
     let i = 0;
     while (i < args.length) {
       const arg = args[i];
@@ -61,11 +63,11 @@ export class GitRunner {
         continue;
       }
       if (arg.startsWith("-")) {
-        return { subcommand: undefined, varTarget: undefined };
+        return { subcommand: undefined, varTarget: undefined, subcommandIndex: -1 };
       }
-      return { subcommand: arg, varTarget: args[i + 1] };
+      return { subcommand: arg, varTarget: args[i + 1], subcommandIndex: i };
     }
-    return { subcommand: undefined, varTarget: undefined };
+    return { subcommand: undefined, varTarget: undefined, subcommandIndex: -1 };
   }
 
   private safeEnvironment(subcommand: string | undefined, varTarget: string | undefined): Record<string, string> {
@@ -163,8 +165,25 @@ export class GitRunner {
     return helper.unsafe ? `WCO_GIT_UNSAFE_CONFIG: ${helper.diagnostic ?? "unsafe local Git helper configuration"}` : null;
   }
 
+  private pinTrustedNetworkRemote(args: readonly string[], subcommand: string | undefined, subcommandIndex: number): readonly string[] {
+    const allowed = this.security?.allowedRemoteUrl;
+    if (!allowed || (subcommand !== "fetch" && subcommand !== "push" && subcommand !== "ls-remote")) return args;
+    if (subcommandIndex < 0) throw new Error("WCO_GIT_REMOTE_PIN_FAILED: network subcommand could not be located.");
+
+    const pinned = [...args];
+    for (let index = subcommandIndex + 1; index < pinned.length; index += 1) {
+      const argument = pinned[index];
+      if (argument === undefined) break;
+      if (argument === "--") continue;
+      if (argument.startsWith("-")) continue;
+      pinned[index] = allowed;
+      return pinned;
+    }
+    throw new Error("WCO_GIT_REMOTE_PIN_FAILED: network command has no explicit remote argument.");
+  }
+
   async run(args: readonly string[], cwd: string): Promise<GitCommandResult> {
-    const { subcommand, varTarget } = this.getCommandTarget(args);
+    const { subcommand, varTarget, subcommandIndex } = this.getCommandTarget(args);
     const env = this.safeEnvironment(subcommand, varTarget);
     const gitExecutable = env.WCO_GIT_EXECUTABLE || "git";
     const blocked = await this.blockedHelperDiagnostic(args, cwd, subcommand, env, gitExecutable);
@@ -180,7 +199,22 @@ export class GitRunner {
       };
     }
 
-    const effectiveArgs = [...this.runtimePrefix(), ...args];
+    let pinnedArgs: readonly string[];
+    try {
+      pinnedArgs = this.pinTrustedNetworkRemote(args, subcommand, subcommandIndex);
+    } catch (error) {
+      return {
+        executable: "git",
+        args: [...this.runtimePrefix(), ...args],
+        cwd,
+        exitCode: 3,
+        stdout: "",
+        stderr: error instanceof Error ? error.message : String(error),
+        duration_ms: 0,
+      };
+    }
+
+    const effectiveArgs = [...this.runtimePrefix(), ...pinnedArgs];
     const networkCommand = subcommand === "fetch" || subcommand === "push" || subcommand === "ls-remote";
     const timeoutMs = networkCommand ? this.limits.networkTimeoutMs : this.limits.localTimeoutMs;
     const result = await spawnBounded({
