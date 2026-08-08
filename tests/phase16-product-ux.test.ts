@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { ConfigError, loadTrustedConfig, MAXIMUM_TRUSTED_CONFIG_BYTES } from "../src/config/config-loader.js";
+import { TRUSTED_CONFIG_HARD_LIMITS, validateConfig } from "../src/config/config-validator.js";
 import { parseControlArgs } from "../src/orchestration/control-cli.js";
 import { scanInbox } from "../src/inbox/scanner.js";
 import { watchInbox } from "../src/inbox/watcher.js";
@@ -23,6 +24,31 @@ async function createInboxFixture(prefix: string) {
   await fs.writeFile(path.join(inbox, "wco-task-a.zip"), "a");
   await fs.writeFile(path.join(inbox, "wco-task-b.zip"), "b");
   return { root, inbox, state };
+}
+
+function validTrustedConfig(): Record<string, unknown> {
+  return {
+    config_version: "1.0",
+    inbox: { poll_interval_ms: 2_000, stable_age_ms: 3_000, stable_observations: 2, maximum_candidates_per_scan: 100 },
+    repositories: { repo: { path: path.resolve("repo"), remote: "origin", expected_remote_urls: ["https://github.com/example/repo.git"], fetch_policy: "never" } },
+    runtime: { source: "bundled" },
+    agents: {
+      implementer: { model: "gpt-5.6-terra", reasoning_effort: "high" },
+      internal_reviewer: { model: "gpt-5.6-terra", reasoning_effort: "high" },
+      final_reviewer: { model: "gpt-5.6-sol", reasoning_effort: "high" },
+      limits: {
+        maximum_implementation_iterations: 8,
+        maximum_internal_review_rounds: 4,
+        maximum_sol_review_rounds: 3,
+        maximum_total_agent_turns: 18,
+        maximum_turn_seconds: 1_800,
+        maximum_total_seconds: 7_200,
+        maximum_total_input_tokens: 2_000_000,
+        maximum_total_output_tokens: 300_000,
+      },
+    },
+    verification: { allowed_executables: ["node", "npm", "git"], allowed_environment_keys: ["CI"], maximum_command_seconds: 1_800, maximum_output_bytes: 4_194_304, allowed_generated_paths: ["dist/**"] },
+  };
 }
 
 test("P16-PRODUCT-001 inbox candidates share one stability wait per observation round", async (t) => {
@@ -83,4 +109,21 @@ test("P16-PRODUCT-005 doctor is a machine preflight and does not require an exis
   assert.equal(parsed.runId, undefined);
   assert.equal(parsed.json, false);
   assert.equal(parsed.maxTransitions, 8);
+});
+
+test("P16-PRODUCT-006 trusted config cannot accidentally grant unbounded resource or token budgets", () => {
+  const baseline = validTrustedConfig();
+  assert.equal(validateConfig(baseline).ok, true);
+
+  const tokenHeavy = structuredClone(baseline) as any;
+  tokenHeavy.agents.limits.maximum_total_input_tokens = TRUSTED_CONFIG_HARD_LIMITS.agents.maximum_total_input_tokens + 1;
+  assert.equal(validateConfig(tokenHeavy).ok, false);
+
+  const inboxHeavy = structuredClone(baseline) as any;
+  inboxHeavy.inbox.maximum_candidates_per_scan = TRUSTED_CONFIG_HARD_LIMITS.inbox.maximum_candidates_per_scan + 1;
+  assert.equal(validateConfig(inboxHeavy).ok, false);
+
+  const archiveHeavy = structuredClone(baseline) as any;
+  archiveHeavy.result_bundle = { maximum_archive_bytes: TRUSTED_CONFIG_HARD_LIMITS.result_bundle.maximum_archive_bytes + 1 };
+  assert.equal(validateConfig(archiveHeavy).ok, false);
 });
