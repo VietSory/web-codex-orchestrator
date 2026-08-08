@@ -103,6 +103,41 @@ function matchingPackOperation(pack: WebImplementationPack, transaction: Executo
   return operation;
 }
 
+async function readRollbackBackup(stateDirectory: string, receipt: ExecutorReceipt, operation: ExecutorTransactionOperation): Promise<Buffer> {
+  if (!operation.backup_sha256 || !operation.backup_relative_path || operation.original_mode === null) throw new ExecutorError("EXECUTOR_TRANSACTION_INVALID", `Rollback backup authority is incomplete for '${operation.path}'.`);
+  const expectedRelative = `backups/${operation.op_id}-${operation.backup_sha256}.bin`;
+  if (operation.backup_relative_path !== expectedRelative) throw new ExecutorError("EXECUTOR_TRANSACTION_INVALID", `Rollback backup path is not canonical for '${operation.path}'.`);
+  const base = executorPaths(stateDirectory, receipt.task_id, receipt.task_bundle_sha256, receipt.artifact_sha256).directory;
+  const backupPath = path.join(base, ...expectedRelative.split("/"));
+  const bytes = await readStableExecutorStateFile(backupPath, MAX_BACKUP_BYTES);
+  if (sha256(bytes) !== operation.backup_sha256) throw new ExecutorError("EXECUTOR_TRANSACTION_INVALID", `Rollback backup digest mismatch for '${operation.path}'.`);
+  return bytes;
+}
+
+async function rollbackAppliedOperations(stateDirectory: string, receipt: ExecutorReceipt, now: () => Date): Promise<void> {
+  for (const operation of [...receipt.operations].reverse()) {
+    if (!operation.applied) continue;
+    const classification = await classifyTarget(receipt.worktree_path, operation);
+    if (classification === "ambiguous") throw new ExecutorError("EXECUTOR_AMBIGUOUS_RECOVERY", `Cannot safely roll back externally changed target '${operation.path}'.`);
+    if (classification === "postimage") {
+      if (operation.kind === "create_file") {
+        await deleteExactWorktreeFile(receipt.worktree_path, operation.path);
+      } else {
+        const backup = await readRollbackBackup(stateDirectory, receipt, operation);
+        await writeExactWorktreeFile(receipt.worktree_path, operation.path, backup, operation.original_mode ?? 0o644, operation.kind === "delete_file");
+      }
+    }
+    const restored = await classifyTarget(receipt.worktree_path, operation);
+    if (restored !== "preimage") throw new ExecutorError("EXECUTOR_AMBIGUOUS_RECOVERY", `Rollback did not restore the exact registered preimage for '${operation.path}'.`);
+    operation.applied = false;
+    receipt.updated_at = nowIso(now);
+    await writeExecutorReceipt(stateDirectory, receipt);
+  }
+  receipt.state = "PREPARED";
+  receipt.updated_at = nowIso(now);
+  await writeExecutorReceipt(stateDirectory, receipt);
+}
+
 export async function applyExecutorTransaction(options: { stateDirectory: string; receipt: ExecutorReceipt; pack: WebImplementationPack; now?: () => Date }): Promise<ExecutorReceipt> {
   const now = options.now ?? (() => new Date());
   const receipt = options.receipt;
@@ -112,28 +147,41 @@ export async function applyExecutorTransaction(options: { stateDirectory: string
   receipt.updated_at = nowIso(now);
   await writeExecutorReceipt(options.stateDirectory, receipt);
 
-  for (const transaction of receipt.operations) {
-    const sourceOperation = matchingPackOperation(options.pack, transaction);
-    const classification = await classifyTarget(receipt.worktree_path, transaction);
-    if (classification === "ambiguous") throw new ExecutorError("EXECUTOR_AMBIGUOUS_RECOVERY", `Target '${transaction.path}' is neither registered preimage nor postimage.`);
-    if (classification === "preimage") {
-      const current = await readStableWorktreeFile(receipt.worktree_path, transaction.path);
-      if (transaction.kind === "create_file") {
-        await writeExactWorktreeFile(receipt.worktree_path, transaction.path, payloadFor(options.pack, sourceOperation)!, 0o644, true);
-      } else if (transaction.kind === "replace_file") {
-        if (!current || current.sha256 !== transaction.preimage_sha256) throw new ExecutorError("EXECUTOR_PREIMAGE_STALE", `Replace preimage changed immediately before write: '${transaction.path}'.`);
-        await writeExactWorktreeFile(receipt.worktree_path, transaction.path, payloadFor(options.pack, sourceOperation)!, transaction.original_mode ?? 0o644, false);
-      } else {
-        if (!current || current.sha256 !== transaction.preimage_sha256) throw new ExecutorError("EXECUTOR_PREIMAGE_STALE", `Delete preimage changed immediately before write: '${transaction.path}'.`);
-        await deleteExactWorktreeFile(receipt.worktree_path, transaction.path);
+  try {
+    for (const transaction of receipt.operations) {
+      const sourceOperation = matchingPackOperation(options.pack, transaction);
+      const classification = await classifyTarget(receipt.worktree_path, transaction);
+      if (classification === "ambiguous") throw new ExecutorError("EXECUTOR_AMBIGUOUS_RECOVERY", `Target '${transaction.path}' is neither registered preimage nor postimage.`);
+      if (classification === "preimage") {
+        const current = await readStableWorktreeFile(receipt.worktree_path, transaction.path);
+        if (transaction.kind === "create_file") {
+          await writeExactWorktreeFile(receipt.worktree_path, transaction.path, payloadFor(options.pack, sourceOperation)!, 0o644, true);
+        } else if (transaction.kind === "replace_file") {
+          if (!current || current.sha256 !== transaction.preimage_sha256) throw new ExecutorError("EXECUTOR_PREIMAGE_STALE", `Replace preimage changed immediately before write: '${transaction.path}'.`);
+          await writeExactWorktreeFile(receipt.worktree_path, transaction.path, payloadFor(options.pack, sourceOperation)!, transaction.original_mode ?? 0o644, false);
+        } else {
+          if (!current || current.sha256 !== transaction.preimage_sha256) throw new ExecutorError("EXECUTOR_PREIMAGE_STALE", `Delete preimage changed immediately before write: '${transaction.path}'.`);
+          await deleteExactWorktreeFile(receipt.worktree_path, transaction.path);
+        }
       }
+      const post = await classifyTarget(receipt.worktree_path, transaction);
+      if (post !== "postimage") throw new ExecutorError("EXECUTOR_POSTIMAGE_MISMATCH", `Exact postimage was not produced for '${transaction.path}'.`);
+      transaction.applied = true;
+      receipt.updated_at = nowIso(now);
+      await writeExecutorReceipt(options.stateDirectory, receipt);
     }
-    const post = await classifyTarget(receipt.worktree_path, transaction);
-    if (post !== "postimage") throw new ExecutorError("EXECUTOR_POSTIMAGE_MISMATCH", `Exact postimage was not produced for '${transaction.path}'.`);
-    transaction.applied = true;
-    receipt.updated_at = nowIso(now);
-    await writeExecutorReceipt(options.stateDirectory, receipt);
+  } catch (error) {
+    try {
+      await rollbackAppliedOperations(options.stateDirectory, receipt, now);
+    } catch (rollbackError) {
+      throw new ExecutorError(
+        "EXECUTOR_AMBIGUOUS_RECOVERY",
+        `Executor apply failed and rollback could not complete safely: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}. Original failure: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    throw error;
   }
+
   receipt.state = "APPLIED";
   receipt.updated_at = nowIso(now);
   await writeExecutorReceipt(options.stateDirectory, receipt);
