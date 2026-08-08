@@ -11,7 +11,7 @@ import type { GitPublishReceipt } from "../publish/contracts.js";
 import { completeAttempt } from "./controller.js";
 import { OrchestrationError, type RunLedger, type TransitionAttempt, type TransitionKind } from "./contracts.js";
 import { attestReadyExecutorSnapshot } from "./executor-ready.js";
-import { readSelectedArtifact } from "./artifact-binding.js";
+import { readSelectedArtifact, readSelectedArtifactSelection } from "./artifact-binding.js";
 import { sealTransitionRequest } from "./retry-policy.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -93,6 +93,7 @@ async function attestTerminalExecutorSnapshot(options: {
 
 export interface RecoveryDependencies {
   readSelectedArtifact: typeof readSelectedArtifact;
+  readSelectedArtifactSelection: typeof readSelectedArtifactSelection;
   readExecutorReceiptForRun: typeof readExecutorReceiptForRun;
   readPublishReceiptForRun: typeof readPublishReceiptForRun;
   attestTerminalExecutorSnapshot: typeof attestTerminalExecutorSnapshot;
@@ -102,6 +103,7 @@ export interface RecoveryDependencies {
 
 const productionDependencies: RecoveryDependencies = {
   readSelectedArtifact,
+  readSelectedArtifactSelection,
   readExecutorReceiptForRun,
   readPublishReceiptForRun,
   attestTerminalExecutorSnapshot,
@@ -109,18 +111,32 @@ const productionDependencies: RecoveryDependencies = {
   completeAttempt,
 };
 
+function sealedRequestMatches(
+  attempt: TransitionAttempt,
+  transition: TransitionKind,
+  payload: unknown,
+): boolean {
+  return attempt.transition === transition && attempt.request_sha256 === sealTransitionRequest(transition, payload);
+}
+
 function assertSealedRequest(
   attempt: TransitionAttempt,
   transition: TransitionKind,
   payload: unknown,
 ): void {
-  const expected = sealTransitionRequest(transition, payload);
-  if (attempt.transition !== transition || attempt.request_sha256 !== expected) {
+  if (!sealedRequestMatches(attempt, transition, payload)) {
     throw new OrchestrationError(
       "ORCHESTRATION_RECOVERY_CONFLICT",
       `Canonical ${transition} recovery evidence does not match the sealed attempt request.`,
     );
   }
+}
+
+function equalSortedPaths(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false;
+  const a = [...left].sort();
+  const b = [...right].sort();
+  return a.every((value, index) => value === b[index]);
 }
 
 export async function recoverCompletedAttempt(options: {
@@ -137,8 +153,12 @@ export async function recoverCompletedAttempt(options: {
   const now = options.now ?? (() => new Date());
 
   if (attempt.transition === "REGISTER_WEB_PACK") {
-    const selected = await deps.readSelectedArtifact(options.stateDirectory, options.runId);
-    if (!selected) return options.ledger;
+    const selection = await deps.readSelectedArtifactSelection(options.stateDirectory, options.runId);
+    if (!selection) return options.ledger;
+    if (Date.parse(selection.selected_at) < Date.parse(attempt.started_at)) {
+      return options.ledger;
+    }
+    const selected = selection.registration;
     assertSealedRequest(attempt, "REGISTER_WEB_PACK", {
       archive_sha256: selected.artifact_sha256,
       pack_id: selected.pack_id,
@@ -240,10 +260,23 @@ export async function recoverCompletedAttempt(options: {
       selected.artifact_sha256,
     );
     if (!publish || publish.state !== "PUSHED") return options.ledger;
-    if (!publish.commit_sha || publish.remote_branch_sha !== publish.commit_sha) {
+
+    const run = ready.source.trusted.runReceipt;
+    if (
+      publish.run_id !== options.runId ||
+      publish.run_id !== run.run_id ||
+      publish.base_commit !== run.base_commit ||
+      publish.branch_name !== run.branch_name ||
+      publish.remote_name !== run.remote ||
+      publish.allowed_remote_url !== run.remote_url ||
+      publish.change_set_sha256 !== ready.changeSetDigest ||
+      !equalSortedPaths(publish.expected_paths, ready.changedPaths) ||
+      !publish.commit_sha ||
+      publish.remote_branch_sha !== publish.commit_sha
+    ) {
       throw new OrchestrationError(
         "ORCHESTRATION_RECOVERY_CONFLICT",
-        "PUSHED recovery receipt does not bind the remote branch to the exact commit.",
+        "PUSHED recovery receipt does not bind the exact run, change-set, delivery target and remote commit.",
       );
     }
     return await deps.completeAttempt({
