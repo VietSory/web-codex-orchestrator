@@ -47,6 +47,10 @@ export interface GitCommandResult {
   stdout: string;
   stderr: string;
   duration_ms: number;
+  timed_out?: boolean;
+  cancelled?: boolean;
+  stdout_truncated?: boolean;
+  stderr_truncated?: boolean;
 }
 
 export interface ResolvedRepository {
