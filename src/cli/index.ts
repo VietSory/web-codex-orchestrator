@@ -43,16 +43,11 @@ function printUsage(): void {
 function parseIntakeArguments(args: string[]): { archivePath: string; stateDirectory: string; json: boolean } | null {
   const archivePath = args[0];
   if (!archivePath) return null;
-
   let stateDirectory: string | undefined;
   let json = false;
   for (let index = 1; index < args.length; index += 1) {
     const argument = args[index];
-    if (argument === "--json") {
-      if (json) return null;
-      json = true;
-      continue;
-    }
+    if (argument === "--json") { if (json) return null; json = true; continue; }
     if (argument === "--state-dir" && stateDirectory === undefined) {
       const value = args[index + 1];
       if (!value || value.startsWith("--")) return null;
@@ -62,15 +57,13 @@ function parseIntakeArguments(args: string[]): { archivePath: string; stateDirec
     }
     return null;
   }
-
   return stateDirectory ? { archivePath, stateDirectory, json } : null;
 }
 
 function printHumanReceipt(receipt: IntakeReceipt): void {
   for (const check of receipt.checks) console.log(`✓ ${check}`);
-  if (receipt.status === "accepted") {
-    console.log(`\nBundle accepted: ${receipt.stored_bundle}`);
-  } else {
+  if (receipt.status === "accepted") console.log(`\nBundle accepted: ${receipt.stored_bundle}`);
+  else {
     for (const error of receipt.errors) {
       const entry = error.entry ? ` (${error.entry})` : "";
       console.error(`✗ ${error.code}: ${error.message}${entry}`);
@@ -80,11 +73,7 @@ function printHumanReceipt(receipt: IntakeReceipt): void {
 }
 
 async function runValidate(target: string | undefined): Promise<void> {
-  if (!target) {
-    printUsage();
-    process.exitCode = 2;
-    return;
-  }
+  if (!target) { printUsage(); process.exitCode = 2; return; }
   const report = await validateBundleDirectory(target);
   for (const check of report.checks) console.log(`✓ ${check}`);
   if (!report.ok) {
@@ -97,22 +86,11 @@ async function runValidate(target: string | undefined): Promise<void> {
 
 async function runIntake(args: string[]): Promise<void> {
   const parsed = parseIntakeArguments(args);
-  if (!parsed) {
-    printUsage();
-    process.exitCode = 2;
-    return;
-  }
-
+  if (!parsed) { printUsage(); process.exitCode = 2; return; }
   try {
     const receipt = await intakeArchive(parsed.archivePath, parsed.stateDirectory);
-    if (parsed.json) {
-      process.stdout.write(`${JSON.stringify(receipt)}\n`);
-    } else {
-      printHumanReceipt(receipt);
-    }
-    if (receipt.status === "rejected") {
-      process.exitCode = receipt.errors.some((error) => error.code === "OPERATIONAL_ERROR") ? 3 : 1;
-    }
+    if (parsed.json) process.stdout.write(`${JSON.stringify(receipt)}\n`); else printHumanReceipt(receipt);
+    if (receipt.status === "rejected") process.exitCode = receipt.errors.some((error) => error.code === "OPERATIONAL_ERROR") ? 3 : 1;
   } catch (error) {
     const message = isIntakeError(error) ? `${error.code}: ${error.message}` : error instanceof Error ? error.message : String(error);
     console.error(message);
@@ -211,7 +189,7 @@ function parseExecutionArguments(args: string[], requireConfig: boolean): { runI
     return null;
   }
   if (!runId || !stateDirectory || requireConfig && !configPath) return null;
-  return { runId, stateDirectory, configPath, json };
+  return { runId, stateDirectory, ...(configPath !== undefined ? { configPath } : {}), json };
 }
 
 function executionExitCode(code: string): number {
