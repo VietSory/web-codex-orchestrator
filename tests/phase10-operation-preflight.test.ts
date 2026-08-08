@@ -27,6 +27,7 @@ test("P10-PREFLIGHT-001 registered pack produces a deterministic mutation-free p
   assert.equal(first.plan_sha256, second.plan_sha256);
   assert.equal(first.operations.length, 1);
   assert.equal(first.operations[0]?.observed_preimage_sha256, sha256(before));
+  assert.equal(first.operations[0]?.observed_preimage_size_bytes, before.byteLength);
   assert.equal(first.operations[0]?.payload_sha256, sha256("after\n"));
   assert.deepEqual(await fs.readFile(path.join(fixture.repo, "app.txt")), before);
 });
@@ -72,4 +73,23 @@ test("P10-PREFLIGHT-003 symlink target is rejected fail-closed", async (t) => {
     (error: unknown) => error instanceof WebAuthorityError && error.code === "WEB_AUTHORITY_PREIMAGE_INVALID",
   );
   assert.equal(await fs.readFile(outside, "utf8"), "before\n");
+});
+
+test("P10-PREFLIGHT-004 oversized preimages are rejected before hashing or mutation", async (t) => {
+  const fixture = await createPhase9Fixture();
+  t.after(async () => fs.rm(fixture.root, { recursive: true, force: true }));
+  const archive = await buildPhase9Pack(fixture);
+  const registration = await registerWebImplementationPack({
+    runId: fixture.runId,
+    stateDirectory: fixture.state,
+    configPath: fixture.config,
+    archivePath: archive,
+  });
+  const pack = await readAndValidateWebImplementationPack(archive);
+
+  await assert.rejects(
+    () => preflightWebOperations({ worktreeRoot: fixture.repo, registration, pack, maximumPreimageBytes: 3 }),
+    (error: unknown) => error instanceof WebAuthorityError && error.code === "WEB_AUTHORITY_PREIMAGE_INVALID",
+  );
+  assert.equal(await fs.readFile(path.join(fixture.repo, "app.txt"), "utf8"), "before\n");
 });
