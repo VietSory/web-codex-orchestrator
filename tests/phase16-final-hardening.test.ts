@@ -4,10 +4,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runControlCommand } from "../src/orchestration/control-cli.js";
-import { checkpointAttempt, failAttempt } from "../src/orchestration/controller.js";
+import { checkpointAttempt, completeAttempt, failAttempt, pauseRun, resumeRun } from "../src/orchestration/controller.js";
+import { writeRunLedger } from "../src/orchestration/ledger.js";
 import type { LifecycleSnapshot } from "../src/orchestration/planner.js";
 import { retryableFailureCode } from "../src/orchestration/retry-policy.js";
 import { runNextTransition } from "../src/orchestration/transition-runner.js";
+import { OrchestrationError } from "../src/orchestration/contracts.js";
 
 const HASH = "a".repeat(64);
 
@@ -232,4 +234,100 @@ test("P16-OPS-005 terminal blocked ledger returns before canonicalizing a Web ve
   assert.equal(result.progressed, false);
   assert.equal(result.planned.transition, "WAIT_WEB_VERDICT");
   assert.equal(result.needs_input, null);
+});
+
+test("P16-CTRL-001 resume cannot unblock a non-paused terminal run", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-p16-resume-terminal-"));
+  t.after(async () => fs.rm(root, { recursive: true, force: true }));
+  const runId = `TASK-P16-RESUME-TERMINAL:${HASH}`;
+  await createFailedAttempt({
+    root,
+    runId,
+    transition: "REGISTER_WEB_PACK",
+    failureCode: "ORCHESTRATION_POLICY_BLOCKED",
+    now: new Date("2026-08-08T00:00:00.000Z"),
+  });
+  const resumed = await resumeRun(root, runId, new Date("2026-08-08T00:00:01.000Z"));
+  assert.equal(resumed.paused, false);
+  assert.equal(resumed.status, "BLOCKED");
+  await assert.rejects(
+    checkpointAttempt({ stateDirectory: root, runId, transition: "REGISTER_WEB_PACK", payload: { archive_sha256: HASH }, now: new Date("2026-08-08T00:00:02.000Z") }),
+    (error: unknown) => error instanceof OrchestrationError && error.code === "ORCHESTRATION_TERMINAL",
+  );
+});
+
+test("P16-CTRL-002 pause rejects an already terminal run instead of hiding terminal status", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-p16-pause-terminal-"));
+  t.after(async () => fs.rm(root, { recursive: true, force: true }));
+  const runId = `TASK-P16-PAUSE-TERMINAL:${HASH}`;
+  await createFailedAttempt({
+    root,
+    runId,
+    transition: "WAIT_WEB_VERDICT",
+    failureCode: "ORCHESTRATION_POLICY_BLOCKED",
+    now: new Date("2026-08-08T00:00:00.000Z"),
+  });
+  await assert.rejects(
+    pauseRun(root, runId, "must stay terminal", new Date("2026-08-08T00:00:01.000Z")),
+    (error: unknown) => error instanceof OrchestrationError && error.code === "ORCHESTRATION_TERMINAL",
+  );
+  const resumed = await resumeRun(root, runId, new Date("2026-08-08T00:00:02.000Z"));
+  assert.equal(resumed.status, "BLOCKED");
+});
+
+test("P16-CTRL-003 resume restores a budget-blocked result completed while paused", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-p16-resume-budget-"));
+  t.after(async () => fs.rm(root, { recursive: true, force: true }));
+  const runId = `TASK-P16-RESUME-BUDGET:${HASH}`;
+  const started = await checkpointAttempt({
+    stateDirectory: root,
+    runId,
+    transition: "EXECUTE_REGISTERED_PACK",
+    payload: { artifact_sha256: HASH },
+    now: new Date("2026-08-08T00:00:00.000Z"),
+  });
+  started.budget.max_input_tokens = 0;
+  await writeRunLedger(root, started);
+  await pauseRun(root, runId, "pause during active attempt", new Date("2026-08-08T00:00:01.000Z"));
+  const completed = await completeAttempt({
+    stateDirectory: root,
+    runId,
+    attemptId: started.current_attempt!.attempt_id,
+    result: { state: "READY_FOR_PUBLISH" },
+    nextTransition: "PUBLISH",
+    usage: { input_tokens: 1 },
+    now: new Date("2026-08-08T00:00:02.000Z"),
+  });
+  assert.equal(completed.status, "PAUSED");
+  const resumed = await resumeRun(root, runId, new Date("2026-08-08T00:00:03.000Z"));
+  assert.equal(resumed.paused, false);
+  assert.equal(resumed.status, "BLOCKED");
+  assert.equal(resumed.next_transition, "PUBLISH");
+});
+
+test("P16-CTRL-004 resume preserves a legitimate WAIT_HUMAN boundary as waiting", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-p16-resume-human-"));
+  t.after(async () => fs.rm(root, { recursive: true, force: true }));
+  const runId = `TASK-P16-RESUME-HUMAN:${HASH}`;
+  const started = await checkpointAttempt({
+    stateDirectory: root,
+    runId,
+    transition: "WAIT_WEB_VERDICT",
+    payload: { verdict_sha256: HASH },
+    now: new Date("2026-08-08T00:00:00.000Z"),
+  });
+  const waiting = await completeAttempt({
+    stateDirectory: root,
+    runId,
+    attemptId: started.current_attempt!.attempt_id,
+    result: { state: "APPROVED" },
+    nextTransition: "WAIT_HUMAN",
+    now: new Date("2026-08-08T00:00:01.000Z"),
+  });
+  assert.equal(waiting.status, "WAITING");
+  await pauseRun(root, runId, "operator review", new Date("2026-08-08T00:00:02.000Z"));
+  const resumed = await resumeRun(root, runId, new Date("2026-08-08T00:00:03.000Z"));
+  assert.equal(resumed.paused, false);
+  assert.equal(resumed.status, "WAITING");
+  assert.equal(resumed.next_transition, "WAIT_HUMAN");
 });
