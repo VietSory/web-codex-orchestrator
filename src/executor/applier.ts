@@ -115,24 +115,44 @@ async function readRollbackBackup(stateDirectory: string, receipt: ExecutorRecei
 }
 
 async function rollbackAppliedOperations(stateDirectory: string, receipt: ExecutorReceipt, now: () => Date): Promise<void> {
+  const unresolved: string[] = [];
   for (const operation of [...receipt.operations].reverse()) {
     if (!operation.applied) continue;
-    const classification = await classifyTarget(receipt.worktree_path, operation);
-    if (classification === "ambiguous") throw new ExecutorError("EXECUTOR_AMBIGUOUS_RECOVERY", `Cannot safely roll back externally changed target '${operation.path}'.`);
-    if (classification === "postimage") {
-      if (operation.kind === "create_file") {
-        await deleteExactWorktreeFile(receipt.worktree_path, operation.path);
-      } else {
-        const backup = await readRollbackBackup(stateDirectory, receipt, operation);
-        await writeExactWorktreeFile(receipt.worktree_path, operation.path, backup, operation.original_mode ?? 0o644, operation.kind === "delete_file");
+    try {
+      const classification = await classifyTarget(receipt.worktree_path, operation);
+      if (classification === "ambiguous") {
+        unresolved.push(operation.path);
+        continue;
       }
+      if (classification === "postimage") {
+        if (operation.kind === "create_file") {
+          await deleteExactWorktreeFile(receipt.worktree_path, operation.path);
+        } else {
+          const backup = await readRollbackBackup(stateDirectory, receipt, operation);
+          await writeExactWorktreeFile(receipt.worktree_path, operation.path, backup, operation.original_mode ?? 0o644, operation.kind === "delete_file");
+        }
+      }
+      const restored = await classifyTarget(receipt.worktree_path, operation);
+      if (restored !== "preimage") {
+        unresolved.push(operation.path);
+        continue;
+      }
+      operation.applied = false;
+      receipt.updated_at = nowIso(now);
+      await writeExecutorReceipt(stateDirectory, receipt);
+    } catch {
+      unresolved.push(operation.path);
     }
-    const restored = await classifyTarget(receipt.worktree_path, operation);
-    if (restored !== "preimage") throw new ExecutorError("EXECUTOR_AMBIGUOUS_RECOVERY", `Rollback did not restore the exact registered preimage for '${operation.path}'.`);
-    operation.applied = false;
+  }
+
+  if (unresolved.length > 0) {
+    receipt.state = "APPLYING";
     receipt.updated_at = nowIso(now);
     await writeExecutorReceipt(stateDirectory, receipt);
+    const paths = [...new Set(unresolved)].slice(0, 16).join(", ");
+    throw new ExecutorError("EXECUTOR_AMBIGUOUS_RECOVERY", `Rollback preserved ambiguous targets while restoring every independently safe operation: ${paths}.`);
   }
+
   receipt.state = "PREPARED";
   receipt.updated_at = nowIso(now);
   await writeExecutorReceipt(stateDirectory, receipt);
