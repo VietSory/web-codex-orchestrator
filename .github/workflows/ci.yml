@@ -41,21 +41,11 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      # The unit runner already executes each top-level test file in its own
-      # bounded process and prints the file name before execution. Avoid
-      # duplicating Phase 9/10 suites here on every commit; explicit phase
-      # release gates still run their targeted suites before a phase is frozen.
+      # The unit runner executes each top-level test file in its own bounded
+      # process and emits the final bounded stdout/stderr tail as a GitHub
+      # annotation on failure, so no separate artifact upload is required.
       - name: Unit and fake integration tests
         run: npm test
-
-      - name: Upload unit failure diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: unit-failure-${{ github.sha }}
-          path: .wco-ci-unit-failure.log
-          if-no-files-found: ignore
-          retention-days: 1
 
       - name: Phase 8 fake end-to-end
         run: npm run test:phase8-e2e
