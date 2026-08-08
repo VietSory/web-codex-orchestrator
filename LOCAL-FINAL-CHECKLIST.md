@@ -1,8 +1,10 @@
 # Local Final Checklist
 
-Run these only from the final Phase 16 branch in the user's real Windows/WSL/native Codex/codex-chatgpt-web environment. Do not merge or mark the PR Ready before returning the diagnostics.
+Run this **only after** Phase 16 exact-head GitHub CI and both maintainer audits have passed. Run from the real WSL Bash environment you intend to use with WCO. Do not merge or mark any PR Ready first.
 
-## 1. Exact local head and clean tree
+Return only the requested sanitized diagnostics. Never return API keys, cookies, authorization headers, OAuth/runtime tokens, browser-profile files, full private prompts/transcripts or private task content.
+
+## 1. Exact checkout and native versions
 
 ```bash
 git fetch origin
@@ -10,60 +12,145 @@ git switch codex/phase-16-final-hardening-v2
 git pull --ff-only
 git rev-parse HEAD
 git status --short
-```
-
-Return: the full HEAD SHA and complete `git status --short` output. The tree must be clean.
-
-## 2. Reproduce the complete Phase 16 gate locally
-
-```bash
+node --version
+npm --version
+git --version
+codex --version
+uname -a
+cmd.exe /c ver
 npm ci
-npm run phase16:release-gate
+npm run build
 ```
 
-Return: final exit code plus the final test summary. If anything fails, return the failing command, test name and complete error/stack for that failure.
+Return:
 
-## 3. Native Codex sandbox integration
+- full `HEAD` SHA;
+- complete `git status --short` output; it must be empty before testing;
+- Node/npm/Git/Codex versions;
+- `uname -a` and Windows `ver` output;
+- `npm ci` and `npm run build` exit codes; if nonzero, include the failing error/stack.
+
+## 2. Real native Codex sandbox integration
 
 ```bash
 WCO_RUN_SANDBOX_INTEGRATION=1 npm run test:sandbox-integration
 ```
 
-Return: exit code, test summary, Codex version, OS/WSL version, and any sandbox/auth diagnostic emitted by the test.
+Return:
 
-## 4. Native Codex execution integration
+- exit code and complete test summary;
+- any bounded sandbox/auth/runtime diagnostic emitted by the test;
+- no credentials or model transcript.
+
+## 3. Real native Codex execution integration
 
 ```bash
 WCO_RUN_CODEX_INTEGRATION=1 npm run test:codex-integration
 ```
 
-Return: exit code, test summary, Codex version, model/effort route actually selected if reported, and any auth/session/reconnect/usage diagnostic. Do not paste secrets or tokens.
+Return:
 
-## 5. Control-plane doctor in the real state/config environment
+- exit code and complete test summary;
+- model/effort route if the test reports it;
+- any bounded auth/session/reconnect/usage diagnostic;
+- no credentials or full model transcript.
+
+## 4. WCO doctor against the real run/config
+
+Replace the three placeholders with the real values used for the native run:
 
 ```bash
-npm run build
 node dist/orchestration/standalone-cli.js doctor \
-  --run-id <REAL_RUN_ID> \
-  --state-dir <REAL_WCO_STATE_DIR> \
-  --config <REAL_WCO_CONFIG_JSON> \
+  --run-id '<REAL_RUN_ID>' \
+  --state-dir '<REAL_WCO_STATE_DIR>' \
+  --config '<REAL_WCO_CONFIG_JSON>' \
   --json
 ```
 
-Return: the complete bounded JSON doctor report after removing credentials/secrets only.
+Return the complete bounded JSON doctor report after removing secret **values** only. Keep diagnostic codes, versions and capability/status fields intact.
 
-## 6. codex-chatgpt-web/native bridge smoke
+## 5. codex-chatgpt-web availability/health on this machine
 
-With the bridge/runtime configuration you actually intend to use, start one normal health/smoke turn and one fresh-session turn using the supported upstream command for your installed bridge version. Do not invent flags from this repository.
+First run exactly:
 
-Return exactly these observations: bridge version; Codex version; Windows + WSL version; transport/tool mode; advertised command/tool namespace if shown; whether a fresh session succeeds; whether a second sequential session succeeds; whether cleanup releases the prior session/tab; active/queued session counts before/during/after if exposed; wall time for each turn; and any disconnect/reconnect/cold-start/restart-loop message.
+```bash
+command -v codex-chatgpt-web || true
+```
 
-## 7. Bounded concurrency/backpressure smoke
+If it prints no executable path, return:
 
-Using the bridge's documented command for your installed version, run the smallest supported concurrent smoke that demonstrates the configured WCO/bridge limit without exceeding the bridge's advertised safety limit.
+```text
+BRIDGE_NOT_INSTALLED_OR_UNSUPPORTED
+```
 
-Return: configured limit, observed active/queued count, peak CPU/RAM if readily available from Task Manager/`top`, whether work queued instead of spawning unbounded sessions, whether all sessions were released afterward, and any rate-limit/backpressure error. Do not increase concurrency merely to stress the account/runtime.
+and stop this bridge section. Do **not** install an undocumented Windows/WSL workaround for the checklist; the current upstream README documents managed background installation as macOS-only.
 
-## 8. Final result to return
+If an executable path is returned, run exactly:
 
-Return one message containing: exact HEAD SHA; outputs requested in steps 1–7; and any discrepancy between documented capability and observed native behavior. Do not include API keys, cookies, auth headers, OAuth tokens, or full browser profiles.
+```bash
+codex-chatgpt-web doctor
+codex-chatgpt-web service status
+codex-chatgpt-web browser check
+```
+
+If `doctor` explicitly reports full/tunnel mode, also run:
+
+```bash
+codex-chatgpt-web tunnel status
+```
+
+Return the complete bounded outputs after removing secret values. Also return the installed bridge version if any of those commands reports it.
+
+## 6. Sequential bridge turn/cleanup smoke — only if step 5 is ready
+
+In native Codex, select the installed **ChatGPT Web** model route reported healthy by bridge `doctor`.
+
+Start a fresh Codex task and send exactly:
+
+```text
+Reply exactly WCO_BRIDGE_SMOKE_1. Do not call tools.
+```
+
+After it completes, in the **same Codex task** send exactly:
+
+```text
+Reply exactly WCO_BRIDGE_SMOKE_2. Do not call tools.
+```
+
+Then run:
+
+```bash
+codex-chatgpt-web service status
+codex-chatgpt-web browser check
+```
+
+Return:
+
+- whether each response was exactly `WCO_BRIDGE_SMOKE_1` / `WCO_BRIDGE_SMOKE_2`;
+- wall time for each turn measured locally;
+- any disconnect/reconnect/cold-start/UI-drift message;
+- final service/browser status showing whether the turn/session was released;
+- no browser screenshots/profile or prompt transcript beyond the two fixed smoke strings.
+
+## 7. Full-harness tool smoke — only if step 5 explicitly reports full mode with local tools
+
+Use a ChatGPT Web route that bridge `doctor` reports as supporting local Codex tools; do not use a route it marks read-only/no-tool.
+
+In a fresh Codex task send exactly:
+
+```text
+Use the local shell tool once to run: printf WCO_BRIDGE_TOOL_OK
+Then reply exactly with the command output and nothing else.
+```
+
+Return:
+
+- whether the tool call actually appeared in Codex's native tool UI;
+- whether the final response was exactly `WCO_BRIDGE_TOOL_OK`;
+- any approval/capability/namespace failure code;
+- wall time;
+- no unrelated shell/environment output.
+
+## Return format
+
+Return one message containing sections `LOCAL-1` through `LOCAL-7` with the requested outputs. For conditional bridge sections that did not run, return the exact reason (`BRIDGE_NOT_INSTALLED_OR_UNSUPPORTED`, `BRIDGE_NOT_READY`, or `BRIDGE_FULL_MODE_NOT_AVAILABLE`).
