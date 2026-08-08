@@ -68,3 +68,21 @@ test("GIT-HELPER-002 blocks local credential and transport-program helpers befor
   assert.match(uploadPackResult.stderr, /WCO_GIT_UNSAFE_CONFIG/);
   assert.match(uploadPackResult.stderr, /remote\.origin\.uploadpack/);
 });
+
+test("GIT-HELPER-003 blocks local external diff and textconv programs before diff inspection", async (t) => {
+  const { repo, runtime, bootstrap } = await fixture(t);
+  const hardened = new GitRunner(process.env, runtime);
+
+  await expectGit(bootstrap, repo, ["config", "diff.wco.command", "definitely-must-not-run"]);
+  const commandResult = await hardened.run(["diff", "--name-only"], repo);
+  assert.equal(commandResult.exitCode, 3);
+  assert.match(commandResult.stderr, /WCO_GIT_UNSAFE_CONFIG/);
+  assert.match(commandResult.stderr, /diff\.wco\.command/);
+
+  await expectGit(bootstrap, repo, ["config", "--unset-all", "diff.wco.command"]);
+  await expectGit(bootstrap, repo, ["config", "diff.wco.textconv", "definitely-must-not-run"]);
+  const textconvResult = await hardened.run(["diff", "--name-only"], repo);
+  assert.equal(textconvResult.exitCode, 3);
+  assert.match(textconvResult.stderr, /WCO_GIT_UNSAFE_CONFIG/);
+  assert.match(textconvResult.stderr, /diff\.wco\.textconv/);
+});
