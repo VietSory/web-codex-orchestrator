@@ -68,7 +68,6 @@ async function runReviewerWithDeadline<T>(
       controller.abort(new Error("Phase 10 reviewer deadline exceeded."));
       reject(new ExecutionError("CODEX_TURN_TIMEOUT", `Phase 10 reviewer exceeded the configured ${maximumTurnSeconds}s turn deadline.`));
     }, timeoutMs);
-    timer.unref?.();
   });
   try {
     return await Promise.race([run(controller.signal), timeout]);
