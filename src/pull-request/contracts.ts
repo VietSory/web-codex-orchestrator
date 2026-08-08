@@ -30,12 +30,16 @@ export type DraftPullRequestErrorCode =
 export class DraftPullRequestError extends Error {
   public readonly code: DraftPullRequestErrorCode;
   public readonly details: string;
+  public readonly retryAfterMs: number | null;
 
-  constructor(code: DraftPullRequestErrorCode, details: string) {
+  constructor(code: DraftPullRequestErrorCode, details: string, retryAfterMs: number | null = null) {
     super(`${code}: ${details}`);
     this.name = "DraftPullRequestError";
     this.code = code;
     this.details = details;
+    this.retryAfterMs = Number.isSafeInteger(retryAfterMs) && retryAfterMs !== null && retryAfterMs > 0
+      ? retryAfterMs
+      : null;
   }
 }
 
