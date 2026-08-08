@@ -58,8 +58,11 @@ export async function packageResultForRun(options: {
   const token = process.env[tokenKey];
   if (!token) throw new OrchestrationError("ORCHESTRATION_RESULT_AUTH_UNAVAILABLE", `GitHub token not found at configured environment key ${tokenKey}.`);
 
-  const limits = config.result_bundle ?? DEFAULT_RESULT_BUNDLE_LIMITS;
-  const maximumResponseBytes = Number(limits.maximum_github_response_bytes);
+  const limits: ResultBundleLimits = {
+    ...DEFAULT_RESULT_BUNDLE_LIMITS,
+    ...(config.result_bundle ?? {}),
+  };
+  const maximumResponseBytes = limits.maximum_github_response_bytes;
   const args: Parameters<typeof packageResultBundle>[0] = {
     runId: options.runId,
     stateDirectory: options.stateDirectory,
