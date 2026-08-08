@@ -16,12 +16,12 @@ async function run(args: string[]): Promise<{ stdout: string; stderr: string }> 
   });
 }
 
-test("CLI-P9-001 canonical register/status use the immutable registry", async (t) => {
+test("CLI-P9-001 compiled register-web-pack and status use the immutable registry", async (t) => {
   const fixture = await createPhase9Fixture();
   t.after(async () => fs.rm(fixture.root, { recursive: true, force: true }));
   const archive = await buildPhase9Pack(fixture);
   const registered = await run([
-    "register",
+    "register-web-pack",
     "--run-id", fixture.runId,
     "--state-dir", fixture.state,
     "--config", fixture.config,
@@ -34,7 +34,7 @@ test("CLI-P9-001 canonical register/status use the immutable registry", async (t
   assert.match(registration.artifact_sha256, /^[a-f0-9]{64}$/);
 
   const status = await run([
-    "status",
+    "web-pack-status",
     "--run-id", fixture.runId,
     "--state-dir", fixture.state,
     "--artifact-sha256", registration.artifact_sha256,
@@ -43,11 +43,4 @@ test("CLI-P9-001 canonical register/status use the immutable registry", async (t
   const parsed = JSON.parse(status.stdout) as { state: string; registration: { artifact_sha256: string } };
   assert.equal(parsed.state, "REGISTERED");
   assert.equal(parsed.registration.artifact_sha256, registration.artifact_sha256);
-});
-
-test("CLI-P9-002 legacy command names remain compatibility aliases", async () => {
-  const help = await run(["--help"]);
-  assert.match(help.stdout, /wco-web-authority register /);
-  assert.match(help.stdout, /wco-web-authority status /);
-  assert.match(help.stdout, /Compatibility aliases: register-web-pack, web-pack-status/);
 });

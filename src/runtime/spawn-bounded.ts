@@ -14,9 +14,11 @@ export interface SpawnBoundedOptions {
   signal?: AbortSignal;
 }
 
-interface SpawnBoundedBaseResult {
+export interface SpawnBoundedResult {
   exitCode: number | null;
   signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
   stdoutBytes: number;
   stderrBytes: number;
   stdoutTruncated: boolean;
@@ -27,66 +29,19 @@ interface SpawnBoundedBaseResult {
   spawnError?: unknown;
 }
 
-export interface SpawnBoundedResult extends SpawnBoundedBaseResult {
-  stdout: string;
-  stderr: string;
-}
-
-export interface SpawnBoundedBinaryResult extends SpawnBoundedBaseResult {
-  stdout: Buffer;
-  stderr: Buffer;
-}
-
 export type SpawnBounded = (options: SpawnBoundedOptions) => Promise<SpawnBoundedResult>;
-export type SpawnBoundedBinary = (options: SpawnBoundedOptions) => Promise<SpawnBoundedBinaryResult>;
 
 function assertArgument(value: string, label: string): void {
   if (value.includes("\u0000")) throw new ExecutionError("OPERATIONAL_ERROR", `${label} contains NUL.`);
 }
 
-class BoundedByteTail {
-  private readonly chunks: Buffer[] = [];
-  private retainedBytes = 0;
-  private wasTruncated = false;
-
-  constructor(private readonly maximumBytes: number) {}
-
-  append(chunk: Buffer): void {
-    if (chunk.byteLength === 0) return;
-    if (this.maximumBytes === 0) {
-      this.wasTruncated = true;
-      return;
-    }
-
-    const exactChunk = Buffer.from(chunk);
-    this.chunks.push(exactChunk);
-    this.retainedBytes += exactChunk.byteLength;
-
-    while (this.retainedBytes > this.maximumBytes && this.chunks.length > 0) {
-      const excess = this.retainedBytes - this.maximumBytes;
-      const first = this.chunks[0]!;
-      this.wasTruncated = true;
-      if (first.byteLength <= excess) {
-        this.chunks.shift();
-        this.retainedBytes -= first.byteLength;
-        continue;
-      }
-      this.chunks[0] = first.subarray(excess);
-      this.retainedBytes -= excess;
-    }
-  }
-
-  get truncated(): boolean {
-    return this.wasTruncated;
-  }
-
-  toBuffer(): Buffer {
-    if (this.retainedBytes === 0) return Buffer.alloc(0);
-    return Buffer.concat(this.chunks, this.retainedBytes);
-  }
+function boundedTail(current: Buffer<ArrayBufferLike>, chunk: Buffer<ArrayBufferLike>, maximum: number): { value: Buffer<ArrayBufferLike>; truncated: boolean } {
+  const combined = Buffer.concat([current, chunk]);
+  if (combined.byteLength <= maximum) return { value: combined, truncated: false };
+  return { value: combined.subarray(Math.max(0, combined.byteLength - maximum)), truncated: true };
 }
 
-async function spawnBoundedBuffers(options: SpawnBoundedOptions): Promise<SpawnBoundedBinaryResult> {
+export const spawnBounded: SpawnBounded = async (options) => {
   assertArgument(options.executable, "Executable");
   for (const argument of options.args) assertArgument(argument, "Argument");
   if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0 || !Number.isFinite(options.stdoutMaxBytes) || options.stdoutMaxBytes < 0 || !Number.isFinite(options.stderrMaxBytes) || options.stderrMaxBytes < 0) {
@@ -94,11 +49,13 @@ async function spawnBoundedBuffers(options: SpawnBoundedOptions): Promise<SpawnB
   }
 
   const started = performance.now();
-  return await new Promise<SpawnBoundedBinaryResult>((resolve) => {
-    const stdoutTail = new BoundedByteTail(options.stdoutMaxBytes);
-    const stderrTail = new BoundedByteTail(options.stderrMaxBytes);
+  return await new Promise<SpawnBoundedResult>((resolve) => {
+    let stdout: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+    let stderr: Buffer<ArrayBufferLike> = Buffer.alloc(0);
     let stdoutBytes = 0;
     let stderrBytes = 0;
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
     let timedOut = false;
     let cancelled = false;
     let spawnError: unknown;
@@ -123,12 +80,12 @@ async function spawnBoundedBuffers(options: SpawnBoundedOptions): Promise<SpawnB
       resolve({
         exitCode,
         signal: exitSignal,
-        stdout: stdoutTail.toBuffer(),
-        stderr: stderrTail.toBuffer(),
+        stdout: stdout.toString("utf8"),
+        stderr: stderr.toString("utf8"),
         stdoutBytes,
         stderrBytes,
-        stdoutTruncated: stdoutTail.truncated,
-        stderrTruncated: stderrTail.truncated,
+        stdoutTruncated,
+        stderrTruncated,
         timedOut,
         cancelled,
         durationMs: Math.max(0, Math.round(performance.now() - started)),
@@ -150,11 +107,15 @@ async function spawnBoundedBuffers(options: SpawnBoundedOptions): Promise<SpawnB
     });
     child.stdout.on("data", (chunk: Buffer) => {
       stdoutBytes += chunk.byteLength;
-      stdoutTail.append(chunk);
+      const bounded = boundedTail(stdout, chunk, options.stdoutMaxBytes);
+      stdout = bounded.value;
+      stdoutTruncated ||= bounded.truncated;
     });
     child.stderr.on("data", (chunk: Buffer) => {
       stderrBytes += chunk.byteLength;
-      stderrTail.append(chunk);
+      const bounded = boundedTail(stderr, chunk, options.stderrMaxBytes);
+      stderr = bounded.value;
+      stderrTruncated ||= bounded.truncated;
     });
     child.once("error", (error) => { spawnError = error; });
     child.once("close", (exitCode, exitSignal) => finish(exitCode, exitSignal));
@@ -166,26 +127,6 @@ async function spawnBoundedBuffers(options: SpawnBoundedOptions): Promise<SpawnB
     if (options.signal?.aborted) abort();
     else options.signal?.addEventListener("abort", abort, { once: true });
   });
-}
-
-export const spawnBoundedBinary: SpawnBoundedBinary = spawnBoundedBuffers;
-
-export const spawnBounded: SpawnBounded = async (options) => {
-  const result = await spawnBoundedBuffers(options);
-  return {
-    exitCode: result.exitCode,
-    signal: result.signal,
-    stdout: result.stdout.toString("utf8"),
-    stderr: result.stderr.toString("utf8"),
-    stdoutBytes: result.stdoutBytes,
-    stderrBytes: result.stderrBytes,
-    stdoutTruncated: result.stdoutTruncated,
-    stderrTruncated: result.stderrTruncated,
-    timedOut: result.timedOut,
-    cancelled: result.cancelled,
-    durationMs: result.durationMs,
-    ...(result.spawnError ? { spawnError: result.spawnError } : {}),
-  };
 };
 
 export const defaultSpawnBounded = spawnBounded;

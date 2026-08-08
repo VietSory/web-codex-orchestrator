@@ -2,8 +2,8 @@ import { WebAuthorityError } from "./contracts.js";
 import { registerWebImplementationPack } from "./authority-service.js";
 import { readArtifactRegistration } from "./registry.js";
 
-export const REGISTER_WEB_PACK_USAGE = "  wco-web-authority register --run-id <task-id:archive-sha256> --state-dir <directory> --config <config.json> --pack <implementation-pack.zip> [--json]";
-export const WEB_PACK_STATUS_USAGE = "  wco-web-authority status --run-id <task-id:archive-sha256> --state-dir <directory> --artifact-sha256 <sha256> [--json]";
+export const REGISTER_WEB_PACK_USAGE = "  wco register-web-pack --run-id <task-id:archive-sha256> --state-dir <directory> --config <config.json> --pack <implementation-pack.zip> [--json]";
+export const WEB_PACK_STATUS_USAGE = "  wco web-pack-status --run-id <task-id:archive-sha256> --state-dir <directory> --artifact-sha256 <sha256> [--json]";
 
 interface CommonArgs { runId: string; stateDirectory: string; json: boolean; }
 interface RegisterArgs extends CommonArgs { configPath: string; packPath: string; }

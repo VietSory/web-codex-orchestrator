@@ -81,44 +81,14 @@ async function readBoundedStableFile(filePath: string, maximumBytes: number): Pr
   } finally { await handle.close(); }
 }
 
-async function syncAuthorityDirectory(directory: string): Promise<void> {
-  if (process.platform === "win32") return;
-  const directoryFlag = typeof fsConstants.O_DIRECTORY === "number" ? fsConstants.O_DIRECTORY : 0;
-  let handle: fs.FileHandle | null = null;
-  try {
-    handle = await fs.open(directory, fsConstants.O_RDONLY | directoryFlag);
-    await handle.sync();
-  } catch (error) {
-    throw new WebAuthorityError(
-      "WEB_AUTHORITY_OPERATIONAL_ERROR",
-      `Failed to sync registry directory metadata '${directory}': ${error instanceof Error ? error.message : String(error)}`,
-    );
-  } finally {
-    await handle?.close().catch(() => undefined);
-  }
-}
-
-async function syncAuthorityFile(filePath: string): Promise<void> {
-  let handle: fs.FileHandle | null = null;
-  try {
-    handle = await fs.open(filePath, "r+");
-    await handle.sync();
-  } finally {
-    await handle?.close().catch(() => undefined);
-  }
-}
-
 async function installImmutableTemp(tempPath: string, finalPath: string, expectedSha256: string, expectedSize: number, stateDirectory: string): Promise<void> {
   try {
-    try {
-      await fs.link(tempPath, finalPath);
-      await syncAuthorityDirectory(path.dirname(finalPath));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      await assertExistingAuthorityFileSafe(stateDirectory, finalPath);
-      const existing = await sha256File(finalPath);
-      if (existing.sha256 !== expectedSha256 || existing.size !== expectedSize) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_CONFLICT", `Immutable registry path already exists with different bytes: ${finalPath}`);
-    }
+    await fs.link(tempPath, finalPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    await assertExistingAuthorityFileSafe(stateDirectory, finalPath);
+    const existing = await sha256File(finalPath);
+    if (existing.sha256 !== expectedSha256 || existing.size !== expectedSize) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_CONFLICT", `Immutable registry path already exists with different bytes: ${finalPath}`);
   } finally { await fs.unlink(tempPath).catch(() => undefined); }
 }
 
@@ -127,7 +97,6 @@ async function copyArchiveImmutable(sourcePath: string, finalPath: string, expec
   try {
     await fs.copyFile(sourcePath, tempPath, fsConstants.COPYFILE_EXCL);
     await fs.chmod(tempPath, 0o600).catch(() => undefined);
-    await syncAuthorityFile(tempPath);
     const copied = await sha256File(tempPath);
     if (copied.sha256 !== expectedSha256 || copied.size !== expectedSize) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_CONFLICT", "Source Web pack changed between validation and registry copy.");
     await installImmutableTemp(tempPath, finalPath, expectedSha256, expectedSize, stateDirectory);
@@ -141,16 +110,10 @@ async function writeRegistrationImmutable(record: ArtifactRegistrationRecord, fi
   const bytes = canonicalJsonBuffer(record);
   const digest = crypto.createHash("sha256").update(bytes).digest("hex");
   const tempPath = `${finalPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
-  let handle: fs.FileHandle | null = null;
   try {
-    handle = await fs.open(tempPath, "wx", 0o600);
-    await handle.writeFile(bytes);
-    await handle.sync();
-    await handle.close();
-    handle = null;
+    await fs.writeFile(tempPath, bytes, { flag: "wx", mode: 0o600 });
     await installImmutableTemp(tempPath, finalPath, digest, bytes.byteLength, stateDirectory);
   } catch (error) {
-    await handle?.close().catch(() => undefined);
     await fs.unlink(tempPath).catch(() => undefined);
     throw error;
   }

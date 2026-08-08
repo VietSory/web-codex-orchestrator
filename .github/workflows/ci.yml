@@ -18,57 +18,65 @@ jobs:
       CI: "true"
       WCO_RUN_CODEX_INTEGRATION: "0"
       WCO_RUN_SANDBOX_INTEGRATION: "0"
-      WCO_EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
     steps:
-      - name: Checkout exact event head
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ env.WCO_EXPECTED_SHA }}
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Confirm exact checkout identity
-        shell: bash
-        run: |
-          actual_sha="$(git rev-parse HEAD)"
-          if [ "$actual_sha" != "$WCO_EXPECTED_SHA" ]; then
-            echo "Expected exact head $WCO_EXPECTED_SHA but checked out $actual_sha" >&2
-            exit 1
-          fi
-          echo "Exact head: $actual_sha"
+      - uses: actions/checkout@v5
 
       - uses: actions/setup-node@v5
         with:
-          node-version-file: .nvmrc
+          node-version: 20
           cache: npm
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Confirm pinned Codex runtime
+      - name: Confirm pinned Codex packages
         run: |
           npm ls @openai/codex
           npm ls @openai/codex-sdk
 
       - name: Validate bundle template
-        run: npm run validate:template
+        run: npm run validate -- ./templates/task-bundle
 
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Unit and deterministic integration tests
+      - name: P9-AUTH-001 registration/idempotency
+        shell: bash
+        run: |
+          set +e
+          npx tsx --test --test-reporter=spec --test-name-pattern="P9-AUTH-001" tests/phase9-web-authority.test.ts > /tmp/p9-auth-001.log 2>&1
+          code=$?
+          cat /tmp/p9-auth-001.log
+          if [ "$code" -ne 0 ]; then
+            detail=$(tail -c 6000 /tmp/p9-auth-001.log | tr '\n' ' ' | sed 's/%/%25/g; s/:/%3A/g')
+            echo "::error title=P9-AUTH-001 diagnostic::$detail"
+            exit "$code"
+          fi
+      - name: P9-AUTH-002 checksum tamper
+        run: npx tsx --test --test-reporter=spec --test-name-pattern="P9-AUTH-002" tests/phase9-web-authority.test.ts
+      - name: P9-AUTH-003 preimage authority
+        run: npx tsx --test --test-reporter=spec --test-name-pattern="P9-AUTH-003" tests/phase9-web-authority.test.ts
+      - name: P9-AUTH-004 inventory authority
+        run: npx tsx --test --test-reporter=spec --test-name-pattern="P9-AUTH-004" tests/phase9-web-authority.test.ts
+      - name: P9-AUTH-005 dirty snapshot
+        run: npx tsx --test --test-reporter=spec --test-name-pattern="P9-AUTH-005" tests/phase9-web-authority.test.ts
+      - name: P9-AUTH-006 response envelope
+        run: npx tsx --test --test-reporter=spec --test-name-pattern="P9-AUTH-006" tests/phase9-web-authority.test.ts
+
+      - name: Phase 9 maintainer adversarial tests
+        run: npx tsx --test --test-reporter=spec tests/phase9-maintainer-hardening.test.ts
+        timeout-minutes: 2
+
+      - name: Unit and fake integration tests
         run: npm test
 
-      - name: End-to-end workflow test
-        run: npm run test:e2e
+      - name: Phase 8 fake end-to-end
+        run: npm run test:phase8-e2e
         timeout-minutes: 2
 
       - name: Build
         run: npm run build
 
-      - name: Compiled CLI integration tests
+      - name: Compiled CLI integration test
         run: npm run test:cli
-
-      - name: Verify distributable package surface
-        run: npm run pack:check

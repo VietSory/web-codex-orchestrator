@@ -1,10 +1,7 @@
 import { constants } from "node:fs";
-import { lstat, mkdir, open, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
-import { readJsonFile } from "../shared/read-json.js";
 import type { RunReceipt } from "./contracts.js";
-
-const RUN_RECEIPT_MAX_BYTES = 1 * 1024 * 1024;
 
 async function ensureDirectory(target: string): Promise<void> {
   const resolved = path.resolve(target);
@@ -55,7 +52,7 @@ export async function readRunReceipt(stateDirectory: string, taskId: string, arc
     const receiptPath = path.join(directory, "run.json");
     const info = await lstat(receiptPath);
     if (info.isSymbolicLink() || !info.isFile()) throw new Error("Run receipt must be a regular non-symlink file.");
-    return await readJsonFile(receiptPath, RUN_RECEIPT_MAX_BYTES) as RunReceipt;
+    return JSON.parse(await readFile(receiptPath, "utf8")) as RunReceipt;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;

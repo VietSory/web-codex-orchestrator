@@ -1,8 +1,8 @@
-import { constants as fsConstants, type Stats } from "node:fs";
 import {
   lstat,
   mkdir,
   open,
+  readFile,
   realpath,
   rename,
   rm,
@@ -15,7 +15,6 @@ import {
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const GIT_OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-const MAX_PUBLISH_RECEIPT_BYTES = 16 * 1024 * 1024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -125,6 +124,7 @@ function assertReceipt(value: unknown): asserts value is GitPublishReceipt {
   }
 }
 
+
 async function assertCanonicalDirectory(
   directory: string,
   create: boolean,
@@ -169,68 +169,25 @@ async function assertRegularOrMissing(filePath: string): Promise<void> {
   }
 }
 
-async function readStablePublishReceiptBytes(receiptPath: string): Promise<Buffer | null> {
-  let pathBefore: Stats;
-  try {
-    pathBefore = await lstat(receiptPath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  }
-  if (pathBefore.isSymbolicLink() || !pathBefore.isFile() || pathBefore.size > MAX_PUBLISH_RECEIPT_BYTES) {
-    throw new GitPublishError(
-      "PUBLISH_RECEIPT_INVALID",
-      `The Git publish receipt must be a regular non-symlink file no larger than ${MAX_PUBLISH_RECEIPT_BYTES} bytes.`,
-    );
-  }
-
-  const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
-  const handle = await open(receiptPath, fsConstants.O_RDONLY | noFollow).catch((error) => {
-    throw new GitPublishError(
-      "PUBLISH_RECEIPT_INVALID",
-      `Cannot safely open the Git publish receipt: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  });
-  try {
-    const before = await handle.stat();
-    if (!before.isFile() || before.dev !== pathBefore.dev || before.ino !== pathBefore.ino || before.size !== pathBefore.size || before.size > MAX_PUBLISH_RECEIPT_BYTES) {
-      throw new GitPublishError("PUBLISH_RECEIPT_INVALID", "The Git publish receipt changed before open.");
-    }
-    const bytes = Buffer.alloc(before.size);
-    let offset = 0;
-    while (offset < bytes.length) {
-      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
-      if (bytesRead === 0) throw new GitPublishError("PUBLISH_RECEIPT_INVALID", "The Git publish receipt was truncated while reading.");
-      offset += bytesRead;
-    }
-    if ((await handle.read(Buffer.alloc(1), 0, 1, offset)).bytesRead !== 0) {
-      throw new GitPublishError("PUBLISH_RECEIPT_INVALID", "The Git publish receipt grew while reading.");
-    }
-    const afterHandle = await handle.stat();
-    const afterPath = await lstat(receiptPath).catch((error) => {
-      throw new GitPublishError("PUBLISH_RECEIPT_INVALID", `The Git publish receipt path disappeared while reading: ${error instanceof Error ? error.message : String(error)}`);
-    });
-    if (afterPath.isSymbolicLink() || !afterPath.isFile() || afterHandle.dev !== before.dev || afterHandle.ino !== before.ino || afterHandle.size !== before.size || afterPath.dev !== before.dev || afterPath.ino !== before.ino || afterPath.size !== before.size) {
-      throw new GitPublishError("PUBLISH_RECEIPT_INVALID", "The Git publish receipt changed while reading.");
-    }
-    return bytes;
-  } finally {
-    await handle.close();
-  }
-}
-
 export async function readGitPublishReceipt(
   receiptPath: string,
 ): Promise<GitPublishReceipt | null> {
   if (!await assertCanonicalDirectory(path.dirname(receiptPath), false)) {
     return null;
   }
-  const bytes = await readStablePublishReceiptBytes(receiptPath);
-  if (bytes === null) return null;
+  await assertRegularOrMissing(receiptPath);
+
+  let text: string;
+  try {
+    text = await readFile(receiptPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(bytes.toString("utf8"));
+    parsed = JSON.parse(text);
   } catch {
     throw new GitPublishError(
       "PUBLISH_RECEIPT_INVALID",
