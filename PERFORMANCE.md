@@ -110,7 +110,7 @@ Do not inject timestamps/random IDs into the stable prefix unless required for c
 
 Concurrency is a configured bounded resource pool, not `Promise.all(all tasks)`.
 
-Separate limits are required for:
+Separate limits apply where those resource classes are present:
 
 - Web/browser turns;
 - Codex agent turns;
@@ -118,9 +118,9 @@ Separate limits are required for:
 - Git/network operations;
 - mission-level runnable tasks.
 
-Queued tasks consume minimal resources. Idle browser/session/worker resources have a TTL and are released. Cancellation must propagate to subprocesses.
+Queued work consumes minimal resources. Cancellation must propagate to subprocesses or queued work. Idle native/browser resources are transport concerns and must be released according to the adapter's supported lifecycle rather than kept alive as WCO authority.
 
-Default policy should be conservative until native benchmarks are available. Phase 16 local performance smoke tests will establish platform-specific recommended defaults rather than assuming that a fixed concurrency is optimal for every machine/account/model.
+The repository-side default policy stays conservative. Platform-specific concurrency recommendations require the native measurements in `LOCAL-FINAL-CHECKLIST.md`; WCO does not claim one fixed browser/session concurrency value is optimal for every machine/account/model.
 
 ## Process and output bounds
 
@@ -132,18 +132,18 @@ Every child process must have:
 - process-tree termination where supported;
 - explicit executable and argument vector (no shell interpolation by default).
 
-WCO already uses bounded asynchronous spawning for execution paths; later orchestration must reuse it rather than introduce unbounded `exec`/sync polling loops.
+WCO uses bounded asynchronous spawning and phase-specific bounded process adapters for controlled execution paths. New orchestration paths must reuse those boundaries rather than introduce unbounded `exec`/sync polling loops.
 
 ## State/log bounds
 
-Persistent state must not grow without a retention policy.
+Persistent hot state must not grow without a retention/compaction policy.
 
 - receipts contain bounded diagnostics, not raw unbounded logs;
 - raw logs/evidence are stored separately and content-addressed where useful;
-- UI/status reads use summaries/indexes rather than deserializing every historical artifact;
-- mission history is paginated/bounded;
-- repeated identical errors are deduplicated with counters;
-- completed temporary transport/session state is deleted.
+- UI/status reads use bounded receipts/indexes rather than deserializing every historical artifact or Codex rollout;
+- orchestration event history is compacted and repeated diagnostics are deduplicated with counters;
+- Web review/revision round discovery is bounded by the protocol's fixed round limits;
+- completed temporary transport/session state is not lifecycle authority.
 
 ## Incremental verification
 
@@ -160,26 +160,27 @@ verifier version/config
 
 If any required identity is unknown, rerun. Never reuse merely because a command string looks the same.
 
-## Performance regression requirements
+## Phase 16 regression coverage
 
-Later phases must add executable coverage for at least:
+The final repository gate covers the performance/token invariants that WCO can prove without a user's native browser/Codex environment:
 
-- `PERF-001`: concurrency cap/backpressure prevents worker explosion.
-- `PERF-002`: unchanged repository tree reuses project-map/inventory cache.
-- `PERF-003`: one-blob change does not force full content re-ingestion.
-- `PERF-004`: completed/cancelled worker releases process/session ownership.
-- `PERF-005`: bounded status polling does not deserialize whole mission history.
-- `PERF-006`: repeated identical diagnostics remain bounded.
-- `PERF-007`: restart/backoff cannot become a hot restart loop.
-- `TOKEN-001`: stable context is not duplicated inside one assembled prompt.
-- `TOKEN-002`: context assembly honors byte/token approximation caps before model invocation.
-- `TOKEN-003`: reviewer receives relevant diff/evidence, not implementation transcript by default.
-- `TOKEN-004`: cache/usage telemetry distinguishes cached and uncached input when exposed.
-- `TOKEN-005`: a transport retry reuses the same frozen request payload/hash.
+- concurrency caps and explicit backpressure through the bounded resource-pool regressions;
+- bounded ledger/event/diagnostic state and durable retry/circuit behavior;
+- exact sealed request hashes across retry/recovery paths;
+- bounded/stable authority file reads and durable revision state writes;
+- status/snapshot discovery from bounded protocol receipts rather than whole session history;
+- no redundant local implementer turn for Phase 10 Web-authored bytes;
+- revision model/token usage charged once into the outer orchestration budget;
+- reviewer context separated from implementation transcript and bound to the exact change-set;
+- retry classification for timeout/network/rate-limit/unavailable classes without hot-retrying policy failures.
+
+Content-addressed repository inventory/project-map and source-read receipts remain the reusable context mechanism established by the Web Authority protocol. Cache reuse is never authorization; exact source/tree identity remains mandatory.
+
+Native-only properties—real browser/session latency, native sandbox startup, Codex resume behavior, bridge capability reporting and machine-specific concurrency ceilings—are deliberately not claimed by GitHub CI.
 
 ## Native measurement
 
-Repository CI can test algorithms and synthetic load, but final performance claims require native/local measurements on supported Windows/WSL/Linux configurations with the actual bridge/Codex runtime. `LOCAL-FINAL-CHECKLIST.md` will contain those commands before v1.0.
+Repository CI tests algorithms, bounded state and synthetic/fake execution. Final native measurements on the user's supported Windows/WSL/Codex/bridge installation are listed in `LOCAL-FINAL-CHECKLIST.md`. Those checks return versions, timings, capability summaries, exit codes and sanitized diagnostics without making raw transcripts or credentials part of WCO authority.
 
 ## References
 
