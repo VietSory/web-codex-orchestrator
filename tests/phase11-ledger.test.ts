@@ -10,8 +10,9 @@ const RUN_ID = `TASK-P11-LEDGER:${"a".repeat(64)}`;
 test("P11-LEDGER-001 event history compacts to a bounded hash-chained tail", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-p11-ledger-"));
   t.after(async () => fs.rm(root, { recursive: true, force: true }));
-  const ledger = createRunLedger({ runId: RUN_ID, now: new Date("2026-08-08T00:00:00.000Z") });
-  for (let index = 0; index < 200; index += 1) appendLedgerEvent(ledger, "synthetic", { index }, new Date(1_786_118_400_000 + index));
+  const createdAt = new Date("2026-08-08T00:00:00.000Z");
+  const ledger = createRunLedger({ runId: RUN_ID, now: createdAt });
+  for (let index = 0; index < 200; index += 1) appendLedgerEvent(ledger, "synthetic", { index }, new Date(createdAt.getTime() + index));
   assert.equal(ledger.events.length, 128);
   assert.equal(ledger.compacted_event_count, 72);
   assert.notEqual(ledger.history_anchor_hash, "0".repeat(64));
