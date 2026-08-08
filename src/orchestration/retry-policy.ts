@@ -3,6 +3,11 @@ import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
 import { OrchestrationError, type RunLedger, type TransitionAttempt, type TransitionKind } from "./contracts.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
+const LOWER_LAYER_RETRYABLE_CODES = new Set([
+  "REVISION_INTERRUPTED",
+  "REVISION_OPERATIONAL_ERROR",
+  "REVISION_PUSH_FAILED",
+]);
 export interface RetryDecision { retry: boolean; delay_ms: number; reason: string; }
 export interface RetryOptions { base_delay_ms: number; maximum_delay_ms: number; maximum_consecutive_failures: number; circuit_open_ms: number; }
 export const DEFAULT_RETRY_OPTIONS: RetryOptions = { base_delay_ms: 1_000, maximum_delay_ms: 60_000, maximum_consecutive_failures: 5, circuit_open_ms: 120_000 };
@@ -13,7 +18,9 @@ function validateRetryOptions(options: RetryOptions): void {
 }
 function deterministicJitter(requestSha256: string, attemptNumber: number, delayMs: number): number { const hash = crypto.createHash("sha256").update(`${requestSha256}:${attemptNumber}`).digest(); const fraction = hash.readUInt32BE(0) / 0xffffffff; return Math.floor(delayMs * (0.75 + fraction * 0.5)); }
 export function computeRetryDelay(requestSha256: string, attemptNumber: number, options: RetryOptions = DEFAULT_RETRY_OPTIONS): number { validateRetryOptions(options); if (!SHA256.test(requestSha256) || !Number.isSafeInteger(attemptNumber) || attemptNumber < 1) throw new OrchestrationError("ORCHESTRATION_RETRY_INVALID", "Retry identity is invalid."); const exponent = Math.min(30, attemptNumber - 1); const raw = Math.min(options.maximum_delay_ms, options.base_delay_ms * 2 ** exponent); return Math.min(options.maximum_delay_ms, deterministicJitter(requestSha256, attemptNumber, raw)); }
-export function retryableFailureCode(code: string): boolean { return /(?:^|_)(?:TIMEOUT|NETWORK|RATE_LIMIT(?:ED)?|TEMPORARY|UNAVAILABLE|DISCONNECTED|RETRYABLE)(?:_|$)/.test(code); }
+export function retryableFailureCode(code: string): boolean {
+  return LOWER_LAYER_RETRYABLE_CODES.has(code) || /(?:^|_)(?:TIMEOUT|NETWORK|RATE_LIMIT(?:ED)?|TEMPORARY|UNAVAILABLE|DISCONNECTED|RETRYABLE)(?:_|$)/.test(code);
+}
 export function decideRetry(ledger: RunLedger, failureCode: string, now: Date, options: RetryOptions = DEFAULT_RETRY_OPTIONS): RetryDecision {
   validateRetryOptions(options); const attempt = ledger.current_attempt; if (!attempt) return { retry: false, delay_ms: 0, reason: "no active attempt" }; if (!retryableFailureCode(failureCode)) return { retry: false, delay_ms: 0, reason: "terminal failure class" }; if (ledger.budget.total_attempts >= ledger.budget.max_total_attempts) return { retry: false, delay_ms: 0, reason: "total attempt budget exhausted" };
   const transitionAttempts = ledger.transition_attempts[attempt.transition]; if (transitionAttempts >= ledger.budget.max_attempts_per_transition) return { retry: false, delay_ms: 0, reason: "transition attempt budget exhausted" };
