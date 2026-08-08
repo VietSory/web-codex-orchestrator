@@ -10,7 +10,7 @@ Phase 16 closes the GitHub/CI side of the stacked v1 control plane. It adds no n
 2. `continue --web-verdict <path>` may feed only the existing `WAIT_WEB_VERDICT` transition. It does not bypass verdict validation, Draft-PR/head attestation, review-round binding, or canonical receipt creation.
 3. A supplied verdict is not replayed automatically into a later review round. After a revision returns to `WAIT_WEB_VERDICT`, the control command stops and requires a new explicit verdict artifact.
 4. Git publication remains normal fast-forward/non-force and exact-head bound. WCO never marks a PR Ready, merges, rebases/amends published history, deletes phase branches, or weakens tests/contracts to make CI green.
-5. GitHub rate-limit failures remain retryable only within the durable attempt/time budget. `Retry-After`, primary reset hints and a documented secondary-limit fallback are bounded metadata, never authority. A server wait longer than the remaining orchestration time budget blocks instead of creating an unbounded sleeper/retry loop.
+5. GitHub rate-limit failures remain retryable only within the durable attempt/time budget. `Retry-After`, an exhausted-primary reset hint and the documented one-minute secondary-limit fallback are bounded metadata, never authority. A required wait longer than the remaining orchestration time budget blocks instead of creating an unbounded sleeper/retry loop.
 6. Codex/ChatGPT bridge, browser, session and runtime failures are compatibility boundaries. WCO may detect, checkpoint, bound, retry safely or surface diagnostics, but does not modify OpenAI Codex app/CLI/agent internals.
 
 ## Runtime, performance and token posture
@@ -33,13 +33,14 @@ WCO has content-addressed/hash-bound task, implementation, evidence and Result B
 
 ## GitHub REST hardening
 
-GitHub documents both primary and secondary rate limits. WCO therefore:
+GitHub documents distinct primary and secondary rate-limit handling. WCO therefore:
 
 - preserves serial orchestration rather than creating concurrent mutation fan-out;
-- parses a valid `Retry-After` delay and `X-RateLimit-Reset` timestamp;
+- uses a valid `Retry-After` delay when supplied;
+- uses `X-RateLimit-Reset` only when `X-RateLimit-Remaining` is exactly `0`, because that header pair identifies an exhausted primary window;
+- if both applicable waits are present, uses the longer bounded delay;
 - recognizes a bounded 403 secondary-rate-limit diagnostic without turning ordinary permission-denied 403 responses into retries;
-- when GitHub identifies a rate-limit response but provides neither retry header nor an exhausted primary counter, applies GitHub's documented minimum one-minute secondary-limit wait;
-- uses the longer valid server hint as a bounded retry floor;
+- when GitHub identifies a secondary rate-limit response but provides neither `Retry-After` nor an exhausted-primary counter, applies GitHub's documented minimum one-minute wait;
 - refuses to wait beyond the remaining orchestration elapsed budget;
 - keeps response/error retention bounded and redacts the configured token from diagnostics;
 - treats an uncertain create as uncertain and reconciles exact Draft PR state rather than blindly issuing another create.
@@ -52,12 +53,14 @@ These behaviors reduce API hammering and memory copying without changing GitHub/
 
 - explicit Web-verdict CLI scope;
 - rate-limit failure classification;
-- server retry-hint parsing;
+- primary-versus-secondary retry-hint semantics;
 - durable retry-floor enforcement;
 - elapsed-budget refusal;
 - the GitHub 1 MiB response cap;
 - secondary-rate-limit 403 recognition plus the one-minute no-header fallback;
 - preservation of terminal ordinary permission-denied 403 behavior.
+
+`tests/phase16-package-metadata.test.ts` additionally requires root `package-lock.json` CLI bin metadata to match `package.json`, preventing install/package drift from passing a code-only suite.
 
 Earlier phase suites remain authoritative for the underlying security/recovery behavior and are rerun by the release gate rather than duplicated or weakened.
 
