@@ -21,12 +21,14 @@ export function parseGitHubRetryAfterMs(headers: Headers, nowMs = Date.now()): n
     }
   }
 
-  const reset = headers.get("x-ratelimit-reset")?.trim();
-  if (reset && /^\d+$/.test(reset)) {
-    const epochSeconds = Number(reset);
-    if (Number.isSafeInteger(epochSeconds)) {
-      const delay = epochSeconds * 1000 - nowMs;
-      if (delay > 0) candidates.push(delay);
+  if (headers.get("x-ratelimit-remaining") === "0") {
+    const reset = headers.get("x-ratelimit-reset")?.trim();
+    if (reset && /^\d+$/.test(reset)) {
+      const epochSeconds = Number(reset);
+      if (Number.isSafeInteger(epochSeconds)) {
+        const delay = epochSeconds * 1000 - nowMs;
+        if (delay > 0) candidates.push(delay);
+      }
     }
   }
 
@@ -121,7 +123,7 @@ export class GitHubRestPullRequestClient implements GitHubPullRequestClient {
               controller.abort();
               break;
             }
-            chunks.push(Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+            chunks.push(Buffer.from(chunk));
           }
         } catch (error: unknown) {
           if (oversized) {
