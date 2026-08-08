@@ -2,11 +2,11 @@
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js 22+
 - npm
 - Git
 
-Use Linux or WSL for the closest match to repository CI and the current runtime assumptions.
+Use Linux or WSL for the closest match to repository CI and the current runtime assumptions. `.nvmrc` defines the minimum CI/runtime development line.
 
 ## Setup
 
@@ -89,4 +89,4 @@ Before a tagged release:
 4. produce checksums and build provenance for the release artifact;
 5. keep release/merge publication human-approved.
 
-A future release workflow should add SBOM/provenance generation and artifact attestation rather than relying only on a successful CI badge.
+A future release workflow should add a Node 22/24 compatibility matrix, SBOM/provenance generation, and artifact attestation rather than relying only on a successful CI badge.

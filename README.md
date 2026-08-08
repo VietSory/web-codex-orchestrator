@@ -32,7 +32,7 @@ WCO deliberately does not treat browser tabs, chat transcripts, model sessions, 
 
 ## Requirements
 
-- Node.js 20 or newer
+- Node.js 22 or newer
 - Git
 - a local repository registered in WCO configuration
 - Codex authentication for model-backed execution/review paths
