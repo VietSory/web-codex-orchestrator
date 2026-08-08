@@ -130,3 +130,52 @@ checkpoint was not yet advanced to `RESULT_READY`, a retry independently
 re-verifies and adopts the exact existing archive instead of rebuilding it with
 new bytes. This keeps crash recovery idempotent without overwriting sealed
 review evidence.
+
+## Phase 9 Web Authority Protocol boundary
+
+Phase 9 treats a Web-authored implementation archive as **untrusted until
+registered**. A valid ZIP is not authority merely because its internal
+checksums are self-consistent. Registration independently binds it to the
+canonical Phase 3 run/configuration, accepted Task Bundle, clean worktree, base
+commit/tree, actual Git inventory and exact operation preimages.
+
+Web pack intake is bounded before authority creation: the archive, entry count,
+per-entry bytes, total uncompressed bytes, operation count and source-receipt
+count all have hard limits. ZIP comments, encryption, unsupported compression,
+non-regular/directory entries, absolute/traversal/backslash paths, Unicode/case
+collisions and `.git/**` operation paths fail closed. Each non-checksum entry is
+covered exactly once by `checksums.json`; payload bytes and frozen lock/source
+artifacts are SHA-256 bound from `implementation-pack.json`.
+
+Repository claims are checked against Git rather than trusted from Web. WCO
+requires the canonical worktree to remain clean at the locked base commit,
+recomputes the base tree, parses the complete `git ls-tree -rz -l --full-tree`
+inventory, and requires the Web inventory to match entry-for-entry. Read
+coverage may reference only the exact blob object IDs in that verified
+inventory, and project-map paths must also exist uniquely in the inventory.
+Source receipt enums/fields and lock documents are runtime closed-world in
+addition to their JSON schemas.
+
+The accepted Task Bundle spec set is recomputed from bounded, stable,
+non-symlink file reads. Operation preimages are read through the same
+allocation-safe pattern: size is attested before allocation, `O_NOFOLLOW` is
+used where supported, an exact-sized buffer is read, a one-byte growth probe is
+performed, and file identity/size are rechecked through both handle and path.
+Create operations require absence/null preimage; replace/delete require the
+exact SHA-256 of existing bytes.
+
+Registered artifacts are content-addressed below
+`authority/runs/<task>/<task-bundle-sha>/artifacts/<archive-sha>/`. Registry
+ancestors must remain real directories inside the state root. The source ZIP is
+copied to a create-only immutable path and hash/size checked; WCO then parses
+and semantic-validates **that immutable registry copy again** before creating
+`registration.json`. Re-registering the same exact pack adopts the first valid
+registration and preserves its original timestamp. Different bytes/authority
+at an existing immutable path are integrity conflicts. Status reads use bounded
+stable registration reads and independently re-hash the registered archive.
+
+Phase 9 deliberately has no product-worktree mutation, agent invocation,
+commit, push, PR creation/update, mark-ready or merge path. Phase 10 may apply
+code only by re-consuming a valid Phase 9 registration and matching archive;
+chat prose, a loose patch, an mtime-selected “latest” file, or an unregistered
+archive never creates implementation authority.

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wco.local/schemas/web-read-coverage.schema.json",
+  "title": "WCO Web Read Coverage v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "repository_tree_sha", "reads"],
+  "properties": {
+    "schema_version": { "const": "2.0" },
+    "repository_tree_sha": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "reads": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "object_sha", "coverage"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+          "object_sha": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+          "coverage": { "enum": ["full", "partial"] }
+        }
+      }
+    }
+  }
+}

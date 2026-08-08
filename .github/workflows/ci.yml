@@ -41,6 +41,33 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: P9-AUTH-001 registration/idempotency
+        shell: bash
+        run: |
+          set +e
+          npx tsx --test --test-reporter=spec --test-name-pattern="P9-AUTH-001" tests/phase9-web-authority.test.ts > /tmp/p9-auth-001.log 2>&1
+          code=$?
+          cat /tmp/p9-auth-001.log
+          if [ "$code" -ne 0 ]; then
+            detail=$(tail -c 6000 /tmp/p9-auth-001.log | tr '\n' ' ' | sed 's/%/%25/g; s/:/%3A/g')
+            echo "::error title=P9-AUTH-001 diagnostic::$detail"
+            exit "$code"
+          fi
+      - name: P9-AUTH-002 checksum tamper
+        run: npx tsx --test --test-reporter=spec --test-name-pattern="P9-AUTH-002" tests/phase9-web-authority.test.ts
+      - name: P9-AUTH-003 preimage authority
+        run: npx tsx --test --test-reporter=spec --test-name-pattern="P9-AUTH-003" tests/phase9-web-authority.test.ts
+      - name: P9-AUTH-004 inventory authority
+        run: npx tsx --test --test-reporter=spec --test-name-pattern="P9-AUTH-004" tests/phase9-web-authority.test.ts
+      - name: P9-AUTH-005 dirty snapshot
+        run: npx tsx --test --test-reporter=spec --test-name-pattern="P9-AUTH-005" tests/phase9-web-authority.test.ts
+      - name: P9-AUTH-006 response envelope
+        run: npx tsx --test --test-reporter=spec --test-name-pattern="P9-AUTH-006" tests/phase9-web-authority.test.ts
+
+      - name: Phase 9 maintainer adversarial tests
+        run: npx tsx --test --test-reporter=spec tests/phase9-maintainer-hardening.test.ts
+        timeout-minutes: 2
+
       - name: Unit and fake integration tests
         run: npm test
 

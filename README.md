@@ -90,6 +90,20 @@ node dist/cli/index.js revision-status \
   --round 1 \
   --state-dir ~/.local/state/web-codex-orchestrator \
   --json
+
+# Phase 9: register an exact Web implementation pack before any Phase 10 apply.
+node dist/web-authority/standalone-cli.js register-web-pack \
+  --run-id TASK-2026-003:<task-bundle-sha256> \
+  --state-dir ~/.local/state/web-codex-orchestrator \
+  --config ~/.config/web-codex-orchestrator/config.json \
+  --pack ./downloads/wco-web-implementation-pack.zip \
+  --json
+
+node dist/web-authority/standalone-cli.js web-pack-status \
+  --run-id TASK-2026-003:<task-bundle-sha256> \
+  --state-dir ~/.local/state/web-codex-orchestrator \
+  --artifact-sha256 <registered-pack-sha256> \
+  --json
 ```
 
 The delivery order is intentional: `execute` must reach `READY_FOR_PUBLISH`,
@@ -118,6 +132,23 @@ A completed Phase 8 round ends in `RESULT_READY`; the user still decides whether
 to merge only after a later Phase 7 `APPROVED` decision. `revision-status` is a
 read-only status command. Revision rounds are limited to 1..3, matching Web
 review rounds 2..4.
+
+Phase 9 introduces the Web Authority Protocol v2. A Web implementation pack is
+not executable merely because it exists on disk or was mentioned in chat. WCO
+validates its bounded ZIP structure, full checksums, repository inventory, read
+coverage, project map, source receipts, frozen architecture/acceptance locks,
+prohibited-change policy, exact operations and exact preimages. It then
+re-attests the canonical Phase 3 run, accepted Task Bundle spec set, clean Git
+worktree, base commit/tree and actual `git ls-tree` inventory before installing
+an immutable content-addressed copy under `authority/runs/.../artifacts/<sha>/`.
+The immutable copy is parsed and semantic-validated again before
+`registration.json` is created. Phase 9 never applies the operations; Phase 10
+is allowed to consume only a matching registered artifact.
+
+`wco-web-authority` is a temporary compiled Phase 9 entry point while the main
+CLI is still organized around the Phase 1-8 command router. The command surface
+will be unified before native Phase 12 UX is frozen; it is not intended to
+become a second long-lived control plane.
 
 Add `--json` to `scan` for one machine-readable result object. Without it,
 `scan` prints a short human-readable summary; diagnostics remain on stderr.
@@ -194,3 +225,13 @@ For the Phase 8 release gate, including the full fake same-PR revision loop:
 ```bash
 npm run phase8:release-gate
 ```
+
+For the Phase 9 Web Authority Protocol v2 release gate:
+
+```bash
+npm run phase9:release-gate
+```
+
+Protocol and performance design references are in `PHASE9.md`,
+`WEB-AUTHORITY-CONTRACT.md`, `ARTIFACT-REGISTRY.md`, `PERFORMANCE.md`, and
+`UPSTREAM-COMPATIBILITY.md`.

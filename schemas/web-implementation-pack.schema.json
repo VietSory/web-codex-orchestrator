@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wco.local/schemas/web-implementation-pack.schema.json",
+  "title": "WCO Web Implementation Pack v2 Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "pack_id", "run_id", "task_id", "task_bundle_sha256", "repository", "bindings", "created_at"],
+  "properties": {
+    "schema_version": { "const": "2.0" },
+    "kind": { "const": "wco-web-implementation-pack" },
+    "pack_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "run_id": { "type": "string", "minLength": 67, "maxLength": 257 },
+    "task_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "task_bundle_sha256": { "$ref": "#/$defs/sha256" },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "base_branch", "base_commit", "tree_sha"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "base_branch": { "$ref": "#/$defs/gitBranch" },
+        "base_commit": { "$ref": "#/$defs/gitSha" },
+        "tree_sha": { "$ref": "#/$defs/gitSha" }
+      }
+    },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spec_set_sha256", "repository_inventory_sha256", "read_coverage_sha256", "project_map_sha256", "source_receipts_sha256", "preimages_sha256", "architecture_lock_sha256", "acceptance_lock_sha256", "prohibited_changes_sha256", "operations_sha256"],
+      "properties": {
+        "spec_set_sha256": { "$ref": "#/$defs/sha256" },
+        "repository_inventory_sha256": { "$ref": "#/$defs/sha256" },
+        "read_coverage_sha256": { "$ref": "#/$defs/sha256" },
+        "project_map_sha256": { "$ref": "#/$defs/sha256" },
+        "source_receipts_sha256": { "$ref": "#/$defs/sha256" },
+        "preimages_sha256": { "$ref": "#/$defs/sha256" },
+        "architecture_lock_sha256": { "$ref": "#/$defs/sha256" },
+        "acceptance_lock_sha256": { "$ref": "#/$defs/sha256" },
+        "prohibited_changes_sha256": { "$ref": "#/$defs/sha256" },
+        "operations_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "gitSha": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "gitBranch": { "type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[A-Za-z0-9._/-]+$" }
+  }
+}

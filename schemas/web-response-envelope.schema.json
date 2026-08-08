@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wco.local/schemas/web-response-envelope.schema.json",
+  "title": "WCO Web Response Envelope v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "run_id", "response_id", "in_reply_to_artifact_sha256", "decision", "payload_sha256", "created_at"],
+  "properties": {
+    "schema_version": { "const": "2.0" },
+    "kind": { "const": "wco-web-response" },
+    "run_id": { "type": "string", "minLength": 67, "maxLength": 257 },
+    "response_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "in_reply_to_artifact_sha256": { "$ref": "#/$defs/sha256" },
+    "decision": { "enum": ["APPROVE", "REVISE", "ESCALATE"] },
+    "payload_sha256": { "$ref": "#/$defs/sha256" },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}
