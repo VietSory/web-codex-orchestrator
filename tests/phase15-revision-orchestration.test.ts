@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runNextTransition, type OrchestrationDependencies } from "../src/orchestration/transition-runner.js";
+import { readRunLedger } from "../src/orchestration/ledger.js";
 import type { LifecycleSnapshot } from "../src/orchestration/planner.js";
 
 const RUN_ID = `TASK-P15:${"a".repeat(64)}`;
@@ -119,13 +120,16 @@ test("P15-ORCH-003 completed revision is quiescent and consumes no extra model t
   assert.equal(result.ledger.transition_attempts.REVISE, 0);
 });
 
-test("P15-ORCH-004 revision is limited to Web review rounds 1 through 3", async (t) => {
+test("P15-ORCH-004 revision is limited to Web review rounds 1 through 3 before an attempt is consumed", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-p15-round-"));
   t.after(async () => fs.rm(root, { recursive: true, force: true }));
   const state = snapshot();
   const deps = dependencies(state, async () => revisionReceipt());
   deps.readWebReview = async () => ({ ...webReview(), review_round: 4 } as never);
-  const result = await runNextTransition({ runId: RUN_ID, stateDirectory: root, configPath: path.join(root, "config.json"), dependencies: deps });
-  assert.equal(result.progressed, false);
-  assert.equal(result.ledger.retry.last_failure_code, "ORCHESTRATION_REVISION_AUTHORITY_INVALID");
+  await assert.rejects(
+    runNextTransition({ runId: RUN_ID, stateDirectory: root, configPath: path.join(root, "config.json"), dependencies: deps }),
+    (error: unknown) => error instanceof Error && "code" in error && (error as { code?: unknown }).code === "ORCHESTRATION_REVISION_AUTHORITY_INVALID",
+  );
+  const ledger = await readRunLedger(root, RUN_ID);
+  assert.equal(ledger?.transition_attempts.REVISE, 0);
 });
