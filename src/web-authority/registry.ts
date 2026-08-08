@@ -211,5 +211,11 @@ export async function readArtifactRegistration(stateDirectory: string, taskId: s
   await assertExistingAuthorityFileSafe(stateDirectory, paths.archivePath);
   const archive = await sha256File(paths.archivePath);
   if (archive.sha256 !== record.artifact_sha256 || archive.size !== record.artifact_size_bytes) throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", "Registered artifact bytes no longer match the registration record.");
+
+  const registeredPack = await readAndValidateWebImplementationPack(paths.archivePath);
+  validateWebImplementationPackSemantics(registeredPack);
+  if (!packMatchesExistingRegistration(record, registeredPack)) {
+    throw new WebAuthorityError("WEB_AUTHORITY_REGISTRY_INVALID", "Registration record no longer matches the immutable registered archive manifest.");
+  }
   return record;
 }
