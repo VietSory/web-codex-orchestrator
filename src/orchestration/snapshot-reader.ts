@@ -37,7 +37,21 @@ export async function readLifecycleSnapshot(stateDirectory: string, runId: strin
   const webReviewState = review?.state === "APPROVED" || review?.state === "REVISION_REQUESTED" || review?.state === "ESCALATED"
     ? review.state
     : review ? "PENDING" : null;
-  const relevantRevision = review?.state === "REVISION_REQUESTED" && revision?.revision_round === review.review_round ? revision : null;
+  const relevantRevision = review?.state === "REVISION_REQUESTED"
+    && revision?.run_id === runId
+    && revision.revision_round === review.review_round
+    && revision.revision_request_sha256 === review.revision_request_sha256
+    && revision.previous_verdict_sha256 === review.verdict_sha256
+    && revision.previous_pr_head_sha === review.fresh_attested_head_sha
+    && revision.pull_request_number === review.pull_request_number
+    ? revision
+    : null;
+  const revisionResultReady = relevantRevision?.state === "RESULT_READY"
+    && relevantRevision.new_published_commit_sha !== null
+    && relevantRevision.remote_branch_sha === relevantRevision.new_published_commit_sha
+    && relevantRevision.result_bundle_sha256 !== null
+    && relevantRevision.result_manifest_sha256 !== null
+    && relevantRevision.next_review_round === relevantRevision.revision_round + 1;
   return {
     registered_artifact_sha256: selected.artifact_sha256,
     executor_state: executor?.state ?? null,
@@ -46,6 +60,6 @@ export async function readLifecycleSnapshot(stateDirectory: string, runId: strin
     result_bundle_ready: result?.state === "READY_FOR_WEB_REVIEW" && result.run_id === runId,
     web_review_state: webReviewState,
     revision_state: relevantRevision?.state ?? null,
-    revision_result_ready: relevantRevision?.state === "RESULT_READY",
+    revision_result_ready: revisionResultReady,
   };
 }
