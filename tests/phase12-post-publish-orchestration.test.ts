@@ -67,7 +67,9 @@ test("P12-ORCH-001 OPEN_DRAFT_PR is checkpointed once and advances only after an
   assert.equal(result.planned.transition, "PACKAGE_RESULT");
   assert.equal(result.ledger.transition_attempts.OPEN_DRAFT_PR, 1);
   assert.equal(result.ledger.last_completed_transition, "OPEN_DRAFT_PR");
-  assert.equal(result.ledger.current_attempt?.status, "SUCCEEDED");
+  assert.equal(result.ledger.current_attempt, null);
+  assert.equal(result.ledger.next_transition, "PACKAGE_RESULT");
+  assert.equal(result.ledger.retry.last_failure_code, null);
 });
 
 test("P12-ORCH-002 non-Draft or mismatched GitHub result fails closed and does not advance", async (t) => {
@@ -79,7 +81,9 @@ test("P12-ORCH-002 non-Draft or mismatched GitHub result fails closed and does n
   assert.equal(result.progressed, false);
   assert.equal(result.planned.transition, "OPEN_DRAFT_PR");
   assert.equal(result.ledger.transition_attempts.OPEN_DRAFT_PR, 1);
-  assert.equal(result.ledger.current_attempt?.failure_code, "ORCHESTRATION_DRAFT_PR_INCOMPLETE");
+  assert.equal(result.ledger.current_attempt, null);
+  assert.equal(result.ledger.retry.last_failure_code, "ORCHESTRATION_DRAFT_PR_INCOMPLETE");
+  assert.equal(result.ledger.diagnostics.at(-1)?.code, "ORCHESTRATION_DRAFT_PR_INCOMPLETE");
 });
 
 test("P12-ORCH-003 PACKAGE_RESULT remains a boundary until Phase 13 and never repeats Draft PR creation", async (t) => {
