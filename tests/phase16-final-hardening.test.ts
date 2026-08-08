@@ -154,3 +154,27 @@ test("P16-OPS-008 secondary Retry-After ignores unrelated primary reset while pr
   });
   assert.equal(parseGitHubRetryAfterMs(headers, now), 5_000);
 });
+
+test("P16-OPS-009 local retry backoff beyond remaining elapsed budget blocks immediately", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-p16-local-retry-budget-"));
+  t.after(async () => fs.rm(root, { recursive: true, force: true }));
+  const started = await checkpointAttempt({
+    stateDirectory: root,
+    runId: RUN_ID,
+    transition: "OPEN_DRAFT_PR",
+    payload: { head: "5".repeat(40) },
+    now: new Date("2026-08-08T00:00:00.000Z"),
+  });
+  started.budget.max_elapsed_ms = 1_001;
+  await writeRunLedger(root, started);
+  const failed = await failAttempt({
+    stateDirectory: root,
+    runId: RUN_ID,
+    attemptId: started.current_attempt!.attempt_id,
+    failureCode: "NETWORK_UNAVAILABLE",
+    message: "temporary network outage",
+    now: new Date("2026-08-08T00:00:01.000Z"),
+  });
+  assert.equal(failed.status, "BLOCKED");
+  assert.equal(failed.retry.next_retry_at, null);
+});
