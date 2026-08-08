@@ -7,7 +7,7 @@ import {
   minimalCodexEnvironment,
   resolveCodexRuntime,
 } from "../runtime/codex-runtime.js";
-import { spawnBounded } from "../runtime/spawn-bounded.js";
+import { spawnBounded, type SpawnBoundedResult } from "../runtime/spawn-bounded.js";
 import { pauseRun, resumeRun } from "./controller.js";
 import { readRunLedger } from "./ledger.js";
 import { runDoctor, type DoctorProbe, type DoctorReport } from "./doctor.js";
@@ -140,6 +140,15 @@ function fail(io: ControlCliIo, error: unknown, json: boolean): number {
   return 2;
 }
 
+function processFailureSummary(result: SpawnBoundedResult, fallback: string): string {
+  const stderr = result.stderr.trim();
+  if (stderr) return stderr;
+  if (result.spawnError instanceof Error) return result.spawnError.message;
+  if (result.spawnError !== undefined) return String(result.spawnError);
+  if (result.timedOut) return `${fallback} (timed out)`;
+  return fallback;
+}
+
 function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
   const configPromise = loadTrustedConfig(args.configPath!);
   const runtimePromise = configPromise.then((config) => resolveCodexRuntime(config.runtime, args.stateDirectory));
@@ -198,7 +207,7 @@ function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
           shell: false,
         });
         if (result.exitCode !== 0 || result.timedOut || result.spawnError) {
-          return { severity: "FAIL" as const, summary: result.stderr.trim() || result.spawnError || "git unavailable" };
+          return { severity: "FAIL" as const, summary: processFailureSummary(result, "git unavailable") };
         }
         return { severity: "OK" as const, summary: result.stdout.trim() };
       },
@@ -218,7 +227,7 @@ function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
           shell: false,
         });
         if (result.exitCode !== 0 || result.timedOut || result.spawnError) {
-          return { severity: "FAIL" as const, summary: result.stderr.trim() || result.spawnError || "pinned Codex runtime unavailable" };
+          return { severity: "FAIL" as const, summary: processFailureSummary(result, "pinned Codex runtime unavailable") };
         }
         const version = assertCompatibleCodexCliVersion(`${result.stdout}\n${result.stderr}`);
         return { severity: "OK" as const, summary: `pinned Codex ${version}` };
