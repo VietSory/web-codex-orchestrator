@@ -94,6 +94,7 @@ export async function installImmutableDurableRevisionStateFile(
           `Immutable revision artifact already exists with different bytes: ${finalPath}`,
         );
       }
+      await syncRevisionDirectory(path.dirname(finalPath));
     }
   } catch (error) {
     if (error instanceof RevisionError) throw error;
