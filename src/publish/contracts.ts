@@ -45,6 +45,10 @@ export interface GitCommandResult {
   stdout: string;
   stderr: string;
   signal?: string | null;
+  timed_out?: boolean;
+  cancelled?: boolean;
+  stdout_truncated?: boolean;
+  stderr_truncated?: boolean;
 }
 
 export interface GitCommandRunner {
