@@ -16,7 +16,7 @@ GitHub mutation work is therefore serialized by transition ownership. This follo
 
 Retry identity is deterministic: the transition kind plus canonical payload is SHA-256 sealed before external work. Retryable transport failures reuse that identity instead of regenerating a different request.
 
-The controller has bounded total-attempt, per-transition, elapsed-time and consecutive-failure budgets. Retry delay is deterministic exponential backoff with jitter. GitHub `Retry-After` and `X-RateLimit-Reset` values are parsed as bounded server hints and act only as a minimum delay; if the requested wait exceeds the remaining orchestration elapsed budget, WCO blocks rather than sleeping past its budget.
+The controller has bounded total-attempt, per-transition, elapsed-time and consecutive-failure budgets. Retry delay is deterministic exponential backoff with jitter. For GitHub rate-limit failures, WCO uses a valid `Retry-After` delay when supplied, uses `X-RateLimit-Reset` only when `X-RateLimit-Remaining` is `0`, and otherwise applies the documented one-minute secondary-limit fallback when GitHub identifies a secondary limit. Applicable waits become a bounded minimum delay; if the required wait exceeds the remaining orchestration elapsed budget, WCO blocks rather than sleeping past its budget.
 
 Authority/policy failures are terminal and are not converted into retries to make progress appear green.
 
@@ -24,7 +24,7 @@ Authority/policy failures are terminal and are not converted into retries to mak
 
 WCO process execution uses explicit executable/argument vectors, deadlines/cancellation and bounded stdout/stderr retention. Shell interpolation is not the default execution model. Where the runtime exposes only parent-process cancellation, WCO documents that boundary instead of claiming guaranteed descendant/process-tree termination on every platform.
 
-The GitHub REST client retains at most 1 MiB of response body. Chunks are accumulated with a byte counter and concatenated once, avoiding repeated whole-buffer copies. Error diagnostics are separately bounded and the configured token is redacted from retained error text.
+The GitHub REST client retains at most 1 MiB of response body. Chunks are copied into exact bounded buffers, accumulated with a byte counter and concatenated once, avoiding repeated whole-buffer copies or retention of a larger stream backing buffer. Error diagnostics are separately bounded and the configured token is redacted from retained error text.
 
 Revision state/evidence reads are bounded and identity-stable. Revision canonical artifacts are capped at 2 MiB. Mutable revision receipts use synced temporary writes plus atomic rename; immutable artifacts use synced temporary bytes plus atomic hard-link installation and exact-byte idempotency.
 
@@ -74,11 +74,12 @@ GitHub CI is responsible for deterministic properties that WCO owns:
 - bounded ledger/state diagnostics;
 - bounded process and GitHub response retention;
 - crash recovery without blind side-effect replay;
-- exact retry/server-hint behavior;
+- exact primary/secondary GitHub retry behavior;
 - token-budget preflight for model-bearing outer transitions;
 - revision usage accounted once across crash adoption;
 - immutable state idempotency/conflict rejection;
-- status/next paths that do not start model work.
+- status/next paths that do not start model work;
+- install/package CLI metadata consistency.
 
 Native/local testing is responsible for properties GitHub CI cannot honestly prove:
 
