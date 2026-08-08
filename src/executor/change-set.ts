@@ -1,7 +1,7 @@
 import { spawnBounded } from "../runtime/spawn-bounded.js";
 import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
 import crypto from "node:crypto";
-import { ExecutorError, type ExecutorReceipt } from "./contracts.js";
+import { ExecutorError, type ExecutorReceipt, type ExecutorTransactionOperation } from "./contracts.js";
 import { readStableWorktreeFile } from "./worktree-io.js";
 
 function cleanGitEnvironment(): Record<string, string> {
@@ -43,13 +43,16 @@ async function currentChangedPaths(receipt: ExecutorReceipt): Promise<string[]> 
   return parseStatusPaths(raw);
 }
 
+function expectedMode(operation: ExecutorTransactionOperation): number | null {
+  if (operation.postimage_sha256 === null) return null;
+  return operation.kind === "create_file" ? 0o644 : operation.original_mode;
+}
+
 export async function attestExecutorResumeChangedPaths(receipt: ExecutorReceipt): Promise<void> {
   const actual = await currentChangedPaths(receipt);
   const allowed = new Set(receipt.operations.map((operation) => operation.path));
   const unexpected = actual.filter((filePath) => !allowed.has(filePath));
-  if (unexpected.length > 0) {
-    throw new ExecutorError("EXECUTOR_UNREGISTERED_CHANGE", `Crash-resume worktree contains unregistered changes: [${unexpected.join(", ")}].`);
-  }
+  if (unexpected.length > 0) throw new ExecutorError("EXECUTOR_UNREGISTERED_CHANGE", `Crash-resume worktree contains unregistered changes: [${unexpected.join(", ")}].`);
 }
 
 export async function attestExecutorChangeSet(receipt: ExecutorReceipt): Promise<string> {
@@ -57,17 +60,18 @@ export async function attestExecutorChangeSet(receipt: ExecutorReceipt): Promise
   const expected = receipt.operations.map((operation) => operation.path).sort();
   if (actual.length !== expected.length || actual.some((value, index) => value !== expected[index])) throw new ExecutorError("EXECUTOR_UNREGISTERED_CHANGE", `Worktree changed-path set differs from registered operations. Expected [${expected.join(", ")}], observed [${actual.join(", ")}].`);
 
-  const postimages: Array<{ path: string; sha256: string | null }> = [];
+  const postimages: Array<{ path: string; sha256: string | null; mode: number | null }> = [];
   for (const operation of receipt.operations) {
     const current = await readStableWorktreeFile(receipt.worktree_path, operation.path);
+    const mode = expectedMode(operation);
     if (operation.postimage_sha256 === null) {
       if (current !== null) throw new ExecutorError("EXECUTOR_POSTIMAGE_MISMATCH", `Deleted path reappeared: '${operation.path}'.`);
-      postimages.push({ path: operation.path, sha256: null });
+      postimages.push({ path: operation.path, sha256: null, mode: null });
     } else {
-      if (!current || current.sha256 !== operation.postimage_sha256) throw new ExecutorError("EXECUTOR_POSTIMAGE_MISMATCH", `Postimage drifted after apply: '${operation.path}'.`);
-      postimages.push({ path: operation.path, sha256: current.sha256 });
+      if (!current || current.sha256 !== operation.postimage_sha256 || mode === null || current.mode !== mode) throw new ExecutorError("EXECUTOR_POSTIMAGE_MISMATCH", `Postimage bytes or mode drifted after apply: '${operation.path}'.`);
+      postimages.push({ path: operation.path, sha256: current.sha256, mode: current.mode });
     }
   }
   postimages.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
-  return crypto.createHash("sha256").update(canonicalJsonBuffer({ version: "1.0", run_id: receipt.run_id, artifact_sha256: receipt.artifact_sha256, base_commit: receipt.base_commit, postimages })).digest("hex");
+  return crypto.createHash("sha256").update(canonicalJsonBuffer({ version: "1.1", run_id: receipt.run_id, artifact_sha256: receipt.artifact_sha256, base_commit: receipt.base_commit, postimages })).digest("hex");
 }

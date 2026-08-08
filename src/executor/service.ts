@@ -4,7 +4,8 @@ import { acquireExecutorLock, readExecutorReceipt, releaseExecutorLock, writeExe
 import { applyExecutorTransaction, prepareExecutorTransaction } from "./applier.js";
 import { attestExecutorChangeSet, attestExecutorResumeChangedPaths } from "./change-set.js";
 import { boundedEvidence, type ExecutorReviewerPort, type ExecutorVerifierPort } from "./gates.js";
-import { persistExecutorEvidence } from "./evidence-store.js";
+import { attestPersistedExecutorGateEvidence, persistExecutorEvidence } from "./evidence-store.js";
+import { assertExecutorTransactionBoundToPack } from "./transaction-authority.js";
 import { ExecutorError, type ExecutorReceipt } from "./contracts.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -21,9 +22,7 @@ function pushError(receipt: ExecutorReceipt, code: string, message: string, now:
 }
 function assertReceiptAuthority(receipt: ExecutorReceipt, source: Awaited<ReturnType<typeof loadExecutorSource>>): void {
   const run = source.trusted.runReceipt;
-  if (receipt.run_id !== run.run_id || receipt.task_id !== run.task_id || receipt.task_bundle_sha256 !== run.archive_sha256 || receipt.artifact_sha256 !== source.registration.artifact_sha256 || receipt.pack_id !== source.registration.pack_id || receipt.repository_id !== run.repository_id || receipt.base_branch !== run.base_branch || receipt.base_commit !== run.base_commit || receipt.base_tree_sha !== source.registration.repository.tree_sha || receipt.worktree_path !== run.worktree_path || receipt.registration_manifest_sha256 !== source.registration.manifest_sha256) {
-    throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", "Persisted executor checkpoint no longer matches canonical Phase 3/9 authority.");
-  }
+  if (receipt.run_id !== run.run_id || receipt.task_id !== run.task_id || receipt.task_bundle_sha256 !== run.archive_sha256 || receipt.artifact_sha256 !== source.registration.artifact_sha256 || receipt.pack_id !== source.registration.pack_id || receipt.repository_id !== run.repository_id || receipt.base_branch !== run.base_branch || receipt.base_commit !== run.base_commit || receipt.base_tree_sha !== source.registration.repository.tree_sha || receipt.worktree_path !== run.worktree_path || receipt.registration_manifest_sha256 !== source.registration.manifest_sha256) throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", "Persisted executor checkpoint no longer matches canonical Phase 3/9 authority.");
 }
 async function reattestDigest(receipt: ExecutorReceipt, expected: string | null): Promise<string> {
   const digest = await attestExecutorChangeSet(receipt);
@@ -62,6 +61,8 @@ export async function executeRegisteredWebPack(options: {
 
     if (receipt) {
       assertReceiptAuthority(receipt, source);
+      assertExecutorTransactionBoundToPack(receipt, source.pack);
+      await attestPersistedExecutorGateEvidence(options.stateDirectory, receipt);
       if (receipt.state === "READY_FOR_PUBLISH") {
         await reattestDigest(receipt, receipt.change_set_digest);
         return receipt;
