@@ -24,6 +24,22 @@ interface PullRequestResponse {
 const PINNED_GITHUB_API_URL = "https://api.github.com";
 const DEFAULT_TIMEOUT_MS = 10_000;
 
+function githubApiBaseUrl(): string {
+  const configured = process.env.GITHUB_API_URL?.trim();
+  if (!configured || configured === PINNED_GITHUB_API_URL || configured === `${PINNED_GITHUB_API_URL}/`) return PINNED_GITHUB_API_URL;
+  let parsed: URL;
+  try {
+    parsed = new URL(configured);
+  } catch {
+    throw new ResultBundleError("RESULT_CONFIG_INVALID", "GITHUB_API_URL is not a valid URL.");
+  }
+  const loopback = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "[::1]" || parsed.hostname === "::1";
+  if (!loopback || (parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.username || parsed.password || (parsed.pathname !== "/" && parsed.pathname !== "")) {
+    throw new ResultBundleError("RESULT_CONFIG_INVALID", "Token-bearing GitHub attestation permits only api.github.com or an explicit loopback test endpoint.");
+  }
+  return parsed.origin;
+}
+
 function assertPrResponse(value: unknown): asserts value is PullRequestResponse {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new ResultBundleError("RESULT_PR_API_RESPONSE_INVALID", "PR response is not an object.");
@@ -156,7 +172,7 @@ export class GitHubRestAttestationClient implements GitHubAttestationClient {
   }
 
   async getPullRequest(owner: string, repo: string, prNumber: number): Promise<unknown> {
-    const url = `${PINNED_GITHUB_API_URL}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${prNumber}`;
+    const url = `${githubApiBaseUrl()}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${prNumber}`;
     let response: Response;
     try {
       response = await this.fetchImplementation(url, {
