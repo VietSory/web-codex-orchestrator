@@ -1,20 +1,32 @@
+import path from "node:path";
 import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
 import { reviewWithSol } from "../agent/sol-reviewer.js";
 import { reviewWithTerra } from "../agent/terra-reviewer.js";
-import { loadPhase4Config, readBundleJson } from "../execution/execution-config.js";
+import { loadPhase4Config } from "../execution/execution-config.js";
 import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
 import { CodexVerificationSandbox } from "../verifier/codex-sandbox.js";
 import { verifyDeterministically } from "../verifier/verifier.js";
+import { readBoundedStableAuthorityFile } from "../web-authority/task-spec-authority.js";
 import { resolveTrustedRunContext } from "../web-review/trusted-run-context.js";
 import { ExecutorError } from "./contracts.js";
 import type { ExecutorReviewerPort, ExecutorReviewRequest, ExecutorVerifierPort, ExecutorVerificationRequest } from "./gates.js";
 
 const MAX_REVIEW_PROMPT_BYTES = 64 * 1024;
 const MAX_COMMAND_TAIL_CHARS = 4096;
+const MAX_VALIDATION_BYTES = 8 * 1024 * 1024;
 
 function tail(value: string | undefined): string {
   if (!value) return "";
   return value.length <= MAX_COMMAND_TAIL_CHARS ? value : value.slice(value.length - MAX_COMMAND_TAIL_CHARS);
+}
+
+async function loadValidationDocument(acceptedBundlePath: string): Promise<unknown> {
+  try {
+    const bytes = await readBoundedStableAuthorityFile(path.join(acceptedBundlePath, "validation.json"), MAX_VALIDATION_BYTES, "WEB_AUTHORITY_BINDING_MISMATCH", "accepted validation.json");
+    return JSON.parse(bytes.toString("utf8")) as unknown;
+  } catch (error) {
+    throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", `Accepted validation authority is unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 function reviewPrompt(request: ExecutorReviewRequest): string {
@@ -47,9 +59,12 @@ export async function createProductionExecutorGates(options: { runId: string; st
   const runtime = await resolveCodexRuntime(config.runtime, options.stateDirectory);
   const agentClient = new CodexSdkAgentClient(runtime);
   const sandbox = new CodexVerificationSandbox(runtime);
-  // Fail before product mutation when the local runtime/auth/sandbox is unusable.
+  // Fail before product mutation when local auth or the verifier sandbox is unusable.
   await Promise.all([agentClient.checkAvailability(), sandbox.checkAvailability()]);
-  const bundle = await readBundleJson(trusted.runReceipt.accepted_bundle_path);
+  // Phase 10 needs only the deterministic validation contract here. Avoid the
+  // Phase 4 broad bundle reader so normal execution does not deserialize
+  // unrelated plan/request/test-matrix documents solely to run verification.
+  const validation = await loadValidationDocument(trusted.runReceipt.accepted_bundle_path);
 
   const verifier: ExecutorVerifierPort = {
     async verify(request: ExecutorVerificationRequest) {
@@ -57,7 +72,7 @@ export async function createProductionExecutorGates(options: { runId: string; st
         worktreePath: request.worktree_path,
         baseCommit: trusted.runReceipt.base_commit,
         branchName: trusted.runReceipt.branch_name,
-        validation: bundle.validation,
+        validation,
         policy: config.verification,
         sandbox,
         ...(request.signal ? { signal: request.signal } : {}),

@@ -1,13 +1,12 @@
-import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
-import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
 import { spawnBounded } from "../runtime/spawn-bounded.js";
 import { resolveTrustedRunContext } from "../web-review/trusted-run-context.js";
 import { WebAuthorityError, type ArtifactRegistrationRecord, type WebAuthorityLimits, type WebImplementationPack } from "./contracts.js";
 import { readAndValidateWebImplementationPack } from "./pack-reader.js";
 import { registerWebImplementationPackArtifact } from "./registry.js";
+import { computeAcceptedTaskSpecSetSha256, readBoundedStableAuthorityFile } from "./task-spec-authority.js";
 
 interface InventoryEntry {
   path: string;
@@ -40,9 +39,7 @@ function cleanProcessEnvironment(): Record<string, string> {
 
 async function runGit(cwd: string, args: string[], maximumBytes = 16 * 1024 * 1024): Promise<string> {
   const result = await spawnBounded({ executable: "git", args: ["-C", cwd, ...args], environment: cleanProcessEnvironment(), timeoutMs: 15_000, stdoutMaxBytes: maximumBytes, stderrMaxBytes: 65_536, shell: false });
-  if (result.spawnError || result.timedOut || result.cancelled || result.exitCode !== 0 || result.stdoutTruncated) {
-    throw new WebAuthorityError("WEB_AUTHORITY_BINDING_MISMATCH", `Git attestation failed for '${args.join(" ")}': ${result.stderr.trim() || "non-zero/truncated result"}`);
-  }
+  if (result.spawnError || result.timedOut || result.cancelled || result.exitCode !== 0 || result.stdoutTruncated) throw new WebAuthorityError("WEB_AUTHORITY_BINDING_MISMATCH", `Git attestation failed for '${args.join(" ")}': ${result.stderr.trim() || "non-zero/truncated result"}`);
   return result.stdout;
 }
 
@@ -51,60 +48,6 @@ function parsePackJson<T>(pack: WebImplementationPack, name: string): T {
   if (!bytes) throw new WebAuthorityError("WEB_AUTHORITY_MANIFEST_INVALID", `Missing '${name}'.`);
   try { return JSON.parse(bytes.toString("utf8")) as T; }
   catch (error) { throw new WebAuthorityError("WEB_AUTHORITY_MANIFEST_INVALID", `Invalid JSON in '${name}': ${error instanceof Error ? error.message : String(error)}`); }
-}
-
-async function readBoundedStableFile(filePath: string, maximumBytes: number, code: "WEB_AUTHORITY_BINDING_MISMATCH" | "WEB_AUTHORITY_PREIMAGE_INVALID", label: string): Promise<Buffer> {
-  const before = await fs.lstat(filePath).catch((error) => {
-    throw new WebAuthorityError(code, `Cannot inspect ${label}: ${error instanceof Error ? error.message : String(error)}`);
-  });
-  if (before.isSymbolicLink() || !before.isFile()) throw new WebAuthorityError(code, `${label} must be a regular non-symlink file.`);
-  if (before.size > maximumBytes) throw new WebAuthorityError(code, `${label} exceeds ${maximumBytes} bytes.`);
-  const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
-  const handle = await fs.open(filePath, fsConstants.O_RDONLY | noFollow).catch((error) => {
-    throw new WebAuthorityError(code, `Cannot safely open ${label}: ${error instanceof Error ? error.message : String(error)}`);
-  });
-  try {
-    const opened = await handle.stat();
-    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size || opened.size > maximumBytes) {
-      throw new WebAuthorityError(code, `${label} changed before bounded read.`);
-    }
-    const bytes = Buffer.alloc(opened.size);
-    let offset = 0;
-    while (offset < bytes.byteLength) {
-      const { bytesRead } = await handle.read(bytes, offset, bytes.byteLength - offset, offset);
-      if (bytesRead === 0) throw new WebAuthorityError(code, `${label} was truncated during bounded read.`);
-      offset += bytesRead;
-    }
-    const probe = Buffer.alloc(1);
-    const extra = await handle.read(probe, 0, 1, offset);
-    if (extra.bytesRead !== 0) throw new WebAuthorityError(code, `${label} grew during bounded read.`);
-    const afterHandle = await handle.stat();
-    const afterPath = await fs.lstat(filePath);
-    if (afterHandle.dev !== before.dev || afterHandle.ino !== before.ino || afterHandle.size !== before.size || afterPath.isSymbolicLink() || !afterPath.isFile() || afterPath.dev !== before.dev || afterPath.ino !== before.ino || afterPath.size !== before.size) {
-      throw new WebAuthorityError(code, `${label} changed during bounded read.`);
-    }
-    return bytes;
-  } finally { await handle.close(); }
-}
-
-async function computeTaskSpecSetSha256(bundlePath: string, taskId: string, runId: string, archiveSha256: string): Promise<string> {
-  const names = ["manifest.json", "REQUEST.md", "PLAN.md", "RULES.md", "RESEARCH.md", "SOURCES.md", "VALIDATION.md", "acceptance.json", "checksums.json", "test-matrix.json", "validation.json", "risk-policy.json"];
-  const files: Array<{ name: string; buffer: Buffer }> = [];
-  for (const name of names) files.push({ name, buffer: await readBoundedStableFile(path.join(bundlePath, name), 8_388_608, "WEB_AUTHORITY_BINDING_MISMATCH", `accepted task file '${name}'`) });
-  const readme = Buffer.from([
-    "# Task Specification Overview",
-    "",
-    `Task ID: \`${taskId}\``,
-    `Run ID: \`${runId}\``,
-    `Archive SHA-256: \`${archiveSha256}\``,
-    "",
-    "This directory contains the task specification and spec-lock.",
-    "Files copied from the accepted task bundle are preserved verbatim.",
-    "The spec_set_sha256 recorded in task/spec-lock.json covers the authoritative files listed in spec-lock, excluding spec-lock.json itself.",
-  ].join("\n") + "\n", "utf8");
-  files.push({ name: "README.md", buffer: readme });
-  const authoritative = files.sort((a, b) => lexical(a.name, b.name)).map((entry) => ({ path: `task/${entry.name}`, sha256: sha256(entry.buffer), size_bytes: entry.buffer.byteLength }));
-  return sha256(canonicalJsonBuffer(authoritative));
 }
 
 function parseGitInventory(raw: string): InventoryEntry[] {
@@ -124,9 +67,7 @@ function parseGitInventory(raw: string): InventoryEntry[] {
 
 function validateInventory(pack: WebImplementationPack, actual: InventoryEntry[]): Map<string, InventoryEntry> {
   const document = parsePackJson<InventoryDocument>(pack, "repository-inventory.json");
-  if (document.schema_version !== "2.0" || document.repository_tree_sha !== pack.manifest.repository.tree_sha || !Array.isArray(document.entries)) {
-    throw new WebAuthorityError("WEB_AUTHORITY_BINDING_MISMATCH", "repository-inventory.json has invalid snapshot binding.");
-  }
+  if (document.schema_version !== "2.0" || document.repository_tree_sha !== pack.manifest.repository.tree_sha || !Array.isArray(document.entries)) throw new WebAuthorityError("WEB_AUTHORITY_BINDING_MISMATCH", "repository-inventory.json has invalid snapshot binding.");
   const expected = [...document.entries].sort((a, b) => lexical(a.path, b.path));
   if (expected.length !== actual.length) throw new WebAuthorityError("WEB_AUTHORITY_BINDING_MISMATCH", `Repository inventory count mismatch: Web=${expected.length}, Git=${actual.length}.`);
   const map = new Map<string, InventoryEntry>();
@@ -173,7 +114,7 @@ async function readWorktreePreimage(worktreePath: string, relativePath: string):
     if (stat.isSymbolicLink()) throw new WebAuthorityError("WEB_AUTHORITY_PREIMAGE_INVALID", `Operation path crosses a symbolic link: '${relativePath}'.`);
     const final = index === segments.length - 1;
     if (!final && !stat.isDirectory()) throw new WebAuthorityError("WEB_AUTHORITY_PREIMAGE_INVALID", `Operation ancestor is not a directory: '${relativePath}'.`);
-    if (final) return await readBoundedStableFile(current, 8_388_608, "WEB_AUTHORITY_PREIMAGE_INVALID", `operation preimage '${relativePath}'`);
+    if (final) return await readBoundedStableAuthorityFile(current, 8_388_608, "WEB_AUTHORITY_PREIMAGE_INVALID", `operation preimage '${relativePath}'`);
   }
   return null;
 }
@@ -207,7 +148,7 @@ export async function registerWebImplementationPack(options: { runId: string; st
   const inventoryRaw = await runGit(trusted.trustedRepoPath, ["ls-tree", "-rz", "-l", "--full-tree", run.base_commit], 16 * 1024 * 1024);
   const inventory = validateInventory(pack, parseGitInventory(inventoryRaw));
   validateReadCoverage(pack, inventory);
-  const specSetSha256 = await computeTaskSpecSetSha256(run.accepted_bundle_path, run.task_id, run.run_id, run.archive_sha256);
+  const specSetSha256 = await computeAcceptedTaskSpecSetSha256(run.accepted_bundle_path, run.task_id, run.run_id, run.archive_sha256);
   if (specSetSha256 !== pack.manifest.bindings.spec_set_sha256) throw new WebAuthorityError("WEB_AUTHORITY_BINDING_MISMATCH", "Web pack spec_set_sha256 differs from the accepted Task Bundle authority.");
   await validateOperationPreimages(pack, run.worktree_path);
   return await registerWebImplementationPackArtifact({ stateDirectory: options.stateDirectory, sourceArchivePath: options.archivePath, pack, registeredAt: (options.now ? options.now() : new Date()).toISOString() });
