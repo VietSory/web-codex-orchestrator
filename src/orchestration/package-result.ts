@@ -1,57 +1,47 @@
-import { spawn } from "node:child_process";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { loadTrustedConfig } from "../config/config-loader.js";
+import { GitRunner as SecureGitRunner } from "../git/git-runner.js";
 import { GitHubRestAttestationClient } from "../result-bundle/github-attestation.js";
 import type { GitRunner } from "../result-bundle/git-evidence-reader.js";
+import { DEFAULT_RESULT_BUNDLE_LIMITS, type ResultBundleReceipt, type ResultBundleLimits } from "../result-bundle/contracts.js";
 import { packageResultBundle } from "../result-bundle/result-bundle-service.js";
-import type { ResultBundleReceipt } from "../result-bundle/contracts.js";
 import { OrchestrationError } from "./contracts.js";
+import { prepareOrchestrationDirectory } from "./ledger.js";
 
-function createGitRunner(): GitRunner {
-  function run(args: string[], cwd: string): Promise<{ stdout: string }> {
-    return new Promise((resolve, reject) => {
-      const child = spawn("git", args, {
-        cwd,
-        stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-      });
-      const stdout: Buffer[] = [];
-      const stderr: Buffer[] = [];
-      child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-      child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-      child.once("error", reject);
-      child.once("close", (code) => {
-        if (code !== 0) {
-          reject(new OrchestrationError("ORCHESTRATION_RESULT_GIT_FAILED", `git exited with code ${code ?? "null"}: ${Buffer.concat(stderr).toString("utf8").slice(0, 4096)}`));
-          return;
-        }
-        resolve({ stdout: Buffer.concat(stdout).toString("utf8") });
-      });
-    });
+async function prepareResultGitRuntime(stateDirectory: string): Promise<string> {
+  const runtime = path.resolve(stateDirectory, "orchestration", "result-git-runtime");
+  await prepareOrchestrationDirectory(stateDirectory, runtime);
+
+  const hooks = path.join(runtime, "empty-hooks");
+  await fs.mkdir(hooks, { mode: 0o700 }).catch(async (error) => {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  });
+  const hooksStat = await fs.lstat(hooks);
+  if (hooksStat.isSymbolicLink() || !hooksStat.isDirectory() || await fs.realpath(hooks) !== hooks) {
+    throw new OrchestrationError("ORCHESTRATION_RESULT_GIT_FAILED", "Result Bundle Git hooks directory is unsafe.");
   }
 
-  function runBinary(args: string[], cwd: string): Promise<Buffer> {
-    return new Promise((resolve, reject) => {
-      const child = spawn("git", args, {
-        cwd,
-        stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-      });
-      const stdout: Buffer[] = [];
-      const stderr: Buffer[] = [];
-      child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-      child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-      child.once("error", reject);
-      child.once("close", (code) => {
-        if (code !== 0) {
-          reject(new OrchestrationError("ORCHESTRATION_RESULT_GIT_FAILED", `git exited with code ${code ?? "null"}: ${Buffer.concat(stderr).toString("utf8").slice(0, 4096)}`));
-          return;
-        }
-        resolve(Buffer.concat(stdout));
-      });
-    });
+  const emptyConfig = path.join(runtime, "empty-config");
+  try {
+    await fs.writeFile(emptyConfig, "", { flag: "wx", mode: 0o600 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    const configStat = await fs.lstat(emptyConfig);
+    if (configStat.isSymbolicLink() || !configStat.isFile() || configStat.size !== 0) {
+      throw new OrchestrationError("ORCHESTRATION_RESULT_GIT_FAILED", "Result Bundle empty Git config is unsafe.");
+    }
   }
+  return runtime;
+}
 
-  return { run, runBinary };
+async function createGitRunner(stateDirectory: string, limits: ResultBundleLimits): Promise<GitRunner> {
+  const runtime = await prepareResultGitRuntime(stateDirectory);
+  const maximumEvidenceBytes = Math.max(limits.maximum_diff_bytes, limits.maximum_source_file_bytes) + 1;
+  return new SecureGitRunner(process.env, runtime, undefined, {
+    stdoutMaxBytes: maximumEvidenceBytes,
+    stderrMaxBytes: Math.min(1_048_576, maximumEvidenceBytes),
+  });
 }
 
 export async function packageResultForRun(options: {
@@ -68,17 +58,17 @@ export async function packageResultForRun(options: {
   const token = process.env[tokenKey];
   if (!token) throw new OrchestrationError("ORCHESTRATION_RESULT_AUTH_UNAVAILABLE", `GitHub token not found at configured environment key ${tokenKey}.`);
 
-  const limits = config.result_bundle;
-  const maximumResponseBytes = Number(limits?.maximum_github_response_bytes ?? 1_048_576);
+  const limits = config.result_bundle ?? DEFAULT_RESULT_BUNDLE_LIMITS;
+  const maximumResponseBytes = Number(limits.maximum_github_response_bytes);
   const args: Parameters<typeof packageResultBundle>[0] = {
     runId: options.runId,
     stateDirectory: options.stateDirectory,
     configPath: options.configPath,
     githubClient: new GitHubRestAttestationClient(token, maximumResponseBytes),
-    gitRunner: createGitRunner(),
+    gitRunner: await createGitRunner(options.stateDirectory, limits),
     secrets: [token],
   };
-  if (limits) args.limits = limits;
+  if (config.result_bundle) args.limits = config.result_bundle;
   if (options.now) args.now = options.now;
   return await packageResultBundle(args);
 }
