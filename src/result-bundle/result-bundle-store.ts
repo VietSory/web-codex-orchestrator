@@ -1,9 +1,11 @@
 // Atomic receipt read/write for deterministic Result Bundles.
-import fs from "node:fs";
+import fs, { constants as fsConstants, type Stats } from "node:fs";
+import crypto from "node:crypto";
 import path from "node:path";
 import { ResultBundleError } from "./contracts.js";
 import type { ResultBundleReceipt, ResultBundleState } from "./contracts.js";
 
+const MAX_RECEIPT_BYTES = 2 * 1024 * 1024;
 const REQUIRED_RECEIPT_FIELDS: ReadonlyArray<keyof ResultBundleReceipt> = [
   "result_bundle_version","run_id","state","input_digest_sha256","execution_receipt_sha256","git_publish_receipt_sha256",
   "draft_pr_receipt_sha256","accepted_bundle_tree_sha256","change_set_sha256","base_commit","published_commit_sha",
@@ -60,12 +62,79 @@ export function assertResultBundleReceipt(value: unknown): asserts value is Resu
   if (!Array.isArray(obj.warnings) || obj.warnings.length > 256 || obj.warnings.some((item) => typeof item !== "string" || item.length > 8192)) throw new ResultBundleError("RESULT_RECEIPT_INVALID", "warnings is invalid or unbounded.");
 }
 
+async function readStableReceiptBytes(receiptPath: string): Promise<Buffer | null> {
+  let pathBefore: Stats;
+  try {
+    pathBefore = await fs.promises.lstat(receiptPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  if (pathBefore.isSymbolicLink() || !pathBefore.isFile() || pathBefore.size > MAX_RECEIPT_BYTES) {
+    throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle receipt must be a bounded regular non-symlink file.");
+  }
+  const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+  const handle = await fs.promises.open(receiptPath, fsConstants.O_RDONLY | noFollow).catch((error) => {
+    throw new ResultBundleError("RESULT_RECEIPT_INVALID", `Cannot safely open Result Bundle receipt: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  try {
+    const before = await handle.stat();
+    if (!before.isFile() || before.dev !== pathBefore.dev || before.ino !== pathBefore.ino || before.size !== pathBefore.size || before.size > MAX_RECEIPT_BYTES) {
+      throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle receipt changed before open.");
+    }
+    const bytes = Buffer.alloc(before.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
+      if (bytesRead === 0) throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle receipt was truncated while reading.");
+      offset += bytesRead;
+    }
+    if ((await handle.read(Buffer.alloc(1), 0, 1, offset)).bytesRead !== 0) throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle receipt grew while reading.");
+    const afterHandle = await handle.stat();
+    const afterPath = await fs.promises.lstat(receiptPath);
+    if (
+      afterPath.isSymbolicLink() || !afterPath.isFile() ||
+      afterHandle.dev !== before.dev || afterHandle.ino !== before.ino || afterHandle.size !== before.size ||
+      afterPath.dev !== before.dev || afterPath.ino !== before.ino || afterPath.size !== before.size
+    ) {
+      throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle receipt changed while reading.");
+    }
+    return bytes;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function syncDirectory(directory: string): Promise<void> {
+  if (process.platform === "win32") return;
+  const directoryFlag = typeof fsConstants.O_DIRECTORY === "number" ? fsConstants.O_DIRECTORY : 0;
+  let handle: Awaited<ReturnType<typeof fs.promises.open>> | undefined;
+  try {
+    handle = await fs.promises.open(directory, fsConstants.O_RDONLY | directoryFlag);
+    await handle.sync();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EINVAL" && code !== "ENOTSUP" && code !== "EISDIR" && code !== "EPERM" && code !== "EBADF") throw error;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+async function assertSafeDestination(receiptPath: string): Promise<void> {
+  try {
+    const info = await fs.promises.lstat(receiptPath);
+    if (info.isSymbolicLink() || !info.isFile()) throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle receipt destination must be a regular non-symlink file.");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+}
+
 export async function readResultBundleReceipt(receiptPath: string): Promise<ResultBundleReceipt | null> {
   try {
-    const stat = await fs.promises.lstat(receiptPath);
-    if (stat.isSymbolicLink() || !stat.isFile() || stat.size > 2 * 1024 * 1024) throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle receipt must be a bounded regular non-symlink file.");
-    const raw = await fs.promises.readFile(receiptPath, "utf8");
-    const parsed: unknown = JSON.parse(raw);
+    const raw = await readStableReceiptBytes(receiptPath);
+    if (raw === null) return null;
+    const parsed: unknown = JSON.parse(raw.toString("utf8"));
     assertResultBundleReceipt(parsed);
     return parsed;
   } catch (error) {
@@ -77,15 +146,25 @@ export async function readResultBundleReceipt(receiptPath: string): Promise<Resu
 
 export async function writeResultBundleReceipt(receiptPath: string, receipt: ResultBundleReceipt): Promise<void> {
   assertResultBundleReceipt(receipt);
-  await fs.promises.mkdir(path.dirname(receiptPath), { recursive: true });
+  await fs.promises.mkdir(path.dirname(receiptPath), { recursive: true, mode: 0o700 });
   const content = Buffer.from(JSON.stringify(receipt, null, 2) + "\n", "utf8");
-  if (content.byteLength > 2 * 1024 * 1024) throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle receipt exceeds 2 MiB.");
-  const tmp = `${receiptPath}.tmp.${process.pid}.${Date.now()}`;
+  if (content.byteLength > MAX_RECEIPT_BYTES) throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle receipt exceeds 2 MiB.");
+  const tmp = path.join(path.dirname(receiptPath), `.${path.basename(receiptPath)}.${process.pid}.${crypto.randomUUID()}.tmp`);
+  let handle: Awaited<ReturnType<typeof fs.promises.open>> | undefined;
   try {
-    await fs.promises.writeFile(tmp, content, { flag: "wx", mode: 0o600 });
+    await assertSafeDestination(receiptPath);
+    handle = await fs.promises.open(tmp, "wx", 0o600);
+    await handle.writeFile(content);
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await assertSafeDestination(receiptPath);
     await fs.promises.rename(tmp, receiptPath);
+    await syncDirectory(path.dirname(receiptPath));
   } catch (error) {
+    await handle?.close().catch(() => undefined);
     await fs.promises.unlink(tmp).catch(() => undefined);
+    if (error instanceof ResultBundleError) throw error;
     throw new ResultBundleError("RESULT_OPERATIONAL_ERROR", `Failed to write result bundle receipt: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
