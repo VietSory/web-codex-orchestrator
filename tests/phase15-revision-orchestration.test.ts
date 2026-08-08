@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { checkpointAttempt } from "../src/orchestration/controller.js";
+import { OrchestrationError } from "../src/orchestration/contracts.js";
 import { recoverCompletedAttempt } from "../src/orchestration/recovery.js";
 import { revisionOrchestrationPayload, type RevisionOrchestrationAuthority } from "../src/orchestration/revise.js";
 import { runNextTransition, type OrchestrationDependencies } from "../src/orchestration/transition-runner.js";
@@ -31,20 +32,6 @@ function snapshot(): LifecycleSnapshot {
     revision_state: null,
     revision_result_ready: false,
   };
-}
-
-function webReview() {
-  return {
-    run_id: RUN_ID,
-    state: "REVISION_REQUESTED",
-    review_round: 1,
-    verdict_sha256: VERDICT,
-    revision_request_sha256: REQUEST,
-    decision_event_sha256: DECISION,
-    published_commit_sha: OLD_HEAD,
-    pull_request_number: 42,
-    fresh_attested_head_sha: OLD_HEAD,
-  } as const;
 }
 
 function authority(overrides: Partial<RevisionOrchestrationAuthority> = {}): RevisionOrchestrationAuthority {
@@ -82,7 +69,7 @@ function revisionReceipt(overrides: Record<string, unknown> = {}) {
 function dependencies(state: LifecycleSnapshot, revise: OrchestrationDependencies["reviseRun"]): OrchestrationDependencies {
   return {
     async readSnapshot() { return { ...state }; },
-    async readWebReview() { return webReview() as never; },
+    async attestRevisionAuthority() { return authority(); },
     reviseRun: revise,
   } as unknown as OrchestrationDependencies;
 }
@@ -138,15 +125,15 @@ test("P15-ORCH-003 completed revision is quiescent and consumes no extra model t
   assert.equal(result.ledger.transition_attempts.REVISE, 0);
 });
 
-test("P15-ORCH-004 revision is limited to Web review rounds 1 through 3 before an attempt is consumed", async (t) => {
+test("P15-ORCH-004 rejected revision authority consumes no attempt", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-p15-round-"));
   t.after(async () => fs.rm(root, { recursive: true, force: true }));
   const state = snapshot();
   const deps = dependencies(state, async () => revisionReceipt());
-  deps.readWebReview = async () => ({ ...webReview(), review_round: 4 } as never);
+  deps.attestRevisionAuthority = async () => { throw new OrchestrationError("ORCHESTRATION_REVISION_AUTHORITY_INVALID", "review round 4 cannot authorize another revision"); };
   await assert.rejects(
     runNextTransition({ runId: RUN_ID, stateDirectory: root, configPath: path.join(root, "config.json"), dependencies: deps }),
-    (error: unknown) => error instanceof Error && "code" in error && (error as { code?: unknown }).code === "ORCHESTRATION_REVISION_AUTHORITY_INVALID",
+    (error: unknown) => error instanceof OrchestrationError && error.code === "ORCHESTRATION_REVISION_AUTHORITY_INVALID",
   );
   const ledger = await readRunLedger(root, RUN_ID);
   assert.equal(ledger?.transition_attempts.REVISE, 0);
@@ -214,7 +201,7 @@ test("P15-REC-002 changed revision authority is rejected before terminal revisio
         async getRevisionStatus() { statusReads += 1; return revisionReceipt(); },
       },
     }),
-    (error: unknown) => error instanceof Error && "code" in error && (error as { code?: unknown }).code === "ORCHESTRATION_RECOVERY_CONFLICT",
+    (error: unknown) => error instanceof OrchestrationError && error.code === "ORCHESTRATION_RECOVERY_CONFLICT",
   );
   assert.equal(statusReads, 0);
 });
