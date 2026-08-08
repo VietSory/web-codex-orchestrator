@@ -13,6 +13,7 @@ export type CodexFactory = (
 ) => Pick<Codex, "startThread" | "resumeThread">;
 
 const MAX_PUBLIC_EVENTS = 256;
+const MAX_STRUCTURED_RESPONSE_BYTES = 2 * 1024 * 1024;
 const PREFLIGHT_TIMEOUT_MS = 15_000;
 const PREFLIGHT_OUTPUT_BYTES = 16_384;
 
@@ -22,6 +23,12 @@ function publicEvent(type: string): { type: string; timestamp: string } {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function assertBoundedStructuredResponse(text: string): void {
+  if (Buffer.byteLength(text, "utf8") > MAX_STRUCTURED_RESPONSE_BYTES) {
+    throw new ExecutionError("AGENT_OUTPUT_INVALID", `Codex structured response exceeds ${MAX_STRUCTURED_RESPONSE_BYTES} bytes.`);
+  }
 }
 
 export class CodexSdkAgentClient implements AgentClient {
@@ -74,7 +81,7 @@ export class CodexSdkAgentClient implements AgentClient {
     if (!request.read_only && request.sandbox_mode !== "workspace-write") throw new ExecutionError("CODEX_SANDBOX_UNAVAILABLE", "Implementation turns require workspace-write sandbox mode.");
   }
 
-    private mapSdkError(
+  private mapSdkError(
     error: unknown,
     request: AgentTurnRequest,
   ): ExecutionError {
@@ -192,7 +199,10 @@ export class CodexSdkAgentClient implements AgentClient {
             break;
           case "item.completed":
             recordEvent(event.item.type);
-            if (event.item.type === "agent_message") finalResponse = event.item.text;
+            if (event.item.type === "agent_message") {
+              assertBoundedStructuredResponse(event.item.text);
+              finalResponse = event.item.text;
+            }
             break;
           case "item.started":
           case "item.updated":
@@ -216,6 +226,7 @@ export class CodexSdkAgentClient implements AgentClient {
       }
       if (!thread.id) throw new ExecutionError("CODEX_TURN_FAILED", "Codex did not provide a thread ID.");
       if (!finalResponse) throw new ExecutionError("AGENT_OUTPUT_INVALID", "Codex did not return a final structured response.");
+      assertBoundedStructuredResponse(finalResponse);
       let output: unknown;
       try {
         output = JSON.parse(finalResponse) as unknown;
