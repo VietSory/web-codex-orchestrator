@@ -1,4 +1,5 @@
-import { lstat, mkdir, readFile, appendFile } from "node:fs/promises";
+import { constants as fsConstants, type Stats } from "node:fs";
+import { appendFile, lstat, mkdir, open } from "node:fs/promises";
 import path from "node:path";
 import { atomicWriteJson, atomicWriteText } from "../run/run-store.js";
 import { readRunReceipt } from "../run/run-store.js";
@@ -7,6 +8,13 @@ import { type ExecutionReceipt, type ExecutionState } from "./contracts.js";
 import { isExecutionState } from "./state-machine.js";
 import { ExecutionError } from "./errors.js";
 import { redact } from "../evidence/log-redaction.js";
+
+const MAX_EXECUTION_RECEIPT_BYTES = 2 * 1024 * 1024;
+const MAX_EXECUTION_JOURNAL_BYTES = 4 * 1024 * 1024;
+const MAX_SANITIZE_DEPTH = 8;
+const MAX_SANITIZE_ARRAY = 256;
+const MAX_SANITIZE_KEYS = 64;
+const MAX_SANITIZE_STRING = 32_768;
 
 export interface ExecutionPaths {
   directory: string;
@@ -65,25 +73,107 @@ export async function ensureExecutionDirectory(paths: ExecutionPaths): Promise<v
     }
   }
   for (const child of [paths.implementation, paths.verification, paths.terraReview, paths.solReview, paths.evidence]) {
-    try { const info = await lstat(child); if (info.isSymbolicLink() || !info.isDirectory()) throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "Execution artifact path is not a real directory."); }
-    catch (error) { if (error instanceof ExecutionError) throw error; if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; await mkdir(child, { mode: 0o700 }); }
+    try {
+      const info = await lstat(child);
+      if (info.isSymbolicLink() || !info.isDirectory()) throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "Execution artifact path is not a real directory.");
+    } catch (error) {
+      if (error instanceof ExecutionError) throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      await mkdir(child, { mode: 0o700 });
+    }
   }
 }
 
-async function readRegularJson<T>(filePath: string): Promise<T | undefined> {
+async function readStableRegularFile(filePath: string, maximumBytes: number): Promise<Buffer | undefined> {
+  let pathBefore: Stats;
   try {
-    const info = await lstat(filePath);
-    if (info.isSymbolicLink() || !info.isFile()) throw new Error("Receipt must be a regular non-symlink file.");
-    return JSON.parse(await readFile(filePath, "utf8")) as T;
+    pathBefore = await lstat(filePath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
   }
+  if (pathBefore.isSymbolicLink() || !pathBefore.isFile() || pathBefore.size > maximumBytes) {
+    throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", `Execution state file must be a regular non-symlink file no larger than ${maximumBytes} bytes.`);
+  }
+  const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+  const handle = await open(filePath, fsConstants.O_RDONLY | noFollow).catch((error) => {
+    throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", `Cannot safely open execution state file: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  try {
+    const before = await handle.stat();
+    if (!before.isFile() || before.dev !== pathBefore.dev || before.ino !== pathBefore.ino || before.size !== pathBefore.size || before.size > maximumBytes) {
+      throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "Execution state file changed before open.");
+    }
+    const bytes = Buffer.alloc(before.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
+      if (bytesRead === 0) throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "Execution state file was truncated while reading.");
+      offset += bytesRead;
+    }
+    if ((await handle.read(Buffer.alloc(1), 0, 1, offset)).bytesRead !== 0) {
+      throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "Execution state file grew while reading.");
+    }
+    const afterHandle = await handle.stat();
+    const afterPath = await lstat(filePath);
+    if (
+      afterPath.isSymbolicLink() || !afterPath.isFile() ||
+      afterHandle.dev !== before.dev || afterHandle.ino !== before.ino || afterHandle.size !== before.size ||
+      afterPath.dev !== before.dev || afterPath.ino !== before.ino || afterPath.size !== before.size
+    ) {
+      throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "Execution state file changed while reading.");
+    }
+    return bytes;
+  } finally {
+    await handle.close();
+  }
 }
 
-async function assertRegularAppendTarget(filePath: string): Promise<void> {
-  const info = await lstat(filePath).catch((error: unknown) => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; });
-  if (info && (info.isSymbolicLink() || !info.isFile())) throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "Execution journal must be a regular non-symlink file.");
+async function readRegularJson<T>(filePath: string): Promise<T | undefined> {
+  const bytes = await readStableRegularFile(filePath, MAX_EXECUTION_RECEIPT_BYTES);
+  if (bytes === undefined) return undefined;
+  try { return JSON.parse(bytes.toString("utf8")) as T; }
+  catch { throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "Execution receipt is not valid JSON."); }
+}
+
+async function journalSize(filePath: string): Promise<number> {
+  const info = await lstat(filePath).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (!info) return 0;
+  if (info.isSymbolicLink() || !info.isFile() || info.size > MAX_EXECUTION_JOURNAL_BYTES) {
+    throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "Execution journal must be a bounded regular non-symlink file.");
+  }
+  return info.size;
+}
+
+async function readJournal(filePath: string): Promise<Buffer> {
+  const bytes = await readStableRegularFile(filePath, MAX_EXECUTION_JOURNAL_BYTES);
+  return bytes ?? Buffer.alloc(0);
+}
+
+async function appendBoundedJournalLine(filePath: string, line: string): Promise<void> {
+  const bytes = Buffer.byteLength(line, "utf8");
+  const existing = await journalSize(filePath);
+  if (bytes > MAX_EXECUTION_JOURNAL_BYTES || existing + bytes > MAX_EXECUTION_JOURNAL_BYTES) {
+    throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", `Execution journal exceeds ${MAX_EXECUTION_JOURNAL_BYTES} bytes.`);
+  }
+  await appendFile(filePath, line, { encoding: "utf8", mode: 0o600 });
+  const after = await journalSize(filePath);
+  if (after > MAX_EXECUTION_JOURNAL_BYTES) throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "Execution journal exceeded its byte cap during append.");
+}
+
+function sanitize(value: unknown, depth = 0): unknown {
+  if (depth >= MAX_SANITIZE_DEPTH) return "[TRUNCATED_DEPTH]";
+  if (Array.isArray(value)) return value.slice(0, MAX_SANITIZE_ARRAY).map((item) => sanitize(item, depth + 1));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).slice(0, MAX_SANITIZE_KEYS).map(([key, item]) => [key.slice(0, 128), sanitize(item, depth + 1)]));
+  }
+  if (typeof value === "string") return redact(value).slice(0, MAX_SANITIZE_STRING);
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (value === null || typeof value === "boolean") return value;
+  return undefined;
 }
 
 export async function readExecutionReceipt(stateDirectory: string, taskId: string, archiveSha256: string): Promise<ExecutionReceipt | undefined> {
@@ -94,7 +184,7 @@ export async function readExecutionReceipt(stateDirectory: string, taskId: strin
   if (receipt === undefined) return undefined;
   const digest = (value: unknown): boolean => value === null || typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
   const role = (value: unknown): value is { model: string; reasoning_effort: string; thread_id?: string; iterations?: number; rounds?: number; latest_thread_id?: string | null; thread_ids?: string[]; verdict?: string | null; reviewed_change_set_sha256?: string | null } => typeof value === "object" && value !== null && typeof (value as { model?: unknown }).model === "string" && typeof (value as { reasoning_effort?: unknown }).reasoning_effort === "string" && ((value as { thread_ids?: unknown }).thread_ids === undefined || Array.isArray((value as { thread_ids?: unknown }).thread_ids) && (value as { thread_ids: unknown[] }).thread_ids.every((thread) => typeof thread === "string" && thread.length > 0));
-  if (!receipt || receipt.execution_version !== "1.0" || receipt.run_id !== `${taskId}:${archiveSha256}` || !isExecutionState(receipt.state) || typeof receipt.base_commit !== "string" || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(receipt.base_commit) || typeof receipt.branch_name !== "string" || typeof receipt.worktree_path !== "string" || typeof receipt.accepted_bundle_path !== "string" || !role(receipt.implementer) || !role(receipt.internal_reviewer) || !role(receipt.final_reviewer) || !receipt.verification || !Array.isArray(receipt.verification.commands) || !Array.isArray(receipt.errors) || !receipt.usage || !digest(receipt.change_set_sha256) || !digest(receipt.repository_refs_sha256 ?? null) || !digest(receipt.verification.verified_change_set_sha256) || !digest(receipt.internal_reviewer.reviewed_change_set_sha256 ?? null) || !digest(receipt.final_reviewer.reviewed_change_set_sha256 ?? null)) throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "Execution receipt has an invalid schema.");
+  if (!receipt || receipt.execution_version !== "1.0" || receipt.run_id !== `${taskId}:${archiveSha256}` || !isExecutionState(receipt.state) || typeof receipt.base_commit !== "string" || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(receipt.base_commit) || typeof receipt.branch_name !== "string" || typeof receipt.worktree_path !== "string" || typeof receipt.accepted_bundle_path !== "string" || !role(receipt.implementer) || !role(receipt.internal_reviewer) || !role(receipt.final_reviewer) || !receipt.verification || !Array.isArray(receipt.verification.commands) || receipt.verification.commands.length > 512 || !Array.isArray(receipt.errors) || receipt.errors.length > 256 || !receipt.usage || !digest(receipt.change_set_sha256) || !digest(receipt.repository_refs_sha256 ?? null) || !digest(receipt.verification.verified_change_set_sha256) || !digest(receipt.internal_reviewer.reviewed_change_set_sha256 ?? null) || !digest(receipt.final_reviewer.reviewed_change_set_sha256 ?? null)) throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "Execution receipt has an invalid schema.");
   const validThread = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 512;
   const validVerdict = (value: unknown): boolean => value === null || value === "APPROVE" || value === "REVISE" || value === "REPLAN" || value === "ESCALATE";
   const validFailureEvidence = (value: unknown): boolean => {
@@ -113,8 +203,13 @@ export async function readExecutionReceipt(stateDirectory: string, taskId: strin
 }
 
 export async function writeExecutionReceipt(stateDirectory: string, receipt: ExecutionReceipt): Promise<void> {
-  const paths = executionPaths(stateDirectory, receipt.run_id.split(":")[0] ?? receipt.run_id, receipt.run_id.split(":")[1] ?? "");
+  const separator = receipt.run_id.lastIndexOf(":");
+  const taskId = receipt.run_id.slice(0, separator);
+  const archiveSha256 = receipt.run_id.slice(separator + 1);
+  const paths = executionPaths(stateDirectory, taskId, archiveSha256);
   await ensureExecutionDirectory(paths);
+  const bytes = Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`, "utf8");
+  if (bytes.byteLength > MAX_EXECUTION_RECEIPT_BYTES) throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", `Execution receipt exceeds ${MAX_EXECUTION_RECEIPT_BYTES} bytes.`);
   await atomicWriteJson(paths.execution, receipt);
 }
 
@@ -140,7 +235,6 @@ export async function writeExecutionArtifact(stateDirectory: string, taskId: str
   const paths = executionPaths(stateDirectory, taskId, archiveSha256);
   await ensureExecutionDirectory(paths);
   const directory = paths[relativeName === "terra-review" ? "terraReview" : relativeName === "sol-review" ? "solReview" : relativeName] as string;
-  const sanitize = (input: unknown): unknown => Array.isArray(input) ? input.map(sanitize) : input && typeof input === "object" ? Object.fromEntries(Object.entries(input as Record<string, unknown>).map(([key, item]) => [key, sanitize(item)])) : typeof input === "string" ? redact(input).slice(0, 32_768) : input;
   await atomicWriteJson(await safeArtifactPath(directory, fileName), sanitize(value));
 }
 
@@ -163,19 +257,16 @@ export async function appendExecutionEvent(
 ): Promise<void> {
   const paths = executionPaths(stateDirectory, taskId, archiveSha256);
   await ensureExecutionDirectory(paths);
-  await assertRegularAppendTarget(paths.events);
-  let sequence = 1;
-  try { sequence = (await readFile(paths.events, "utf8")).split(/\r?\n/).filter(Boolean).length + 1; } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-  const sanitize = (value: unknown): unknown => Array.isArray(value) ? value.slice(0, 256).map(sanitize) : value && typeof value === "object" ? Object.fromEntries(Object.entries(value as Record<string, unknown>).slice(0, 64).map(([key, item]) => [key.slice(0, 128), sanitize(item)])) : typeof value === "string" ? redact(value).slice(0, 32_768) : typeof value === "number" && Number.isFinite(value) ? value : value === null || typeof value === "boolean" ? value : undefined;
-  await appendFile(paths.events, `${JSON.stringify({ event_version: "1.0", run_id: redact(runId), sequence, from, to, timestamp: now().toISOString(), details: sanitize(details) })}\n`, { encoding: "utf8", mode: 0o600 });
+  const existing = await readJournal(paths.events);
+  const sequence = existing.toString("utf8").split(/\r?\n/).filter(Boolean).length + 1;
+  const line = `${JSON.stringify({ event_version: "1.0", run_id: redact(runId), sequence, from, to, timestamp: now().toISOString(), details: sanitize(details) })}\n`;
+  await appendBoundedJournalLine(paths.events, line);
 }
 
 export async function appendAgentEvent(stateDirectory: string, taskId: string, archiveSha256: string, event: Record<string, unknown>): Promise<void> {
   const paths = executionPaths(stateDirectory, taskId, archiveSha256);
   await ensureExecutionDirectory(paths);
-  await assertRegularAppendTarget(paths.agentEvents);
-  const sanitize = (value: unknown): unknown => Array.isArray(value) ? value.slice(0, 256).map(sanitize) : value && typeof value === "object" ? Object.fromEntries(Object.entries(value as Record<string, unknown>).slice(0, 64).map(([key, item]) => [key.slice(0, 128), sanitize(item)])) : typeof value === "string" ? redact(value).slice(0, 32_768) : typeof value === "number" && Number.isFinite(value) ? value : value === null || typeof value === "boolean" ? value : undefined;
-  await appendFile(paths.agentEvents, `${JSON.stringify(sanitize(event))}\n`, { encoding: "utf8", mode: 0o600 });
+  await appendBoundedJournalLine(paths.agentEvents, `${JSON.stringify(sanitize(event))}\n`);
 }
 
 export async function readPreparationForExecution(stateDirectory: string, runId: string): Promise<{ receipt: RunReceipt; taskId: string; archiveSha256: string }> {
