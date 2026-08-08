@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { readAndCanonicalizeVerdict } from "../web-review/verdict-source-reader.js";
-import { submitWebVerdict } from "../web-review/web-review-service.js";
+import { getWebReviewStatus, submitWebVerdict } from "../web-review/web-review-service.js";
 import type { WebReviewReceipt } from "../web-review/contracts.js";
 import { OrchestrationError } from "./contracts.js";
 import { orchestrationPaths } from "./paths.js";
@@ -36,6 +36,22 @@ function stagedVerdictPath(stateDirectory: string, runId: string, reviewRound: n
   const id = splitRunId(runId);
   const runPaths = orchestrationPaths(stateDirectory, id.taskId, id.taskBundleSha256);
   return path.join(runPaths.directory, "inputs", `web-verdict-round-${String(reviewRound).padStart(2, "0")}.json`);
+}
+
+async function readStagedVerdict(stateDirectory: string, runId: string, reviewRound: number): Promise<PreparedWebVerdict | null> {
+  const verdictPath = stagedVerdictPath(stateDirectory, runId, reviewRound);
+  let stat: import("node:fs").Stats;
+  try {
+    stat = await fs.lstat(verdictPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    throw new OrchestrationError("ORCHESTRATION_VERDICT_STATE_UNSAFE", "Staged Web verdict path is unsafe during recovery.");
+  }
+  const staged = await readAndCanonicalizeVerdict(verdictPath);
+  return { verdictPath, verdictSha256: staged.verdictSha256, reviewRound };
 }
 
 export interface PreparedWebVerdict {
@@ -104,27 +120,29 @@ export async function recoverPreparedWebVerdictForAttempt(options: {
   requestSha256: string;
 }): Promise<PreparedWebVerdict | null> {
   for (let reviewRound = 1; reviewRound <= 4; reviewRound += 1) {
-    const verdictPath = stagedVerdictPath(options.stateDirectory, options.runId, reviewRound);
-    let stat: import("node:fs").Stats;
-    try {
-      stat = await fs.lstat(verdictPath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-      throw error;
-    }
-    if (stat.isSymbolicLink() || !stat.isFile()) {
-      throw new OrchestrationError("ORCHESTRATION_VERDICT_STATE_UNSAFE", "Staged Web verdict path is unsafe during recovery.");
-    }
-    const staged = await readAndCanonicalizeVerdict(verdictPath);
+    const staged = await readStagedVerdict(options.stateDirectory, options.runId, reviewRound);
+    if (!staged) continue;
     const sealed = sealTransitionRequest("WAIT_WEB_VERDICT", {
       verdict_sha256: staged.verdictSha256,
       review_round: reviewRound,
     });
-    if (sealed === options.requestSha256) {
-      return { verdictPath, verdictSha256: staged.verdictSha256, reviewRound };
-    }
+    if (sealed === options.requestSha256) return staged;
   }
   return null;
+}
+
+export async function recoverRetryableWebVerdictForRun(options: {
+  runId: string;
+  stateDirectory: string;
+}): Promise<PreparedWebVerdict | null> {
+  const receipt = await getWebReviewStatus({ runId: options.runId, stateDirectory: options.stateDirectory });
+  if (!receipt || (receipt.state !== "FAILED" && receipt.state !== "RETRYABLE") || !receipt.verdict_sha256) return null;
+  const staged = await readStagedVerdict(options.stateDirectory, options.runId, receipt.review_round);
+  if (!staged) return null;
+  if (staged.verdictSha256 !== receipt.verdict_sha256) {
+    throw new OrchestrationError("ORCHESTRATION_VERDICT_DRIFT", "Retryable Web review receipt no longer matches the staged verdict digest.");
+  }
+  return staged;
 }
 
 export async function submitPreparedWebVerdict(options: {
