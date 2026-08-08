@@ -19,6 +19,8 @@ export interface SpawnBoundedResult {
   signal: NodeJS.Signals | null;
   stdout: string;
   stderr: string;
+  stdoutBuffer: Buffer;
+  stderrBuffer: Buffer;
   stdoutBytes: number;
   stderrBytes: number;
   stdoutTruncated: boolean;
@@ -77,11 +79,15 @@ export const spawnBounded: SpawnBounded = async (options) => {
       if (timeoutTimer) clearTimeout(timeoutTimer);
       if (killTimer) clearTimeout(killTimer);
       options.signal?.removeEventListener("abort", abort);
+      const stdoutBuffer = Buffer.from(stdout);
+      const stderrBuffer = Buffer.from(stderr);
       resolve({
         exitCode,
         signal: exitSignal,
-        stdout: stdout.toString("utf8"),
-        stderr: stderr.toString("utf8"),
+        stdout: stdoutBuffer.toString("utf8"),
+        stderr: stderrBuffer.toString("utf8"),
+        stdoutBuffer,
+        stderrBuffer,
         stdoutBytes,
         stderrBytes,
         stdoutTruncated,
