@@ -22,7 +22,7 @@ export interface GitEvidence {
   diffPatch: Buffer;
   changedFiles: ChangedFileEntry[];
   deletedFiles: DeletedFileEntry[];
-  sourceFiles: Map<string, Buffer>; // path → content bytes
+  sourceFiles: Map<string, Buffer>;
   warnings: string[];
 }
 
@@ -34,18 +34,12 @@ const FORBIDDEN_GIT_CONFIG = [
   "-c", "diff.tool=",
 ];
 
-/** Supported diff status characters */
 const SUPPORTED_STATUS = new Set(["A", "M", "D"]);
 
-/**
- * Collect exact git evidence from the published commit.
- * Uses argv-only git commands; never executes external diff or textconv.
- */
 export async function collectGitEvidence(opts: GitEvidenceOptions): Promise<GitEvidence> {
   const { worktreePath, baseCommit, publishedCommit, gitRunner } = opts;
   const warnings: string[] = [];
 
-  // 1. Get the diff as a patch
   let diffBuffer: Buffer;
   try {
     const diffArgs = [
@@ -53,6 +47,7 @@ export async function collectGitEvidence(opts: GitEvidenceOptions): Promise<GitE
       "diff",
       "--no-color",
       "--no-ext-diff",
+      "--no-textconv",
       "--binary",
       "-z",
       `${baseCommit}..${publishedCommit}`,
@@ -73,11 +68,10 @@ export async function collectGitEvidence(opts: GitEvidenceOptions): Promise<GitE
     );
   }
 
-  // 2. Get list of changed files with status
   let nameStatusOut: string;
   try {
     const result = await gitRunner.run(
-      [...FORBIDDEN_GIT_CONFIG, "diff", "--name-status", "-z", `${baseCommit}..${publishedCommit}`],
+      [...FORBIDDEN_GIT_CONFIG, "diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z", `${baseCommit}..${publishedCommit}`],
       worktreePath
     );
     nameStatusOut = result.stdout;
@@ -88,7 +82,6 @@ export async function collectGitEvidence(opts: GitEvidenceOptions): Promise<GitE
     );
   }
 
-  // Parse NUL-terminated name-status output
   const entries = nameStatusOut.split("\0").filter(Boolean);
   const changedFiles: ChangedFileEntry[] = [];
   const deletedFiles: DeletedFileEntry[] = [];
@@ -109,7 +102,6 @@ export async function collectGitEvidence(opts: GitEvidenceOptions): Promise<GitE
       );
     }
 
-    // Path safety check
     if (
       filePath.startsWith("/") ||
       filePath.startsWith("..") ||
@@ -135,7 +127,6 @@ export async function collectGitEvidence(opts: GitEvidenceOptions): Promise<GitE
     if (status[0] === "D") {
       deletedFiles.push({ path: filePath });
     } else {
-      // Read the file blob from the published commit
       let blobBuffer: Buffer;
       try {
         blobBuffer = await gitRunner.runBinary(
@@ -156,7 +147,6 @@ export async function collectGitEvidence(opts: GitEvidenceOptions): Promise<GitE
         );
       }
 
-      // Get the mode from ls-tree
       let mode = "100644";
       try {
         const lsResult = await gitRunner.run(
@@ -170,7 +160,6 @@ export async function collectGitEvidence(opts: GitEvidenceOptions): Promise<GitE
         warnings.push(`Could not read mode for ${filePath}, using 100644.`);
       }
 
-      // Reject symlinks and special files
       if (mode.startsWith("12") || mode.startsWith("16")) {
         throw new ResultBundleError(
           "RESULT_UNSUPPORTED_CHANGE_TYPE",
@@ -190,7 +179,6 @@ export async function collectGitEvidence(opts: GitEvidenceOptions): Promise<GitE
     }
   }
 
-  // Generate clean diff (text, no binary markers) for the patch entry
   let cleanDiff: Buffer;
   try {
     const patchArgs = [
@@ -198,6 +186,7 @@ export async function collectGitEvidence(opts: GitEvidenceOptions): Promise<GitE
       "diff",
       "--no-color",
       "--no-ext-diff",
+      "--no-textconv",
       `${baseCommit}..${publishedCommit}`,
       "--",
     ];
