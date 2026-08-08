@@ -93,6 +93,7 @@ export async function publishReadyExecutorSnapshot(options: {
     const runner = new GitRunner(process.env, runtimeDirectory, {
       identity: config.publish.identity,
       auth,
+      allowedRemoteUrl: run.remote_url,
     });
     await verifyConfiguredIdentity(runner, run.worktree_path, config.publish.identity);
 
