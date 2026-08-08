@@ -51,14 +51,14 @@ async function nextSequence(filePath: string, runId: string): Promise<number> {
         }
         if (!previous || typeof previous !== "object" || Array.isArray(previous)) throw new Error("Event journal final record is invalid.");
         const record = previous as Record<string, unknown>;
-        if (record.run_id !== runId || !Number.isSafeInteger(record.sequence) || Number(record.sequence) < 1) {
+        if (record.run_id !== runId || typeof record.sequence !== "number" || !Number.isSafeInteger(record.sequence) || record.sequence < 1) {
           throw new Error("Event journal final record identity or sequence is invalid.");
         }
         const after = await handle.stat();
         if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== opened.size || after.mtimeMs !== opened.mtimeMs || after.ctimeMs !== opened.ctimeMs) {
           throw new Error("Event journal changed during sequence recovery.");
         }
-        return Number(record.sequence) + 1;
+        return record.sequence + 1;
       }
     }
     return 1;
