@@ -5,6 +5,7 @@ import { readExecutorReceipt } from "../executor/store.js";
 import { executorPaths } from "../executor/paths.js";
 import type { ExecutorReceipt } from "../executor/contracts.js";
 import { readGitPublishReceiptSnapshot, type GitPublishReceiptSnapshot } from "../publish/publish-store.js";
+import { canonicalGitPublishReceiptDigest } from "../publish/receipt-digest.js";
 import { readDraftPullRequestReceiptSnapshot, type DraftPullRequestReceiptSnapshot } from "../pull-request/draft-pr-store.js";
 import { readResultBundleReceipt } from "../result-bundle/result-bundle-store.js";
 import { resultBundlePaths } from "../result-bundle/result-bundle-paths.js";
@@ -52,6 +53,7 @@ export function initialResultBoundToSelectedExecutor(
     !executor || executor.run_id !== runId || executor.state !== "READY_FOR_PUBLISH" || executor.change_set_digest === null ||
     !publishSnapshot || !publish || publish.run_id !== runId || publish.state !== "PUSHED" || publish.commit_sha === null || publish.remote_branch_sha !== publish.commit_sha ||
     !draftSnapshot || !draft || draft.run_id !== runId || draft.state !== "OPEN" || draft.pull_number === null || draft.expected_head_sha !== publish.commit_sha ||
+    draft.git_publish_receipt_sha256 !== canonicalGitPublishReceiptDigest(publish) ||
     !result || result.run_id !== runId || result.state !== "READY_FOR_WEB_REVIEW" || result.archive_sha256 === null
   ) return false;
 
