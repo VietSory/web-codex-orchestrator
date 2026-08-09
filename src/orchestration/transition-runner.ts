@@ -196,6 +196,7 @@ export async function runNextTransition(options: {
           attemptId: activeAttemptId,
           result: { state: receipt.state, change_set_digest: receipt.change_set_digest, artifact_sha256: receipt.artifact_sha256 },
           nextTransition: next,
+          ...(receipt.usage ? { usage: receipt.usage } : {}),
           now: now(),
         });
       } else if (planned.transition === "PUBLISH") {
