@@ -11,6 +11,7 @@ const reads = Array.from({ length: candidateCount }, (_, index) => ({
 const entries = new Map<string, Buffer>([
   ["read-coverage.json", Buffer.from(JSON.stringify({ schema_version: "2.0", repository_tree_sha: "a".repeat(40), reads }))],
   ["project-map.json", Buffer.from(JSON.stringify({ schema_version: "2.0", repository_tree_sha: "a".repeat(40), nodes: [{ path: "src/change.ts", role: "changed" }] }))],
+  ["prohibited-changes.json", Buffer.from(JSON.stringify({ schema_version: "2.0", paths: [".git/**"], rules: ["no redesign"] }))],
 ]);
 const pack = { entries } as unknown as WebImplementationPack;
 
