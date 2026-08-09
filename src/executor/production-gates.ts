@@ -1,5 +1,6 @@
 import path from "node:path";
 import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
+import { ReservedAgentClient, type ModelTurnReservation } from "../agent/reserved-agent-client.js";
 import { reviewWithSol } from "../agent/sol-reviewer.js";
 import { reviewWithTerra } from "../agent/terra-reviewer.js";
 import { loadPhase4Config } from "../execution/execution-config.js";
@@ -70,19 +71,25 @@ function mappedVerdict(verdict: string): "APPROVE" | "REVISE" | "ESCALATE" {
   return "ESCALATE";
 }
 
-export async function createProductionExecutorGates(options: { runId: string; stateDirectory: string; configPath: string }): Promise<{ verifier: ExecutorVerifierPort; reviewer: ExecutorReviewerPort }> {
+export async function createProductionExecutorGates(options: {
+  runId: string;
+  stateDirectory: string;
+  configPath: string;
+  beforeModelTurn?: (reservation: ModelTurnReservation) => Promise<void>;
+}): Promise<{ verifier: ExecutorVerifierPort; reviewer: ExecutorReviewerPort }> {
   const [config, trusted] = await Promise.all([
     loadPhase4Config(options.configPath),
     resolveTrustedRunContext(options.runId, options.stateDirectory, options.configPath),
   ]);
   const runtime = await resolveCodexRuntime(config.runtime, options.stateDirectory);
-  const agentClient = new CodexSdkAgentClient(runtime);
+  const baseAgentClient = new CodexSdkAgentClient(runtime);
+  const agentClient = options.beforeModelTurn
+    ? new ReservedAgentClient(baseAgentClient, options.beforeModelTurn)
+    : baseAgentClient;
   const sandbox = new CodexVerificationSandbox(runtime);
-  // Fail before product mutation when local auth or the verifier sandbox is unusable.
-  await Promise.all([agentClient.checkAvailability(), sandbox.checkAvailability()]);
-  // Phase 10 needs only the deterministic validation contract here. Avoid the
-  // Phase 4 broad bundle reader so normal execution does not deserialize
-  // unrelated plan/request/test-matrix documents solely to run verification.
+  // Availability probes are deliberately outside model-turn accounting because
+  // they do not start a provider-backed model turn.
+  await Promise.all([baseAgentClient.checkAvailability(), sandbox.checkAvailability()]);
   const validation = await loadValidationDocument(trusted.runReceipt.accepted_bundle_path);
 
   const verifier: ExecutorVerifierPort = {
