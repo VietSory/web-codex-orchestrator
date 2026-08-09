@@ -19,22 +19,13 @@ function tail(value: string | undefined): string {
   if (!value) return "";
   return value.length <= MAX_COMMAND_TAIL_CHARS ? value : value.slice(value.length - MAX_COMMAND_TAIL_CHARS);
 }
-
 function boundedTokenCount(value: unknown): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) return 0;
   return value;
 }
-
 function reviewUsage(usage: { input_tokens?: number; output_tokens?: number } | undefined): ExecutorUsage {
-  // The executor reserves the model turn durably before the provider call.
-  // The response contributes only measured token usage to avoid double-counting.
-  return {
-    model_turns: 0,
-    input_tokens: boundedTokenCount(usage?.input_tokens),
-    output_tokens: boundedTokenCount(usage?.output_tokens),
-  };
+  return { model_turns: 0, input_tokens: boundedTokenCount(usage?.input_tokens), output_tokens: boundedTokenCount(usage?.output_tokens) };
 }
-
 async function loadValidationDocument(acceptedBundlePath: string): Promise<unknown> {
   try {
     const bytes = await readBoundedStableAuthorityFile(path.join(acceptedBundlePath, "validation.json"), MAX_VALIDATION_BYTES, "WEB_AUTHORITY_BINDING_MISMATCH", "accepted validation.json");
@@ -65,7 +56,6 @@ export function reviewPrompt(request: ExecutorReviewRequest): string {
   if (Buffer.byteLength(body, "utf8") > MAX_REVIEW_PROMPT_BYTES) throw new ExecutorError("EXECUTOR_OPERATIONAL_ERROR", `Phase 10 review prompt exceeds ${MAX_REVIEW_PROMPT_BYTES} bytes.`);
   return body;
 }
-
 function mappedVerdict(verdict: string): "APPROVE" | "REVISE" | "ESCALATE" {
   if (verdict === "APPROVE") return "APPROVE";
   if (verdict === "REVISE") return "REVISE";
@@ -85,33 +75,14 @@ export async function createProductionExecutorGates(options: { runId: string; st
 
   const verifier: ExecutorVerifierPort = {
     async verify(request: ExecutorVerificationRequest) {
-      const result = await verifyDeterministically({
-        worktreePath: request.worktree_path,
-        baseCommit: trusted.runReceipt.base_commit,
-        branchName: trusted.runReceipt.branch_name,
-        validation,
-        policy: config.verification,
-        sandbox,
-        ...(request.signal ? { signal: request.signal } : {}),
-      });
+      const result = await verifyDeterministically({ worktreePath: request.worktree_path, baseCommit: trusted.runReceipt.base_commit, branchName: trusted.runReceipt.branch_name, validation, policy: config.verification, sandbox, ...(request.signal ? { signal: request.signal } : {}) });
       return {
         passed: result.required_commands_passed,
         evidence: {
           kind: "phase10-deterministic-verification",
           change_set_digest: request.change_set_digest,
           required_commands_passed: result.required_commands_passed,
-          commands: result.commands.map((command) => ({
-            command_id: command.command_id,
-            required: command.required,
-            status: command.status,
-            exit_code: command.exit_code,
-            timed_out: command.timed_out,
-            duration_ms: command.duration_ms,
-            stdout_truncated: command.stdout_truncated,
-            stderr_truncated: command.stderr_truncated,
-            stdout_tail: tail(command.stdout),
-            stderr_tail: tail(command.stderr),
-          })),
+          commands: result.commands.map((command) => ({ command_id: command.command_id, required: command.required, status: command.status, exit_code: command.exit_code, timed_out: command.timed_out, duration_ms: command.duration_ms, stdout_truncated: command.stdout_truncated, stderr_truncated: command.stderr_truncated, stdout_tail: tail(command.stdout), stderr_tail: tail(command.stderr) })),
         },
       };
     },
@@ -119,11 +90,10 @@ export async function createProductionExecutorGates(options: { runId: string; st
 
   const reviewer: ExecutorReviewerPort = {
     budget_policy: {
-      maximum_model_turns: Math.min(
-        config.agents.limits.maximum_total_agent_turns,
-        config.agents.limits.maximum_internal_review_rounds + config.agents.limits.maximum_sol_review_rounds,
-      ),
+      maximum_model_turns: Math.min(config.agents.limits.maximum_total_agent_turns, config.agents.limits.maximum_internal_review_rounds + config.agents.limits.maximum_sol_review_rounds),
       maximum_elapsed_ms: config.agents.limits.maximum_total_seconds * 1000,
+      maximum_input_tokens: config.agents.limits.maximum_total_input_tokens,
+      maximum_output_tokens: config.agents.limits.maximum_total_output_tokens,
     },
     async review(request: ExecutorReviewRequest) {
       const prompt = reviewPrompt(request);
@@ -136,22 +106,9 @@ export async function createProductionExecutorGates(options: { runId: string; st
         verdict: mappedVerdict(result.review.verdict),
         usage: reviewUsage(result.response.usage),
         evidence: {
-          kind: `phase10-${request.reviewer}-review`,
-          reviewer: request.reviewer,
-          change_set_digest: request.change_set_digest,
-          context_selection_sha256: request.context_selection.selection_sha256,
-          context_source: request.context_selection.source,
-          context_paths: request.context_selection.paths,
-          context_candidate_count: request.context_selection.candidate_count,
-          context_truncated: request.context_selection.truncated,
-          verdict: result.review.verdict,
-          summary: result.review.summary,
-          acceptance_results: result.review.acceptance_results,
-          blocking_findings: result.review.blocking_findings,
-          non_blocking_findings: result.review.non_blocking_findings,
-          scope_violations: result.review.scope_violations,
-          unverified_acceptance: result.review.unverified_acceptance,
-          usage: result.response.usage ?? null,
+          kind: `phase10-${request.reviewer}-review`, reviewer: request.reviewer, change_set_digest: request.change_set_digest,
+          context_selection_sha256: request.context_selection.selection_sha256, context_source: request.context_selection.source, context_paths: request.context_selection.paths, context_candidate_count: request.context_selection.candidate_count, context_truncated: request.context_selection.truncated,
+          verdict: result.review.verdict, summary: result.review.summary, acceptance_results: result.review.acceptance_results, blocking_findings: result.review.blocking_findings, non_blocking_findings: result.review.non_blocking_findings, scope_violations: result.review.scope_violations, unverified_acceptance: result.review.unverified_acceptance, usage: result.response.usage ?? null,
         },
       };
     },
