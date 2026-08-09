@@ -1,0 +1,21 @@
+name: Cleanup temporary lock tag
+
+on:
+  push:
+    branches:
+      - repair/generated-package-lock
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: repair/generated-package-lock
+          fetch-depth: 1
+      - name: Delete temporary tag
+        run: git push origin :refs/tags/wco-lockgen-temp-20260809
