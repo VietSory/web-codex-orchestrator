@@ -5,10 +5,15 @@ import { reviewPrompt } from "../src/executor/production-gates.js";
 import type { WebImplementationPack } from "../src/web-authority/contracts.js";
 import type { ExecutorReviewRequest } from "../src/executor/gates.js";
 
-function pack(reads: Array<{ path: string; coverage: "full" | "partial" }>, nodes: Array<{ path: string; role?: string }>): WebImplementationPack {
+function pack(
+  reads: Array<{ path: string; coverage: "full" | "partial" }>,
+  nodes: Array<{ path: string; role?: string }>,
+  prohibited: string[] = [".git/**"],
+): WebImplementationPack {
   const entries = new Map<string, Buffer>();
   entries.set("read-coverage.json", Buffer.from(JSON.stringify({ schema_version: "2.0", repository_tree_sha: "a".repeat(40), reads: reads.map((entry) => ({ ...entry, object_sha: "b".repeat(40) })) })));
   entries.set("project-map.json", Buffer.from(JSON.stringify({ schema_version: "2.0", repository_tree_sha: "a".repeat(40), nodes })));
+  entries.set("prohibited-changes.json", Buffer.from(JSON.stringify({ schema_version: "2.0", paths: prohibited, rules: ["no redesign"] })));
   return { entries } as unknown as WebImplementationPack;
 }
 
@@ -16,10 +21,21 @@ function request(context_selection: ReturnType<typeof selectSmartContext>, chang
   return { run_id: `TASK:${"a".repeat(64)}`, artifact_sha256: "b".repeat(64), worktree_path: "/tmp/worktree", accepted_bundle_path: "/tmp/bundle", change_set_digest: "c".repeat(64), changed_paths, reviewer: "terra", prior_evidence_sha256: [], context_selection };
 }
 
-test("v0.2 smart context is deterministic and prioritizes local/full, local/partial, role, then broad reads", () => {
+test("v0.2 smart context is deterministic and prioritizes local/full, local/partial, read-covered same-role, then broad reads", () => {
   const source = pack(
-    [{ path: "lib/y.ts", coverage: "partial" }, { path: "src/c.ts", coverage: "partial" }, { path: "src/b.ts", coverage: "full" }, { path: "lib/z.ts", coverage: "full" }, { path: "src/a.ts", coverage: "full" }],
-    [{ path: "src/a.ts", role: "core" }, { path: "lib/role.ts", role: "core" }, { path: "src/b.ts", role: "support" }],
+    [
+      { path: "lib/y.ts", coverage: "partial" },
+      { path: "src/c.ts", coverage: "partial" },
+      { path: "src/b.ts", coverage: "full" },
+      { path: "lib/role.ts", coverage: "partial" },
+      { path: "lib/z.ts", coverage: "full" },
+      { path: "src/a.ts", coverage: "full" },
+    ],
+    [
+      { path: "src/a.ts", role: "core" },
+      { path: "lib/role.ts", role: "core" },
+      { path: "src/b.ts", role: "support" },
+    ],
   );
   const first = selectSmartContext(source, ["src/a.ts"]);
   const second = selectSmartContext(source, ["src/a.ts", "src/a.ts"]);
@@ -27,6 +43,36 @@ test("v0.2 smart context is deterministic and prioritizes local/full, local/part
   assert.equal(first.paths.includes("src/a.ts"), false, "changed paths are already mandatory context and must not be duplicated");
   assert.deepEqual(second, first);
   assert.match(first.selection_sha256, /^[a-f0-9]{64}$/);
+});
+
+test("v0.2 project-map-only nodes never expand the review read surface", () => {
+  const selection = selectSmartContext(
+    pack(
+      [{ path: "src/a.ts", coverage: "full" }],
+      [{ path: "src/a.ts", role: "core" }, { path: "secrets/project-map-only.txt", role: "core" }],
+    ),
+    ["src/a.ts"],
+  );
+  assert.deepEqual(selection.paths, []);
+  assert.equal(selection.candidate_count, 0);
+});
+
+test("v0.2 prohibited and hard-sensitive paths are never selected as context hints", () => {
+  const selection = selectSmartContext(
+    pack(
+      [
+        { path: "src/helper.ts", coverage: "full" },
+        { path: "infra/production/secret.tf", coverage: "full" },
+        { path: ".env.local", coverage: "full" },
+        { path: ".git/config", coverage: "full" },
+      ],
+      [],
+      ["infra/production/**", ".git/**"],
+    ),
+    ["src/a.ts"],
+  );
+  assert.deepEqual(selection.paths, ["src/helper.ts"]);
+  assert.equal(selection.candidate_count, 1);
 });
 
 test("v0.2 smart context selection is bounded and materially reduces context-path bytes on a large authority map", () => {
