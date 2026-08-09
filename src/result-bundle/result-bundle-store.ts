@@ -107,7 +107,8 @@ async function openStableReceipt(resolved: string, pathStat: fs.Stats): Promise<
     return handle;
   } catch (error) {
     await handle.close().catch(() => undefined);
-    throw error;
+    if (error instanceof ResultBundleError) throw error;
+    throw new ResultBundleError("RESULT_RECEIPT_INVALID", `Result Bundle receipt changed before bounded read: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -128,18 +129,25 @@ async function syncParentDirectory(parent: string): Promise<void> {
 
 export async function readResultBundleReceipt(receiptPath: string): Promise<ResultBundleReceipt | null> {
   const resolved = path.resolve(receiptPath);
+  const parent = path.dirname(resolved);
   try {
-    const parent = path.dirname(resolved);
-    try {
-      await fs.promises.lstat(parent);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-      throw error;
-    }
-    await assertCanonicalReceiptParent(resolved);
-    const stat = await fs.promises.lstat(resolved);
-    if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_RECEIPT_BYTES) throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle receipt must be a bounded regular non-symlink file.");
+    await fs.promises.lstat(parent);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new ResultBundleError("RESULT_RECEIPT_INVALID", `Cannot inspect Result Bundle receipt parent: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  await assertCanonicalReceiptParent(resolved);
 
+  let stat: fs.Stats;
+  try {
+    stat = await fs.promises.lstat(resolved);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new ResultBundleError("RESULT_RECEIPT_INVALID", `Cannot inspect Result Bundle receipt: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_RECEIPT_BYTES) throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle receipt must be a bounded regular non-symlink file.");
+
+  try {
     const handle = await openStableReceipt(resolved, stat);
     try {
       const before = await handle.stat();
@@ -166,9 +174,8 @@ export async function readResultBundleReceipt(receiptPath: string): Promise<Resu
       await handle.close().catch(() => undefined);
     }
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     if (error instanceof ResultBundleError) throw error;
-    throw new ResultBundleError("RESULT_RECEIPT_INVALID", `Cannot read result bundle receipt: ${error instanceof Error ? error.message : String(error)}`);
+    throw new ResultBundleError("RESULT_RECEIPT_INVALID", `Cannot stably read Result Bundle receipt: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
