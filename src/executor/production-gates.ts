@@ -8,7 +8,7 @@ import { CodexVerificationSandbox } from "../verifier/codex-sandbox.js";
 import { verifyDeterministically } from "../verifier/verifier.js";
 import { readBoundedStableAuthorityFile } from "../web-authority/task-spec-authority.js";
 import { resolveTrustedRunContext } from "../web-review/trusted-run-context.js";
-import { ExecutorError } from "./contracts.js";
+import { ExecutorError, type ExecutorUsage } from "./contracts.js";
 import type { ExecutorReviewerPort, ExecutorReviewRequest, ExecutorVerifierPort, ExecutorVerificationRequest } from "./gates.js";
 
 const MAX_REVIEW_PROMPT_BYTES = 64 * 1024;
@@ -18,6 +18,19 @@ const MAX_VALIDATION_BYTES = 8 * 1024 * 1024;
 function tail(value: string | undefined): string {
   if (!value) return "";
   return value.length <= MAX_COMMAND_TAIL_CHARS ? value : value.slice(value.length - MAX_COMMAND_TAIL_CHARS);
+}
+
+function boundedTokenCount(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) return 0;
+  return value;
+}
+
+function reviewUsage(usage: { input_tokens?: number; output_tokens?: number } | undefined): ExecutorUsage {
+  return {
+    model_turns: 1,
+    input_tokens: boundedTokenCount(usage?.input_tokens),
+    output_tokens: boundedTokenCount(usage?.output_tokens),
+  };
 }
 
 async function loadValidationDocument(acceptedBundlePath: string): Promise<unknown> {
@@ -110,6 +123,7 @@ export async function createProductionExecutorGates(options: { runId: string; st
       if (result.review.reviewed_change_set_sha256 !== request.change_set_digest) throw new ExecutorError("EXECUTOR_REVIEW_REJECTED", `${request.reviewer} reviewed stale digest '${result.review.reviewed_change_set_sha256}'.`);
       return {
         verdict: mappedVerdict(result.review.verdict),
+        usage: reviewUsage(result.response.usage),
         evidence: {
           kind: `phase10-${request.reviewer}-review`,
           reviewer: request.reviewer,
