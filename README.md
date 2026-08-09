@@ -59,6 +59,8 @@ human merge decision
 
 WCO deliberately does not treat browser tabs, chat transcripts, model sessions, or a previous success message as lifecycle authority. Durable receipts and exact content identities drive recovery and continuation.
 
+Independent review uses a deterministic bounded context hint derived from the registered project map/read coverage. It does not replace the changed files or accepted Task Bundle as authority. Model turns and wall-clock review limits are checked before provider calls; token usage is measured after responses and can stop later calls. WCO does not present measured token thresholds as a strict current-call billing cap. See [Operations and packaging](docs/operations.md) for the exact semantics.
+
 ## Requirements
 
 - Node.js 22 or newer
@@ -102,6 +104,8 @@ Run the preflight:
 wco doctor
 ```
 
+`doctor` includes a bounded Codex verification-sandbox smoke test with network disabled; WCO does not fall back to unrestricted host verification if that check fails.
+
 Then preview and run a bundle:
 
 ```bash
@@ -128,7 +132,7 @@ wco preview      validate and inspect a task without touching the repository
 wco run          prepare and advance the durable workflow
 wco status       human-readable progress plus durable runtime evidence
 wco resume       resume a paused/interrupted run using exact persisted state
-wco doctor       machine/config/runtime preflight
+wco doctor       machine/config/runtime/sandbox preflight
 wco next         next durable transition, read-only
 wco continue     lower-level bounded transition runner
 wco pause        prevent new transitions
@@ -145,7 +149,9 @@ Use `--json` where supported for machine-readable output. Human output stays con
 npm run check
 ```
 
-`check` runs template validation, strict TypeScript checking, the complete deterministic test suite, end-to-end workflow coverage, the build, and compiled CLI integration tests.
+`check` runs template validation, strict TypeScript checking, the complete deterministic test suite, the deterministic Smart Context selector benchmark, end-to-end workflow coverage, the build, and compiled CLI integration tests.
+
+The selector benchmark is intentionally narrow: it measures deterministic context-path selection overhead and byte reduction, not provider token/cost/quality claims.
 
 Native opt-in checks are separate because CI must not pretend to prove a developer's local Codex or sandbox environment:
 
