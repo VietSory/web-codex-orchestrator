@@ -10,7 +10,7 @@ const taskId = "TASK-JOURNAL";
 const archive = "a".repeat(64);
 
 function event(sequence: number): string {
-  return JSON.stringify({ event_version: "1.0", run_id: runId, sequence, from: "DISCOVERED", to: "INTAKE_ACCEPTED", timestamp: "2026-08-08T00:00:00.000Z", details: { padding: "x".repeat(64) } });
+  return JSON.stringify({ event_version: "1.0", run_id: runId, sequence, from: "DISCOVERED", to: "ACCEPTED", timestamp: "2026-08-08T00:00:00.000Z", details: { padding: "x".repeat(64) } });
 }
 
 test("EVENT-JOURNAL-001 recovers the next sequence from only the final durable record", async (t) => {
@@ -22,7 +22,7 @@ test("EVENT-JOURNAL-001 recovers the next sequence from only the final durable r
   const records = Array.from({ length: 5000 }, (_, index) => event(index + 1)).join("\n") + "\n";
   await fs.writeFile(journal, records, { mode: 0o600 });
 
-  const appended = await appendRunEvent(state, taskId, archive, runId, "INTAKE_ACCEPTED", "READY_FOR_CODEX", { ok: true }, () => new Date("2026-08-08T00:00:01.000Z"));
+  const appended = await appendRunEvent(state, taskId, archive, runId, "ACCEPTED", "READY_FOR_CODEX", { ok: true }, () => new Date("2026-08-08T00:00:01.000Z"));
   assert.equal(appended.sequence, 5001);
   const tail = (await fs.readFile(journal, "utf8")).trimEnd().split("\n").at(-1);
   assert.equal((JSON.parse(tail!) as { sequence: number }).sequence, 5001);
@@ -37,7 +37,7 @@ test("EVENT-JOURNAL-002 malformed final authority fails closed instead of silent
   await fs.writeFile(journal, `${event(1)}\nnot-json\n`, { mode: 0o600 });
 
   await assert.rejects(
-    () => appendRunEvent(state, taskId, archive, runId, "INTAKE_ACCEPTED", "READY_FOR_CODEX"),
+    () => appendRunEvent(state, taskId, archive, runId, "ACCEPTED", "READY_FOR_CODEX"),
     /invalid final record/,
   );
 });
