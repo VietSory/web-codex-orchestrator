@@ -29,6 +29,7 @@ async function run(args: string[], env: NodeJS.ProcessEnv = {}): Promise<{ code:
 test("compiled wco exposes the durable workflow through one public CLI", async () => {
   const result = await run(["--help"]);
   assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /wco preview <task-bundle\.zip>/);
   assert.match(result.stdout, /wco run <task-bundle\.zip>/);
   assert.match(result.stdout, /wco status/);
   assert.match(result.stdout, /wco resume/);
