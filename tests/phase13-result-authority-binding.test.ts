@@ -32,7 +32,7 @@ function authorities() {
     errors: [],
     created_at: "2026-08-09T00:00:00.000Z",
     updated_at: "2026-08-09T00:00:01.000Z",
-  } as never;
+  } as any;
   const executionSha = crypto.createHash("sha256").update(canonicalJsonBuffer(executor)).digest("hex");
   const publish = {
     publish_version: "1.1",
@@ -51,7 +51,7 @@ function authorities() {
     updated_at: "2026-08-09T00:00:02.000Z",
     committed_at: "2026-08-09T00:00:02.000Z",
     pushed_at: "2026-08-09T00:00:02.000Z",
-  } as never;
+  } as any;
   const draft = {
     receipt_version: "1.0",
     run_id: RUN_ID,
@@ -79,7 +79,7 @@ function authorities() {
     create_attempted_at: "2026-08-09T00:00:03.000Z",
     opened_at: "2026-08-09T00:00:03.000Z",
     conflict_at: null,
-  } as never;
+  } as any;
   const result = {
     result_bundle_version: "1.1",
     run_id: RUN_ID,
@@ -100,7 +100,7 @@ function authorities() {
       base_branch: "main",
       title_sha256: "f".repeat(64),
     },
-  } as never;
+  } as any;
   return { executor, publish, draft, result };
 }
 
@@ -111,24 +111,24 @@ test("P13-BIND-001 exact selected executor/publish/Draft/result authority is rea
 
 test("P13-BIND-002 stale executor receipt identity cannot make the planner quiescent", () => {
   const { executor, publish, draft, result } = authorities();
-  const stale = { ...result, execution_receipt_sha256: "0".repeat(64) } as never;
+  const stale = { ...result, execution_receipt_sha256: "0".repeat(64) };
   assert.equal(initialResultBoundToSelectedExecutor(RUN_ID, executor, publish, draft, stale), false);
 });
 
 test("P13-BIND-003 stale change-set digest cannot make the planner quiescent", () => {
   const { executor, publish, draft, result } = authorities();
-  const stale = { ...result, change_set_sha256: "0".repeat(64) } as never;
+  const stale = { ...result, change_set_sha256: "0".repeat(64) };
   assert.equal(initialResultBoundToSelectedExecutor(RUN_ID, executor, publish, draft, stale), false);
 });
 
 test("P13-BIND-004 stale publish head cannot make the planner quiescent", () => {
   const { executor, publish, draft, result } = authorities();
-  const stalePublish = { ...publish, commit_sha: "4".repeat(40), remote_branch_sha: "4".repeat(40) } as never;
+  const stalePublish = { ...publish, commit_sha: "4".repeat(40), remote_branch_sha: "4".repeat(40) };
   assert.equal(initialResultBoundToSelectedExecutor(RUN_ID, executor, stalePublish, draft, result), false);
 });
 
 test("P13-BIND-005 wrong Draft PR identity cannot make the planner quiescent", () => {
   const { executor, publish, draft, result } = authorities();
-  const staleDraft = { ...draft, pull_number: 43 } as never;
+  const staleDraft = { ...draft, pull_number: 43 };
   assert.equal(initialResultBoundToSelectedExecutor(RUN_ID, executor, publish, staleDraft, result), false);
 });
