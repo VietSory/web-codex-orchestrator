@@ -4,10 +4,8 @@ import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
 import { readExecutorReceipt } from "../executor/store.js";
 import { executorPaths } from "../executor/paths.js";
 import type { ExecutorReceipt } from "../executor/contracts.js";
-import { readGitPublishReceipt } from "../publish/publish-store.js";
-import type { GitPublishReceipt } from "../publish/contracts.js";
-import { readDraftPullRequestReceipt } from "../pull-request/draft-pr-store.js";
-import type { DraftPullRequestReceipt } from "../pull-request/contracts.js";
+import { readGitPublishReceiptSnapshot, type GitPublishReceiptSnapshot } from "../publish/publish-store.js";
+import { readDraftPullRequestReceiptSnapshot, type DraftPullRequestReceiptSnapshot } from "../pull-request/draft-pr-store.js";
 import { readResultBundleReceipt } from "../result-bundle/result-bundle-store.js";
 import { resultBundlePaths } from "../result-bundle/result-bundle-paths.js";
 import type { ResultBundleReceipt } from "../result-bundle/contracts.js";
@@ -27,30 +25,39 @@ function splitRunId(runId: string): { taskId: string; taskBundleSha256: string }
   return { taskId: runId.slice(0, split), taskBundleSha256: runId.slice(split + 1) };
 }
 
+function sha256(bytes: Buffer): string {
+  return crypto.createHash("sha256").update(bytes).digest("hex");
+}
+
 function executorReceiptSha256(receipt: ExecutorReceipt): string {
-  return crypto.createHash("sha256").update(canonicalJsonBuffer(receipt)).digest("hex");
+  return sha256(canonicalJsonBuffer(receipt));
 }
 
 /**
  * Phase 13 result readiness is an exact selected-artifact binding, not merely a
  * run-level READY flag. A handoff produced for an older selected artifact,
- * publish head, or Draft PR must never make the planner quiescent.
+ * exact Phase 5 receipt, publish head, or Draft PR must never make the planner
+ * quiescent.
  */
 export function initialResultBoundToSelectedExecutor(
   runId: string,
   executor: ExecutorReceipt | null,
-  publish: GitPublishReceipt | null,
-  draft: DraftPullRequestReceipt | null,
+  publishSnapshot: GitPublishReceiptSnapshot | null,
+  draftSnapshot: DraftPullRequestReceiptSnapshot | null,
   result: ResultBundleReceipt | null,
 ): boolean {
+  const publish = publishSnapshot?.receipt ?? null;
+  const draft = draftSnapshot?.receipt ?? null;
   if (
     !executor || executor.run_id !== runId || executor.state !== "READY_FOR_PUBLISH" || executor.change_set_digest === null ||
-    !publish || publish.run_id !== runId || publish.state !== "PUSHED" || publish.commit_sha === null || publish.remote_branch_sha !== publish.commit_sha ||
-    !draft || draft.run_id !== runId || draft.state !== "OPEN" || draft.pull_number === null || draft.expected_head_sha !== publish.commit_sha ||
+    !publishSnapshot || !publish || publish.run_id !== runId || publish.state !== "PUSHED" || publish.commit_sha === null || publish.remote_branch_sha !== publish.commit_sha ||
+    !draftSnapshot || !draft || draft.run_id !== runId || draft.state !== "OPEN" || draft.pull_number === null || draft.expected_head_sha !== publish.commit_sha ||
     !result || result.run_id !== runId || result.state !== "READY_FOR_WEB_REVIEW" || result.archive_sha256 === null
   ) return false;
 
   return result.execution_receipt_sha256 === executorReceiptSha256(executor)
+    && result.git_publish_receipt_sha256 === sha256(publishSnapshot.bytes)
+    && result.draft_pr_receipt_sha256 === sha256(draftSnapshot.bytes)
     && result.change_set_sha256 === executor.change_set_digest
     && result.base_commit === executor.base_commit
     && result.published_commit_sha === publish.commit_sha
@@ -91,13 +98,15 @@ export async function readLifecycleSnapshot(stateDirectory: string, runId: strin
   const directory = executorPaths(stateDirectory, id.taskId, id.taskBundleSha256, selected.artifact_sha256).directory;
   const publishDirectory = path.join(directory, "publish");
   const resultPaths = resultBundlePaths(stateDirectory, id.taskId, id.taskBundleSha256);
-  const [publish, draft, result, review, revision] = await Promise.all([
-    readGitPublishReceipt(path.join(publishDirectory, "git-publish.json")),
-    readDraftPullRequestReceipt(path.join(publishDirectory, "github-draft-pr.json")),
+  const [publishSnapshot, draftSnapshot, result, review, revision] = await Promise.all([
+    readGitPublishReceiptSnapshot(path.join(publishDirectory, "git-publish.json")),
+    readDraftPullRequestReceiptSnapshot(path.join(publishDirectory, "github-draft-pr.json")),
     readResultBundleReceipt(resultPaths.receiptPath),
     getWebReviewStatus({ runId, stateDirectory }),
     getRevisionStatus(stateDirectory, runId),
   ]);
+  const publish = publishSnapshot?.receipt ?? null;
+  const draft = draftSnapshot?.receipt ?? null;
   const webReviewState = review?.state === "APPROVED" || review?.state === "REVISION_REQUESTED" || review?.state === "ESCALATED"
     ? review.state
     : review ? "PENDING" : null;
@@ -107,7 +116,7 @@ export async function readLifecycleSnapshot(stateDirectory: string, runId: strin
     executor_state: executor?.state ?? null,
     publish_state: publish?.state ?? null,
     draft_pr_state: draft?.state ?? null,
-    result_bundle_ready: initialResultBoundToSelectedExecutor(runId, executor, publish, draft, result),
+    result_bundle_ready: initialResultBoundToSelectedExecutor(runId, executor, publishSnapshot, draftSnapshot, result),
     web_review_state: webReviewState,
     revision_state: relevantRevision?.state ?? null,
     revision_result_ready: revisionResultReadyForWebReview(runId, review, revision),
