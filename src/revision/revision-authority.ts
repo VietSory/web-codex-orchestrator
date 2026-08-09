@@ -116,7 +116,7 @@ export function assertRevisionReceiptAuthority(receipt: RevisionReceipt, expecte
   same("revision_request_sha256", receipt.revision_request_sha256, expected.revisionRequestSha256);
   same("spec_set_sha256", receipt.spec_set_sha256, expected.specSetSha256);
   same("previous_result_bundle_sha256", receipt.previous_result_bundle_sha256, expected.previousResultBundleSha256);
-  same("previous_result_receipt_sha256", receipt.previousResultReceiptSha256, expected.previousResultReceiptSha256);
+  same("previous_result_receipt_sha256", receipt.previous_result_receipt_sha256, expected.previousResultReceiptSha256);
   same("previous_verdict_sha256", receipt.previous_verdict_sha256, expected.previousVerdictSha256);
   same("previous_published_commit_sha", receipt.previous_published_commit_sha, expected.previousPublishedCommitSha);
   same("previous_pr_head_sha", receipt.previous_pr_head_sha, expected.previousPrHeadSha);
