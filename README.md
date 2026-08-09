@@ -2,11 +2,40 @@
 
 [![CI](https://github.com/VietSory/web-codex-orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/VietSory/web-codex-orchestrator/actions/workflows/ci.yml)
 
-Web Codex Orchestrator (WCO) is a security-focused CLI that turns externally authored implementation evidence into a durable, reviewable Git workflow. It validates untrusted handoffs, operates in isolated worktrees, runs deterministic verification and independent model review, publishes only exact approved changes, opens a Draft pull request, and keeps merge authority with a human.
+Web Codex Orchestrator (WCO) is a security-focused CLI for turning a structured coding task into a durable, verified Draft-PR workflow. It validates untrusted handoffs, works in isolated Git worktrees, verifies exact changes, records model/runtime evidence, survives interruption through durable recovery, and keeps merge authority with a human.
 
 > Status: pre-release. The repository is suitable for development and technical evaluation; a stable binary/package release has not been published yet.
 
-## What WCO does
+## The user workflow
+
+Preview a Task Bundle before WCO touches a repository:
+
+```bash
+wco preview ./task-bundle.zip --state-dir ./.wco/state
+```
+
+Preview reports the target repository/base commit, allowed and forbidden scope, verification commands, delivery policy, and human-approval boundaries. It securely validates/stores the bundle in WCO state but does **not** create a worktree, modify repository files, or request network access.
+
+Start or continue the durable workflow with one primary command:
+
+```bash
+wco run ./task-bundle.zip \
+  --state-dir ./.wco/state \
+  --config ./.wco/config.json
+```
+
+`wco run` prepares the exact run and advances the existing durable controller until the next explicit input, human, or terminal boundary. It does not create a second shortcut around Web implementation authority, deterministic verification, independent review, or Draft-PR attestation.
+
+At any point:
+
+```bash
+wco status --run-id '<task-id>:<bundle-sha256>' --state-dir ./.wco/state
+wco resume --run-id '<task-id>:<bundle-sha256>' --state-dir ./.wco/state
+```
+
+Human `status` output shows workflow progress plus durable WCO runtime usage. `resume` reuses exact receipts and re-attests completed side effects before the next one, instead of trusting a previous terminal/session message.
+
+## What happens underneath
 
 ```text
 Task Bundle
@@ -73,13 +102,21 @@ Run the preflight:
 wco doctor
 ```
 
-Once a run exists, set its identity once:
+Then preview and run a bundle:
+
+```bash
+wco preview ./task-bundle.zip
+wco run ./task-bundle.zip
+```
+
+When a workflow reaches an external input boundary, WCO tells you exactly which input is required. Advanced automation can provide those inputs explicitly, for example `--web-pack <zip>` or `--web-verdict <json>`.
+
+Once a run identity exists, it can also be exported once:
 
 ```bash
 export WCO_RUN_ID='<task-id>:<task-bundle-sha256>'
 wco status
-wco next
-wco continue
+wco resume
 ```
 
 Flags always override the need for environment defaults, so automation can remain fully explicit.
@@ -87,12 +124,14 @@ Flags always override the need for environment defaults, so automation can remai
 ## Common commands
 
 ```text
+wco preview      validate and inspect a task without touching the repository
+wco run          prepare and advance the durable workflow
+wco status       human-readable progress plus durable runtime evidence
+wco resume       resume a paused/interrupted run using exact persisted state
 wco doctor       machine/config/runtime preflight
-wco status       durable run status
 wco next         next durable transition, read-only
-wco continue     advance the workflow within bounded transition limits
+wco continue     lower-level bounded transition runner
 wco pause        prevent new transitions
-wco resume       resume an explicitly paused run
 wco validate     validate a Task Bundle directory
 wco intake       securely ingest a Task Bundle archive
 wco scan/watch   process an inbox of Task Bundles
