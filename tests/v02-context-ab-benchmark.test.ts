@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { benchmarkOrder, runContextAbBenchmark } from "../src/benchmark/context-ab.js";
+import { benchmarkOrder, runContextAbBenchmark, sameOrderedPaths } from "../src/benchmark/context-ab.js";
 
 const DIGEST = "a".repeat(64);
 
@@ -9,6 +9,14 @@ test("v0.2 native A/B benchmark alternates arm order to reduce fixed ordering bi
   assert.deepEqual(benchmarkOrder(3), ["baseline", "smart", "smart", "baseline", "baseline", "smart"]);
   assert.throws(() => benchmarkOrder(0), /1\.\.5/);
   assert.throws(() => benchmarkOrder(6), /1\.\.5/);
+});
+
+test("v0.2 benchmark path identity is collision-safe for filenames containing newlines", () => {
+  const left = ["a\nb", "c"];
+  const right = ["a", "b\nc"];
+  assert.equal(left.join("\n"), right.join("\n"), "fixture must demonstrate the old delimiter collision");
+  assert.equal(sameOrderedPaths(left, right), false);
+  assert.equal(sameOrderedPaths(left, [...left]), true);
 });
 
 test("v0.2 A/B benchmark re-attests before every sample and summarizes provider metrics", async () => {
@@ -36,6 +44,34 @@ test("v0.2 A/B benchmark re-attests before every sample and summarizes provider 
   assert.equal(report.smart.input_tokens.mean, 80);
   assert.equal(report.baseline.elapsed_ms.median, 102.5);
   assert.equal(report.smart.elapsed_ms.median, 82.5);
+});
+
+test("v0.2 A/B benchmark gives each provider sample a bounded abort signal", async () => {
+  await assert.rejects(
+    () => runContextAbBenchmark({
+      repetitions: 1,
+      expectedChangeSetSha256: DIGEST,
+      sampleTimeoutMs: 10,
+      runSample: async (_arm, _sequence, signal) => await new Promise((resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      }),
+    }),
+    (error: unknown) => error instanceof DOMException && error.name === "TimeoutError",
+  );
+  await assert.rejects(
+    () => runContextAbBenchmark({
+      repetitions: 1,
+      expectedChangeSetSha256: DIGEST,
+      sampleTimeoutMs: 0,
+      runSample: async () => ({
+        elapsed_ms: 1,
+        verdict: "APPROVE",
+        reviewed_change_set_sha256: DIGEST,
+        usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+      }),
+    }),
+    /positive safe integer/,
+  );
 });
 
 test("v0.2 A/B benchmark counts only APPROVE on the exact expected digest as success", async () => {
