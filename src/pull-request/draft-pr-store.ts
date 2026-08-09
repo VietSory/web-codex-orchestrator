@@ -1,9 +1,11 @@
-import { lstat, mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
+import { constants as fsConstants, type Stats } from "node:fs";
+import { lstat, mkdir, open, realpath, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { DraftPullRequestError, type DraftPullRequestReceipt } from "./contracts.js";
 
 const SHA1 = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
+const MAX_DRAFT_PR_RECEIPT_BYTES = 65_536;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -57,7 +59,6 @@ function assertReceipt(value: unknown): asserts value is DraftPullRequestReceipt
     throw new DraftPullRequestError("PR_RECEIPT_INVALID", "Invalid schema.");
   }
 
-  // Ensure strict field count to reject unknown fields
   const expectedKeys = new Set([
     "receipt_version", "run_id", "state", "repository_owner", "repository_name", "base_branch",
     "head_branch", "expected_head_sha", "git_publish_receipt_sha256", "request_sha256", "title",
@@ -70,7 +71,6 @@ function assertReceipt(value: unknown): asserts value is DraftPullRequestReceipt
     throw new DraftPullRequestError("PR_RECEIPT_INVALID", "Unknown fields in receipt.");
   }
 
-  // State invariants
   if (state === "READY_FOR_CREATE") {
     if (pull_number !== null || pull_url !== null || observed_head_sha !== null || observed_base_branch !== null || observed_state !== null || observed_draft !== null || conflict_reason !== null || opened_at !== null || conflict_at !== null) {
       throw new DraftPullRequestError("PR_RECEIPT_INVALID", "READY_FOR_CREATE has unexpected fields.");
@@ -98,9 +98,16 @@ async function assertCanonicalDirectory(directory: string, create: boolean): Pro
   if (create) await mkdir(resolved, { recursive: true, mode: 0o700 });
 
   try {
-    const [info, canonical] = await Promise.all([lstat(resolved), realpath(resolved)]);
-    if (!info.isDirectory() || info.isSymbolicLink() || canonical !== resolved) {
-      throw new DraftPullRequestError("PR_RECEIPT_INVALID", "Directory must be a canonical real directory.");
+    const before = await lstat(resolved);
+    const canonical = await realpath(resolved);
+    const after = await lstat(resolved);
+    if (
+      !before.isDirectory() || before.isSymbolicLink() ||
+      !after.isDirectory() || after.isSymbolicLink() ||
+      before.dev !== after.dev || before.ino !== after.ino ||
+      canonical !== resolved
+    ) {
+      throw new DraftPullRequestError("PR_RECEIPT_INVALID", "Directory must remain one canonical real directory while authority is accessed.");
     }
     return true;
   } catch (error) {
@@ -121,25 +128,78 @@ async function assertRegularOrMissing(filePath: string): Promise<void> {
   }
 }
 
-export async function readDraftPullRequestReceipt(receiptPath: string): Promise<DraftPullRequestReceipt | null> {
-  if (!await assertCanonicalDirectory(path.dirname(receiptPath), false)) return null;
-  await assertRegularOrMissing(receiptPath);
+function sameFileIdentity(left: Stats, right: Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size;
+}
 
-  let text: string;
+async function readStableDraftReceiptBytes(receiptPath: string): Promise<Buffer | null> {
+  let pathBefore: Stats;
   try {
-    text = await readFile(receiptPath, "utf8");
+    pathBefore = await lstat(receiptPath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
+  if (pathBefore.isSymbolicLink() || !pathBefore.isFile() || pathBefore.size > MAX_DRAFT_PR_RECEIPT_BYTES) {
+    throw new DraftPullRequestError("PR_RECEIPT_INVALID", `Receipt must be a regular non-symlink file no larger than ${MAX_DRAFT_PR_RECEIPT_BYTES} bytes.`);
+  }
 
-  if (Buffer.byteLength(text, "utf8") > 65536) {
-    throw new DraftPullRequestError("PR_RECEIPT_INVALID", "Receipt is too large.");
+  const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+  let handle;
+  try {
+    handle = await open(receiptPath, fsConstants.O_RDONLY | noFollow);
+  } catch (error) {
+    throw new DraftPullRequestError("PR_RECEIPT_INVALID", `Cannot safely open Draft PR receipt: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  try {
+    const before = await handle.stat();
+    if (!before.isFile() || !sameFileIdentity(pathBefore, before) || before.size > MAX_DRAFT_PR_RECEIPT_BYTES) {
+      throw new DraftPullRequestError("PR_RECEIPT_INVALID", "Draft PR receipt changed before it could be opened safely.");
+    }
+
+    const bytes = Buffer.alloc(before.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
+      if (bytesRead === 0) throw new DraftPullRequestError("PR_RECEIPT_INVALID", "Draft PR receipt was truncated while reading.");
+      offset += bytesRead;
+    }
+    if ((await handle.read(Buffer.alloc(1), 0, 1, offset)).bytesRead !== 0) {
+      throw new DraftPullRequestError("PR_RECEIPT_INVALID", "Draft PR receipt grew while reading.");
+    }
+
+    const afterHandle = await handle.stat();
+    let afterPath: Stats;
+    try {
+      afterPath = await lstat(receiptPath);
+    } catch (error) {
+      throw new DraftPullRequestError("PR_RECEIPT_INVALID", `Draft PR receipt path disappeared while reading: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (
+      afterPath.isSymbolicLink() || !afterPath.isFile() ||
+      !sameFileIdentity(before, afterHandle) || !sameFileIdentity(before, afterPath)
+    ) {
+      throw new DraftPullRequestError("PR_RECEIPT_INVALID", "Draft PR receipt changed while reading.");
+    }
+    return bytes;
+  } finally {
+    await handle.close();
+  }
+}
+
+export async function readDraftPullRequestReceipt(receiptPath: string): Promise<DraftPullRequestReceipt | null> {
+  const directory = path.dirname(receiptPath);
+  if (!await assertCanonicalDirectory(directory, false)) return null;
+  const bytes = await readStableDraftReceiptBytes(receiptPath);
+  if (bytes === null) return null;
+  if (!await assertCanonicalDirectory(directory, false)) {
+    throw new DraftPullRequestError("PR_RECEIPT_INVALID", "Draft PR receipt directory disappeared after authority was read.");
   }
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(text);
+    parsed = JSON.parse(bytes.toString("utf8"));
   } catch {
     throw new DraftPullRequestError("PR_RECEIPT_INVALID", "Receipt is not valid JSON.");
   }
@@ -155,7 +215,7 @@ async function syncDirectory(directory: string): Promise<void> {
     await handle.sync();
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "EINVAL" && code !== "ENOTSUP" && code !== "EISDIR") throw error;
+    if (code !== "EINVAL" && code !== "ENOTSUP" && code !== "EISDIR" && code !== "EPERM" && code !== "EBADF") throw error;
   } finally {
     await handle?.close();
   }
@@ -174,7 +234,7 @@ export async function writeDraftPullRequestReceipt(receiptPath: string, receipt:
   try {
     handle = await open(temporaryPath, "wx", 0o600);
     const data = `${JSON.stringify(receipt, null, 2)}\n`;
-    if (Buffer.byteLength(data, "utf8") > 65536) {
+    if (Buffer.byteLength(data, "utf8") > MAX_DRAFT_PR_RECEIPT_BYTES) {
       throw new DraftPullRequestError("PR_RECEIPT_INVALID", "Receipt is too large to write.");
     }
     await handle.writeFile(data, "utf8");
