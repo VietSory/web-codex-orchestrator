@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
 import { ExecutorError, type ExecutorUsage } from "./contracts.js";
+import type { SmartContextSelection } from "./smart-context.js";
 
 export interface ExecutorVerificationRequest {
   run_id: string;
@@ -24,6 +25,7 @@ export interface ExecutorVerifierPort {
 export interface ExecutorReviewRequest extends ExecutorVerificationRequest {
   reviewer: "terra" | "sol";
   prior_evidence_sha256: string[];
+  context_selection: SmartContextSelection;
 }
 
 export interface ExecutorReviewResult {
