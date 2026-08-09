@@ -133,9 +133,19 @@ export async function recoverCompletedAttempt(options: { stateDirectory: string;
     assertSealedRequest(attempt, "EXECUTE_REGISTERED_PACK", { artifact_sha256: selected.artifact_sha256, manifest_sha256: selected.manifest_sha256 });
     const receipt = await deps.readExecutorReceiptForRun(options.stateDirectory, options.runId, selected.artifact_sha256);
     if (!receipt || !["READY_FOR_PUBLISH", "ESCALATE_TO_WEB", "FAILED"].includes(receipt.state)) return options.ledger;
-    const attestedReceipt = receipt.state === "READY_FOR_PUBLISH" ? (await deps.attestReadyExecutorSnapshot({ runId: options.runId, artifactSha256: selected.artifact_sha256, stateDirectory: options.stateDirectory, configPath: options.configPath })).receipt : await deps.attestTerminalExecutorSnapshot({ runId: options.runId, artifactSha256: selected.artifact_sha256, stateDirectory: options.stateDirectory, configPath: options.configPath });
+    const attestedReceipt = receipt.state === "READY_FOR_PUBLISH"
+      ? (await deps.attestReadyExecutorSnapshot({ runId: options.runId, artifactSha256: selected.artifact_sha256, stateDirectory: options.stateDirectory, configPath: options.configPath })).receipt
+      : await deps.attestTerminalExecutorSnapshot({ runId: options.runId, artifactSha256: selected.artifact_sha256, stateDirectory: options.stateDirectory, configPath: options.configPath });
     const nextTransition: TransitionKind = attestedReceipt.state === "READY_FOR_PUBLISH" ? "PUBLISH" : attestedReceipt.state === "ESCALATE_TO_WEB" ? "REGISTER_WEB_PACK" : "WAIT_HUMAN";
-    return await deps.completeAttempt({ stateDirectory: options.stateDirectory, runId: options.runId, attemptId: attempt.attempt_id, result: { state: attestedReceipt.state, change_set_digest: attestedReceipt.change_set_digest, artifact_sha256: attestedReceipt.artifact_sha256, adopted_after_restart: true }, nextTransition, now: now() });
+    return await deps.completeAttempt({
+      stateDirectory: options.stateDirectory,
+      runId: options.runId,
+      attemptId: attempt.attempt_id,
+      result: { state: attestedReceipt.state, change_set_digest: attestedReceipt.change_set_digest, artifact_sha256: attestedReceipt.artifact_sha256, adopted_after_restart: true },
+      nextTransition,
+      ...(attestedReceipt.usage ? { usage: attestedReceipt.usage } : {}),
+      now: now(),
+    });
   }
 
   if (attempt.transition === "PUBLISH") {
