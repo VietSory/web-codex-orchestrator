@@ -33,11 +33,23 @@ test("BUDGET-HARD-002 negative or fractional provider counters fail closed", () 
 });
 
 test("BUDGET-HARD-003 explicit zero usage is valid and safe-integer overflow is rejected", () => {
-  const tracker = new BudgetTracker(defaultAgentLimits(), 0, {
+  const zeroTracker = new BudgetTracker(defaultAgentLimits(), 0, undefined, () => 0);
+  zeroTracker.recordTokens(0, 0, 0);
+  assert.deepEqual(
+    { input: zeroTracker.usage.inputTokens, cached: zeroTracker.usage.cachedInputTokens, output: zeroTracker.usage.outputTokens },
+    { input: 0, cached: 0, output: 0 },
+  );
+
+  const overflowLimits = {
+    ...defaultAgentLimits(),
+    maximum_total_input_tokens: Number.MAX_SAFE_INTEGER,
+    maximum_total_output_tokens: Number.MAX_SAFE_INTEGER,
+  };
+  const overflowTracker = new BudgetTracker(overflowLimits, 0, {
     inputTokens: Number.MAX_SAFE_INTEGER,
     cachedInputTokens: 0,
     outputTokens: 0,
   }, () => 0);
-  tracker.recordTokens(0, 0, 0);
-  assert.throws(() => tracker.recordTokens(1, 0, 0), isBudgetError);
+  overflowTracker.recordTokens(0, 0, 0);
+  assert.throws(() => overflowTracker.recordTokens(1, 0, 0), isBudgetError);
 });
