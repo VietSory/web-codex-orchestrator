@@ -94,17 +94,47 @@ export function summarizeContextBenchmarkArm(samples: ContextBenchmarkSample[]):
   };
 }
 
+type RawContextBenchmarkSample = {
+  elapsed_ms: number;
+  verdict: string;
+  reviewed_change_set_sha256: string;
+  usage: ContextBenchmarkUsage;
+};
+
+async function runBoundedSample(
+  runSample: (arm: ContextBenchmarkArm, sequence: number, signal: AbortSignal) => Promise<RawContextBenchmarkSample>,
+  arm: ContextBenchmarkArm,
+  sequence: number,
+  sampleTimeoutMs: number | undefined,
+): Promise<RawContextBenchmarkSample> {
+  const controller = new AbortController();
+  if (sampleTimeoutMs === undefined) return await runSample(arm, sequence, controller.signal);
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = new DOMException(`Benchmark sample ${sequence} exceeded ${sampleTimeoutMs} ms.`, "TimeoutError");
+      controller.abort(error);
+      reject(error);
+    }, sampleTimeoutMs);
+  });
+
+  try {
+    return await Promise.race([
+      runSample(arm, sequence, controller.signal),
+      timeoutPromise,
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 export async function runContextAbBenchmark(options: {
   repetitions: number;
   expectedChangeSetSha256: string;
   sampleTimeoutMs?: number;
   beforeSample?: (arm: ContextBenchmarkArm, sequence: number) => Promise<void>;
-  runSample: (arm: ContextBenchmarkArm, sequence: number, signal: AbortSignal) => Promise<{
-    elapsed_ms: number;
-    verdict: string;
-    reviewed_change_set_sha256: string;
-    usage: ContextBenchmarkUsage;
-  }>;
+  runSample: (arm: ContextBenchmarkArm, sequence: number, signal: AbortSignal) => Promise<RawContextBenchmarkSample>;
 }): Promise<ContextBenchmarkReport> {
   if (!/^[a-f0-9]{64}$/.test(options.expectedChangeSetSha256)) throw new Error("Benchmark expected change-set SHA-256 is invalid.");
   if (options.sampleTimeoutMs !== undefined && (!Number.isSafeInteger(options.sampleTimeoutMs) || options.sampleTimeoutMs < 1)) {
@@ -116,10 +146,7 @@ export async function runContextAbBenchmark(options: {
     const arm = order[index]!;
     const sequence = index + 1;
     await options.beforeSample?.(arm, sequence);
-    const signal = options.sampleTimeoutMs === undefined
-      ? new AbortController().signal
-      : AbortSignal.timeout(options.sampleTimeoutMs);
-    const result = await options.runSample(arm, sequence, signal);
+    const result = await runBoundedSample(options.runSample, arm, sequence, options.sampleTimeoutMs);
     const usage = {
       input_tokens: safeToken(result.usage.input_tokens, "input_tokens"),
       cached_input_tokens: safeToken(result.usage.cached_input_tokens, "cached_input_tokens"),
