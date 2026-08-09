@@ -306,6 +306,7 @@ export async function runNextTransition(options: {
           result.state !== "READY_FOR_WEB_REVIEW" ||
           result.run_id !== options.runId ||
           result.archive_sha256 === null ||
+          result.change_set_sha256 !== ready.changeSetDigest ||
           result.published_commit_sha !== result.remote_branch_sha ||
           result.pull_request.draft !== true ||
           result.pull_request.head_sha !== result.published_commit_sha
