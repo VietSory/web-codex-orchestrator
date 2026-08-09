@@ -38,3 +38,25 @@ test("v0.2 preview exposes scope and verification without preparing a worktree",
   assert.match(human, /No worktree created/);
   assert.match(human, /No network operation requested/);
 });
+
+test("v0.2 preview fails closed if accepted state is replaced by a symlink before a repeated read", { skip: process.platform === "win32" }, async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-v02-preview-symlink-"));
+  t.after(async () => fs.rm(root, { recursive: true, force: true }));
+
+  const bundle = await copyTemplate(root);
+  await updateChecksums(bundle);
+  const archive = path.join(root, "task.zip");
+  await writeYazlZip(bundle, archive);
+  const state = path.join(root, "state");
+  const preview = await previewTaskBundle(archive, state);
+  const acceptedManifest = path.join(state, "accepted", preview.task_id, preview.archive_sha256, "bundle", "manifest.json");
+  const attackerFile = path.join(root, "attacker-manifest.json");
+  await fs.writeFile(attackerFile, "{}\n");
+  await fs.rm(acceptedManifest);
+  await fs.symlink(attackerFile, acceptedManifest);
+
+  await assert.rejects(
+    () => previewTaskBundle(archive, state),
+    /regular non-symlink|Cannot safely open/,
+  );
+});
