@@ -36,6 +36,7 @@ if (packageLock?.version !== packageJson.version) failures.push(`top-level versi
 if (rootPackage) {
   if (rootPackage.name !== packageJson.name) failures.push(`root package name '${String(rootPackage.name)}' != package.json '${packageJson.name}'`);
   if (rootPackage.version !== packageJson.version) failures.push(`root package version '${String(rootPackage.version)}' != package.json '${packageJson.version}'`);
+  if (rootPackage.license !== packageJson.license) failures.push(`root package license '${String(rootPackage.license)}' != package.json '${String(packageJson.license)}'`);
   if (!equal(rootPackage.dependencies ?? {}, packageJson.dependencies ?? {})) failures.push("root dependencies do not match package.json");
   if (!equal(rootPackage.devDependencies ?? {}, packageJson.devDependencies ?? {})) failures.push("root devDependencies do not match package.json");
   if (!equal(rootPackage.engines ?? {}, packageJson.engines ?? {})) failures.push("root engines do not match package.json");
