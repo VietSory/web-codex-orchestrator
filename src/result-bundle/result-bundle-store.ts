@@ -79,6 +79,53 @@ async function assertCanonicalReceiptParent(receiptPath: string): Promise<string
   return resolved;
 }
 
+function sameFileIdentity(left: fs.Stats, right: fs.Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+async function openStableReceipt(resolved: string, pathStat: fs.Stats): Promise<FileHandle> {
+  const noFollow = process.platform === "win32" ? 0 : (fs.constants.O_NOFOLLOW ?? 0);
+  let handle: FileHandle;
+  try {
+    handle = await fs.promises.open(resolved, fs.constants.O_RDONLY | noFollow);
+  } catch (error) {
+    throw new ResultBundleError("RESULT_RECEIPT_INVALID", `Cannot safely open Result Bundle receipt: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  try {
+    const opened = await handle.stat();
+    const current = await fs.promises.lstat(resolved);
+    if (
+      !opened.isFile() ||
+      opened.size > MAX_RECEIPT_BYTES ||
+      !sameFileIdentity(opened, pathStat) ||
+      current.isSymbolicLink() ||
+      !current.isFile() ||
+      !sameFileIdentity(current, opened)
+    ) {
+      throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle receipt changed before bounded read.");
+    }
+    return handle;
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    throw error;
+  }
+}
+
+async function syncParentDirectory(parent: string): Promise<void> {
+  if (process.platform === "win32") return;
+  let directory: FileHandle | null = null;
+  try {
+    directory = await fs.promises.open(parent, "r");
+    await directory.sync();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EINVAL" || code === "ENOTSUP" || code === "ENOSYS") return;
+    throw error;
+  } finally {
+    await directory?.close().catch(() => undefined);
+  }
+}
+
 export async function readResultBundleReceipt(receiptPath: string): Promise<ResultBundleReceipt | null> {
   const resolved = path.resolve(receiptPath);
   try {
@@ -93,14 +140,23 @@ export async function readResultBundleReceipt(receiptPath: string): Promise<Resu
     const stat = await fs.promises.lstat(resolved);
     if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_RECEIPT_BYTES) throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle receipt must be a bounded regular non-symlink file.");
 
-    const handle = await fs.promises.open(resolved, "r");
+    const handle = await openStableReceipt(resolved, stat);
     try {
       const before = await handle.stat();
-      if (!before.isFile() || before.size > MAX_RECEIPT_BYTES) throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle receipt changed to an unsafe file before read.");
       const raw = await handle.readFile();
       if (raw.byteLength !== before.size) throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle receipt changed while being read.");
       const after = await handle.stat();
-      if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) {
+      const pathAfter = await fs.promises.lstat(resolved);
+      if (
+        !sameFileIdentity(after, before) ||
+        after.size !== before.size ||
+        after.mtimeMs !== before.mtimeMs ||
+        after.ctimeMs !== before.ctimeMs ||
+        pathAfter.isSymbolicLink() ||
+        !pathAfter.isFile() ||
+        !sameFileIdentity(pathAfter, before) ||
+        pathAfter.size !== before.size
+      ) {
         throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle receipt changed while being read.");
       }
       const parsed: unknown = JSON.parse(raw.toString("utf8"));
@@ -135,13 +191,7 @@ export async function writeResultBundleReceipt(receiptPath: string, receipt: Res
     await fs.promises.rename(tmp, resolved);
     const finalStat = await fs.promises.lstat(resolved);
     if (finalStat.isSymbolicLink() || !finalStat.isFile() || finalStat.size !== content.byteLength) throw new ResultBundleError("RESULT_OPERATIONAL_ERROR", "Result Bundle receipt replacement did not produce the exact regular file.");
-    try {
-      const directory = await fs.promises.open(parent, "r");
-      try { await directory.sync(); } finally { await directory.close(); }
-    } catch {
-      // Some supported filesystems do not permit fsync on directory handles.
-      // The receipt file itself is synced before the atomic rename.
-    }
+    await syncParentDirectory(parent);
   } catch (error) {
     if (handle) await handle.close().catch(() => undefined);
     await fs.promises.unlink(tmp).catch(() => undefined);
