@@ -17,6 +17,16 @@ function splitRunId(runId: string): { taskId: string; archiveSha: string } {
   return { taskId, archiveSha };
 }
 
+function containedAuthorityPath(stateDirectory: string, candidate: string, label: string): string {
+  const root = path.resolve(stateDirectory);
+  const resolved = path.resolve(candidate);
+  const relative = path.relative(root, resolved);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new ResultBundleError("RESULT_RECEIPT_INVALID", `${label} escapes the trusted state directory.`);
+  }
+  return resolved;
+}
+
 function exactAttestationMatches(left: ResultBundleReceipt["pull_request"], right: ResultBundleReceipt["pull_request"]): boolean {
   return left.number === right.number
     && left.url === right.url
@@ -33,11 +43,21 @@ export async function reattestReadyResultBundleAuthority(options: {
   runId: string;
   receipt: ResultBundleReceipt;
   githubClient: GitHubAttestationClient;
+  publishReceiptPath?: string;
+  draftReceiptPath?: string;
 }): Promise<void> {
   const { taskId, archiveSha } = splitRunId(options.runId);
   const root = path.resolve(options.stateDirectory);
-  const p5aPath = path.join(root, "runs", taskId, archiveSha, "execution", "publish", "git-publish.json");
-  const p5bPath = path.join(root, "publish", "github-draft-pr.json");
+  const p5aPath = containedAuthorityPath(
+    root,
+    options.publishReceiptPath ?? path.join(root, "runs", taskId, archiveSha, "execution", "publish", "git-publish.json"),
+    "Ready Result Bundle publish receipt path",
+  );
+  const p5bPath = containedAuthorityPath(
+    root,
+    options.draftReceiptPath ?? path.join(root, "publish", "github-draft-pr.json"),
+    "Ready Result Bundle Draft PR receipt path",
+  );
   const p5a = await readGitPublishReceipt(p5aPath);
   const p5b = await readDraftPullRequestReceipt(p5bPath);
 
