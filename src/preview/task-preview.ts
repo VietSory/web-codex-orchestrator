@@ -1,7 +1,7 @@
-import fs from "node:fs/promises";
 import path from "node:path";
 import { intakeArchive } from "../intake/intake-service.js";
 import type { AcceptedIntakeReceipt } from "../intake/contracts.js";
+import { readBoundedStableAuthorityFile } from "../web-authority/task-spec-authority.js";
 
 const MAX_PREVIEW_JSON_BYTES = 2 * 1024 * 1024;
 
@@ -76,11 +76,17 @@ function resolveAcceptedBundle(stateDirectory: string, receipt: AcceptedIntakeRe
 }
 
 async function readPreviewJson(bundleDirectory: string, fileName: string): Promise<unknown> {
-  const filePath = path.join(bundleDirectory, fileName);
-  const stat = await fs.lstat(filePath);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_PREVIEW_JSON_BYTES) throw new Error(`${fileName} is not a bounded regular preview file.`);
-  const value = await fs.readFile(filePath, "utf8");
-  return JSON.parse(value) as unknown;
+  const bytes = await readBoundedStableAuthorityFile(
+    path.join(bundleDirectory, fileName),
+    MAX_PREVIEW_JSON_BYTES,
+    "WEB_AUTHORITY_BINDING_MISMATCH",
+    `preview file '${fileName}'`,
+  );
+  try {
+    return JSON.parse(bytes.toString("utf8")) as unknown;
+  } catch (error) {
+    throw new Error(`${fileName} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 export async function previewTaskBundle(archivePath: string, stateDirectory: string): Promise<TaskPreview> {
