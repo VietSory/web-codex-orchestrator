@@ -32,6 +32,11 @@ function validateReceipt(receipt: ExecutorReceipt): void {
   if (!validDigest(receipt.change_set_digest) || !validDigest(receipt.verification.change_set_digest) || !validDigest(receipt.verification.evidence_sha256) || !validDigest(receipt.terra_review.change_set_digest) || !validDigest(receipt.terra_review.evidence_sha256) || !validDigest(receipt.sol_review.change_set_digest) || !validDigest(receipt.sol_review.evidence_sha256)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor receipt contains an invalid digest.");
   if (!Number.isSafeInteger(receipt.verification.rounds) || receipt.verification.rounds < 0 || receipt.verification.rounds > 32 || !Number.isSafeInteger(receipt.terra_review.rounds) || receipt.terra_review.rounds < 0 || receipt.terra_review.rounds > 32 || !Number.isSafeInteger(receipt.sol_review.rounds) || receipt.sol_review.rounds < 0 || receipt.sol_review.rounds > 32) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor gate round counters are invalid.");
   if (![null,"APPROVE","REVISE","ESCALATE"].includes(receipt.terra_review.verdict) || ![null,"APPROVE","REVISE","ESCALATE"].includes(receipt.sol_review.verdict)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor review verdict is invalid.");
+  if (receipt.usage !== undefined) {
+    if (!receipt.usage || typeof receipt.usage !== "object" || !Number.isSafeInteger(receipt.usage.model_turns) || receipt.usage.model_turns < 0 || !Number.isSafeInteger(receipt.usage.input_tokens) || receipt.usage.input_tokens < 0 || !Number.isSafeInteger(receipt.usage.output_tokens) || receipt.usage.output_tokens < 0) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor usage counters are invalid.");
+    const completedReviewRounds = receipt.terra_review.rounds + receipt.sol_review.rounds;
+    if (receipt.usage.model_turns > completedReviewRounds) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor usage claims more model turns than persisted review rounds.");
+  }
   const paths = new Set<string>();
   const ids = new Set<string>();
   for (const operation of receipt.operations) {
