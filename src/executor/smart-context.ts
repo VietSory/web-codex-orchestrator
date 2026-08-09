@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import path from "node:path";
+import { matches } from "../execution/change-set.js";
 import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
 import type { WebImplementationPack } from "../web-authority/contracts.js";
 import { ExecutorError } from "./contracts.js";
@@ -61,31 +62,45 @@ function projectMap(pack: WebImplementationPack): ProjectMapNode[] {
   });
 }
 
+function prohibitedPatterns(pack: WebImplementationPack): string[] {
+  const value = parseObject(pack, "prohibited-changes.json").paths;
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string" || entry.length < 1 || entry.length > 4096)) {
+    throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", "Bound prohibited-change paths are invalid.");
+  }
+  return [...value] as string[];
+}
+
+function hardSensitivePath(candidate: string): boolean {
+  if (candidate === ".git" || candidate.startsWith(".git/") || candidate === ".gitmodules") return true;
+  const base = path.posix.basename(candidate).toLowerCase();
+  return base === ".env" || base.startsWith(".env.");
+}
+
 function rankCandidates(pack: WebImplementationPack, changedPaths: readonly string[]): Map<string, number> {
   const changed = new Set(changedPaths);
   const changedDirectories = new Set(changedPaths.map((value) => path.posix.dirname(value)));
   const nodes = projectMap(pack);
-  const changedRoles = new Set(
-    nodes
-      .filter((node) => changed.has(node.path) && node.role)
-      .map((node) => node.role!),
-  );
+  const roleByPath = new Map(nodes.filter((node) => node.role).map((node) => [node.path, node.role!] as const));
+  const changedRoles = new Set(changedPaths.map((value) => roleByPath.get(value)).filter((value): value is string => Boolean(value)));
+  const prohibited = prohibitedPatterns(pack);
   const ranks = new Map<string, number>();
   const offer = (candidate: string, rank: number): void => {
-    if (changed.has(candidate)) return;
+    if (changed.has(candidate) || hardSensitivePath(candidate) || prohibited.some((pattern) => matches(pattern, candidate))) return;
     const existing = ranks.get(candidate);
     if (existing === undefined || rank < existing) ranks.set(candidate, rank);
   };
 
+  // Least privilege: Smart Context may prioritize only files already attested
+  // in read-coverage. Project-map metadata can re-rank that set, but it cannot
+  // introduce a new read target on its own.
   for (const read of readCoverage(pack)) {
     const sameDirectory = changedDirectories.has(path.posix.dirname(read.path));
+    const sameRole = Boolean(roleByPath.get(read.path) && changedRoles.has(roleByPath.get(read.path)!));
     if (sameDirectory && read.coverage === "full") offer(read.path, 10);
     else if (sameDirectory) offer(read.path, 20);
+    else if (sameRole) offer(read.path, 30);
     else if (read.coverage === "full") offer(read.path, 40);
     else offer(read.path, 50);
-  }
-  if (changedRoles.size > 0) {
-    for (const node of nodes) if (node.role && changedRoles.has(node.role)) offer(node.path, 30);
   }
   return ranks;
 }
