@@ -51,7 +51,8 @@
     "test:integration": "npm run test:e2e && npm run test:cli",
     "test:native:sandbox": "tsx --test tests/integration/codex-sandbox.integration.ts",
     "test:native:codex": "tsx --test tests/integration/codex-execution.integration.ts",
-    "check": "npm run validate:template && npm run typecheck && npm test && npm run test:e2e && npm run build && npm run test:cli",
+    "benchmark:context": "tsx scripts/benchmark-smart-context.mts",
+    "check": "npm run validate:template && npm run typecheck && npm test && npm run benchmark:context && npm run test:e2e && npm run build && npm run test:cli",
     "pack:check": "npm pack --dry-run --json",
     "prepack": "npm run build"
   },
