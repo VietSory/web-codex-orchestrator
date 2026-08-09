@@ -6,6 +6,7 @@ import { attestExecutorChangeSet, attestExecutorResumeChangedPaths } from "./cha
 import { boundedEvidence, type ExecutorReviewerPort, type ExecutorVerifierPort } from "./gates.js";
 import { attestPersistedExecutorGateEvidence, persistExecutorEvidence } from "./evidence-store.js";
 import { assertExecutorTransactionBoundToPack, attestExecutorTransactionBackups } from "./transaction-authority.js";
+import { selectSmartContext } from "./smart-context.js";
 import { ExecutorError, type ExecutorReceipt, type ExecutorUsage } from "./contracts.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -121,6 +122,7 @@ export async function executeRegisteredWebPack(options: {
       changed_paths: receipt.operations.map((operation) => operation.path).sort(),
       ...(options.signal ? { signal: options.signal } : {}),
     };
+    const contextSelection = selectSmartContext(source.pack, baseRequest.changed_paths);
 
     if (!receipt.verification.passed || receipt.verification.change_set_digest !== digest) {
       receipt.state = "VERIFYING";
@@ -143,7 +145,7 @@ export async function executeRegisteredWebPack(options: {
       receipt.state = "REVIEWING_TERRA";
       receipt.updated_at = timestamp(now);
       await writeExecutorReceipt(options.stateDirectory, receipt);
-      const result = await options.reviewer.review({ ...baseRequest, reviewer: "terra", prior_evidence_sha256: receipt.verification.evidence_sha256 ? [receipt.verification.evidence_sha256] : [] });
+      const result = await options.reviewer.review({ ...baseRequest, reviewer: "terra", prior_evidence_sha256: receipt.verification.evidence_sha256 ? [receipt.verification.evidence_sha256] : [], context_selection: contextSelection });
       await reattestDigest(receipt, digest);
       recordUsage(receipt, result.usage);
       const evidence = boundedEvidence(result.evidence);
@@ -162,7 +164,7 @@ export async function executeRegisteredWebPack(options: {
       receipt.updated_at = timestamp(now);
       await writeExecutorReceipt(options.stateDirectory, receipt);
       const prior = [receipt.verification.evidence_sha256, receipt.terra_review.evidence_sha256].filter((value): value is string => Boolean(value));
-      const result = await options.reviewer.review({ ...baseRequest, reviewer: "sol", prior_evidence_sha256: prior });
+      const result = await options.reviewer.review({ ...baseRequest, reviewer: "sol", prior_evidence_sha256: prior, context_selection: contextSelection });
       await reattestDigest(receipt, digest);
       recordUsage(receipt, result.usage);
       const evidence = boundedEvidence(result.evidence);
