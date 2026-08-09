@@ -37,6 +37,24 @@ function recordUsage(receipt: ExecutorReceipt, usage: ExecutorUsage | undefined)
     output_tokens: safeUsageAdd(current.output_tokens, usage.output_tokens),
   };
 }
+async function reserveReviewTurn(receipt: ExecutorReceipt, reviewer: ExecutorReviewerPort, stateDirectory: string, now: () => Date): Promise<void> {
+  const policy = reviewer.budget_policy;
+  if (!policy) return;
+  if (!Number.isSafeInteger(policy.maximum_model_turns) || policy.maximum_model_turns < 1 || !Number.isSafeInteger(policy.maximum_elapsed_ms) || policy.maximum_elapsed_ms < 1) {
+    throw new ExecutorError("EXECUTOR_BUDGET_EXHAUSTED", "Trusted executor review budget policy is invalid.");
+  }
+  const current = receipt.usage ?? { model_turns: 0, input_tokens: 0, output_tokens: 0 };
+  const elapsed = now().getTime() - Date.parse(receipt.created_at);
+  if (!Number.isFinite(elapsed) || elapsed >= policy.maximum_elapsed_ms) {
+    throw new ExecutorError("EXECUTOR_BUDGET_EXHAUSTED", "Executor review wall-clock budget is exhausted before the provider call.");
+  }
+  if (current.model_turns >= policy.maximum_model_turns) {
+    throw new ExecutorError("EXECUTOR_BUDGET_EXHAUSTED", "Executor review model-turn budget is exhausted before the provider call.");
+  }
+  receipt.usage = { ...current, model_turns: safeUsageAdd(current.model_turns, 1) };
+  receipt.updated_at = timestamp(now);
+  await writeExecutorReceipt(stateDirectory, receipt);
+}
 function assertReceiptAuthority(receipt: ExecutorReceipt, source: Awaited<ReturnType<typeof loadExecutorSource>>): void {
   const run = source.trusted.runReceipt;
   if (receipt.run_id !== run.run_id || receipt.task_id !== run.task_id || receipt.task_bundle_sha256 !== run.archive_sha256 || receipt.artifact_sha256 !== source.registration.artifact_sha256 || receipt.pack_id !== source.registration.pack_id || receipt.repository_id !== run.repository_id || receipt.base_branch !== run.base_branch || receipt.base_commit !== run.base_commit || receipt.base_tree_sha !== source.registration.repository.tree_sha || receipt.worktree_path !== run.worktree_path || receipt.registration_manifest_sha256 !== source.registration.manifest_sha256) throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", "Persisted executor checkpoint no longer matches canonical Phase 3/9 authority.");
@@ -48,6 +66,13 @@ async function reattestDigest(receipt: ExecutorReceipt, expected: string | null)
 }
 async function failToWeb(receipt: ExecutorReceipt, stateDirectory: string, code: string, message: string, now: () => Date): Promise<ExecutorReceipt> {
   receipt.state = "ESCALATE_TO_WEB";
+  pushError(receipt, code, message, now);
+  receipt.updated_at = timestamp(now);
+  await writeExecutorReceipt(stateDirectory, receipt);
+  return receipt;
+}
+async function failTerminal(receipt: ExecutorReceipt, stateDirectory: string, code: string, message: string, now: () => Date): Promise<ExecutorReceipt> {
+  receipt.state = "FAILED";
   pushError(receipt, code, message, now);
   receipt.updated_at = timestamp(now);
   await writeExecutorReceipt(stateDirectory, receipt);
@@ -145,9 +170,12 @@ export async function executeRegisteredWebPack(options: {
       receipt.state = "REVIEWING_TERRA";
       receipt.updated_at = timestamp(now);
       await writeExecutorReceipt(options.stateDirectory, receipt);
+      await reserveReviewTurn(receipt, options.reviewer, options.stateDirectory, now);
       const result = await options.reviewer.review({ ...baseRequest, reviewer: "terra", prior_evidence_sha256: receipt.verification.evidence_sha256 ? [receipt.verification.evidence_sha256] : [], context_selection: contextSelection });
       await reattestDigest(receipt, digest);
       recordUsage(receipt, result.usage);
+      receipt.updated_at = timestamp(now);
+      await writeExecutorReceipt(options.stateDirectory, receipt);
       const evidence = boundedEvidence(result.evidence);
       await persistExecutorEvidence({ stateDirectory: options.stateDirectory, receipt, name: `terra-${receipt.terra_review.rounds + 1}`, bytes: evidence.bytes, expectedSha256: evidence.sha256 });
       receipt.terra_review.rounds += 1;
@@ -164,9 +192,12 @@ export async function executeRegisteredWebPack(options: {
       receipt.updated_at = timestamp(now);
       await writeExecutorReceipt(options.stateDirectory, receipt);
       const prior = [receipt.verification.evidence_sha256, receipt.terra_review.evidence_sha256].filter((value): value is string => Boolean(value));
+      await reserveReviewTurn(receipt, options.reviewer, options.stateDirectory, now);
       const result = await options.reviewer.review({ ...baseRequest, reviewer: "sol", prior_evidence_sha256: prior, context_selection: contextSelection });
       await reattestDigest(receipt, digest);
       recordUsage(receipt, result.usage);
+      receipt.updated_at = timestamp(now);
+      await writeExecutorReceipt(options.stateDirectory, receipt);
       const evidence = boundedEvidence(result.evidence);
       await persistExecutorEvidence({ stateDirectory: options.stateDirectory, receipt, name: `sol-${receipt.sol_review.rounds + 1}`, bytes: evidence.bytes, expectedSha256: evidence.sha256 });
       receipt.sol_review.rounds += 1;
@@ -184,7 +215,10 @@ export async function executeRegisteredWebPack(options: {
     await writeExecutorReceipt(options.stateDirectory, receipt);
     return receipt;
   } catch (error) {
-    if (receipt && error instanceof ExecutorError && !["READY_FOR_PUBLISH", "ESCALATE_TO_WEB"].includes(receipt.state)) return await failToWeb(receipt, options.stateDirectory, error.code, error.message, now);
+    if (receipt && error instanceof ExecutorError && error.code === "EXECUTOR_BUDGET_EXHAUSTED" && receipt.state !== "READY_FOR_PUBLISH") {
+      return await failTerminal(receipt, options.stateDirectory, error.code, error.message, now);
+    }
+    if (receipt && error instanceof ExecutorError && !["READY_FOR_PUBLISH", "ESCALATE_TO_WEB", "FAILED"].includes(receipt.state)) return await failToWeb(receipt, options.stateDirectory, error.code, error.message, now);
     throw error;
   } finally {
     await releaseExecutorLock(lock);
