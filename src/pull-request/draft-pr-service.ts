@@ -58,25 +58,32 @@ export class DraftPullRequestStateMachine {
   }
 
   private getHashes(input: ExecuteDraftPrInput) {
-    const title = `WCO delivery: ${input.taskId}`;
-    const body = `## WCO verified delivery
+    const title = `WCO: ${input.taskId}`;
+    const body = `## Verified Draft PR
 
-- Task: \`${input.taskId}\`
-- Run: \`${input.runId}\`
+WCO prepared this Draft PR from the exact approved change set for \`${input.taskId}\`.
+
+### Delivery evidence
+
 - Repository: \`${input.owner}/${input.repository}\`
 - Base branch: \`${input.baseBranch}\`
 - Delivery branch: \`${input.headBranch}\`
-- Published commit: \`${input.expectedHeadSha}\`
-- Approved change set: \`${input.changeSetSha256}\`
-- Phase 4 state: \`READY_FOR_PUBLISH\`
-- Phase 5A state: \`PUSHED\`
+- Verified head: \`${input.expectedHeadSha}\`
+- Change-set SHA-256: \`${input.changeSetSha256}\`
+- Run: \`${input.runId}\`
 
-This pull request was created as a draft by web-codex-orchestrator.
-WCO will not mark it ready, merge it, delete the branch, or modify review metadata.`;
+### Verification gates
+
+- Deterministic verification: **PASS**
+- Independent Terra review: **PASS**
+- Independent Sol review: **PASS**
+- Remote branch head re-attested to the verified commit before this PR was accepted.
+
+### Human boundary
+
+This PR is intentionally **Draft**. WCO will not mark it ready, merge it, enable auto-merge, delete the branch, or rewrite the published head with a force push. Final merge authority remains with a human maintainer.`;
 
     const bodySha256 = crypto.createHash("sha256").update(body, "utf8").digest("hex");
-    
-    // stable, explicit ordered serialization
     const requestObject = {
       repository: `${input.owner}/${input.repository}`,
       base: input.baseBranch,
@@ -87,8 +94,6 @@ WCO will not mark it ready, merge it, delete the branch, or modify review metada
       draft: true,
       maintainer_can_modify: false
     };
-    
-    // create a deterministic JSON string
     const requestString = JSON.stringify([
       "repository", requestObject.repository,
       "base", requestObject.base,
@@ -99,9 +104,7 @@ WCO will not mark it ready, merge it, delete the branch, or modify review metada
       "draft", requestObject.draft,
       "maintainer_can_modify", requestObject.maintainer_can_modify
     ]);
-
     const requestSha256 = crypto.createHash("sha256").update(requestString, "utf8").digest("hex");
-
     return { title, body, bodySha256, requestSha256 };
   }
 
@@ -124,42 +127,25 @@ WCO will not mark it ready, merge it, delete the branch, or modify review metada
         c.merged_at === null;
     });
 
-    // If multiple candidates are returned for the head -> CONFLICT MULTIPLE_CANDIDATES
     const headBranchCandidates = validCandidates.filter(c => c.head.ref === input.headBranch);
-    
     if (headBranchCandidates.length > 1) {
       const firstCandidate = headBranchCandidates[0];
-      if (firstCandidate) {
-        return { exact: null, conflict: "MULTIPLE_CANDIDATES" as const, pr: firstCandidate };
-      }
+      if (firstCandidate) return { exact: null, conflict: "MULTIPLE_CANDIDATES" as const, pr: firstCandidate };
     }
 
     if (headBranchCandidates.length === 1) {
       const [c] = headBranchCandidates;
-      if (!c) {
-        throw new DraftPullRequestError("PR_REQUEST_INVALID", "Expected one pull request candidate.");
-      }
-
+      if (!c) throw new DraftPullRequestError("PR_REQUEST_INVALID", "Expected one pull request candidate.");
       const [matchingCandidate] = matchingCandidates;
-      if (matchingCandidates.length === 1 && matchingCandidate && matchingCandidate.number === c.number) {
-        return { exact: c, conflict: null, pr: c };
-      }
-      
-      // Classify the single non-exact candidate
-      if (!c.head.repo || !c.base.repo || 
-          c.head.repo.full_name.toLowerCase() !== `${input.owner}/${input.repository}`.toLowerCase() ||
-          c.base.repo.full_name.toLowerCase() !== `${input.owner}/${input.repository}`.toLowerCase()) {
-        return { exact: null, conflict: "WRONG_REPOSITORY" as const, pr: c };
-      }
+      if (matchingCandidates.length === 1 && matchingCandidate && matchingCandidate.number === c.number) return { exact: c, conflict: null, pr: c };
+      if (!c.head.repo || !c.base.repo || c.head.repo.full_name.toLowerCase() !== `${input.owner}/${input.repository}`.toLowerCase() || c.base.repo.full_name.toLowerCase() !== `${input.owner}/${input.repository}`.toLowerCase()) return { exact: null, conflict: "WRONG_REPOSITORY" as const, pr: c };
       if (c.head.sha !== input.expectedHeadSha) return { exact: null, conflict: "WRONG_HEAD_SHA" as const, pr: c };
       if (c.base.ref !== input.baseBranch) return { exact: null, conflict: "WRONG_BASE" as const, pr: c };
       if (c.merged_at !== null) return { exact: null, conflict: "MERGED" as const, pr: c };
       if (c.state !== "open") return { exact: null, conflict: "NOT_OPEN" as const, pr: c };
       if (c.draft !== true) return { exact: null, conflict: "NOT_DRAFT" as const, pr: c };
-      
-      return { exact: null, conflict: "WRONG_HEAD_BRANCH" as const, pr: c }; // Fallback conflict
+      return { exact: null, conflict: "WRONG_HEAD_BRANCH" as const, pr: c };
     }
-
     return { exact: null, conflict: null, pr: null };
   }
 
@@ -196,193 +182,101 @@ WCO will not mark it ready, merge it, delete the branch, or modify review metada
   }
 
   private mutateReceipt(receipt: DraftPullRequestReceipt, mutations: Partial<DraftPullRequestReceipt>): DraftPullRequestReceipt {
-    return {
-      ...receipt,
-      ...mutations,
-      updated_at: this.now().toISOString()
-    };
+    return { ...receipt, ...mutations, updated_at: this.now().toISOString() };
   }
 
   public async execute(input: ExecuteDraftPrInput): Promise<DraftPullRequestReceipt> {
     this.validateInput(input);
     const hashes = this.getHashes(input);
-
     let receipt = input.existingReceipt;
-    
-    // Receipt identity validation if existing
+
     if (receipt) {
       if (receipt.request_sha256 !== hashes.requestSha256 || receipt.git_publish_receipt_sha256 !== input.gitPublishReceiptSha256) {
         throw new DraftPullRequestError("PR_RECEIPT_INCONSISTENT", "Existing receipt identities do not match current inputs.");
       }
     } else {
-      // 10.1 No previous receipt
-      const candidates = await this.client.listByHead({
-        owner: input.owner, repository: input.repository,
-        headOwner: input.owner, headBranch: input.headBranch
-      });
+      const candidates = await this.client.listByHead({ owner: input.owner, repository: input.repository, headOwner: input.owner, headBranch: input.headBranch });
       const cls = this.classifyCandidates(candidates, input);
-      
       receipt = this.createBaseReceipt(input, hashes);
-      
       if (cls.exact) {
-        receipt = this.mutateReceipt(receipt, {
-          state: "OPEN",
-          pull_number: cls.exact.number,
-          pull_url: cls.exact.html_url,
-          observed_head_sha: cls.exact.head.sha,
-          observed_base_branch: cls.exact.base.ref,
-          observed_state: cls.exact.state,
-          observed_draft: cls.exact.draft,
-          opened_at: this.now().toISOString()
-        });
+        receipt = this.mutateReceipt(receipt, { state: "OPEN", pull_number: cls.exact.number, pull_url: cls.exact.html_url, observed_head_sha: cls.exact.head.sha, observed_base_branch: cls.exact.base.ref, observed_state: cls.exact.state, observed_draft: cls.exact.draft, opened_at: this.now().toISOString() });
       } else if (cls.conflict) {
-        receipt = this.mutateReceipt(receipt, {
-          state: "CONFLICT",
-          conflict_reason: cls.conflict,
-          conflict_at: this.now().toISOString()
-        });
+        receipt = this.mutateReceipt(receipt, { state: "CONFLICT", conflict_reason: cls.conflict, conflict_at: this.now().toISOString() });
       }
-      
       await this.persistReceipt(receipt);
     }
 
-    if (receipt.state === "CONFLICT") {
-      // 10.6 CONFLICT: Return the same receipt without network or mutation
-      return receipt;
-    }
+    if (receipt.state === "CONFLICT") return receipt;
 
     if (receipt.state === "OPEN") {
-      // 10.5 OPEN
       const pr = await this.client.get({ owner: input.owner, repository: input.repository, pullNumber: receipt.pull_number! });
-      if (
-        pr.head.sha !== input.expectedHeadSha || 
-        pr.base.ref !== input.baseBranch || 
-        pr.state !== "open" || 
-        pr.draft !== true || 
-        pr.merged_at !== null
-      ) {
-        receipt = this.mutateReceipt(receipt, {
-          state: "CONFLICT",
-          conflict_reason: "OPEN_PR_MUTATED",
-          conflict_at: this.now().toISOString()
-        });
+      if (pr.head.sha !== input.expectedHeadSha || pr.base.ref !== input.baseBranch || pr.state !== "open" || pr.draft !== true || pr.merged_at !== null) {
+        receipt = this.mutateReceipt(receipt, { state: "CONFLICT", conflict_reason: "OPEN_PR_MUTATED", conflict_at: this.now().toISOString() });
         await this.persistReceipt(receipt);
       }
       return receipt;
     }
 
     if (receipt.state === "CREATE_UNCERTAIN" || (receipt.state === "READY_FOR_CREATE" && receipt.create_post_attempted)) {
-      // 10.3 and 10.4
       if (receipt.state === "CREATE_UNCERTAIN" && receipt.pull_number) {
         try {
           const pr = await this.client.get({ owner: input.owner, repository: input.repository, pullNumber: receipt.pull_number! });
           const cls = this.classifyCandidates([pr], input);
           if (cls.exact) {
-            receipt = this.mutateReceipt(receipt, {
-              state: "OPEN",
-              pull_number: cls.exact.number,
-              pull_url: cls.exact.html_url,
-              observed_head_sha: cls.exact.head.sha,
-              observed_base_branch: cls.exact.base.ref,
-              observed_state: cls.exact.state,
-              observed_draft: cls.exact.draft,
-              opened_at: this.now().toISOString()
-            });
+            receipt = this.mutateReceipt(receipt, { state: "OPEN", pull_number: cls.exact.number, pull_url: cls.exact.html_url, observed_head_sha: cls.exact.head.sha, observed_base_branch: cls.exact.base.ref, observed_state: cls.exact.state, observed_draft: cls.exact.draft, opened_at: this.now().toISOString() });
             await this.persistReceipt(receipt);
             return receipt;
           } else if (cls.conflict) {
-            receipt = this.mutateReceipt(receipt, {
-              state: "CONFLICT",
-              conflict_reason: cls.conflict,
-              conflict_at: this.now().toISOString()
-            });
+            receipt = this.mutateReceipt(receipt, { state: "CONFLICT", conflict_reason: cls.conflict, conflict_at: this.now().toISOString() });
             await this.persistReceipt(receipt);
             return receipt;
           }
-        } catch (e) {
-          // ignore error, fall back to list
+        } catch {
+          // Fall through to bounded rediscovery.
         }
       }
 
-      const candidates = await this.client.listByHead({
-        owner: input.owner, repository: input.repository,
-        headOwner: input.owner, headBranch: input.headBranch
-      });
+      const candidates = await this.client.listByHead({ owner: input.owner, repository: input.repository, headOwner: input.owner, headBranch: input.headBranch });
       const cls = this.classifyCandidates(candidates, input);
       if (cls.exact) {
-        receipt = this.mutateReceipt(receipt, {
-          state: "OPEN",
-          pull_number: cls.exact.number,
-          pull_url: cls.exact.html_url,
-          observed_head_sha: cls.exact.head.sha,
-          observed_base_branch: cls.exact.base.ref,
-          observed_state: cls.exact.state,
-          observed_draft: cls.exact.draft,
-          opened_at: this.now().toISOString()
-        });
+        receipt = this.mutateReceipt(receipt, { state: "OPEN", pull_number: cls.exact.number, pull_url: cls.exact.html_url, observed_head_sha: cls.exact.head.sha, observed_base_branch: cls.exact.base.ref, observed_state: cls.exact.state, observed_draft: cls.exact.draft, opened_at: this.now().toISOString() });
       } else if (cls.conflict) {
-        receipt = this.mutateReceipt(receipt, {
-          state: "CONFLICT",
-          conflict_reason: cls.conflict,
-          conflict_at: this.now().toISOString()
-        });
+        receipt = this.mutateReceipt(receipt, { state: "CONFLICT", conflict_reason: cls.conflict, conflict_at: this.now().toISOString() });
       } else if (receipt.state === "READY_FOR_CREATE" && receipt.create_post_attempted) {
-        receipt = this.mutateReceipt(receipt, {
-          state: "CREATE_UNCERTAIN"
-        });
+        receipt = this.mutateReceipt(receipt, { state: "CREATE_UNCERTAIN" });
       }
-      if (receipt.state !== input.existingReceipt?.state) {
-        await this.persistReceipt(receipt);
-      }
+      if (receipt.state !== input.existingReceipt?.state) await this.persistReceipt(receipt);
       return receipt;
     }
 
     if (receipt.state === "READY_FOR_CREATE" && !receipt.create_post_attempted) {
-      // 10.2 READY with create_post_attempted=false
-      const candidates = await this.client.listByHead({
-        owner: input.owner, repository: input.repository,
-        headOwner: input.owner, headBranch: input.headBranch
-      });
+      const candidates = await this.client.listByHead({ owner: input.owner, repository: input.repository, headOwner: input.owner, headBranch: input.headBranch });
       const cls = this.classifyCandidates(candidates, input);
       if (cls.exact) {
-        receipt = this.mutateReceipt(receipt, {
-          state: "OPEN", pull_number: cls.exact.number, pull_url: cls.exact.html_url, observed_head_sha: cls.exact.head.sha, observed_base_branch: cls.exact.base.ref, observed_state: cls.exact.state, observed_draft: cls.exact.draft, opened_at: this.now().toISOString()
-        });
+        receipt = this.mutateReceipt(receipt, { state: "OPEN", pull_number: cls.exact.number, pull_url: cls.exact.html_url, observed_head_sha: cls.exact.head.sha, observed_base_branch: cls.exact.base.ref, observed_state: cls.exact.state, observed_draft: cls.exact.draft, opened_at: this.now().toISOString() });
         await this.persistReceipt(receipt);
         return receipt;
       } else if (cls.conflict) {
-        receipt = this.mutateReceipt(receipt, {
-          state: "CONFLICT", conflict_reason: cls.conflict, conflict_at: this.now().toISOString()
-        });
+        receipt = this.mutateReceipt(receipt, { state: "CONFLICT", conflict_reason: cls.conflict, conflict_at: this.now().toISOString() });
         await this.persistReceipt(receipt);
         return receipt;
       }
 
       await input.verifyRemoteHead();
-      
-      receipt = this.mutateReceipt(receipt, {
-        create_post_attempted: true,
-        create_attempted_at: this.now().toISOString()
-      });
+      receipt = this.mutateReceipt(receipt, { create_post_attempted: true, create_attempted_at: this.now().toISOString() });
       await this.persistReceipt(receipt);
 
       let result: GitHubPullRequest;
       try {
-        result = await this.client.createDraft({
-          owner: input.owner, repository: input.repository, title: hashes.title, body: hashes.body, head: input.headBranch, base: input.baseBranch
-        });
+        result = await this.client.createDraft({ owner: input.owner, repository: input.repository, title: hashes.title, body: hashes.body, head: input.headBranch, base: input.baseBranch });
       } catch (err: any) {
         if (err instanceof DraftPullRequestError) {
           if (["PR_API_UNAUTHORIZED", "PR_API_FORBIDDEN", "PR_API_NOT_FOUND"].includes(err.code) || err.code === "PR_API_RATE_LIMITED" && err.message.includes("429")) {
-            // Definitive 4xx rejection -> reset READY attempted false
-            receipt = this.mutateReceipt(receipt, {
-              create_post_attempted: false,
-              create_attempted_at: null
-            });
+            receipt = this.mutateReceipt(receipt, { create_post_attempted: false, create_attempted_at: null });
             await this.persistReceipt(receipt);
             throw err;
           }
-          if (err.code === "PR_CREATE_REJECTED") { // 422
+          if (err.code === "PR_CREATE_REJECTED") {
             const c = await this.client.listByHead({ owner: input.owner, repository: input.repository, headOwner: input.owner, headBranch: input.headBranch });
             const cCls = this.classifyCandidates(c, input);
             if (cCls.exact) {
@@ -393,53 +287,40 @@ WCO will not mark it ready, merge it, delete the branch, or modify review metada
               receipt = this.mutateReceipt(receipt, { state: "CONFLICT", conflict_reason: cCls.conflict, conflict_at: this.now().toISOString() });
               await this.persistReceipt(receipt);
               return receipt;
-            } else {
-              receipt = this.mutateReceipt(receipt, { create_post_attempted: false, create_attempted_at: null });
-              await this.persistReceipt(receipt);
-              throw err;
             }
+            receipt = this.mutateReceipt(receipt, { create_post_attempted: false, create_attempted_at: null });
+            await this.persistReceipt(receipt);
+            throw err;
           }
         }
-        
-        // Ambiguous outcome
+
         const c = await this.client.listByHead({ owner: input.owner, repository: input.repository, headOwner: input.owner, headBranch: input.headBranch }).catch(() => []);
         const cCls = this.classifyCandidates(c, input);
-        if (cCls.exact) {
-          receipt = this.mutateReceipt(receipt, { state: "OPEN", pull_number: cCls.exact.number, pull_url: cCls.exact.html_url, observed_head_sha: cCls.exact.head.sha, observed_base_branch: cCls.exact.base.ref, observed_state: cCls.exact.state, observed_draft: cCls.exact.draft, opened_at: this.now().toISOString() });
-        } else if (cCls.conflict) {
-          receipt = this.mutateReceipt(receipt, { state: "CONFLICT", conflict_reason: cCls.conflict, conflict_at: this.now().toISOString() });
-        } else {
-          receipt = this.mutateReceipt(receipt, { state: "CREATE_UNCERTAIN" });
-        }
+        if (cCls.exact) receipt = this.mutateReceipt(receipt, { state: "OPEN", pull_number: cCls.exact.number, pull_url: cCls.exact.html_url, observed_head_sha: cCls.exact.head.sha, observed_base_branch: cCls.exact.base.ref, observed_state: cCls.exact.state, observed_draft: cCls.exact.draft, opened_at: this.now().toISOString() });
+        else if (cCls.conflict) receipt = this.mutateReceipt(receipt, { state: "CONFLICT", conflict_reason: cCls.conflict, conflict_at: this.now().toISOString() });
+        else receipt = this.mutateReceipt(receipt, { state: "CREATE_UNCERTAIN" });
         await this.persistReceipt(receipt);
-        if (receipt.state === "CREATE_UNCERTAIN") throw err; // Ensure we propagate error if uncertain
+        if (receipt.state === "CREATE_UNCERTAIN") throw err;
         return receipt;
       }
 
-      // 201:
       try {
         const pr = await this.client.get({ owner: input.owner, repository: input.repository, pullNumber: result.number });
         const cCls = this.classifyCandidates([pr], input);
         if (cCls.exact) {
-           receipt = this.mutateReceipt(receipt, { state: "OPEN", pull_number: cCls.exact.number, pull_url: cCls.exact.html_url, observed_head_sha: cCls.exact.head.sha, observed_base_branch: cCls.exact.base.ref, observed_state: cCls.exact.state, observed_draft: cCls.exact.draft, opened_at: this.now().toISOString() });
-           await this.persistReceipt(receipt);
-           return receipt;
-        } else {
-           receipt = this.mutateReceipt(receipt, { state: "CONFLICT", conflict_reason: cCls.conflict || "INVALID_CREATE_RESPONSE", conflict_at: this.now().toISOString() });
-           await this.persistReceipt(receipt);
-           return receipt;
+          receipt = this.mutateReceipt(receipt, { state: "OPEN", pull_number: cCls.exact.number, pull_url: cCls.exact.html_url, observed_head_sha: cCls.exact.head.sha, observed_base_branch: cCls.exact.base.ref, observed_state: cCls.exact.state, observed_draft: cCls.exact.draft, opened_at: this.now().toISOString() });
+          await this.persistReceipt(receipt);
+          return receipt;
         }
-      } catch (err) {
-        // failure to parse or verify -> one discovery pass
+        receipt = this.mutateReceipt(receipt, { state: "CONFLICT", conflict_reason: cCls.conflict || "INVALID_CREATE_RESPONSE", conflict_at: this.now().toISOString() });
+        await this.persistReceipt(receipt);
+        return receipt;
+      } catch {
         const c = await this.client.listByHead({ owner: input.owner, repository: input.repository, headOwner: input.owner, headBranch: input.headBranch }).catch(() => []);
         const cCls = this.classifyCandidates(c, input);
-        if (cCls.exact) {
-          receipt = this.mutateReceipt(receipt, { state: "OPEN", pull_number: cCls.exact.number, pull_url: cCls.exact.html_url, observed_head_sha: cCls.exact.head.sha, observed_base_branch: cCls.exact.base.ref, observed_state: cCls.exact.state, observed_draft: cCls.exact.draft, opened_at: this.now().toISOString() });
-        } else if (cCls.conflict) {
-          receipt = this.mutateReceipt(receipt, { state: "CONFLICT", conflict_reason: cCls.conflict, conflict_at: this.now().toISOString() });
-        } else {
-          receipt = this.mutateReceipt(receipt, { state: "CREATE_UNCERTAIN" });
-        }
+        if (cCls.exact) receipt = this.mutateReceipt(receipt, { state: "OPEN", pull_number: cCls.exact.number, pull_url: cCls.exact.html_url, observed_head_sha: cCls.exact.head.sha, observed_base_branch: cCls.exact.base.ref, observed_state: cCls.exact.state, observed_draft: cCls.exact.draft, opened_at: this.now().toISOString() });
+        else if (cCls.conflict) receipt = this.mutateReceipt(receipt, { state: "CONFLICT", conflict_reason: cCls.conflict, conflict_at: this.now().toISOString() });
+        else receipt = this.mutateReceipt(receipt, { state: "CREATE_UNCERTAIN" });
         await this.persistReceipt(receipt);
         return receipt;
       }
