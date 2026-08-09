@@ -1,4 +1,5 @@
-import { lstat, readdir, realpath, type Stats } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import { lstat, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 
 import { hashStableFile, readStableFile, StableFileError } from "../shared/stable-file.js";
