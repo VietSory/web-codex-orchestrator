@@ -56,6 +56,10 @@ export function benchmarkOrder(repetitions: number): ContextBenchmarkArm[] {
   return order;
 }
 
+export function sameOrderedPaths(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 function mean(values: number[]): number {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
@@ -93,8 +97,9 @@ export function summarizeContextBenchmarkArm(samples: ContextBenchmarkSample[]):
 export async function runContextAbBenchmark(options: {
   repetitions: number;
   expectedChangeSetSha256: string;
+  sampleTimeoutMs?: number;
   beforeSample?: (arm: ContextBenchmarkArm, sequence: number) => Promise<void>;
-  runSample: (arm: ContextBenchmarkArm, sequence: number) => Promise<{
+  runSample: (arm: ContextBenchmarkArm, sequence: number, signal: AbortSignal) => Promise<{
     elapsed_ms: number;
     verdict: string;
     reviewed_change_set_sha256: string;
@@ -102,13 +107,19 @@ export async function runContextAbBenchmark(options: {
   }>;
 }): Promise<ContextBenchmarkReport> {
   if (!/^[a-f0-9]{64}$/.test(options.expectedChangeSetSha256)) throw new Error("Benchmark expected change-set SHA-256 is invalid.");
+  if (options.sampleTimeoutMs !== undefined && (!Number.isSafeInteger(options.sampleTimeoutMs) || options.sampleTimeoutMs < 1)) {
+    throw new Error("Benchmark sample timeout must be a positive safe integer in milliseconds.");
+  }
   const order = benchmarkOrder(options.repetitions);
   const samples: ContextBenchmarkSample[] = [];
   for (let index = 0; index < order.length; index += 1) {
     const arm = order[index]!;
     const sequence = index + 1;
     await options.beforeSample?.(arm, sequence);
-    const result = await options.runSample(arm, sequence);
+    const signal = options.sampleTimeoutMs === undefined
+      ? new AbortController().signal
+      : AbortSignal.timeout(options.sampleTimeoutMs);
+    const result = await options.runSample(arm, sequence, signal);
     const usage = {
       input_tokens: safeToken(result.usage.input_tokens, "input_tokens"),
       cached_input_tokens: safeToken(result.usage.cached_input_tokens, "cached_input_tokens"),
