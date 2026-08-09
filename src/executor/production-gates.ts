@@ -42,7 +42,8 @@ async function loadValidationDocument(acceptedBundlePath: string): Promise<unkno
   }
 }
 
-function reviewPrompt(request: ExecutorReviewRequest): string {
+export function reviewPrompt(request: ExecutorReviewRequest): string {
+  const context = request.context_selection;
   const body = [
     "Review the exact Phase 10 result in read-only mode.",
     "The Web implementation pack is already the architecture/implementation authority; do not redesign or modify files.",
@@ -50,8 +51,13 @@ function reviewPrompt(request: ExecutorReviewRequest): string {
     `Registered artifact SHA-256: ${request.artifact_sha256}`,
     `Changed paths (${request.changed_paths.length}):`,
     ...request.changed_paths.map((filePath) => `- ${filePath}`),
+    `Deterministic context selection: ${context.selection_sha256}`,
+    `Context source: ${context.source}; candidates=${context.candidate_count}; selected=${context.paths.length}; truncated=${context.truncated}`,
+    "Priority context paths (hints only; not lifecycle, architecture, or acceptance authority):",
+    ...(context.paths.length > 0 ? context.paths.map((filePath) => `- ${filePath}`) : ["- none"]),
+    "Start with the changed files and these priority context paths. Expand reads only when necessary to verify a concrete dependency or finding.",
     "Use the accepted Task Bundle as the requirement/acceptance source of truth.",
-    "Inspect only the relevant changed files and their necessary dependencies. Focus on correctness, security, regressions, tests, scope and performance.",
+    "Focus on correctness, security, regressions, tests, scope and performance.",
     "If a blocking correction is needed return REVISE; if authority/requirements are insufficient return ESCALATE. Never edit the worktree.",
   ].join("\n");
   if (Buffer.byteLength(body, "utf8") > MAX_REVIEW_PROMPT_BYTES) throw new ExecutorError("EXECUTOR_OPERATIONAL_ERROR", `Phase 10 review prompt exceeds ${MAX_REVIEW_PROMPT_BYTES} bytes.`);
@@ -128,6 +134,11 @@ export async function createProductionExecutorGates(options: { runId: string; st
           kind: `phase10-${request.reviewer}-review`,
           reviewer: request.reviewer,
           change_set_digest: request.change_set_digest,
+          context_selection_sha256: request.context_selection.selection_sha256,
+          context_source: request.context_selection.source,
+          context_paths: request.context_selection.paths,
+          context_candidate_count: request.context_selection.candidate_count,
+          context_truncated: request.context_selection.truncated,
           verdict: result.review.verdict,
           summary: result.review.summary,
           acceptance_results: result.review.acceptance_results,
