@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { canonicalJsonBuffer } from "../src/result-bundle/canonical-json.js";
+import { canonicalGitPublishReceiptDigest } from "../src/publish/receipt-digest.js";
 import { initialResultBoundToSelectedExecutor } from "../src/orchestration/snapshot-reader.js";
 
 const RUN_ID = `TASK-P13-BIND:${"a".repeat(64)}`;
@@ -33,7 +34,7 @@ function authorities() {
   const draft = {
     receipt_version: "1.0", run_id: RUN_ID, state: "OPEN", repository_owner: "owner", repository_name: "repo",
     base_branch: "main", head_branch: "codex/task", expected_head_sha: COMMIT,
-    git_publish_receipt_sha256: "7".repeat(64), request_sha256: "8".repeat(64), title: "Test",
+    git_publish_receipt_sha256: canonicalGitPublishReceiptDigest(publish), request_sha256: "8".repeat(64), title: "Test",
     body_sha256: "9".repeat(64), draft_required: true, create_post_attempted: true, pull_number: 42,
     pull_url: "https://github.com/owner/repo/pull/42", observed_head_sha: COMMIT, observed_base_branch: "main",
     observed_state: "open", observed_draft: true, conflict_reason: null,
@@ -84,4 +85,10 @@ test("P13-BIND-006 changed Phase 5 receipt bytes cannot make the planner quiesce
   const { executor, publishSnapshot, draftSnapshot, result } = authorities();
   const staleBytes = { ...publishSnapshot, bytes: Buffer.concat([publishSnapshot.bytes, Buffer.from(" ")]) };
   assert.equal(initialResultBoundToSelectedExecutor(RUN_ID, executor, staleBytes, draftSnapshot, result), false);
+});
+
+test("P13-BIND-007 Draft PR bound to a different publish receipt cannot make the planner quiescent", () => {
+  const { executor, publishSnapshot, draftSnapshot, result } = authorities();
+  const staleDraft = { ...draftSnapshot, receipt: { ...draftSnapshot.receipt, git_publish_receipt_sha256: "0".repeat(64) } };
+  assert.equal(initialResultBoundToSelectedExecutor(RUN_ID, executor, publishSnapshot, staleDraft, result), false);
 });
