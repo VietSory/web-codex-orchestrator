@@ -18,6 +18,8 @@ import type { AgentTurnRequest } from "../src/agent/contracts.js";
 import { FakeVerificationSandbox } from "../src/verifier/fake-sandbox.js";
 import { GitRunner } from "../src/git/git-runner.js";
 import { calculateChangeSet } from "../src/execution/change-set.js";
+import type { GitPublishReceipt } from "../src/publish/contracts.js";
+import { canonicalGitPublishReceiptDigest } from "../src/publish/receipt-digest.js";
 import { updateChecksums } from "./helpers/zip-fixture.js";
 import { createValidVerdict } from "./helpers/phase7-fixtures.js";
 
@@ -193,7 +195,7 @@ async function writeInitialReceipts(params: {
     updated_at: now,
   }, null, 2));
 
-  const gitPublishReceipt = {
+  const gitPublishReceipt: GitPublishReceipt = {
     publish_version: "1.1",
     run_id: RUN_ID,
     state: "PUSHED",
@@ -225,7 +227,7 @@ async function writeInitialReceipts(params: {
     base_branch: "main",
     head_branch: BRANCH,
     expected_head_sha: params.initialHead,
-    git_publish_receipt_sha256: sha256Hex(gitPublishBytes),
+    git_publish_receipt_sha256: canonicalGitPublishReceiptDigest(gitPublishReceipt),
     request_sha256: sha256Hex("phase8-e2e-request"),
     title: "Phase 8 E2E",
     body_sha256: sha256Hex("phase8-e2e-body"),
