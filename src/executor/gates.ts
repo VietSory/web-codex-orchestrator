@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
-import { ExecutorError } from "./contracts.js";
+import { ExecutorError, type ExecutorUsage } from "./contracts.js";
 
 export interface ExecutorVerificationRequest {
   run_id: string;
@@ -29,6 +29,7 @@ export interface ExecutorReviewRequest extends ExecutorVerificationRequest {
 export interface ExecutorReviewResult {
   verdict: "APPROVE" | "REVISE" | "ESCALATE";
   evidence: unknown;
+  usage?: ExecutorUsage;
 }
 
 export interface ExecutorReviewerPort {
