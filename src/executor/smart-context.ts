@@ -71,8 +71,9 @@ function prohibitedPatterns(pack: WebImplementationPack): string[] {
 }
 
 function hardSensitivePath(candidate: string): boolean {
-  if (candidate === ".git" || candidate.startsWith(".git/") || candidate === ".gitmodules") return true;
-  const base = path.posix.basename(candidate).toLowerCase();
+  const normalized = candidate.toLowerCase();
+  if (normalized === ".git" || normalized.startsWith(".git/") || normalized === ".gitmodules") return true;
+  const base = path.posix.basename(normalized);
   return base === ".env" || base.startsWith(".env.");
 }
 
