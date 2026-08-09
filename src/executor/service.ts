@@ -6,7 +6,7 @@ import { attestExecutorChangeSet, attestExecutorResumeChangedPaths } from "./cha
 import { boundedEvidence, type ExecutorReviewerPort, type ExecutorVerifierPort } from "./gates.js";
 import { attestPersistedExecutorGateEvidence, persistExecutorEvidence } from "./evidence-store.js";
 import { assertExecutorTransactionBoundToPack, attestExecutorTransactionBackups } from "./transaction-authority.js";
-import { ExecutorError, type ExecutorReceipt } from "./contracts.js";
+import { ExecutorError, type ExecutorReceipt, type ExecutorUsage } from "./contracts.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
 
@@ -19,6 +19,20 @@ function timestamp(now: () => Date): string { return now().toISOString(); }
 function pushError(receipt: ExecutorReceipt, code: string, message: string, now: () => Date): void {
   receipt.errors.push({ code: code.slice(0, 128), message: message.slice(0, 8192), at: timestamp(now) });
   if (receipt.errors.length > 32) receipt.errors.splice(0, receipt.errors.length - 32);
+}
+function recordUsage(receipt: ExecutorReceipt, usage: ExecutorUsage | undefined): void {
+  if (!usage) return;
+  const current = receipt.usage ?? { model_turns: 0, input_tokens: 0, output_tokens: 0 };
+  const values = [usage.model_turns, usage.input_tokens, usage.output_tokens];
+  if (values.some((value) => !Number.isSafeInteger(value) || value < 0)) throw new ExecutorError("EXECUTOR_OPERATIONAL_ERROR", "Reviewer usage contains an invalid counter.");
+  for (const [left, right] of [[current.model_turns, usage.model_turns], [current.input_tokens, usage.input_tokens], [current.output_tokens, usage.output_tokens]]) {
+    if (!Number.isSafeInteger(left + right)) throw new ExecutorError("EXECUTOR_OPERATIONAL_ERROR", "Reviewer usage counter overflowed safe integer bounds.");
+  }
+  receipt.usage = {
+    model_turns: current.model_turns + usage.model_turns,
+    input_tokens: current.input_tokens + usage.input_tokens,
+    output_tokens: current.output_tokens + usage.output_tokens,
+  };
 }
 function assertReceiptAuthority(receipt: ExecutorReceipt, source: Awaited<ReturnType<typeof loadExecutorSource>>): void {
   const run = source.trusted.runReceipt;
@@ -129,6 +143,7 @@ export async function executeRegisteredWebPack(options: {
       await writeExecutorReceipt(options.stateDirectory, receipt);
       const result = await options.reviewer.review({ ...baseRequest, reviewer: "terra", prior_evidence_sha256: receipt.verification.evidence_sha256 ? [receipt.verification.evidence_sha256] : [] });
       await reattestDigest(receipt, digest);
+      recordUsage(receipt, result.usage);
       const evidence = boundedEvidence(result.evidence);
       await persistExecutorEvidence({ stateDirectory: options.stateDirectory, receipt, name: `terra-${receipt.terra_review.rounds + 1}`, bytes: evidence.bytes, expectedSha256: evidence.sha256 });
       receipt.terra_review.rounds += 1;
@@ -147,6 +162,7 @@ export async function executeRegisteredWebPack(options: {
       const prior = [receipt.verification.evidence_sha256, receipt.terra_review.evidence_sha256].filter((value): value is string => Boolean(value));
       const result = await options.reviewer.review({ ...baseRequest, reviewer: "sol", prior_evidence_sha256: prior });
       await reattestDigest(receipt, digest);
+      recordUsage(receipt, result.usage);
       const evidence = boundedEvidence(result.evidence);
       await persistExecutorEvidence({ stateDirectory: options.stateDirectory, receipt, name: `sol-${receipt.sol_review.rounds + 1}`, bytes: evidence.bytes, expectedSha256: evidence.sha256 });
       receipt.sol_review.rounds += 1;
