@@ -76,3 +76,33 @@ test("PR-STORE-HARD-003 oversized receipt is rejected before allocation/read", a
     (error: unknown) => error instanceof DraftPullRequestError && error.code === "PR_RECEIPT_INVALID",
   );
 });
+
+test("PR-STORE-HARD-004 Git SHA-256 object IDs round-trip under the same receipt contract", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-pr-store-oid-"));
+  t.after(async () => fs.rm(root, { recursive: true, force: true }));
+  const receiptPath = path.join(root, "publish", "github-draft-pr.json");
+  const receipt = {
+    ...openReceipt(),
+    expected_head_sha: "5".repeat(64),
+    observed_head_sha: "5".repeat(64),
+  };
+  await writeDraftPullRequestReceipt(receiptPath, receipt);
+  assert.deepEqual(await readDraftPullRequestReceipt(receiptPath), receipt);
+});
+
+test("PR-STORE-HARD-005 persisted PR numbers must be positive safe integers", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-pr-store-number-"));
+  t.after(async () => fs.rm(root, { recursive: true, force: true }));
+  const publish = path.join(root, "publish");
+  await fs.mkdir(publish);
+  const receiptPath = path.join(publish, "github-draft-pr.json");
+
+  for (const rawNumber of ["1.5", "1e309"]) {
+    const raw = JSON.stringify(openReceipt()).replace('"pull_number":42', `"pull_number":${rawNumber}`);
+    await fs.writeFile(receiptPath, `${raw}\n`, "utf8");
+    await assert.rejects(
+      readDraftPullRequestReceipt(receiptPath),
+      (error: unknown) => error instanceof DraftPullRequestError && error.code === "PR_RECEIPT_INVALID",
+    );
+  }
+});
