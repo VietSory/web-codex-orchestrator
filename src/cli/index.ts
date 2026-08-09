@@ -179,21 +179,17 @@ function parseIntakeArguments(args: string[], allowStateEnv = false): { archiveP
   const archivePath = args[0];
   if (!archivePath || archivePath.startsWith("--")) return null;
   let stateDirectory: string | undefined = allowStateEnv ? process.env.WCO_STATE_DIR : undefined;
+  let stateDirectoryExplicit = false;
   let json = false;
   for (let index = 1; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === "--json") { if (json) return null; json = true; continue; }
-    if (argument === "--state-dir" && stateDirectory === undefined) {
+    if (argument === "--state-dir") {
+      if (stateDirectoryExplicit) return null;
       const value = args[index + 1];
       if (!value || value.startsWith("--")) return null;
       stateDirectory = value;
-      index += 1;
-      continue;
-    }
-    if (argument === "--state-dir" && allowStateEnv && process.env.WCO_STATE_DIR && stateDirectory === process.env.WCO_STATE_DIR) {
-      const value = args[index + 1];
-      if (!value || value.startsWith("--")) return null;
-      stateDirectory = value;
+      stateDirectoryExplicit = true;
       index += 1;
       continue;
     }
