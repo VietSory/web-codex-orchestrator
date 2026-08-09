@@ -141,7 +141,7 @@ test("P4-H-006: persisted budget counts assessment turns and cached input", () =
   tracker.recordTokens(2, 1, 3);
   assert.equal(tracker.usage.totalTurns, 2);
   assert.equal(tracker.usage.cachedInputTokens, 4);
-  assert.throws(() => tracker.recordTokens(6, 0), (error: unknown) => error instanceof ExecutionError && error.code === "BUDGET_EXHAUSTED");
+  assert.throws(() => tracker.recordTokens(6, 0, 0), (error: unknown) => error instanceof ExecutionError && error.code === "BUDGET_EXHAUSTED");
 });
 
 test("P4-H-007: interruption can resume through a fixing state", () => {
