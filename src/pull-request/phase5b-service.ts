@@ -36,20 +36,20 @@ export interface PreparedDraftPullRequestContext {
   stateDirectory: string;
   gitRunner: { run(args: string[], cwd: string): Promise<{ stdout: string }> };
   worktreePath: string;
-  remoteName: string;
+  remoteUrl: string;
   now?: () => Date;
 }
 
 export async function createPreparedDraftPullRequest(context: PreparedDraftPullRequestContext): Promise<DraftPullRequestReceipt> {
   const storePath = path.join(context.stateDirectory, "publish", "github-draft-pr.json");
   const verifyRemoteHead = async () => {
-    const headOutput = await context.gitRunner.run(["ls-remote", "--heads", context.remoteName, `refs/heads/${context.headBranch}`], context.worktreePath);
+    const headOutput = await context.gitRunner.run(["ls-remote", "--heads", context.remoteUrl, `refs/heads/${context.headBranch}`], context.worktreePath);
     const headLines = headOutput.stdout.trim().split("\n").filter(Boolean);
     const firstHead = headLines[0];
     if (headLines.length !== 1 || !firstHead || !firstHead.startsWith(context.expectedHeadSha)) {
       throw new DraftPullRequestError("PR_REMOTE_BRANCH_MISMATCH", "Remote head branch does not exactly match the expected Phase 5A SHA.");
     }
-    const baseOutput = await context.gitRunner.run(["ls-remote", "--heads", context.remoteName, `refs/heads/${context.baseBranch}`], context.worktreePath);
+    const baseOutput = await context.gitRunner.run(["ls-remote", "--heads", context.remoteUrl, `refs/heads/${context.baseBranch}`], context.worktreePath);
     const baseLines = baseOutput.stdout.trim().split("\n").filter(Boolean);
     if (baseLines.length !== 1) throw new DraftPullRequestError("PR_BASE_BRANCH_MISSING", "Base branch is missing on the remote.");
   };
@@ -77,45 +77,35 @@ export async function createDraftPullRequestForRun(options: Phase5BDraftPrOption
   try {
     const execution = await readExecutionReceipt(stateDirectory, preparation.taskId, preparation.archiveSha256);
     if (!execution || execution.run_id !== options.runId) throw new DraftPullRequestError("PR_PHASE5A_NOT_PUSHED", "Execution receipt missing or invalid run ID.");
-
     await verifyBundleChecksums(preparation.receipt.accepted_bundle_path);
-    const [bundleData, config] = await Promise.all([
-      readBundleJson(preparation.receipt.accepted_bundle_path),
-      loadPhase4Config(options.configPath),
-    ]);
+    const [bundleData, config] = await Promise.all([readBundleJson(preparation.receipt.accepted_bundle_path), loadPhase4Config(options.configPath)]);
     const contract = assertPhase4ExecutionContract(bundleData.manifest);
     if (
-      contract.task_id !== preparation.taskId ||
-      contract.repository.id !== preparation.receipt.repository_id ||
-      contract.repository.base_branch !== preparation.receipt.base_branch ||
-      contract.repository.base_commit !== execution.base_commit ||
-      contract.delivery.remote !== preparation.receipt.remote ||
-      contract.delivery.branch_name !== execution.branch_name ||
-      contract.delivery.base_branch !== preparation.receipt.base_branch ||
-      contract.delivery.draft !== true || contract.delivery.auto_merge !== false ||
-      contract.git_policy.allowed_remote !== contract.delivery.remote ||
-      contract.git_policy.allow_force_push !== false || contract.git_policy.allow_remote_branch_delete !== false || contract.git_policy.allow_merge !== false
+      contract.task_id !== preparation.taskId || contract.repository.id !== preparation.receipt.repository_id ||
+      contract.repository.base_branch !== preparation.receipt.base_branch || contract.repository.base_commit !== execution.base_commit ||
+      contract.delivery.remote !== preparation.receipt.remote || contract.delivery.branch_name !== execution.branch_name ||
+      contract.delivery.base_branch !== preparation.receipt.base_branch || contract.delivery.draft !== true || contract.delivery.auto_merge !== false ||
+      contract.git_policy.allowed_remote !== contract.delivery.remote || contract.git_policy.allow_force_push !== false ||
+      contract.git_policy.allow_remote_branch_delete !== false || contract.git_policy.allow_merge !== false
     ) throw new DraftPullRequestError("PR_REQUEST_INVALID", "Contract validation failed.");
 
     const p5aReceiptPath = path.join(stateDirectory, "publish", "git-publish.json");
     const p5aReceipt = await readGitPublishReceipt(p5aReceiptPath);
     if (!p5aReceipt) throw new DraftPullRequestError("PR_PHASE5A_NOT_PUSHED", "Phase 5A receipt missing.");
     if (
-      p5aReceipt.state !== "PUSHED" || p5aReceipt.run_id !== options.runId ||
-      p5aReceipt.base_commit !== execution.base_commit || p5aReceipt.branch_name !== execution.branch_name ||
-      p5aReceipt.remote_name !== preparation.receipt.remote || p5aReceipt.allowed_remote_url !== preparation.receipt.remote_url ||
-      p5aReceipt.change_set_sha256 !== execution.change_set_sha256 || p5aReceipt.commit_sha === null ||
-      p5aReceipt.remote_branch_sha === null || p5aReceipt.commit_sha !== p5aReceipt.remote_branch_sha
+      p5aReceipt.state !== "PUSHED" || p5aReceipt.run_id !== options.runId || p5aReceipt.base_commit !== execution.base_commit ||
+      p5aReceipt.branch_name !== execution.branch_name || p5aReceipt.remote_name !== preparation.receipt.remote ||
+      p5aReceipt.allowed_remote_url !== preparation.receipt.remote_url || p5aReceipt.change_set_sha256 !== execution.change_set_sha256 ||
+      p5aReceipt.commit_sha === null || p5aReceipt.remote_branch_sha === null || p5aReceipt.commit_sha !== p5aReceipt.remote_branch_sha
     ) throw new DraftPullRequestError("PR_PHASE5A_NOT_PUSHED", "Phase 5A receipt indicates invalid state.");
 
     const gitPublishReceiptSha256 = canonicalGitPublishReceiptDigest(p5aReceipt);
     const repoIdentity = parseGitHubRepositoryRemote(p5aReceipt.allowed_remote_url);
     if (!config.github_pull_request || config.github_pull_request.provider !== "github.com") throw new DraftPullRequestError("PR_CONFIG_INVALID", "GitHub pull request config missing or invalid.");
     if (!config.publish?.identity) throw new DraftPullRequestError("PR_CONFIG_INVALID", "Publish config missing.");
-
     const runtimeDirectory = path.join(stateDirectory, "git-runtime");
     const gitAuth = await preparePublishGitSecurity(config.publish, p5aReceipt.allowed_remote_url, runtimeDirectory, process.env);
-    const gitRunner = new GitRunner(process.env, runtimeDirectory, { identity: config.publish.identity, auth: gitAuth });
+    const gitRunner = new GitRunner(process.env, runtimeDirectory, { identity: config.publish.identity, auth: gitAuth, allowedRemoteUrl: p5aReceipt.allowed_remote_url });
     const githubEnvKey = config.github_pull_request.authentication.token_environment_key;
     const githubToken = process.env[githubEnvKey];
     if (!githubToken) throw new DraftPullRequestError("PR_AUTH_UNAVAILABLE", `Missing GitHub token at ${githubEnvKey}`);
@@ -138,7 +128,7 @@ export async function createDraftPullRequestForRun(options: Phase5BDraftPrOption
       stateDirectory,
       gitRunner,
       worktreePath: execution.worktree_path,
-      remoteName: p5aReceipt.remote_name,
+      remoteUrl: p5aReceipt.allowed_remote_url,
       ...(options.now ? { now: options.now } : {}),
     });
   } finally {
