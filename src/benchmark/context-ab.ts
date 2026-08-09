@@ -1,3 +1,5 @@
+import { clearTimeout as clearNodeTimeout, setTimeout as setNodeTimeout } from "node:timers";
+
 export type ContextBenchmarkArm = "baseline" | "smart";
 
 export interface ContextBenchmarkUsage {
@@ -110,22 +112,23 @@ async function runBoundedSample(
   const controller = new AbortController();
   if (sampleTimeoutMs === undefined) return await runSample(arm, sequence, controller.signal);
 
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timer: ReturnType<typeof setNodeTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => {
+    timer = setNodeTimeout(() => {
       const error = new DOMException(`Benchmark sample ${sequence} exceeded ${sampleTimeoutMs} ms.`, "TimeoutError");
       controller.abort(error);
       reject(error);
     }, sampleTimeoutMs);
+    // A benchmark deadline is an execution bound, not best-effort telemetry.
+    // Keep the process alive until the bound either fires or the sample settles.
+    timer.ref();
   });
+  const samplePromise = Promise.resolve().then(() => runSample(arm, sequence, controller.signal));
 
   try {
-    return await Promise.race([
-      runSample(arm, sequence, controller.signal),
-      timeoutPromise,
-    ]);
+    return await Promise.race([samplePromise, timeoutPromise]);
   } finally {
-    if (timer !== undefined) clearTimeout(timer);
+    if (timer !== undefined) clearNodeTimeout(timer);
   }
 }
 
