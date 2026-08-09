@@ -13,6 +13,7 @@ import type {
 import { DEFAULT_RESULT_BUNDLE_LIMITS } from "./contracts.js";
 import { resultBundlePaths, resultBundleArchiveFilename, REQUIRED_RESULT_BUNDLE_ENTRIES, SOURCE_ENTRY_PREFIX } from "./result-bundle-paths.js";
 import { readResultBundleReceipt, writeResultBundleReceipt } from "./result-bundle-store.js";
+import { reattestReadyResultBundleAuthority } from "./ready-result-attestation.js";
 import { executionPaths, readExecutionReceipt } from "../execution/execution-store.js";
 import { readGitPublishReceipt } from "../publish/publish-store.js";
 import { readDraftPullRequestReceipt } from "../pull-request/draft-pr-store.js";
@@ -162,16 +163,21 @@ export async function packageResultBundle(options: Phase6Options): Promise<Resul
   // Check for existing receipt first (idempotency)
   const existingReceipt = await readResultBundleReceipt(paths.receiptPath);
   if (existingReceipt?.run_id === runId && existingReceipt.state === "READY_FOR_WEB_REVIEW") {
-    // Idempotent return - verify archive still matches
+    // Idempotent return requires both exact archive bytes and fresh external PR authority.
     const archiveFilename = existingReceipt.archive_relative_path ? path.basename(existingReceipt.archive_relative_path) : "";
     const archivePath = archiveFilename ? paths.archivePath(archiveFilename) : "";
     if (archivePath) {
       try {
         const stat = await fs.promises.stat(archivePath);
         if (stat.size === existingReceipt.archive_size_bytes) {
-          // Re-hash verify
           const verified = await verifyResultBundleZip(archivePath);
           if (verified.sha256 === existingReceipt.archive_sha256) {
+            await reattestReadyResultBundleAuthority({
+              stateDirectory: resolvedStateDir,
+              runId,
+              receipt: existingReceipt,
+              githubClient,
+            });
             return existingReceipt;
           }
         }
