@@ -1,11 +1,13 @@
+import crypto from "node:crypto";
 import path from "node:path";
-import { readGitPublishReceipt } from "../publish/publish-store.js";
-import { readDraftPullRequestReceipt } from "../pull-request/draft-pr-store.js";
+import { readGitPublishReceiptSnapshot } from "../publish/publish-store.js";
+import { readDraftPullRequestReceiptSnapshot } from "../pull-request/draft-pr-store.js";
 import { parseGitHubRepositoryRemote } from "../pull-request/github-remote.js";
 import { ResultBundleError, type ResultBundleReceipt } from "./contracts.js";
 import { attestGitHubPullRequest, type GitHubAttestationClient } from "./github-attestation.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
+const sha256 = (bytes: Buffer) => crypto.createHash("sha256").update(bytes).digest("hex");
 
 function splitRunId(runId: string): { taskId: string; archiveSha: string } {
   const separator = runId.lastIndexOf(":");
@@ -58,24 +60,30 @@ export async function reattestReadyResultBundleAuthority(options: {
     options.draftReceiptPath ?? path.join(root, "publish", "github-draft-pr.json"),
     "Ready Result Bundle Draft PR receipt path",
   );
-  const p5a = await readGitPublishReceipt(p5aPath);
-  const p5b = await readDraftPullRequestReceipt(p5bPath);
+  const [p5aSnapshot, p5bSnapshot] = await Promise.all([
+    readGitPublishReceiptSnapshot(p5aPath),
+    readDraftPullRequestReceiptSnapshot(p5bPath),
+  ]);
+  const p5a = p5aSnapshot?.receipt ?? null;
+  const p5b = p5bSnapshot?.receipt ?? null;
 
-  if (!p5a || p5a.state !== "PUSHED" || p5a.run_id !== options.runId || !p5a.commit_sha || p5a.remote_branch_sha !== p5a.commit_sha) {
+  if (!p5aSnapshot || !p5a || p5a.state !== "PUSHED" || p5a.run_id !== options.runId || !p5a.commit_sha || p5a.remote_branch_sha !== p5a.commit_sha) {
     throw new ResultBundleError("RESULT_PUBLISH_RECEIPT_INCONSISTENT", "Ready Result Bundle no longer has an exact PUSHED publish authority.");
   }
-  if (!p5b || p5b.state !== "OPEN" || p5b.run_id !== options.runId || p5b.pull_number === null || p5b.expected_head_sha !== p5a.commit_sha) {
+  if (!p5bSnapshot || !p5b || p5b.state !== "OPEN" || p5b.run_id !== options.runId || p5b.pull_number === null || p5b.expected_head_sha !== p5a.commit_sha) {
     throw new ResultBundleError("RESULT_PR_RECEIPT_INCONSISTENT", "Ready Result Bundle no longer has an exact open Draft PR receipt authority.");
   }
   if (
     options.receipt.run_id !== options.runId
     || options.receipt.state !== "READY_FOR_WEB_REVIEW"
+    || options.receipt.git_publish_receipt_sha256 !== sha256(p5aSnapshot.bytes)
+    || options.receipt.draft_pr_receipt_sha256 !== sha256(p5bSnapshot.bytes)
     || options.receipt.published_commit_sha !== p5a.commit_sha
     || options.receipt.remote_branch_sha !== p5a.commit_sha
     || options.receipt.pull_request.number !== p5b.pull_number
     || options.receipt.pull_request.head_sha !== p5a.commit_sha
   ) {
-    throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Ready Result Bundle receipt no longer matches persisted publication authority.");
+    throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Ready Result Bundle receipt no longer matches the exact persisted publication authority.");
   }
 
   let identity;
