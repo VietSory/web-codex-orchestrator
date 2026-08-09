@@ -162,11 +162,12 @@ export async function collectGitEvidence(opts: GitEvidenceOptions): Promise<GitE
       let mode: string;
       try {
         const lsResult = await gitRunner.run(
-          [...FORBIDDEN_GIT_CONFIG, "ls-tree", publishedCommit, "--", filePath],
+          [...FORBIDDEN_GIT_CONFIG, "--literal-pathspecs", "ls-tree", publishedCommit, "--", filePath],
           worktreePath
         );
-        const lsLine = lsResult.stdout.trim();
-        const modeMatch = /^(\d{6})\s/.exec(lsLine);
+        const lsLines = lsResult.stdout.split(/\r?\n/).filter((line) => line.length > 0);
+        if (lsLines.length !== 1) throw new Error("git ls-tree did not return exactly one literal path record");
+        const modeMatch = /^(\d{6})\s/.exec(lsLines[0]!);
         if (!modeMatch?.[1]) throw new Error("git ls-tree did not return an exact mode");
         mode = modeMatch[1];
       } catch (error) {
@@ -195,7 +196,9 @@ export async function collectGitEvidence(opts: GitEvidenceOptions): Promise<GitE
     }
   }
 
-  // Generate clean diff (text, no binary markers) for the patch entry
+  // Generate clean diff (text, no binary markers) for the patch entry.
+  // The fallback remains bounded by the already-checked binary diff, while a
+  // successful clean diff must independently satisfy the same configured cap.
   let cleanDiff: Buffer;
   try {
     const patchArgs = [
@@ -210,6 +213,13 @@ export async function collectGitEvidence(opts: GitEvidenceOptions): Promise<GitE
     cleanDiff = await gitRunner.runBinary(patchArgs, worktreePath);
   } catch {
     cleanDiff = diffBuffer;
+  }
+
+  if (cleanDiff.byteLength > opts.maximumDiffBytes) {
+    throw new ResultBundleError(
+      "RESULT_ARCHIVE_SIZE_LIMIT",
+      `Clean diff size ${cleanDiff.byteLength} exceeds maximum ${opts.maximumDiffBytes} bytes.`
+    );
   }
 
   return {
