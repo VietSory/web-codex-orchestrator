@@ -37,6 +37,12 @@ export interface ExecutorReviewReceipt {
   evidence_sha256: string | null;
 }
 
+export interface ExecutorUsage {
+  model_turns: number;
+  input_tokens: number;
+  output_tokens: number;
+}
+
 export interface ExecutorReceipt {
   executor_version: "1.0";
   run_id: string;
@@ -61,6 +67,8 @@ export interface ExecutorReceipt {
   };
   terra_review: ExecutorReviewReceipt;
   sol_review: ExecutorReviewReceipt;
+  /** Present for receipts produced after end-to-end usage accounting was introduced. */
+  usage?: ExecutorUsage;
   errors: ExecutorDiagnostic[];
   created_at: string;
   updated_at: string;
