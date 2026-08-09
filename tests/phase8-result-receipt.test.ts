@@ -147,3 +147,39 @@ test("P8-RB-004: receipt replacement by symlink between lstat and open fails clo
     });
   }
 });
+
+test("P8-RB-005: receipt disappearance after initial identity check is tamper, not absence", async (t) => {
+  const root = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), "wco-result-receipt-disappear-")));
+  t.after(async () => fs.promises.rm(root, { recursive: true, force: true }));
+  const receiptPath = path.join(root, "result.json");
+  await fs.promises.writeFile(receiptPath, `${JSON.stringify(validRevisionReceipt())}\n`, { mode: 0o600 });
+
+  const originalOpen = fs.promises.open.bind(fs.promises);
+  let removed = false;
+  Object.defineProperty(fs.promises, "open", {
+    configurable: true,
+    writable: true,
+    value: async (...args: Parameters<typeof fs.promises.open>) => {
+      const requested = String(args[0]);
+      if (!removed && path.resolve(requested) === receiptPath) {
+        removed = true;
+        await fs.promises.unlink(receiptPath);
+      }
+      return originalOpen(...args);
+    },
+  });
+
+  try {
+    await assert.rejects(
+      () => readResultBundleReceipt(receiptPath),
+      (error: unknown) => error instanceof ResultBundleError && error.code === "RESULT_RECEIPT_INVALID",
+    );
+    assert.equal(removed, true);
+  } finally {
+    Object.defineProperty(fs.promises, "open", {
+      configurable: true,
+      writable: true,
+      value: originalOpen,
+    });
+  }
+});
