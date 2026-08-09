@@ -219,7 +219,7 @@ export async function packageResultForRun(options: {
     secrets: [token],
     authority: {
       executionEvidence,
-      executionReceiptBytes,
+      executionReceiptBytes: executorReceiptBytes,
       publishReceiptPath: path.join(publishDirectory, "git-publish.json"),
       draftReceiptPath: path.join(publishDirectory, "github-draft-pr.json"),
     },
