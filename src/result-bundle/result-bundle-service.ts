@@ -79,6 +79,17 @@ function sha256Hex(data: Buffer | string): string {
     .digest("hex");
 }
 
+function scanForSecrets(content: Buffer, secrets: string[]): string | null {
+  if (secrets.length === 0) return null;
+  const text = content.toString("utf8");
+  for (const secret of secrets) {
+    if (secret.length >= 8 && text.includes(secret)) {
+      return `${secret.slice(0, 4)}***`;
+    }
+  }
+  return null;
+}
+
 function currentIso(now?: () => Date): string {
   return (now ? now() : new Date()).toISOString();
 }
