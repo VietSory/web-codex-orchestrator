@@ -154,7 +154,11 @@ export async function reviseRunForOrchestration(options: {
     const runtime = await resolveCodexRuntime(config.runtime, options.stateDirectory);
     const auth = await preparePublishGitSecurity(config.publish, runContext.runReceipt.remote_url, runtimeDirectory, process.env);
     if (auth.mode === "https_token") authPath = auth.askpassScriptPath;
-    const runner = new GitRunner(process.env, runtimeDirectory, { identity: config.publish.identity, auth });
+    const runner = new GitRunner(process.env, runtimeDirectory, {
+      identity: config.publish.identity,
+      auth,
+      allowedRemoteUrl: runContext.runReceipt.remote_url,
+    });
     return await reviseRun({
       runId: options.runId,
       revisionRound: options.revisionRound,

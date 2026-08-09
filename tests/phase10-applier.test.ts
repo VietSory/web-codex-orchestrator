@@ -112,3 +112,58 @@ test("P10-APPLY-004 ambiguous recovery bytes escalate instead of guessing", asyn
   receipt.state = "APPLYING";
   await assert.rejects(() => applyExecutorTransaction({ stateDirectory: f.state, receipt, pack: f.pack }), (error: unknown) => error instanceof ExecutorError && error.code === "EXECUTOR_AMBIGUOUS_RECOVERY");
 });
+
+test("P10-APPLY-005 later post-prepare drift rolls back earlier exact mutations", async (t) => {
+  const f = await fixture(); t.after(async () => fs.rm(f.root, { recursive: true, force: true }));
+  const receipt = await prepareExecutorTransaction(prepareOptions(f));
+  await fs.writeFile(path.join(f.worktree, "delete.txt"), "external drift after prepare\n");
+
+  await assert.rejects(
+    () => applyExecutorTransaction({ stateDirectory: f.state, receipt, pack: f.pack }),
+    (error: unknown) => error instanceof ExecutorError && error.code === "EXECUTOR_AMBIGUOUS_RECOVERY",
+  );
+
+  assert.equal(receipt.state, "PREPARED");
+  assert.ok(receipt.operations.every((operation) => operation.applied === false));
+  assert.equal(await fs.readFile(path.join(f.worktree, "replace.txt"), "utf8"), "old replace\n");
+  assert.equal(await fs.readFile(path.join(f.worktree, "delete.txt"), "utf8"), "external drift after prepare\n");
+  await assert.rejects(() => fs.readFile(path.join(f.worktree, "create.txt")));
+});
+
+test("P10-APPLY-006 failure after delete restores all exact preimages in reverse order", async (t) => {
+  const f = await fixture(); t.after(async () => fs.rm(f.root, { recursive: true, force: true }));
+  const receipt = await prepareExecutorTransaction(prepareOptions(f));
+  await fs.writeFile(path.join(f.worktree, "create.txt"), "external create drift\n");
+
+  await assert.rejects(
+    () => applyExecutorTransaction({ stateDirectory: f.state, receipt, pack: f.pack }),
+    (error: unknown) => error instanceof ExecutorError && error.code === "EXECUTOR_AMBIGUOUS_RECOVERY",
+  );
+
+  assert.equal(receipt.state, "PREPARED");
+  assert.ok(receipt.operations.every((operation) => operation.applied === false));
+  assert.equal(await fs.readFile(path.join(f.worktree, "replace.txt"), "utf8"), "old replace\n");
+  assert.equal(await fs.readFile(path.join(f.worktree, "delete.txt"), "utf8"), "old delete\n");
+  assert.equal(await fs.readFile(path.join(f.worktree, "create.txt"), "utf8"), "external create drift\n");
+});
+
+test("P10-APPLY-007 rollback continues past an ambiguous applied target and restores independent mutations", async (t) => {
+  const f = await fixture(); t.after(async () => fs.rm(f.root, { recursive: true, force: true }));
+  const receipt = await prepareExecutorTransaction(prepareOptions(f));
+  await applyExecutorTransaction({ stateDirectory: f.state, receipt, pack: f.pack });
+  await fs.writeFile(path.join(f.worktree, "delete.txt"), "external drift after apply\n");
+  receipt.state = "APPLYING";
+
+  await assert.rejects(
+    () => applyExecutorTransaction({ stateDirectory: f.state, receipt, pack: f.pack }),
+    (error: unknown) => error instanceof ExecutorError && error.code === "EXECUTOR_AMBIGUOUS_RECOVERY",
+  );
+
+  assert.equal(receipt.state, "APPLYING");
+  assert.equal(receipt.operations[0]?.applied, false);
+  assert.equal(receipt.operations[1]?.applied, true);
+  assert.equal(receipt.operations[2]?.applied, false);
+  assert.equal(await fs.readFile(path.join(f.worktree, "replace.txt"), "utf8"), "old replace\n");
+  assert.equal(await fs.readFile(path.join(f.worktree, "delete.txt"), "utf8"), "external drift after apply\n");
+  await assert.rejects(() => fs.readFile(path.join(f.worktree, "create.txt")));
+});

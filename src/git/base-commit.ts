@@ -7,6 +7,14 @@ function safeBranch(value: string): boolean {
   return value.length > 0 && !value.startsWith("-") && !value.startsWith("/") && !value.endsWith("/") && !value.includes("..") && !value.includes("@{") && !/[\u0000\r\n\\~^:?*\[\]]/.test(value);
 }
 
+function trustedTransport(repository: ResolvedRepository, sealedRemoteUrl?: string): string {
+  if (sealedRemoteUrl === undefined) return repository.remote;
+  if (!repository.expected_remote_urls.includes(sealedRemoteUrl)) {
+    throw new GitBoundaryError("REMOTE_URL_MISMATCH", "Sealed base-fetch URL is not present in the trusted repository registry.");
+  }
+  return sealedRemoteUrl;
+}
+
 async function objectExists(commit: string, repository: ResolvedRepository, runner: GitRunner): Promise<boolean> {
   const result = await runner.run(["cat-file", "-e", `${commit}^{commit}`], repository.path);
   return result.exitCode === 0;
@@ -22,19 +30,22 @@ export async function prepareBase(
   baseBranch: string,
   baseCommit: string,
   runner = new GitRunner(),
+  sealedRemoteUrl?: string,
 ): Promise<PreparedBase> {
   if (!FULL_COMMIT.test(baseCommit)) throw new GitBoundaryError("BASE_COMMIT_INVALID", "Base commit must be a full lowercase 40 or 64 character commit ID.");
   if (!safeBranch(baseBranch)) throw new GitBoundaryError("BASE_COMMIT_INVALID", "Base branch is unsafe.");
+  const transport = trustedTransport(repository, sealedRemoteUrl);
   let fetched = false;
   const trackingRef = `refs/remotes/${repository.remote}/${baseBranch}`;
   const localRef = `refs/heads/${baseBranch}`;
+  const fetchRefspec = `refs/heads/${baseBranch}:refs/remotes/${repository.remote}/${baseBranch}`;
 
   if (repository.fetch_policy === "always") {
-    const result = await runner.run(["fetch", "--no-tags", "--no-recurse-submodules", repository.remote, `refs/heads/${baseBranch}:refs/remotes/${repository.remote}/${baseBranch}`], repository.path);
+    const result = await runner.run(["fetch", "--no-tags", "--no-recurse-submodules", transport, fetchRefspec], repository.path);
     if (result.exitCode !== 0) throw new GitBoundaryError("FETCH_FAILED", "Fetching the trusted base branch failed.", result);
     fetched = true;
   } else if (repository.fetch_policy === "if-missing" && !(await objectExists(baseCommit, repository, runner))) {
-    const result = await runner.run(["fetch", "--no-tags", "--no-recurse-submodules", repository.remote, `refs/heads/${baseBranch}:refs/remotes/${repository.remote}/${baseBranch}`], repository.path);
+    const result = await runner.run(["fetch", "--no-tags", "--no-recurse-submodules", transport, fetchRefspec], repository.path);
     if (result.exitCode !== 0) throw new GitBoundaryError("FETCH_FAILED", "Fetching the trusted base branch failed.", result);
     fetched = true;
   }

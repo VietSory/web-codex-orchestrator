@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { assertResultBundleReceipt } from "../src/result-bundle/result-bundle-store.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { assertResultBundleReceipt, readResultBundleReceipt } from "../src/result-bundle/result-bundle-store.js";
 import { ResultBundleError, type ResultBundleReceipt } from "../src/result-bundle/contracts.js";
 
 function validRevisionReceipt(): ResultBundleReceipt {
@@ -103,4 +106,80 @@ test("P8-RB-003: Phase 6 v1.1 remains backward-compatible", () => {
   initial.input_kind = "initial";
   initial.revision_round = null;
   assert.doesNotThrow(() => assertResultBundleReceipt(initial));
+});
+
+test("P8-RB-004: receipt replacement by symlink between lstat and open fails closed", async (t) => {
+  const root = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), "wco-result-receipt-race-")));
+  t.after(async () => fs.promises.rm(root, { recursive: true, force: true }));
+  const receiptPath = path.join(root, "result.json");
+  const displacedPath = path.join(root, "result-original.json");
+  const attackerPath = path.join(root, "attacker.json");
+  await fs.promises.writeFile(receiptPath, `${JSON.stringify(validRevisionReceipt())}\n`, { mode: 0o600 });
+  await fs.promises.writeFile(attackerPath, `${JSON.stringify({ ...validRevisionReceipt(), run_id: `ATTACKER:${"2".repeat(64)}` })}\n`, { mode: 0o600 });
+
+  const originalOpen = fs.promises.open.bind(fs.promises);
+  let swapped = false;
+  Object.defineProperty(fs.promises, "open", {
+    configurable: true,
+    writable: true,
+    value: async (...args: Parameters<typeof fs.promises.open>) => {
+      const requested = String(args[0]);
+      if (!swapped && path.resolve(requested) === receiptPath) {
+        swapped = true;
+        await fs.promises.rename(receiptPath, displacedPath);
+        await fs.promises.symlink(attackerPath, receiptPath);
+      }
+      return originalOpen(...args);
+    },
+  });
+
+  try {
+    await assert.rejects(
+      () => readResultBundleReceipt(receiptPath),
+      (error: unknown) => error instanceof ResultBundleError && error.code === "RESULT_RECEIPT_INVALID",
+    );
+    assert.equal(swapped, true);
+  } finally {
+    Object.defineProperty(fs.promises, "open", {
+      configurable: true,
+      writable: true,
+      value: originalOpen,
+    });
+  }
+});
+
+test("P8-RB-005: receipt disappearance after initial identity check is tamper, not absence", async (t) => {
+  const root = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), "wco-result-receipt-disappear-")));
+  t.after(async () => fs.promises.rm(root, { recursive: true, force: true }));
+  const receiptPath = path.join(root, "result.json");
+  await fs.promises.writeFile(receiptPath, `${JSON.stringify(validRevisionReceipt())}\n`, { mode: 0o600 });
+
+  const originalOpen = fs.promises.open.bind(fs.promises);
+  let removed = false;
+  Object.defineProperty(fs.promises, "open", {
+    configurable: true,
+    writable: true,
+    value: async (...args: Parameters<typeof fs.promises.open>) => {
+      const requested = String(args[0]);
+      if (!removed && path.resolve(requested) === receiptPath) {
+        removed = true;
+        await fs.promises.unlink(receiptPath);
+      }
+      return originalOpen(...args);
+    },
+  });
+
+  try {
+    await assert.rejects(
+      () => readResultBundleReceipt(receiptPath),
+      (error: unknown) => error instanceof ResultBundleError && error.code === "RESULT_RECEIPT_INVALID",
+    );
+    assert.equal(removed, true);
+  } finally {
+    Object.defineProperty(fs.promises, "open", {
+      configurable: true,
+      writable: true,
+      value: originalOpen,
+    });
+  }
 });

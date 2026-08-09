@@ -127,6 +127,7 @@ test(
       assert.equal(await git(fixture.worktree, ["rev-parse", "HEAD"]), beforeHead);
       assert.equal(await git(fixture.worktree, ["for-each-ref", "--format=%(refname):%(objectname)", "refs/remotes"]), beforeRemoteRefs);
       assert.equal(await git(fixture.worktree, ["ls-files", "payload/marker"]), "");
+      completed = true;
     } catch (error) {
       if (error instanceof ExecutionError && error.code === "CODEX_AUTH_UNAVAILABLE") {
         throw new Error("CODEX_AUTH_UNAVAILABLE: Codex login status failed.");

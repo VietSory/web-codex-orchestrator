@@ -215,6 +215,7 @@ export async function publishPhase4Run(options: Phase4PublishOptions): Promise<G
     const runner = new GitRunner(process.env, runtimeDirectory, {
       identity: config.publish.identity,
       auth,
+      allowedRemoteUrl: preparation.receipt.remote_url,
     });
 
     const cwd = execution.worktree_path;

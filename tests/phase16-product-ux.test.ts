@@ -127,3 +127,14 @@ test("P16-PRODUCT-006 trusted config cannot accidentally grant unbounded resourc
   archiveHeavy.result_bundle = { maximum_archive_bytes: TRUSTED_CONFIG_HARD_LIMITS.result_bundle.maximum_archive_bytes + 1 };
   assert.equal(validateConfig(archiveHeavy).ok, false);
 });
+
+test("P16-PRODUCT-007 local validation guide references only real npm scripts", async () => {
+  const packageJson = JSON.parse(await fs.readFile(path.resolve("package.json"), "utf8")) as { scripts?: Record<string, string> };
+  const scripts = packageJson.scripts ?? {};
+  const checklist = await fs.readFile(path.resolve("docs/local-validation.md"), "utf8");
+  const referenced = [...checklist.matchAll(/npm run ([A-Za-z0-9:_-]+)/g)].map((match) => match[1]!);
+  assert.ok(referenced.length > 0);
+  for (const script of referenced) assert.ok(script in scripts, `docs/local-validation.md references missing npm script '${script}'`);
+  assert.match(checklist, /npm run test:native:sandbox/);
+  assert.match(checklist, /npm run test:native:codex/);
+});

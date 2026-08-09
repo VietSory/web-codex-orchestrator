@@ -64,6 +64,20 @@ function createCandidate(overrides: Partial<GitHubPullRequest> = {}): GitHubPull
   };
 }
 
+function makeOpenReceipt(receipt: DraftPullRequestReceipt, pr: GitHubPullRequest): DraftPullRequestReceipt {
+  return {
+    ...receipt,
+    state: "OPEN",
+    pull_number: pr.number,
+    pull_url: pr.html_url,
+    observed_head_sha: pr.head.sha,
+    observed_base_branch: pr.base.ref,
+    observed_state: "open",
+    observed_draft: true,
+    opened_at: "2026-08-09T00:00:00.000Z",
+  };
+}
+
 test("P5B-008: existing-adoption", async () => {
   const client = new FakeGitHubPullRequestClient();
   client.lists = [[createCandidate()]];
@@ -330,15 +344,13 @@ test("P5B-030: definitive-auth-retry", async () => {
 
 test("P5B-031: open-idempotency", async () => {
   const client = new FakeGitHubPullRequestClient();
-  client.gets[1] = createCandidate({ number: 1 });
+  const pr = createCandidate({ number: 1 });
+  client.gets[1] = pr;
   
   const input = createDummyInput();
   const machine = new DraftPullRequestStateMachine(client, async () => {});
   const hashes = (machine as any).getHashes(input);
-  const existing = (machine as any).createBaseReceipt(input, hashes);
-  existing.state = "OPEN";
-  existing.pull_number = 1;
-  input.existingReceipt = existing;
+  input.existingReceipt = makeOpenReceipt((machine as any).createBaseReceipt(input, hashes), pr);
 
   const receipt = await machine.execute(input);
   assert.equal(receipt.state, "OPEN");
@@ -349,17 +361,15 @@ test("P5B-031: open-idempotency", async () => {
 
 test("P5B-032: open-mutation", async () => {
   const client = new FakeGitHubPullRequestClient();
+  const original = createCandidate({ number: 1 });
   client.gets[1] = createCandidate({ number: 1, state: "closed" }); // mutated
   
   const input = createDummyInput();
   const machine = new DraftPullRequestStateMachine(client, async () => {});
   const hashes = (machine as any).getHashes(input);
-  const existing = (machine as any).createBaseReceipt(input, hashes);
-  existing.state = "OPEN";
-  existing.pull_number = 1;
-  input.existingReceipt = existing;
+  input.existingReceipt = makeOpenReceipt((machine as any).createBaseReceipt(input, hashes), original);
 
   const receipt = await machine.execute(input);
   assert.equal(receipt.state, "CONFLICT");
-  assert.equal(receipt.conflict_reason, "OPEN_PR_MUTATED");
+  assert.equal(receipt.conflict_reason, "NOT_OPEN");
 });

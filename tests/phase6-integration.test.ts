@@ -6,6 +6,8 @@ import os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import crypto from "node:crypto";
+import type { GitPublishReceipt } from "../src/publish/contracts.js";
+import { canonicalGitPublishReceiptDigest } from "../src/publish/receipt-digest.js";
 import { packageResultBundle } from "../src/result-bundle/result-bundle-service.js";
 import { verifyResultBundleZip } from "../src/result-bundle/zip-verifier.js";
 import type { GitHubAttestationClient } from "../src/result-bundle/github-attestation.js";
@@ -115,10 +117,11 @@ test("Phase 6 Integration: full deterministic result bundle packaging", async (t
       updated_at: "2026-01-01T00:00:00Z"
     }));
 
-    // Setup P5A Receipt
+    // Setup P5A Receipt. The Draft PR fixture must bind the semantic Phase 5A
+    // authority using the same canonical digest as production Phase 5B.
     const publishDir = path.join(executionDir, "publish");
     await fs.mkdir(publishDir, { recursive: true });
-    await fs.writeFile(path.join(publishDir, "git-publish.json"), JSON.stringify({
+    const p5aReceipt: GitPublishReceipt = {
       publish_version: "1.1",
       run_id: runId,
       state: "PUSHED",
@@ -135,7 +138,8 @@ test("Phase 6 Integration: full deterministic result bundle packaging", async (t
       updated_at: "2026-01-01T00:00:00Z",
       committed_at: "2026-01-01T00:00:00Z",
       pushed_at: "2026-01-01T00:00:00Z"
-    }));
+    };
+    await fs.writeFile(path.join(publishDir, "git-publish.json"), JSON.stringify(p5aReceipt));
 
     // Setup P5B Receipt
     await fs.mkdir(path.join(stateDirectory, "publish"), { recursive: true });
@@ -148,7 +152,7 @@ test("Phase 6 Integration: full deterministic result bundle packaging", async (t
       base_branch: "main",
       head_branch: "codex/task",
       expected_head_sha: headCommit,
-      git_publish_receipt_sha256: sha256Hex(await fs.readFile(path.join(publishDir, "git-publish.json"))),
+      git_publish_receipt_sha256: canonicalGitPublishReceiptDigest(p5aReceipt),
       request_sha256: sha256Hex("dummy-req"),
       title: "Test PR",
       body_sha256: sha256Hex("dummy-body"),

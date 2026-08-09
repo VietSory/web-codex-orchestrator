@@ -1,6 +1,6 @@
 {
   "name": "web-codex-orchestrator",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "A durable, security-focused CLI for orchestrating Web-authored code changes through verification, review, and Draft PR delivery.",
   "license": "Apache-2.0",
@@ -41,6 +41,7 @@
     "dev": "tsx src/cli/index.ts",
     "validate": "tsx src/cli/index.ts validate",
     "validate:template": "npm run validate -- ./templates/task-bundle",
+    "lock:check": "node scripts/check-package-lock-sync.mjs",
     "typecheck": "tsc -p tsconfig.json",
     "build": "tsc -p tsconfig.build.json && node -e \"require('fs').cpSync('src/result-bundle/resources', 'dist/result-bundle/resources', {recursive:true, force:true})\"",
     "start": "node dist/cli/index.js",
@@ -51,17 +52,19 @@
     "test:integration": "npm run test:e2e && npm run test:cli",
     "test:native:sandbox": "tsx --test tests/integration/codex-sandbox.integration.ts",
     "test:native:codex": "tsx --test tests/integration/codex-execution.integration.ts",
-    "check": "npm run validate:template && npm run typecheck && npm test && npm run test:e2e && npm run build && npm run test:cli",
+    "benchmark:context": "tsx scripts/benchmark-smart-context.mts",
+    "benchmark:native:context": "tsx scripts/benchmark-native-context.mts",
+    "check": "npm run lock:check && npm run validate:template && npm run typecheck && npm test && npm run benchmark:context && npm run test:e2e && npm run build && npm run test:cli",
     "pack:check": "npm pack --dry-run --json",
     "prepack": "npm run build"
   },
   "devDependencies": {
-    "@types/node": "latest",
+    "@types/node": "26.1.2",
     "@types/yauzl": "3.4.0",
     "@types/yazl": "3.3.0",
     "ajv": "^8.20.0",
-    "tsx": "latest",
-    "typescript": "latest",
+    "tsx": "4.23.1",
+    "typescript": "7.0.2",
     "yazl": "3.3.1"
   },
   "dependencies": {

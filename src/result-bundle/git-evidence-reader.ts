@@ -36,6 +36,7 @@ const FORBIDDEN_GIT_CONFIG = [
 
 /** Supported diff status characters */
 const SUPPORTED_STATUS = new Set(["A", "M", "D"]);
+const SUPPORTED_FILE_MODES = new Set(["100644", "100755"]);
 
 /**
  * Collect exact git evidence from the published commit.
@@ -53,6 +54,7 @@ export async function collectGitEvidence(opts: GitEvidenceOptions): Promise<GitE
       "diff",
       "--no-color",
       "--no-ext-diff",
+      "--no-textconv",
       "--binary",
       "-z",
       `${baseCommit}..${publishedCommit}`,
@@ -77,7 +79,7 @@ export async function collectGitEvidence(opts: GitEvidenceOptions): Promise<GitE
   let nameStatusOut: string;
   try {
     const result = await gitRunner.run(
-      [...FORBIDDEN_GIT_CONFIG, "diff", "--name-status", "-z", `${baseCommit}..${publishedCommit}`],
+      [...FORBIDDEN_GIT_CONFIG, "diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z", `${baseCommit}..${publishedCommit}`, "--"],
       worktreePath
     );
     nameStatusOut = result.stdout;
@@ -156,25 +158,29 @@ export async function collectGitEvidence(opts: GitEvidenceOptions): Promise<GitE
         );
       }
 
-      // Get the mode from ls-tree
-      let mode = "100644";
+      // Mode is authority: if Git cannot attest it exactly, fail closed.
+      let mode: string;
       try {
         const lsResult = await gitRunner.run(
-          [...FORBIDDEN_GIT_CONFIG, "ls-tree", publishedCommit, filePath],
+          [...FORBIDDEN_GIT_CONFIG, "--literal-pathspecs", "ls-tree", publishedCommit, "--", filePath],
           worktreePath
         );
-        const lsLine = lsResult.stdout.trim();
-        const modeMatch = /^(\d{6})\s/.exec(lsLine);
-        if (modeMatch?.[1]) mode = modeMatch[1];
-      } catch {
-        warnings.push(`Could not read mode for ${filePath}, using 100644.`);
+        const lsLines = lsResult.stdout.split(/\r?\n/).filter((line) => line.length > 0);
+        if (lsLines.length !== 1) throw new Error("git ls-tree did not return exactly one literal path record");
+        const modeMatch = /^(\d{6})\s/.exec(lsLines[0]!);
+        if (!modeMatch?.[1]) throw new Error("git ls-tree did not return an exact mode");
+        mode = modeMatch[1];
+      } catch (error) {
+        throw new ResultBundleError(
+          "RESULT_GIT_INSPECTION_FAILED",
+          `Failed to attest mode for ${filePath}@${publishedCommit}: ${error instanceof Error ? error.message : String(error)}`
+        );
       }
 
-      // Reject symlinks and special files
-      if (mode.startsWith("12") || mode.startsWith("16")) {
+      if (!SUPPORTED_FILE_MODES.has(mode)) {
         throw new ResultBundleError(
           "RESULT_UNSUPPORTED_CHANGE_TYPE",
-          `File '${filePath}' is a symlink or special file (mode ${mode}).`
+          `File '${filePath}' has unsupported Git mode ${mode}.`
         );
       }
 
@@ -190,7 +196,9 @@ export async function collectGitEvidence(opts: GitEvidenceOptions): Promise<GitE
     }
   }
 
-  // Generate clean diff (text, no binary markers) for the patch entry
+  // Generate clean diff (text, no binary markers) for the patch entry.
+  // The fallback remains bounded by the already-checked binary diff, while a
+  // successful clean diff must independently satisfy the same configured cap.
   let cleanDiff: Buffer;
   try {
     const patchArgs = [
@@ -198,12 +206,20 @@ export async function collectGitEvidence(opts: GitEvidenceOptions): Promise<GitE
       "diff",
       "--no-color",
       "--no-ext-diff",
+      "--no-textconv",
       `${baseCommit}..${publishedCommit}`,
       "--",
     ];
     cleanDiff = await gitRunner.runBinary(patchArgs, worktreePath);
   } catch {
     cleanDiff = diffBuffer;
+  }
+
+  if (cleanDiff.byteLength > opts.maximumDiffBytes) {
+    throw new ResultBundleError(
+      "RESULT_ARCHIVE_SIZE_LIMIT",
+      `Clean diff size ${cleanDiff.byteLength} exceeds maximum ${opts.maximumDiffBytes} bytes.`
+    );
   }
 
   return {

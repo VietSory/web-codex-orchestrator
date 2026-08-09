@@ -9,6 +9,8 @@ import crypto from "node:crypto";
 import http from "node:http";
 
 import { fileURLToPath } from "node:url";
+import type { GitPublishReceipt } from "../../src/publish/contracts.js";
+import { canonicalGitPublishReceiptDigest } from "../../src/publish/receipt-digest.js";
 
 const exec = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -28,7 +30,7 @@ test("Phase 6 CLI Integration - compiled CLI loads resources and packages bundle
 
   let tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "wco-cli-phase6-test-"));
   tmpDir = await fs.realpath(tmpDir);
-  
+
   const sharedState = { headCommit: "pending" };
   const server = http.createServer((req, res) => {
     if (req.method === "GET" && req.url === "/repos/owner/repo/pulls/123") {
@@ -41,7 +43,7 @@ test("Phase 6 CLI Integration - compiled CLI loads resources and packages bundle
         merged: false,
         merged_at: null,
         title: "Test PR",
-        head: { ref: "codex/task", sha: sharedState.headCommit }, // will be checked against expected
+        head: { ref: "codex/task", sha: sharedState.headCommit },
         base: { ref: "main" }
       }));
     } else {
@@ -59,7 +61,7 @@ test("Phase 6 CLI Integration - compiled CLI loads resources and packages bundle
     const stateDirectory = path.join(tmpDir, "state");
     const bundlePath = path.join(tmpDir, "bundle");
     const configPath = path.join(tmpDir, "config.json");
-    
+
     await fs.mkdir(worktreePath, { recursive: true });
     await fs.mkdir(stateDirectory, { recursive: true });
     await fs.mkdir(bundlePath, { recursive: true });
@@ -95,7 +97,6 @@ test("Phase 6 CLI Integration - compiled CLI loads resources and packages bundle
       }
     }));
 
-    // Setup Git Repo
     await exec("git", ["init", "-b", "main"], { cwd: worktreePath });
     await exec("git", ["config", "user.name", "Test User"], { cwd: worktreePath });
     await exec("git", ["config", "user.email", "test@example.com"], { cwd: worktreePath });
@@ -103,7 +104,7 @@ test("Phase 6 CLI Integration - compiled CLI loads resources and packages bundle
     await fs.writeFile(path.join(worktreePath, "file.txt"), "base content");
     await exec("git", ["add", "file.txt"], { cwd: worktreePath });
     await exec("git", ["commit", "-m", "Initial commit"], { cwd: worktreePath });
-    
+
     const { stdout: baseCommitOut } = await exec("git", ["rev-parse", "HEAD"], { cwd: worktreePath });
     const baseCommit = baseCommitOut.trim();
 
@@ -112,12 +113,11 @@ test("Phase 6 CLI Integration - compiled CLI loads resources and packages bundle
     await fs.writeFile(path.join(worktreePath, "new.txt"), "new file");
     await exec("git", ["add", "."], { cwd: worktreePath });
     await exec("git", ["commit", "-m", "Task commit"], { cwd: worktreePath });
-    
+
     const { stdout: headCommitOut } = await exec("git", ["rev-parse", "HEAD"], { cwd: worktreePath });
     const headCommit = headCommitOut.trim();
     sharedState.headCommit = headCommit;
 
-    // Setup fake task bundle
     const specFiles = ["manifest.json", "REQUEST.md", "PLAN.md", "RULES.md", "RESEARCH.md", "SOURCES.md", "VALIDATION.md", "acceptance.json", "test-matrix.json", "validation.json", "risk-policy.json"];
     const checksumsFiles: Record<string, string> = {};
     for (const name of specFiles) {
@@ -132,7 +132,6 @@ test("Phase 6 CLI Integration - compiled CLI loads resources and packages bundle
     const archiveSha = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
     const changeSetSha256 = sha256Hex("dummy-change-set");
 
-    // Setup P4 Receipt
     const executionDir = path.join(stateDirectory, "runs", taskId, archiveSha, "execution");
     await fs.mkdir(executionDir, { recursive: true });
     await fs.writeFile(path.join(executionDir, "execution.json"), JSON.stringify({
@@ -154,10 +153,9 @@ test("Phase 6 CLI Integration - compiled CLI loads resources and packages bundle
       updated_at: "2026-01-01T00:00:00Z"
     }));
 
-    // Setup P5A Receipt
     const publishDir = path.join(executionDir, "publish");
     await fs.mkdir(publishDir, { recursive: true });
-    await fs.writeFile(path.join(publishDir, "git-publish.json"), JSON.stringify({
+    const gitPublishReceipt: GitPublishReceipt = {
       publish_version: "1.1",
       run_id: runId,
       state: "PUSHED",
@@ -174,9 +172,9 @@ test("Phase 6 CLI Integration - compiled CLI loads resources and packages bundle
       updated_at: "2026-01-01T00:00:00Z",
       committed_at: "2026-01-01T00:00:00Z",
       pushed_at: "2026-01-01T00:00:00Z"
-    }));
+    };
+    await fs.writeFile(path.join(publishDir, "git-publish.json"), JSON.stringify(gitPublishReceipt));
 
-    // Setup P5B Receipt
     await fs.mkdir(path.join(stateDirectory, "publish"), { recursive: true });
     await fs.writeFile(path.join(stateDirectory, "publish", "github-draft-pr.json"), JSON.stringify({
       receipt_version: "1.0",
@@ -187,7 +185,7 @@ test("Phase 6 CLI Integration - compiled CLI loads resources and packages bundle
       base_branch: "main",
       head_branch: "codex/task",
       expected_head_sha: headCommit,
-      git_publish_receipt_sha256: sha256Hex(await fs.readFile(path.join(publishDir, "git-publish.json"))),
+      git_publish_receipt_sha256: canonicalGitPublishReceiptDigest(gitPublishReceipt),
       request_sha256: sha256Hex("dummy-req"),
       title: "Test PR",
       body_sha256: sha256Hex("dummy-body"),
@@ -206,11 +204,6 @@ test("Phase 6 CLI Integration - compiled CLI loads resources and packages bundle
       opened_at: "2026-01-01T00:00:00Z",
       conflict_at: null
     }));
-
-    // Mock head commit in server response
-    server.on("request", (req, res) => {
-      // server already closed or handled in initial handler
-    });
 
     let stdout, stderr;
     try {
@@ -240,8 +233,7 @@ test("Phase 6 CLI Integration - compiled CLI loads resources and packages bundle
 
     const out = JSON.parse(stdout);
     assert.strictEqual(out.state, "READY_FOR_WEB_REVIEW", "CLI should succeed and reach READY_FOR_WEB_REVIEW");
-    
-    // Explicitly check that resources were copied in the build step, and CLI ran fine
+
     const resourcesDir = path.join(rootDir, "dist", "result-bundle", "resources");
     const files = await fs.readdir(resourcesDir);
     assert.ok(files.includes("WEB-REVIEW-CONTRACT.md"));

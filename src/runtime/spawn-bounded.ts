@@ -45,7 +45,8 @@ function assertArgument(value: string, label: string): void {
 }
 
 class BoundedByteTail {
-  private readonly chunks: Buffer[] = [];
+  private chunks: Buffer[] = [];
+  private head = 0;
   private retainedBytes = 0;
   private wasTruncated = false;
 
@@ -58,21 +59,34 @@ class BoundedByteTail {
       return;
     }
 
+    if (chunk.byteLength >= this.maximumBytes) {
+      this.wasTruncated ||= this.retainedBytes > 0 || chunk.byteLength > this.maximumBytes;
+      this.chunks = [Buffer.from(chunk.subarray(chunk.byteLength - this.maximumBytes))];
+      this.head = 0;
+      this.retainedBytes = this.maximumBytes;
+      return;
+    }
+
     const exactChunk = Buffer.from(chunk);
     this.chunks.push(exactChunk);
     this.retainedBytes += exactChunk.byteLength;
 
-    while (this.retainedBytes > this.maximumBytes && this.chunks.length > 0) {
+    while (this.retainedBytes > this.maximumBytes && this.head < this.chunks.length) {
       const excess = this.retainedBytes - this.maximumBytes;
-      const first = this.chunks[0]!;
+      const first = this.chunks[this.head]!;
       this.wasTruncated = true;
       if (first.byteLength <= excess) {
-        this.chunks.shift();
+        this.head += 1;
         this.retainedBytes -= first.byteLength;
         continue;
       }
-      this.chunks[0] = first.subarray(excess);
+      this.chunks[this.head] = Buffer.from(first.subarray(excess));
       this.retainedBytes -= excess;
+    }
+
+    if (this.head > 1024 && this.head * 2 >= this.chunks.length) {
+      this.chunks = this.chunks.slice(this.head);
+      this.head = 0;
     }
   }
 
@@ -82,7 +96,7 @@ class BoundedByteTail {
 
   toBuffer(): Buffer {
     if (this.retainedBytes === 0) return Buffer.alloc(0);
-    return Buffer.concat(this.chunks, this.retainedBytes);
+    return Buffer.concat(this.chunks.slice(this.head), this.retainedBytes);
   }
 }
 
@@ -135,10 +149,14 @@ async function spawnBoundedBuffers(options: SpawnBoundedOptions): Promise<SpawnB
         ...(spawnError ? { spawnError } : {}),
       });
     };
+    const scheduleKill = (): void => {
+      if (killTimer) return;
+      killTimer = setTimeout(() => terminate("SIGKILL"), 250);
+    };
     const abort = (): void => {
       cancelled = true;
       terminate("SIGTERM");
-      killTimer = setTimeout(() => terminate("SIGKILL"), 250);
+      scheduleKill();
     };
 
     const child = spawn(options.executable, [...options.args], {
@@ -161,7 +179,7 @@ async function spawnBoundedBuffers(options: SpawnBoundedOptions): Promise<SpawnB
     timeoutTimer = setTimeout(() => {
       timedOut = true;
       terminate("SIGTERM");
-      killTimer = setTimeout(() => terminate("SIGKILL"), 250);
+      scheduleKill();
     }, options.timeoutMs);
     if (options.signal?.aborted) abort();
     else options.signal?.addEventListener("abort", abort, { once: true });

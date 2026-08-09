@@ -31,6 +31,7 @@ function resultReceipt(overrides: Record<string, unknown> = {}) {
     state: "READY_FOR_WEB_REVIEW",
     run_id: RUN_ID,
     archive_sha256: ARCHIVE,
+    change_set_sha256: DIGEST,
     published_commit_sha: COMMIT,
     remote_branch_sha: COMMIT,
     reviewed_entry_set_sha256: REVIEWED,
@@ -92,4 +93,16 @@ test("P13-ORCH-003 READY_FOR_WEB_REVIEW is quiescent and does not repackage", as
   assert.equal(result.planned.transition, "WAIT_WEB_VERDICT");
   assert.equal(calls, 0);
   assert.equal(result.ledger.transition_attempts.PACKAGE_RESULT, 0);
+});
+
+test("P13-ORCH-004 stale Result Bundle change-set digest fails closed", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-p13-digest-"));
+  t.after(async () => fs.rm(root, { recursive: true, force: true }));
+  const state = snapshot();
+  const deps = dependencies(state, async () => resultReceipt({ change_set_sha256: "9".repeat(64) }));
+  const result = await runNextTransition({ runId: RUN_ID, stateDirectory: root, configPath: path.join(root, "config.json"), dependencies: deps });
+  assert.equal(result.progressed, false);
+  assert.equal(result.planned.transition, "PACKAGE_RESULT");
+  assert.equal(result.ledger.transition_attempts.PACKAGE_RESULT, 1);
+  assert.equal(result.ledger.retry.last_failure_code, "ORCHESTRATION_RESULT_INCOMPLETE");
 });

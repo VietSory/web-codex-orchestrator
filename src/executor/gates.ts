@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
-import { ExecutorError } from "./contracts.js";
+import { ExecutorError, type ExecutorUsage } from "./contracts.js";
+import type { SmartContextSelection } from "./smart-context.js";
 
 export interface ExecutorVerificationRequest {
   run_id: string;
@@ -24,14 +25,26 @@ export interface ExecutorVerifierPort {
 export interface ExecutorReviewRequest extends ExecutorVerificationRequest {
   reviewer: "terra" | "sol";
   prior_evidence_sha256: string[];
+  context_selection: SmartContextSelection;
 }
 
 export interface ExecutorReviewResult {
   verdict: "APPROVE" | "REVISE" | "ESCALATE";
   evidence: unknown;
+  usage?: ExecutorUsage;
+}
+
+export interface ExecutorReviewBudgetPolicy {
+  maximum_model_turns: number;
+  maximum_elapsed_ms: number;
+  maximum_input_tokens: number;
+  maximum_output_tokens: number;
 }
 
 export interface ExecutorReviewerPort {
+  /** Optional trusted policy. When present, the executor durably reserves one
+   * turn in its own receipt before each review call. */
+  budget_policy?: ExecutorReviewBudgetPolicy;
   review(request: ExecutorReviewRequest): Promise<ExecutorReviewResult>;
 }
 

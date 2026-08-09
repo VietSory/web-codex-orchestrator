@@ -6,7 +6,8 @@ import { attestExecutorChangeSet, attestExecutorResumeChangedPaths } from "./cha
 import { boundedEvidence, type ExecutorReviewerPort, type ExecutorVerifierPort } from "./gates.js";
 import { attestPersistedExecutorGateEvidence, persistExecutorEvidence } from "./evidence-store.js";
 import { assertExecutorTransactionBoundToPack, attestExecutorTransactionBackups } from "./transaction-authority.js";
-import { ExecutorError, type ExecutorReceipt } from "./contracts.js";
+import { selectSmartContext } from "./smart-context.js";
+import { ExecutorError, type ExecutorReceipt, type ExecutorUsage } from "./contracts.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
 
@@ -20,6 +21,57 @@ function pushError(receipt: ExecutorReceipt, code: string, message: string, now:
   receipt.errors.push({ code: code.slice(0, 128), message: message.slice(0, 8192), at: timestamp(now) });
   if (receipt.errors.length > 32) receipt.errors.splice(0, receipt.errors.length - 32);
 }
+function safeUsageAdd(left: number, right: number): number {
+  const value = left + right;
+  if (!Number.isSafeInteger(value)) throw new ExecutorError("EXECUTOR_OPERATIONAL_ERROR", "Reviewer usage counter overflowed safe integer bounds.");
+  return value;
+}
+function recordUsage(receipt: ExecutorReceipt, usage: ExecutorUsage | undefined): void {
+  if (!usage) return;
+  const current = receipt.usage ?? { model_turns: 0, input_tokens: 0, output_tokens: 0 };
+  const values = [usage.model_turns, usage.input_tokens, usage.output_tokens];
+  if (values.some((value) => !Number.isSafeInteger(value) || value < 0)) throw new ExecutorError("EXECUTOR_OPERATIONAL_ERROR", "Reviewer usage contains an invalid counter.");
+  receipt.usage = {
+    model_turns: safeUsageAdd(current.model_turns, usage.model_turns),
+    input_tokens: safeUsageAdd(current.input_tokens, usage.input_tokens),
+    output_tokens: safeUsageAdd(current.output_tokens, usage.output_tokens),
+  };
+}
+function assertBudgetPolicy(reviewer: ExecutorReviewerPort): NonNullable<ExecutorReviewerPort["budget_policy"]> | null {
+  const policy = reviewer.budget_policy;
+  if (!policy) return null;
+  const values = [policy.maximum_model_turns, policy.maximum_elapsed_ms, policy.maximum_input_tokens, policy.maximum_output_tokens];
+  if (values.some((value) => !Number.isSafeInteger(value) || value < 1)) throw new ExecutorError("EXECUTOR_BUDGET_EXHAUSTED", "Trusted executor review budget policy is invalid.");
+  return policy;
+}
+function assertMeasuredUsageWithinBudget(receipt: ExecutorReceipt, reviewer: ExecutorReviewerPort): void {
+  const policy = assertBudgetPolicy(reviewer);
+  if (!policy || !receipt.usage) return;
+  if (receipt.usage.input_tokens > policy.maximum_input_tokens || receipt.usage.output_tokens > policy.maximum_output_tokens) {
+    throw new ExecutorError("EXECUTOR_BUDGET_EXHAUSTED", "Measured executor review token usage exceeded the configured budget; no later model call is permitted.");
+  }
+}
+function assertNoAmbiguousReviewResume(receipt: ExecutorReceipt, reviewer: ExecutorReviewerPort): void {
+  if (!reviewer.budget_policy) return;
+  if (receipt.state === "REVIEWING_TERRA" && receipt.terra_review.verdict === null) {
+    throw new ExecutorError("EXECUTOR_AMBIGUOUS_RECOVERY", "A Terra review turn may have started before interruption but no durable verdict exists; WCO will not replay an ambiguous model call.");
+  }
+  if (receipt.state === "REVIEWING_SOL" && receipt.sol_review.verdict === null) {
+    throw new ExecutorError("EXECUTOR_AMBIGUOUS_RECOVERY", "A Sol review turn may have started before interruption but no durable verdict exists; WCO will not replay an ambiguous model call.");
+  }
+}
+async function reserveReviewTurn(receipt: ExecutorReceipt, reviewer: ExecutorReviewerPort, stateDirectory: string, now: () => Date): Promise<void> {
+  const policy = assertBudgetPolicy(reviewer);
+  if (!policy) return;
+  const current = receipt.usage ?? { model_turns: 0, input_tokens: 0, output_tokens: 0 };
+  const elapsed = now().getTime() - Date.parse(receipt.created_at);
+  if (!Number.isFinite(elapsed) || elapsed >= policy.maximum_elapsed_ms) throw new ExecutorError("EXECUTOR_BUDGET_EXHAUSTED", "Executor review wall-clock budget is exhausted before the provider call.");
+  if (current.model_turns >= policy.maximum_model_turns) throw new ExecutorError("EXECUTOR_BUDGET_EXHAUSTED", "Executor review model-turn budget is exhausted before the provider call.");
+  if (current.input_tokens >= policy.maximum_input_tokens || current.output_tokens >= policy.maximum_output_tokens) throw new ExecutorError("EXECUTOR_BUDGET_EXHAUSTED", "Measured executor review token budget is exhausted before the next provider call.");
+  receipt.usage = { ...current, model_turns: safeUsageAdd(current.model_turns, 1) };
+  receipt.updated_at = timestamp(now);
+  await writeExecutorReceipt(stateDirectory, receipt);
+}
 function assertReceiptAuthority(receipt: ExecutorReceipt, source: Awaited<ReturnType<typeof loadExecutorSource>>): void {
   const run = source.trusted.runReceipt;
   if (receipt.run_id !== run.run_id || receipt.task_id !== run.task_id || receipt.task_bundle_sha256 !== run.archive_sha256 || receipt.artifact_sha256 !== source.registration.artifact_sha256 || receipt.pack_id !== source.registration.pack_id || receipt.repository_id !== run.repository_id || receipt.base_branch !== run.base_branch || receipt.base_commit !== run.base_commit || receipt.base_tree_sha !== source.registration.repository.tree_sha || receipt.worktree_path !== run.worktree_path || receipt.registration_manifest_sha256 !== source.registration.manifest_sha256) throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", "Persisted executor checkpoint no longer matches canonical Phase 3/9 authority.");
@@ -31,6 +83,13 @@ async function reattestDigest(receipt: ExecutorReceipt, expected: string | null)
 }
 async function failToWeb(receipt: ExecutorReceipt, stateDirectory: string, code: string, message: string, now: () => Date): Promise<ExecutorReceipt> {
   receipt.state = "ESCALATE_TO_WEB";
+  pushError(receipt, code, message, now);
+  receipt.updated_at = timestamp(now);
+  await writeExecutorReceipt(stateDirectory, receipt);
+  return receipt;
+}
+async function failTerminal(receipt: ExecutorReceipt, stateDirectory: string, code: string, message: string, now: () => Date): Promise<ExecutorReceipt> {
+  receipt.state = "FAILED";
   pushError(receipt, code, message, now);
   receipt.updated_at = timestamp(now);
   await writeExecutorReceipt(stateDirectory, receipt);
@@ -54,41 +113,21 @@ export async function executeRegisteredWebPack(options: {
   try {
     receipt = await readExecutorReceipt(options.stateDirectory, identity.taskId, identity.taskBundleSha256, options.artifactSha256);
     if (receipt?.state === "ESCALATE_TO_WEB" || receipt?.state === "FAILED") return receipt;
-
     const source = receipt
       ? await loadExecutorResumeSource({ runId: options.runId, artifactSha256: options.artifactSha256, stateDirectory: options.stateDirectory, configPath: options.configPath })
       : await loadExecutorSource({ runId: options.runId, artifactSha256: options.artifactSha256, stateDirectory: options.stateDirectory, configPath: options.configPath });
-
     if (receipt) {
       assertReceiptAuthority(receipt, source);
       assertExecutorTransactionBoundToPack(receipt, source.pack);
       await attestExecutorTransactionBackups(options.stateDirectory, receipt);
       await attestPersistedExecutorGateEvidence(options.stateDirectory, receipt);
-      if (receipt.state === "READY_FOR_PUBLISH") {
-        await reattestDigest(receipt, receipt.change_set_digest);
-        return receipt;
-      }
+      if (receipt.state === "READY_FOR_PUBLISH") { await reattestDigest(receipt, receipt.change_set_digest); return receipt; }
+      assertNoAmbiguousReviewResume(receipt, options.reviewer);
       await attestExecutorResumeChangedPaths(receipt);
     }
-
     if (!receipt) {
-      receipt = await prepareExecutorTransaction({
-        stateDirectory: options.stateDirectory,
-        runId: options.runId,
-        taskId: identity.taskId,
-        taskBundleSha256: identity.taskBundleSha256,
-        artifactSha256: options.artifactSha256,
-        pack: source.pack,
-        repositoryId: source.trusted.runReceipt.repository_id,
-        baseBranch: source.trusted.runReceipt.base_branch,
-        baseCommit: source.trusted.runReceipt.base_commit,
-        baseTreeSha: source.registration.repository.tree_sha,
-        worktreePath: source.trusted.runReceipt.worktree_path,
-        registrationManifestSha256: source.registration.manifest_sha256,
-        now,
-      });
+      receipt = await prepareExecutorTransaction({ stateDirectory: options.stateDirectory, runId: options.runId, taskId: identity.taskId, taskBundleSha256: identity.taskBundleSha256, artifactSha256: options.artifactSha256, pack: source.pack, repositoryId: source.trusted.runReceipt.repository_id, baseBranch: source.trusted.runReceipt.base_branch, baseCommit: source.trusted.runReceipt.base_commit, baseTreeSha: source.registration.repository.tree_sha, worktreePath: source.trusted.runReceipt.worktree_path, registrationManifestSha256: source.registration.manifest_sha256, now });
     }
-
     if (["PREPARED", "APPLYING"].includes(receipt.state)) receipt = await applyExecutorTransaction({ stateDirectory: options.stateDirectory, receipt, pack: source.pack, now });
     if (!["APPLIED", "VERIFYING", "REVIEWING_TERRA", "REVIEWING_SOL"].includes(receipt.state)) throw new ExecutorError("EXECUTOR_STATE_INVALID", `Unexpected executor state '${receipt.state}'.`);
 
@@ -96,75 +135,57 @@ export async function executeRegisteredWebPack(options: {
     receipt.change_set_digest = digest;
     receipt.updated_at = timestamp(now);
     await writeExecutorReceipt(options.stateDirectory, receipt);
-    const baseRequest = {
-      run_id: receipt.run_id,
-      artifact_sha256: receipt.artifact_sha256,
-      worktree_path: receipt.worktree_path,
-      accepted_bundle_path: source.trusted.runReceipt.accepted_bundle_path,
-      change_set_digest: digest,
-      changed_paths: receipt.operations.map((operation) => operation.path).sort(),
-      ...(options.signal ? { signal: options.signal } : {}),
-    };
+    const baseRequest = { run_id: receipt.run_id, artifact_sha256: receipt.artifact_sha256, worktree_path: receipt.worktree_path, accepted_bundle_path: source.trusted.runReceipt.accepted_bundle_path, change_set_digest: digest, changed_paths: receipt.operations.map((operation) => operation.path).sort(), ...(options.signal ? { signal: options.signal } : {}) };
+    const contextSelection = selectSmartContext(source.pack, baseRequest.changed_paths);
 
     if (!receipt.verification.passed || receipt.verification.change_set_digest !== digest) {
-      receipt.state = "VERIFYING";
-      receipt.updated_at = timestamp(now);
-      await writeExecutorReceipt(options.stateDirectory, receipt);
+      receipt.state = "VERIFYING"; receipt.updated_at = timestamp(now); await writeExecutorReceipt(options.stateDirectory, receipt);
       const result = await options.verifier.verify(baseRequest);
       await reattestDigest(receipt, digest);
       const evidence = boundedEvidence(result.evidence);
       await persistExecutorEvidence({ stateDirectory: options.stateDirectory, receipt, name: `verification-${receipt.verification.rounds + 1}`, bytes: evidence.bytes, expectedSha256: evidence.sha256 });
-      receipt.verification.rounds += 1;
-      receipt.verification.passed = result.passed;
-      receipt.verification.change_set_digest = digest;
-      receipt.verification.evidence_sha256 = evidence.sha256;
+      receipt.verification.rounds += 1; receipt.verification.passed = result.passed; receipt.verification.change_set_digest = digest; receipt.verification.evidence_sha256 = evidence.sha256;
       if (!result.passed) return await failToWeb(receipt, options.stateDirectory, "EXECUTOR_VERIFICATION_FAILED", "Deterministic verification rejected the exact registered Web result.", now);
-      receipt.updated_at = timestamp(now);
-      await writeExecutorReceipt(options.stateDirectory, receipt);
+      receipt.updated_at = timestamp(now); await writeExecutorReceipt(options.stateDirectory, receipt);
     }
 
     if (receipt.terra_review.verdict !== "APPROVE" || receipt.terra_review.change_set_digest !== digest) {
-      receipt.state = "REVIEWING_TERRA";
-      receipt.updated_at = timestamp(now);
-      await writeExecutorReceipt(options.stateDirectory, receipt);
-      const result = await options.reviewer.review({ ...baseRequest, reviewer: "terra", prior_evidence_sha256: receipt.verification.evidence_sha256 ? [receipt.verification.evidence_sha256] : [] });
+      receipt.state = "REVIEWING_TERRA"; receipt.updated_at = timestamp(now); await writeExecutorReceipt(options.stateDirectory, receipt);
+      await reserveReviewTurn(receipt, options.reviewer, options.stateDirectory, now);
+      const result = await options.reviewer.review({ ...baseRequest, reviewer: "terra", prior_evidence_sha256: receipt.verification.evidence_sha256 ? [receipt.verification.evidence_sha256] : [], context_selection: contextSelection });
       await reattestDigest(receipt, digest);
+      recordUsage(receipt, result.usage);
+      assertMeasuredUsageWithinBudget(receipt, options.reviewer);
+      receipt.updated_at = timestamp(now); await writeExecutorReceipt(options.stateDirectory, receipt);
       const evidence = boundedEvidence(result.evidence);
       await persistExecutorEvidence({ stateDirectory: options.stateDirectory, receipt, name: `terra-${receipt.terra_review.rounds + 1}`, bytes: evidence.bytes, expectedSha256: evidence.sha256 });
-      receipt.terra_review.rounds += 1;
-      receipt.terra_review.verdict = result.verdict;
-      receipt.terra_review.change_set_digest = digest;
-      receipt.terra_review.evidence_sha256 = evidence.sha256;
+      receipt.terra_review.rounds += 1; receipt.terra_review.verdict = result.verdict; receipt.terra_review.change_set_digest = digest; receipt.terra_review.evidence_sha256 = evidence.sha256;
       if (result.verdict !== "APPROVE") return await failToWeb(receipt, options.stateDirectory, "EXECUTOR_REVIEW_REJECTED", `Terra review returned ${result.verdict}; Phase 10 does not redesign the Web pack.`, now);
-      receipt.updated_at = timestamp(now);
-      await writeExecutorReceipt(options.stateDirectory, receipt);
+      receipt.updated_at = timestamp(now); await writeExecutorReceipt(options.stateDirectory, receipt);
     }
 
     if (receipt.sol_review.verdict !== "APPROVE" || receipt.sol_review.change_set_digest !== digest) {
-      receipt.state = "REVIEWING_SOL";
-      receipt.updated_at = timestamp(now);
-      await writeExecutorReceipt(options.stateDirectory, receipt);
+      receipt.state = "REVIEWING_SOL"; receipt.updated_at = timestamp(now); await writeExecutorReceipt(options.stateDirectory, receipt);
       const prior = [receipt.verification.evidence_sha256, receipt.terra_review.evidence_sha256].filter((value): value is string => Boolean(value));
-      const result = await options.reviewer.review({ ...baseRequest, reviewer: "sol", prior_evidence_sha256: prior });
+      await reserveReviewTurn(receipt, options.reviewer, options.stateDirectory, now);
+      const result = await options.reviewer.review({ ...baseRequest, reviewer: "sol", prior_evidence_sha256: prior, context_selection: contextSelection });
       await reattestDigest(receipt, digest);
+      recordUsage(receipt, result.usage);
+      assertMeasuredUsageWithinBudget(receipt, options.reviewer);
+      receipt.updated_at = timestamp(now); await writeExecutorReceipt(options.stateDirectory, receipt);
       const evidence = boundedEvidence(result.evidence);
       await persistExecutorEvidence({ stateDirectory: options.stateDirectory, receipt, name: `sol-${receipt.sol_review.rounds + 1}`, bytes: evidence.bytes, expectedSha256: evidence.sha256 });
-      receipt.sol_review.rounds += 1;
-      receipt.sol_review.verdict = result.verdict;
-      receipt.sol_review.change_set_digest = digest;
-      receipt.sol_review.evidence_sha256 = evidence.sha256;
+      receipt.sol_review.rounds += 1; receipt.sol_review.verdict = result.verdict; receipt.sol_review.change_set_digest = digest; receipt.sol_review.evidence_sha256 = evidence.sha256;
       if (result.verdict !== "APPROVE") return await failToWeb(receipt, options.stateDirectory, "EXECUTOR_REVIEW_REJECTED", `Sol review returned ${result.verdict}; Phase 10 does not redesign the Web pack.`, now);
-      receipt.updated_at = timestamp(now);
-      await writeExecutorReceipt(options.stateDirectory, receipt);
+      receipt.updated_at = timestamp(now); await writeExecutorReceipt(options.stateDirectory, receipt);
     }
 
     await reattestDigest(receipt, digest);
-    receipt.state = "READY_FOR_PUBLISH";
-    receipt.updated_at = timestamp(now);
-    await writeExecutorReceipt(options.stateDirectory, receipt);
+    receipt.state = "READY_FOR_PUBLISH"; receipt.updated_at = timestamp(now); await writeExecutorReceipt(options.stateDirectory, receipt);
     return receipt;
   } catch (error) {
-    if (receipt && error instanceof ExecutorError && !["READY_FOR_PUBLISH", "ESCALATE_TO_WEB"].includes(receipt.state)) return await failToWeb(receipt, options.stateDirectory, error.code, error.message, now);
+    if (receipt && error instanceof ExecutorError && ["EXECUTOR_BUDGET_EXHAUSTED", "EXECUTOR_AMBIGUOUS_RECOVERY"].includes(error.code) && receipt.state !== "READY_FOR_PUBLISH") return await failTerminal(receipt, options.stateDirectory, error.code, error.message, now);
+    if (receipt && error instanceof ExecutorError && !["READY_FOR_PUBLISH", "ESCALATE_TO_WEB", "FAILED"].includes(receipt.state)) return await failToWeb(receipt, options.stateDirectory, error.code, error.message, now);
     throw error;
   } finally {
     await releaseExecutorLock(lock);

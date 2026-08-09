@@ -10,6 +10,9 @@ const MAX_RECEIPT_BYTES = 2 * 1024 * 1024;
 const MAX_LOCK_BYTES = 8 * 1024;
 const MAX_ERRORS = 32;
 const MAX_DIAGNOSTIC_CHARS = 8192;
+const MAX_MODEL_TURNS = 128;
+const MAX_INPUT_TOKENS = 20_000_000;
+const MAX_OUTPUT_TOKENS = 4_000_000;
 const SHA256 = /^[a-f0-9]{64}$/;
 const GIT_SHA = /^[a-f0-9]{40}$/;
 const STATES = new Set<ExecutorState>(["VALIDATING","PREPARED","APPLYING","APPLIED","VERIFYING","REVIEWING_TERRA","REVIEWING_SOL","READY_FOR_PUBLISH","ESCALATE_TO_WEB","FAILED"]);
@@ -32,6 +35,11 @@ function validateReceipt(receipt: ExecutorReceipt): void {
   if (!validDigest(receipt.change_set_digest) || !validDigest(receipt.verification.change_set_digest) || !validDigest(receipt.verification.evidence_sha256) || !validDigest(receipt.terra_review.change_set_digest) || !validDigest(receipt.terra_review.evidence_sha256) || !validDigest(receipt.sol_review.change_set_digest) || !validDigest(receipt.sol_review.evidence_sha256)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor receipt contains an invalid digest.");
   if (!Number.isSafeInteger(receipt.verification.rounds) || receipt.verification.rounds < 0 || receipt.verification.rounds > 32 || !Number.isSafeInteger(receipt.terra_review.rounds) || receipt.terra_review.rounds < 0 || receipt.terra_review.rounds > 32 || !Number.isSafeInteger(receipt.sol_review.rounds) || receipt.sol_review.rounds < 0 || receipt.sol_review.rounds > 32) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor gate round counters are invalid.");
   if (![null,"APPROVE","REVISE","ESCALATE"].includes(receipt.terra_review.verdict) || ![null,"APPROVE","REVISE","ESCALATE"].includes(receipt.sol_review.verdict)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor review verdict is invalid.");
+  if (receipt.usage !== undefined) {
+    if (!receipt.usage || typeof receipt.usage !== "object" || !Number.isSafeInteger(receipt.usage.model_turns) || receipt.usage.model_turns < 0 || receipt.usage.model_turns > MAX_MODEL_TURNS || !Number.isSafeInteger(receipt.usage.input_tokens) || receipt.usage.input_tokens < 0 || receipt.usage.input_tokens > MAX_INPUT_TOKENS || !Number.isSafeInteger(receipt.usage.output_tokens) || receipt.usage.output_tokens < 0 || receipt.usage.output_tokens > MAX_OUTPUT_TOKENS) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor usage counters are invalid or exceed trusted hard ceilings.");
+    // model_turns are reservations, not merely completed verdict rounds. A turn
+    // is persisted before the provider call so a crash cannot erase budget use.
+  }
   const paths = new Set<string>();
   const ids = new Set<string>();
   for (const operation of receipt.operations) {

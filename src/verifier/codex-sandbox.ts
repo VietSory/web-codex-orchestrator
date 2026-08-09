@@ -25,7 +25,10 @@ export class CodexVerificationSandbox implements VerificationSandbox {
     private readonly spawnBounded: SpawnBounded = defaultSpawnBounded,
   ) {}
 
-  async checkAvailability(): Promise<void> {
+  async checkAvailability(timeoutMs = 15_000): Promise<void> {
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) {
+      throw new ExecutionError("CODEX_SANDBOX_UNAVAILABLE", "Sandbox smoke-test timeout is invalid.");
+    }
     const root = this.runtime.state_directory;
     if (!root) throw new ExecutionError("CODEX_SANDBOX_UNAVAILABLE", "A state directory is required for the Codex sandbox smoke test.");
     let smokeDirectory: string | undefined;
@@ -37,7 +40,7 @@ export class CodexVerificationSandbox implements VerificationSandbox {
         cwd: smokeDirectory,
         environment: minimalCodexEnvironment(this.runtime),
         shell: false,
-        timeoutMs: 15_000,
+        timeoutMs,
         stdoutMaxBytes: 16_384,
         stderrMaxBytes: 16_384,
       });

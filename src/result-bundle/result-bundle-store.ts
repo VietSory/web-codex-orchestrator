@@ -1,9 +1,12 @@
 // Atomic receipt read/write for deterministic Result Bundles.
+import crypto from "node:crypto";
 import fs from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { ResultBundleError } from "./contracts.js";
 import type { ResultBundleReceipt, ResultBundleState } from "./contracts.js";
 
+const MAX_RECEIPT_BYTES = 2 * 1024 * 1024;
 const REQUIRED_RECEIPT_FIELDS: ReadonlyArray<keyof ResultBundleReceipt> = [
   "result_bundle_version","run_id","state","input_digest_sha256","execution_receipt_sha256","git_publish_receipt_sha256",
   "draft_pr_receipt_sha256","accepted_bundle_tree_sha256","change_set_sha256","base_commit","published_commit_sha",
@@ -56,36 +59,150 @@ export function assertResultBundleReceipt(value: unknown): asserts value is Resu
   if (!obj.pull_request || typeof obj.pull_request !== "object" || Array.isArray(obj.pull_request)) throw new ResultBundleError("RESULT_RECEIPT_INVALID", "pull_request must be an object.");
   const pr = obj.pull_request as Record<string, unknown>;
   if (!Number.isInteger(pr.number) || Number(pr.number) < 1 || pr.state !== "open" || typeof pr.draft !== "boolean") throw new ResultBundleError("RESULT_RECEIPT_INVALID", "pull_request identity/state is invalid.");
+  if ((obj.state === "VERIFIED" || obj.state === "READY_FOR_WEB_REVIEW") && pr.draft !== true) throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Verified Result Bundles must remain bound to a Draft pull request.");
   requireCommit({ head: pr.head_sha, state: obj.state }, "head");
   if (!Array.isArray(obj.warnings) || obj.warnings.length > 256 || obj.warnings.some((item) => typeof item !== "string" || item.length > 8192)) throw new ResultBundleError("RESULT_RECEIPT_INVALID", "warnings is invalid or unbounded.");
 }
 
-export async function readResultBundleReceipt(receiptPath: string): Promise<ResultBundleReceipt | null> {
+async function assertCanonicalReceiptParent(receiptPath: string): Promise<string> {
+  const resolved = path.resolve(receiptPath);
+  const parent = path.dirname(resolved);
+  let info: fs.Stats;
   try {
-    const stat = await fs.promises.lstat(receiptPath);
-    if (stat.isSymbolicLink() || !stat.isFile() || stat.size > 2 * 1024 * 1024) throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle receipt must be a bounded regular non-symlink file.");
-    const raw = await fs.promises.readFile(receiptPath, "utf8");
-    const parsed: unknown = JSON.parse(raw);
-    assertResultBundleReceipt(parsed);
-    return parsed;
+    info = await fs.promises.lstat(parent);
+  } catch (error) {
+    throw new ResultBundleError("RESULT_RECEIPT_INVALID", `Result Bundle receipt parent is unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (info.isSymbolicLink() || !info.isDirectory() || await fs.promises.realpath(parent) !== parent) {
+    throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle receipt parent must be a canonical real directory.");
+  }
+  return resolved;
+}
+
+function sameFileIdentity(left: fs.Stats, right: fs.Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+async function openStableReceipt(resolved: string, pathStat: fs.Stats): Promise<FileHandle> {
+  const noFollow = process.platform === "win32" ? 0 : (fs.constants.O_NOFOLLOW ?? 0);
+  let handle: FileHandle;
+  try {
+    handle = await fs.promises.open(resolved, fs.constants.O_RDONLY | noFollow);
+  } catch (error) {
+    throw new ResultBundleError("RESULT_RECEIPT_INVALID", `Cannot safely open Result Bundle receipt: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  try {
+    const opened = await handle.stat();
+    const current = await fs.promises.lstat(resolved);
+    if (
+      !opened.isFile() ||
+      opened.size > MAX_RECEIPT_BYTES ||
+      !sameFileIdentity(opened, pathStat) ||
+      current.isSymbolicLink() ||
+      !current.isFile() ||
+      !sameFileIdentity(current, opened)
+    ) {
+      throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle receipt changed before bounded read.");
+    }
+    return handle;
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    if (error instanceof ResultBundleError) throw error;
+    throw new ResultBundleError("RESULT_RECEIPT_INVALID", `Result Bundle receipt changed before bounded read: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function syncParentDirectory(parent: string): Promise<void> {
+  if (process.platform === "win32") return;
+  let directory: FileHandle | null = null;
+  try {
+    directory = await fs.promises.open(parent, "r");
+    await directory.sync();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EINVAL" || code === "ENOTSUP" || code === "ENOSYS") return;
+    throw error;
+  } finally {
+    await directory?.close().catch(() => undefined);
+  }
+}
+
+export async function readResultBundleReceipt(receiptPath: string): Promise<ResultBundleReceipt | null> {
+  const resolved = path.resolve(receiptPath);
+  const parent = path.dirname(resolved);
+  try {
+    await fs.promises.lstat(parent);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new ResultBundleError("RESULT_RECEIPT_INVALID", `Cannot inspect Result Bundle receipt parent: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  await assertCanonicalReceiptParent(resolved);
+
+  let stat: fs.Stats;
+  try {
+    stat = await fs.promises.lstat(resolved);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new ResultBundleError("RESULT_RECEIPT_INVALID", `Cannot inspect Result Bundle receipt: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_RECEIPT_BYTES) throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle receipt must be a bounded regular non-symlink file.");
+
+  try {
+    const handle = await openStableReceipt(resolved, stat);
+    try {
+      const before = await handle.stat();
+      const raw = await handle.readFile();
+      if (raw.byteLength !== before.size) throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle receipt changed while being read.");
+      const after = await handle.stat();
+      const pathAfter = await fs.promises.lstat(resolved);
+      if (
+        !sameFileIdentity(after, before) ||
+        after.size !== before.size ||
+        after.mtimeMs !== before.mtimeMs ||
+        after.ctimeMs !== before.ctimeMs ||
+        pathAfter.isSymbolicLink() ||
+        !pathAfter.isFile() ||
+        !sameFileIdentity(pathAfter, before) ||
+        pathAfter.size !== before.size
+      ) {
+        throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle receipt changed while being read.");
+      }
+      const parsed: unknown = JSON.parse(raw.toString("utf8"));
+      assertResultBundleReceipt(parsed);
+      return parsed;
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
+  } catch (error) {
     if (error instanceof ResultBundleError) throw error;
-    throw new ResultBundleError("RESULT_RECEIPT_INVALID", `Cannot read result bundle receipt: ${error instanceof Error ? error.message : String(error)}`);
+    throw new ResultBundleError("RESULT_RECEIPT_INVALID", `Cannot stably read Result Bundle receipt: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
 export async function writeResultBundleReceipt(receiptPath: string, receipt: ResultBundleReceipt): Promise<void> {
   assertResultBundleReceipt(receipt);
-  await fs.promises.mkdir(path.dirname(receiptPath), { recursive: true });
+  const resolved = path.resolve(receiptPath);
+  const parent = path.dirname(resolved);
+  await fs.promises.mkdir(parent, { recursive: true, mode: 0o700 });
+  await assertCanonicalReceiptParent(resolved);
   const content = Buffer.from(JSON.stringify(receipt, null, 2) + "\n", "utf8");
-  if (content.byteLength > 2 * 1024 * 1024) throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle receipt exceeds 2 MiB.");
-  const tmp = `${receiptPath}.tmp.${process.pid}.${Date.now()}`;
+  if (content.byteLength > MAX_RECEIPT_BYTES) throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Result Bundle receipt exceeds 2 MiB.");
+  const tmp = `${resolved}.tmp.${process.pid}.${crypto.randomUUID()}`;
+  let handle: FileHandle | null = null;
   try {
-    await fs.promises.writeFile(tmp, content, { flag: "wx", mode: 0o600 });
-    await fs.promises.rename(tmp, receiptPath);
+    handle = await fs.promises.open(tmp, "wx", 0o600);
+    await handle.writeFile(content);
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    await fs.promises.rename(tmp, resolved);
+    const finalStat = await fs.promises.lstat(resolved);
+    if (finalStat.isSymbolicLink() || !finalStat.isFile() || finalStat.size !== content.byteLength) throw new ResultBundleError("RESULT_OPERATIONAL_ERROR", "Result Bundle receipt replacement did not produce the exact regular file.");
+    await syncParentDirectory(parent);
   } catch (error) {
+    if (handle) await handle.close().catch(() => undefined);
     await fs.promises.unlink(tmp).catch(() => undefined);
+    if (error instanceof ResultBundleError) throw error;
     throw new ResultBundleError("RESULT_OPERATIONAL_ERROR", `Failed to write result bundle receipt: ${error instanceof Error ? error.message : String(error)}`);
   }
 }

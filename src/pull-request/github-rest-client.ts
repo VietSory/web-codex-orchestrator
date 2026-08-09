@@ -5,6 +5,7 @@ const GITHUB_API_VERSION = "2026-03-10";
 const REQUEST_TIMEOUT_MS = 15_000;
 const MAXIMUM_RESPONSE_BYTES = 1_048_576;
 const MAXIMUM_ERROR_DIAGNOSTIC_BYTES = 8_192;
+const USER_AGENT = "web-codex-orchestrator";
 
 export class GitHubRestPullRequestClient implements GitHubPullRequestClient {
   private readonly token: string;
@@ -17,7 +18,7 @@ export class GitHubRestPullRequestClient implements GitHubPullRequestClient {
     if (token.includes("\0") || token.includes("\r") || token.includes("\n")) {
       throw new DraftPullRequestError("PR_AUTH_UNAVAILABLE", "Token contains invalid characters.");
     }
-    
+
     this.token = token;
     this.fetchImplementation = fetchImplementation;
   }
@@ -38,12 +39,51 @@ export class GitHubRestPullRequestClient implements GitHubPullRequestClient {
     if (status === 429) return "PR_API_RATE_LIMITED";
     if (status >= 300 && status < 400) return "PR_API_REDIRECT_REJECTED";
     if (status >= 500) return "PR_API_FAILED";
-    
-    if (isPost && status === 422) return "PR_CREATE_REJECTED"; // Will be caught higher up, or we can just map it here but POST logic is different.
+
+    if (isPost && status === 422) return "PR_CREATE_REJECTED";
     return "PR_API_FAILED";
   }
 
-  private async executeRequest(url: string, method: string, body?: any): Promise<any> {
+  private async readBoundedResponseBody(response: Response): Promise<string> {
+    if (!response.body) return "";
+
+    const contentLength = response.headers.get("content-length");
+    if (contentLength !== null && /^\d+$/.test(contentLength)) {
+      const declared = Number(contentLength);
+      if (Number.isSafeInteger(declared) && declared > MAXIMUM_RESPONSE_BYTES) {
+        await response.body.cancel().catch(() => undefined);
+        throw new DraftPullRequestError("PR_API_RESPONSE_TOO_LARGE", "Response exceeds size limit.");
+      }
+    }
+
+    const reader = response.body.getReader();
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        totalBytes += value.byteLength;
+        if (totalBytes > MAXIMUM_RESPONSE_BYTES) {
+          await reader.cancel().catch(() => undefined);
+          throw new DraftPullRequestError("PR_API_RESPONSE_TOO_LARGE", "Response exceeds size limit.");
+        }
+        chunks.push(Buffer.from(value));
+      }
+    } catch (error) {
+      if (error instanceof DraftPullRequestError) throw error;
+      if ((error as { name?: unknown })?.name === "AbortError") {
+        throw new DraftPullRequestError("PR_API_FAILED", "Request timeout");
+      }
+      throw new DraftPullRequestError("PR_API_FAILED", "Socket/read failure");
+    } finally {
+      reader.releaseLock();
+    }
+    return Buffer.concat(chunks, totalBytes).toString("utf8");
+  }
+
+  private async executeRequest(url: string, method: string, body?: unknown): Promise<{ parsed: unknown; response: Response }> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
@@ -51,9 +91,9 @@ export class GitHubRestPullRequestClient implements GitHubPullRequestClient {
       const headers = new Headers();
       headers.set("Accept", "application/vnd.github+json");
       headers.set("Authorization", `Bearer ${this.token}`);
-      headers.set("User-Agent", "web-codex-orchestrator/0.1.0");
+      headers.set("User-Agent", USER_AGENT);
       headers.set("X-GitHub-Api-Version", GITHUB_API_VERSION);
-      
+
       const init: RequestInit = {
         method,
         headers,
@@ -67,31 +107,7 @@ export class GitHubRestPullRequestClient implements GitHubPullRequestClient {
       }
 
       const response = await this.fetchImplementation(url, init);
-      
-      let dataBuffer = Buffer.alloc(0);
-      let text = "";
-      let isOversized = false;
-
-      if (response.body) {
-        // use async iterator
-        try {
-          for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
-            dataBuffer = Buffer.concat([dataBuffer, chunk]);
-            if (dataBuffer.length > MAXIMUM_RESPONSE_BYTES) {
-              isOversized = true;
-              break;
-            }
-          }
-        } catch (err: any) {
-          if (err.name === "AbortError") throw new DraftPullRequestError("PR_API_FAILED", "Request timeout");
-          throw new DraftPullRequestError("PR_API_FAILED", "Socket/read failure");
-        }
-      }
-
-      if (isOversized) {
-        throw new DraftPullRequestError("PR_API_RESPONSE_TOO_LARGE", "Response exceeds size limit.");
-      }
-      text = dataBuffer.toString("utf8");
+      const text = await this.readBoundedResponseBody(response);
 
       if (method === "GET" && response.status !== 200) {
         const code = this.mapError(response.status, response.headers, false) as any;
@@ -109,29 +125,28 @@ export class GitHubRestPullRequestClient implements GitHubPullRequestClient {
         } else if (response.status >= 300 && response.status < 400) {
           code = "PR_API_REDIRECT_REJECTED";
         } else {
-           // Ambiguous CREATE_UNCERTAIN
-           throw new DraftPullRequestError("PR_CREATE_UNCERTAIN", `Ambiguous create outcome: ${response.status} ${diag}`);
+          throw new DraftPullRequestError("PR_CREATE_UNCERTAIN", `Ambiguous create outcome: ${response.status} ${diag}`);
         }
         throw new DraftPullRequestError(code, `Request failed with status ${response.status}: ${diag}`);
       }
 
-      let parsed: any;
+      let parsed: unknown;
       try {
-        parsed = JSON.parse(text);
-      } catch (err) {
+        parsed = JSON.parse(text) as unknown;
+      } catch {
         if (method === "POST") throw new DraftPullRequestError("PR_CREATE_UNCERTAIN", "Response not JSON.");
         throw new DraftPullRequestError("PR_API_RESPONSE_INVALID", "Response not JSON.");
       }
 
       return { parsed, response };
-
-    } catch (err: any) {
-      if (err instanceof DraftPullRequestError) throw err;
-      if (err.name === "AbortError") {
+    } catch (error) {
+      if (error instanceof DraftPullRequestError) throw error;
+      if ((error as { name?: unknown })?.name === "AbortError") {
         if (method === "POST") throw new DraftPullRequestError("PR_CREATE_UNCERTAIN", "Request aborted.");
         throw new DraftPullRequestError("PR_API_FAILED", "Request aborted.");
       }
-      const message = err.message ? this.redact(err.message).substring(0, MAXIMUM_ERROR_DIAGNOSTIC_BYTES) : "Unknown error";
+      const rawMessage = error instanceof Error ? error.message : "Unknown error";
+      const message = this.redact(rawMessage).substring(0, MAXIMUM_ERROR_DIAGNOSTIC_BYTES);
       if (method === "POST") throw new DraftPullRequestError("PR_CREATE_UNCERTAIN", `Network/Socket error: ${message}`);
       throw new DraftPullRequestError("PR_API_FAILED", `Network/Socket error: ${message}`);
     } finally {
@@ -141,7 +156,7 @@ export class GitHubRestPullRequestClient implements GitHubPullRequestClient {
 
   private validatePR(pr: any): GitHubPullRequest {
     if (!pr || typeof pr !== "object") throw new Error("PR is not an object");
-    if (typeof pr.number !== "number" || pr.number <= 0) throw new Error("Invalid number");
+    if (!Number.isSafeInteger(pr.number) || pr.number <= 0) throw new Error("Invalid number");
     if (typeof pr.html_url !== "string") throw new Error("Invalid html_url");
     if (pr.state !== "open" && pr.state !== "closed") throw new Error("Invalid state");
     if (typeof pr.draft !== "boolean") throw new Error("Invalid draft");
@@ -195,24 +210,27 @@ export class GitHubRestPullRequestClient implements GitHubPullRequestClient {
 
     try {
       return result.parsed.map((item: any) => this.validatePR(item));
-    } catch (err: any) {
+    } catch {
       throw new DraftPullRequestError("PR_API_RESPONSE_INVALID", "Invalid PR object in list response.");
     }
   }
 
   public async get(input: { owner: string; repository: string; pullNumber: number; }): Promise<GitHubPullRequest> {
+    if (!Number.isSafeInteger(input.pullNumber) || input.pullNumber <= 0) {
+      throw new DraftPullRequestError("PR_REQUEST_INVALID", "Pull request number must be a positive safe integer.");
+    }
     const url = `${GITHUB_API_ORIGIN}/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repository)}/pulls/${input.pullNumber}`;
     const result = await this.executeRequest(url, "GET");
     try {
       return this.validatePR(result.parsed);
-    } catch (err: any) {
+    } catch {
       throw new DraftPullRequestError("PR_API_RESPONSE_INVALID", "Invalid PR object in get response.");
     }
   }
 
   public async createDraft(input: { owner: string; repository: string; title: string; body: string; head: string; base: string; }): Promise<GitHubPullRequest> {
     const url = `${GITHUB_API_ORIGIN}/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repository)}/pulls`;
-    
+
     const body = {
       title: input.title,
       head: input.head,
@@ -222,17 +240,10 @@ export class GitHubRestPullRequestClient implements GitHubPullRequestClient {
       draft: true
     };
 
-    let result: any;
-    try {
-      result = await this.executeRequest(url, "POST", body);
-    } catch (err: any) {
-      // executeRequest already handles POST errors throwing correctly mapped ones like CREATE_UNCERTAIN or REJECTED.
-      throw err;
-    }
-
+    const result = await this.executeRequest(url, "POST", body);
     try {
       return this.validatePR(result.parsed);
-    } catch (err: any) {
+    } catch {
       throw new DraftPullRequestError("PR_CREATE_UNCERTAIN", "Invalid PR object in create response.");
     }
   }
