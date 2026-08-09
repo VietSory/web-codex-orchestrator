@@ -15,6 +15,7 @@ import { readResultBundleReceipt, writeResultBundleReceipt } from "./result-bund
 import { reattestReadyResultBundleAuthority } from "./ready-result-attestation.js";
 import { executionPaths, readExecutionReceipt } from "../execution/execution-store.js";
 import { readGitPublishReceiptSnapshot } from "../publish/publish-store.js";
+import { canonicalGitPublishReceiptDigest } from "../publish/receipt-digest.js";
 import { readDraftPullRequestReceiptSnapshot } from "../pull-request/draft-pr-store.js";
 import { parseGitHubRepositoryRemote } from "../pull-request/github-remote.js";
 import { acquireResultBundleLock } from "./result-bundle-lock.js";
@@ -270,6 +271,9 @@ async function _buildResultBundle(ctx: {
   if (!prNumber) throw new ResultBundleError("RESULT_PR_RECEIPT_INVALID", "Phase 5B receipt missing pull_number.");
   const draftPrReceiptSha256 = sha256Hex(p5bSnapshot.bytes);
   if (p5bRaw.expected_head_sha !== publishedCommitSha) throw new ResultBundleError("RESULT_REMOTE_SHA_MISMATCH", "Phase 5B expected_head_sha does not match published commit SHA.");
+  if (p5bRaw.git_publish_receipt_sha256 !== canonicalGitPublishReceiptDigest(p5aRaw)) {
+    throw new ResultBundleError("RESULT_PR_RECEIPT_INCONSISTENT", "Phase 5B Draft PR receipt is not bound to the exact current Phase 5A publish authority.");
+  }
 
   try {
     await verifyBundleChecksums(bundlePath);
