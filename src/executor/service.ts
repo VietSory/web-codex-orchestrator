@@ -51,6 +51,15 @@ function assertMeasuredUsageWithinBudget(receipt: ExecutorReceipt, reviewer: Exe
     throw new ExecutorError("EXECUTOR_BUDGET_EXHAUSTED", "Measured executor review token usage exceeded the configured budget; no later model call is permitted.");
   }
 }
+function assertNoAmbiguousReviewResume(receipt: ExecutorReceipt, reviewer: ExecutorReviewerPort): void {
+  if (!reviewer.budget_policy) return;
+  if (receipt.state === "REVIEWING_TERRA" && receipt.terra_review.verdict === null) {
+    throw new ExecutorError("EXECUTOR_AMBIGUOUS_RECOVERY", "A Terra review turn may have started before interruption but no durable verdict exists; WCO will not replay an ambiguous model call.");
+  }
+  if (receipt.state === "REVIEWING_SOL" && receipt.sol_review.verdict === null) {
+    throw new ExecutorError("EXECUTOR_AMBIGUOUS_RECOVERY", "A Sol review turn may have started before interruption but no durable verdict exists; WCO will not replay an ambiguous model call.");
+  }
+}
 async function reserveReviewTurn(receipt: ExecutorReceipt, reviewer: ExecutorReviewerPort, stateDirectory: string, now: () => Date): Promise<void> {
   const policy = assertBudgetPolicy(reviewer);
   if (!policy) return;
@@ -113,6 +122,7 @@ export async function executeRegisteredWebPack(options: {
       await attestExecutorTransactionBackups(options.stateDirectory, receipt);
       await attestPersistedExecutorGateEvidence(options.stateDirectory, receipt);
       if (receipt.state === "READY_FOR_PUBLISH") { await reattestDigest(receipt, receipt.change_set_digest); return receipt; }
+      assertNoAmbiguousReviewResume(receipt, options.reviewer);
       await attestExecutorResumeChangedPaths(receipt);
     }
     if (!receipt) {
@@ -174,7 +184,7 @@ export async function executeRegisteredWebPack(options: {
     receipt.state = "READY_FOR_PUBLISH"; receipt.updated_at = timestamp(now); await writeExecutorReceipt(options.stateDirectory, receipt);
     return receipt;
   } catch (error) {
-    if (receipt && error instanceof ExecutorError && error.code === "EXECUTOR_BUDGET_EXHAUSTED" && receipt.state !== "READY_FOR_PUBLISH") return await failTerminal(receipt, options.stateDirectory, error.code, error.message, now);
+    if (receipt && error instanceof ExecutorError && ["EXECUTOR_BUDGET_EXHAUSTED", "EXECUTOR_AMBIGUOUS_RECOVERY"].includes(error.code) && receipt.state !== "READY_FOR_PUBLISH") return await failTerminal(receipt, options.stateDirectory, error.code, error.message, now);
     if (receipt && error instanceof ExecutorError && !["READY_FOR_PUBLISH", "ESCALATE_TO_WEB", "FAILED"].includes(receipt.state)) return await failToWeb(receipt, options.stateDirectory, error.code, error.message, now);
     throw error;
   } finally {
