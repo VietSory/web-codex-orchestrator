@@ -37,6 +37,8 @@ export interface ExecutorReviewResult {
 export interface ExecutorReviewBudgetPolicy {
   maximum_model_turns: number;
   maximum_elapsed_ms: number;
+  maximum_input_tokens: number;
+  maximum_output_tokens: number;
 }
 
 export interface ExecutorReviewerPort {
