@@ -30,7 +30,8 @@ interface StableArchive {
 }
 
 function sameIdentity(left: Stats, right: Stats): boolean {
-  return left.dev === right.dev && left.ino === right.ino && left.size === right.size;
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size &&
+    left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
 }
 
 function effectiveLimits(overrides?: Partial<ResultBundleLimits>): ResultBundleLimits {
@@ -128,6 +129,10 @@ export async function verifyResultBundleZip(
   const limits = effectiveLimits(overrides);
   const stable = await openStableArchive(archivePath, limits.maximum_archive_bytes);
   try {
+    // Seal the exact byte epoch before ZIP parsing. The same descriptor is
+    // hashed again after parsing; a same-inode/same-size overwrite therefore
+    // cannot make us attest bytes different from those actually reviewed.
+    const initialArchiveHash = await hashStableArchive(stable.handle, stable.stat);
     const result = await new Promise<VerificationResult>((resolve, reject) => {
       let settled = false;
       const fail = (error: unknown, zipfile?: yauzl.ZipFile): void => {
@@ -316,6 +321,9 @@ export async function verifyResultBundleZip(
             }
 
             const archiveHash = await hashStableArchive(stable.handle, stable.stat);
+            if (archiveHash !== initialArchiveHash) {
+              throw new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", "Result Bundle archive bytes changed while ZIP contents were being verified.");
+            }
             await assertArchivePathStillBound(archivePath, stable.stat);
             if (settled) return;
             settled = true;
