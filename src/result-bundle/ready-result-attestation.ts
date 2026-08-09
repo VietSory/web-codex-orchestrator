@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import path from "node:path";
 import { readGitPublishReceiptSnapshot } from "../publish/publish-store.js";
+import { canonicalGitPublishReceiptDigest } from "../publish/receipt-digest.js";
 import { readDraftPullRequestReceiptSnapshot } from "../pull-request/draft-pr-store.js";
 import { parseGitHubRepositoryRemote } from "../pull-request/github-remote.js";
 import { ResultBundleError, type ResultBundleReceipt } from "./contracts.js";
@@ -70,8 +71,12 @@ export async function reattestReadyResultBundleAuthority(options: {
   if (!p5aSnapshot || !p5a || p5a.state !== "PUSHED" || p5a.run_id !== options.runId || !p5a.commit_sha || p5a.remote_branch_sha !== p5a.commit_sha) {
     throw new ResultBundleError("RESULT_PUBLISH_RECEIPT_INCONSISTENT", "Ready Result Bundle no longer has an exact PUSHED publish authority.");
   }
-  if (!p5bSnapshot || !p5b || p5b.state !== "OPEN" || p5b.run_id !== options.runId || p5b.pull_number === null || p5b.expected_head_sha !== p5a.commit_sha) {
-    throw new ResultBundleError("RESULT_PR_RECEIPT_INCONSISTENT", "Ready Result Bundle no longer has an exact open Draft PR receipt authority.");
+  if (
+    !p5bSnapshot || !p5b || p5b.state !== "OPEN" || p5b.run_id !== options.runId ||
+    p5b.pull_number === null || p5b.expected_head_sha !== p5a.commit_sha ||
+    p5b.git_publish_receipt_sha256 !== canonicalGitPublishReceiptDigest(p5a)
+  ) {
+    throw new ResultBundleError("RESULT_PR_RECEIPT_INCONSISTENT", "Ready Result Bundle no longer has an exact Draft PR receipt bound to the current publish authority.");
   }
   if (
     options.receipt.run_id !== options.runId
@@ -101,13 +106,8 @@ export async function reattestReadyResultBundleAuthority(options: {
     identity.owner,
     identity.repository,
     p5b.pull_number,
-    {
-      headBranch: p5a.branch_name,
-      headSha: p5a.commit_sha,
-      baseBranch: p5b.base_branch,
-    },
+    { headBranch: p5a.branch_name, headSha: p5a.commit_sha, baseBranch: p5b.base_branch },
   );
-
   if (!exactAttestationMatches(options.receipt.pull_request, fresh)) {
     throw new ResultBundleError("RESULT_PR_IDENTITY_MISMATCH", "Ready Result Bundle PR authority changed after the handoff was sealed.");
   }
