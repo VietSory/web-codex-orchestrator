@@ -33,12 +33,16 @@ function printUsage(): void {
   console.log("Usage:");
   console.log("  wco <command> [options]");
   console.log("");
-  console.log("Workflow:");
-  console.log("  wco doctor --state-dir <directory> --config <config.json> [--json]");
+  console.log("Primary workflow:");
+  console.log("  wco run <task-bundle.zip> --state-dir <directory> --config <config.json> [--web-pack <zip>] [--web-verdict <json>] [--max-transitions <1-32>] [--json]");
   console.log("  wco status --run-id <run-id> --state-dir <directory> [--json]");
+  console.log("  wco resume --run-id <run-id> --state-dir <directory> [--json]");
+  console.log("  wco doctor --state-dir <directory> --config <config.json> [--json]");
+  console.log("");
+  console.log("Control and recovery:");
   console.log("  wco next --run-id <run-id> --state-dir <directory> [--json]");
   console.log("  wco continue --run-id <run-id> --state-dir <directory> --config <config.json> [--web-pack <zip>] [--web-verdict <json>] [--max-transitions <1-32>] [--json]");
-  console.log("  wco pause|resume --run-id <run-id> --state-dir <directory> [--json]");
+  console.log("  wco pause --run-id <run-id> --state-dir <directory> [--json]");
   console.log("");
   console.log("Intake and lower-level operations:");
   console.log("  wco validate <task-bundle-directory>");
@@ -56,6 +60,7 @@ function printUsage(): void {
   console.log("  wco revision-status --run-id <run-id> --state-dir <directory> [--round <1-3>] [--json]");
   console.log("");
   console.log("Routine workflow commands may use WCO_RUN_ID, WCO_STATE_DIR, and WCO_CONFIG instead of repeating the matching flags.");
+  console.log("`wco run` uses WCO_STATE_DIR and WCO_CONFIG when the matching flags are omitted.");
   console.log("Use --json where supported for stable machine-readable output.");
 }
 
@@ -85,6 +90,119 @@ const controlIo = {
   stdout: (value: string) => process.stdout.write(`${value}\n`),
   stderr: (value: string) => process.stderr.write(`${value}\n`),
 };
+
+interface WorkflowRunArguments {
+  archivePath: string;
+  stateDirectory: string;
+  configPath: string;
+  webPackPath?: string;
+  webVerdictPath?: string;
+  maxTransitions: number;
+  json: boolean;
+}
+
+function parseWorkflowRunArguments(args: string[]): WorkflowRunArguments | null {
+  const archivePath = args[0];
+  if (!archivePath || archivePath.startsWith("--")) return null;
+  let stateDirectory = process.env.WCO_STATE_DIR;
+  let configPath = process.env.WCO_CONFIG;
+  let webPackPath: string | undefined;
+  let webVerdictPath: string | undefined;
+  let maxTransitions = 8;
+  let json = false;
+  const seen = new Set<string>();
+
+  for (let index = 1; index < args.length; index += 1) {
+    const argument = args[index]!;
+    if (seen.has(argument)) return null;
+    if (argument === "--json") {
+      seen.add(argument);
+      json = true;
+      continue;
+    }
+    if (!["--state-dir", "--config", "--web-pack", "--web-verdict", "--max-transitions"].includes(argument)) return null;
+    const value = args[index + 1];
+    if (!value || value.startsWith("--")) return null;
+    seen.add(argument);
+    if (argument === "--state-dir") stateDirectory = value;
+    else if (argument === "--config") configPath = value;
+    else if (argument === "--web-pack") webPackPath = value;
+    else if (argument === "--web-verdict") webVerdictPath = value;
+    else {
+      maxTransitions = Number(value);
+      if (!Number.isSafeInteger(maxTransitions) || maxTransitions < 1 || maxTransitions > 32) return null;
+    }
+    index += 1;
+  }
+
+  if (!stateDirectory || !configPath) return null;
+  return {
+    archivePath,
+    stateDirectory,
+    configPath,
+    ...(webPackPath ? { webPackPath } : {}),
+    ...(webVerdictPath ? { webVerdictPath } : {}),
+    maxTransitions,
+    json,
+  };
+}
+
+async function runWorkflow(args: string[]): Promise<void> {
+  const parsed = parseWorkflowRunArguments(args);
+  if (!parsed) { printUsage(); process.exitCode = 2; return; }
+  try {
+    const receipt = await prepareTask({
+      archivePath: parsed.archivePath,
+      stateDirectory: parsed.stateDirectory,
+      configPath: parsed.configPath,
+    });
+    const forwarded = [
+      "--run-id", receipt.run_id,
+      "--state-dir", parsed.stateDirectory,
+      "--config", parsed.configPath,
+      "--max-transitions", String(parsed.maxTransitions),
+      ...(parsed.webPackPath ? ["--web-pack", parsed.webPackPath] : []),
+      ...(parsed.webVerdictPath ? ["--web-verdict", parsed.webVerdictPath] : []),
+      ...(parsed.json ? ["--json"] : []),
+    ];
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const exitCode = await runControlCommand("continue", forwarded, {
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value),
+    });
+
+    if (parsed.json) {
+      const controller = stdout.length > 0 ? JSON.parse(stdout[stdout.length - 1]!) : null;
+      if (exitCode === 0) {
+        process.stdout.write(`${JSON.stringify({
+          status: "ok",
+          run_id: receipt.run_id,
+          task_id: receipt.task_id,
+          worktree_path: receipt.worktree_path,
+          controller,
+        })}\n`);
+      } else {
+        const controllerError = stderr.length > 0 ? JSON.parse(stderr[stderr.length - 1]!) : { error: "ORCHESTRATION_OPERATIONAL_ERROR", message: "workflow controller failed" };
+        process.stdout.write(`${JSON.stringify({ status: "failed", run_id: receipt.run_id, task_id: receipt.task_id, error: controllerError })}\n`);
+      }
+    } else {
+      console.log(`WCO · ${receipt.task_id}`);
+      console.log(`Run: ${receipt.run_id}`);
+      console.log(`Worktree: ${receipt.worktree_path}`);
+      if (stdout.length > 0) console.log(`\n${stdout.join("\n")}`);
+      for (const line of stderr) console.error(line);
+    }
+    process.exitCode = exitCode;
+  } catch (error) {
+    const code = errorCode(error);
+    const message = error instanceof Error ? error.message : String(error);
+    const state = statusForError(code);
+    if (parsed.json) process.stdout.write(`${JSON.stringify({ status: state, error: { code, message } })}\n`);
+    else console.error(`${code}: ${message}`);
+    process.exitCode = state === "failed" ? 3 : 1;
+  }
+}
 
 function parseIntakeArguments(args: string[]): { archivePath: string; stateDirectory: string; json: boolean } | null {
   const archivePath = args[0];
@@ -279,6 +397,7 @@ async function main(): Promise<void> {
   const [, , command, ...args] = process.argv;
   if (command === "--help" || command === "-h" || command === "help") { printUsage(); return; }
   if (command === "--version" || command === "-V" || command === "version") { console.log(await packageVersion()); return; }
+  if (command === "run") return runWorkflow(args);
   if (command && CONTROL_COMMANDS.has(command)) {
     process.exitCode = await runControlCommand(command, controlArgumentsWithEnvironment(command, args), controlIo);
     return;
