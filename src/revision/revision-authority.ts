@@ -60,10 +60,14 @@ async function computeAcceptedBundleTree(bundlePath: string): Promise<string> {
  */
 export async function attestAcceptedBundleAuthority(bundlePath: string, expectedTreeSha256: string): Promise<string> {
   if (!/^[a-f0-9]{64}$/.test(expectedTreeSha256)) throw new RevisionError("REVISION_HISTORY_INVALID", "Previous Result Bundle has an invalid accepted bundle tree binding.");
-  const actual = await computeAcceptedBundleTree(bundlePath);
-  if (actual !== expectedTreeSha256) throw new RevisionError("REVISION_BUNDLE_MUTATED", "Accepted Task Bundle no longer matches the tree sealed by the previous verified Result Bundle.");
+  const before = await computeAcceptedBundleTree(bundlePath);
+  if (before !== expectedTreeSha256) throw new RevisionError("REVISION_BUNDLE_MUTATED", "Accepted Task Bundle no longer matches the tree sealed by the previous verified Result Bundle.");
   await verifyBundleChecksums(bundlePath, DEFAULT_ARCHIVE_LIMITS).catch((error) => { throw new RevisionError("REVISION_BUNDLE_MUTATED", `Accepted bundle checksum verification failed: ${error instanceof Error ? error.message : String(error)}`); });
-  return actual;
+  const after = await computeAcceptedBundleTree(bundlePath);
+  if (after !== before || after !== expectedTreeSha256) {
+    throw new RevisionError("REVISION_BUNDLE_MUTATED", "Accepted Task Bundle changed across checksum verification; revision authority cannot cross byte epochs.");
+  }
+  return after;
 }
 
 export interface RevisionReceiptAuthority {
@@ -112,7 +116,7 @@ export function assertRevisionReceiptAuthority(receipt: RevisionReceipt, expecte
   same("revision_request_sha256", receipt.revision_request_sha256, expected.revisionRequestSha256);
   same("spec_set_sha256", receipt.spec_set_sha256, expected.specSetSha256);
   same("previous_result_bundle_sha256", receipt.previous_result_bundle_sha256, expected.previousResultBundleSha256);
-  same("previous_result_receipt_sha256", receipt.previous_result_receipt_sha256, expected.previousResultReceiptSha256);
+  same("previous_result_receipt_sha256", receipt.previousResultReceiptSha256, expected.previousResultReceiptSha256);
   same("previous_verdict_sha256", receipt.previous_verdict_sha256, expected.previousVerdictSha256);
   same("previous_published_commit_sha", receipt.previous_published_commit_sha, expected.previousPublishedCommitSha);
   same("previous_pr_head_sha", receipt.previous_pr_head_sha, expected.previousPrHeadSha);
