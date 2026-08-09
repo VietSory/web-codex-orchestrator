@@ -68,3 +68,47 @@ test("v0.2 measured token overrun is terminal after the current response and pre
   assert.deepEqual(receipt.usage, { model_turns: 1, input_tokens: 21, output_tokens: 1 });
   assert.ok(receipt.errors.some((error) => error.code === "EXECUTOR_BUDGET_EXHAUSTED"));
 });
+
+test("v0.2 restart never replays a review call whose durable reservation has an uncertain outcome", async (t) => {
+  const { fixture, registration } = await setup(t);
+  let firstCalls = 0;
+  const interrupted: ExecutorReviewerPort = {
+    budget_policy: policy(),
+    async review() {
+      firstCalls += 1;
+      throw new Error("simulated process/provider interruption after reservation");
+    },
+  };
+  await assert.rejects(() => executeRegisteredWebPack({
+    runId: fixture.runId,
+    artifactSha256: registration.artifact_sha256,
+    stateDirectory: fixture.state,
+    configPath: fixture.config,
+    verifier: verifier(),
+    reviewer: interrupted,
+    now: () => new Date("2026-08-09T00:00:01.000Z"),
+  }));
+  assert.equal(firstCalls, 1);
+
+  let replayCalls = 0;
+  const replay: ExecutorReviewerPort = {
+    budget_policy: policy(),
+    async review() {
+      replayCalls += 1;
+      return { verdict: "APPROVE", evidence: {}, usage: { model_turns: 0, input_tokens: 1, output_tokens: 1 } };
+    },
+  };
+  const recovered = await executeRegisteredWebPack({
+    runId: fixture.runId,
+    artifactSha256: registration.artifact_sha256,
+    stateDirectory: fixture.state,
+    configPath: fixture.config,
+    verifier: verifier(),
+    reviewer: replay,
+    now: () => new Date("2026-08-09T00:00:02.000Z"),
+  });
+  assert.equal(replayCalls, 0, "an uncertain provider-backed turn must not be replayed after restart");
+  assert.equal(recovered.state, "FAILED");
+  assert.equal(recovered.usage?.model_turns, 1);
+  assert.ok(recovered.errors.some((error) => error.code === "EXECUTOR_AMBIGUOUS_RECOVERY"));
+});
