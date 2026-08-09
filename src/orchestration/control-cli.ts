@@ -11,7 +11,7 @@ import { spawnBounded, type SpawnBoundedResult } from "../runtime/spawn-bounded.
 import { pauseRun, resumeRun } from "./controller.js";
 import { readRunLedger } from "./ledger.js";
 import { runDoctor, type DoctorProbe, type DoctorReport } from "./doctor.js";
-import { deriveNextTransition, type PlannedTransition } from "./planner.js";
+import { deriveNextTransition, type LifecycleSnapshot, type PlannedTransition } from "./planner.js";
 import { readLifecycleSnapshot } from "./snapshot-reader.js";
 import { runNextTransition, type ContinueResult } from "./transition-runner.js";
 import { OrchestrationError, type RunLedger } from "./contracts.js";
@@ -107,9 +107,64 @@ function humanLedger(ledger: RunLedger): string {
   return lines.join("\n");
 }
 
-function humanStatus(value: { ledger: RunLedger | null; next: PlannedTransition }): string {
+function progressMarker(complete: boolean, active: boolean): string {
+  return complete ? "✓" : active ? "●" : "○";
+}
+
+function stageLine(label: string, complete: boolean, active: boolean): string {
+  return `  ${progressMarker(complete, active)} ${label}`;
+}
+
+function humanProgress(snapshot: LifecycleSnapshot, next: PlannedTransition): string[] {
+  const executorComplete = snapshot.executor_state === "READY_FOR_PUBLISH";
+  const reviewComplete = snapshot.web_review_state === "APPROVED" || snapshot.web_review_state === "ESCALATED";
+  return [
+    "Progress",
+    "  ✓ Run prepared",
+    stageLine("Web implementation registered", snapshot.registered_artifact_sha256 !== null, next.transition === "REGISTER_WEB_PACK"),
+    stageLine("Implementation and deterministic verification", executorComplete, next.transition === "EXECUTE_REGISTERED_PACK"),
+    stageLine("Approved change published", snapshot.publish_state === "PUSHED", next.transition === "PUBLISH"),
+    stageLine("Draft PR open", snapshot.draft_pr_state === "OPEN", next.transition === "OPEN_DRAFT_PR"),
+    stageLine("Review bundle ready", snapshot.result_bundle_ready, next.transition === "PACKAGE_RESULT"),
+    stageLine("External review decision", reviewComplete, next.transition === "WAIT_WEB_VERDICT" || next.transition === "REVISE"),
+  ];
+}
+
+function humanBudget(ledger: RunLedger): string[] {
+  return [
+    "Resources",
+    `  Attempts: ${ledger.budget.total_attempts}/${ledger.budget.max_total_attempts}`,
+    `  Model turns: ${ledger.budget.model_turns}/${ledger.budget.max_model_turns}`,
+    `  Input tokens: ${ledger.budget.input_tokens}/${ledger.budget.max_input_tokens}`,
+    `  Output tokens: ${ledger.budget.output_tokens}/${ledger.budget.max_output_tokens}`,
+  ];
+}
+
+type StatusValue = { ledger: RunLedger | null; snapshot: LifecycleSnapshot; next: PlannedTransition };
+
+function humanStatus(value: StatusValue): string {
   if (!value.ledger) return [`Status: NOT_STARTED`, humanPlan(value.next)].join("\n");
-  return [humanLedger(value.ledger), `Reason: ${value.next.reason}`].join("\n");
+  const lines = [
+    `Run: ${value.ledger.run_id}`,
+    `Status: ${value.ledger.status}${value.ledger.paused ? " (PAUSED)" : ""}`,
+    "",
+    ...humanProgress(value.snapshot, value.next),
+    "",
+    ...humanBudget(value.ledger),
+    "",
+    `Next: ${value.next.transition}`,
+    `Reason: ${value.next.reason}`,
+  ];
+  if (value.ledger.current_attempt) lines.push(`Current attempt: ${value.ledger.current_attempt.transition} #${value.ledger.current_attempt.attempt_number} (${value.ledger.current_attempt.status})`);
+  if (value.ledger.retry.next_retry_at) lines.push(`Retry after: ${value.ledger.retry.next_retry_at}`);
+  return lines.join("\n");
+}
+
+function inputHint(input: string | null): string | null {
+  if (input === "web_pack_path") return "Input required: provide --web-pack <zip> to continue.";
+  if (input === "web_verdict_path") return "Input required: provide --web-verdict <json> to continue.";
+  if (input === "resume") return "Run is paused. Use `wco resume` before continuing.";
+  return input ? `Input required: ${input}` : null;
 }
 
 function humanContinue(result: ContinueResult): string {
@@ -118,13 +173,15 @@ function humanContinue(result: ContinueResult): string {
     `Progressed: ${result.progressed ? "yes" : "no"}`,
     `Reason: ${result.planned.reason}`,
   ];
-  if (result.needs_input) lines.push(`Needs input: ${result.needs_input}`);
+  const hint = inputHint(result.needs_input);
+  if (hint) lines.push(hint);
   return lines.join("\n");
 }
 
 function humanDoctor(report: DoctorReport): string {
-  const checks = report.checks.map((check) => `[${check.severity}] ${check.id}: ${check.summary} (${check.duration_ms}ms)`);
-  return [`Doctor: ${report.status}`, ...checks].join("\n");
+  const marker = (severity: string): string => severity === "OK" ? "✓" : severity === "WARN" ? "!" : "✗";
+  const checks = report.checks.map((check) => `${marker(check.severity)} ${check.id}: ${check.summary} (${check.duration_ms}ms)`);
+  return ["WCO Doctor", "", ...checks, "", `Ready to run: ${report.status === "FAIL" ? "NO" : "YES"}`].join("\n");
 }
 
 function emit(io: ControlCliIo, json: boolean, humanValue: string, value: unknown): void {
@@ -158,7 +215,7 @@ function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
       id: "node",
       async run() {
         return {
-          severity: Number(process.versions.node.split(".")[0]) >= 20 ? "OK" as const : "FAIL" as const,
+          severity: Number(process.versions.node.split(".")[0]) >= 22 ? "OK" as const : "FAIL" as const,
           summary: `Node ${process.versions.node}`,
         };
       },
@@ -279,8 +336,20 @@ export async function runControlCommand(command: string, argv: string[], io: Con
       return 0;
     }
     if (command === "resume") {
-      const ledger = await resumeRun(args.stateDirectory, requireRunId(args));
-      emit(io, args.json, humanLedger(ledger), ledger);
+      const runId = requireRunId(args);
+      const ledger = await resumeRun(args.stateDirectory, runId);
+      if (args.json) {
+        emit(io, true, "", ledger);
+        return 0;
+      }
+      const snapshot = await readLifecycleSnapshot(args.stateDirectory, runId);
+      const next = deriveNextTransition(snapshot);
+      emit(
+        io,
+        false,
+        [`Resumed: ${runId}`, "Recovery and exact-state re-attestation will run before the next side effect.", "", humanStatus({ ledger, snapshot, next })].join("\n"),
+        ledger,
+      );
       return 0;
     }
     if (command === "doctor") {
