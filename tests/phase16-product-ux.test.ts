@@ -128,13 +128,13 @@ test("P16-PRODUCT-006 trusted config cannot accidentally grant unbounded resourc
   assert.equal(validateConfig(archiveHeavy).ok, false);
 });
 
-test("P16-PRODUCT-007 local final checklist references only real npm scripts", async () => {
+test("P16-PRODUCT-007 local validation guide references only real npm scripts", async () => {
   const packageJson = JSON.parse(await fs.readFile(path.resolve("package.json"), "utf8")) as { scripts?: Record<string, string> };
   const scripts = packageJson.scripts ?? {};
-  const checklist = await fs.readFile(path.resolve("LOCAL-FINAL-CHECKLIST.md"), "utf8");
+  const checklist = await fs.readFile(path.resolve("docs/local-validation.md"), "utf8");
   const referenced = [...checklist.matchAll(/npm run ([A-Za-z0-9:_-]+)/g)].map((match) => match[1]!);
   assert.ok(referenced.length > 0);
-  for (const script of referenced) assert.ok(script in scripts, `LOCAL-FINAL-CHECKLIST references missing npm script '${script}'`);
+  for (const script of referenced) assert.ok(script in scripts, `docs/local-validation.md references missing npm script '${script}'`);
   assert.match(checklist, /npm run test:native:sandbox/);
   assert.match(checklist, /npm run test:native:codex/);
 });
