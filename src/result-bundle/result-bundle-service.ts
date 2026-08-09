@@ -16,6 +16,7 @@ import { readResultBundleReceipt, writeResultBundleReceipt } from "./result-bund
 import { executionPaths, readExecutionReceipt } from "../execution/execution-store.js";
 import { readGitPublishReceipt } from "../publish/publish-store.js";
 import { readDraftPullRequestReceipt } from "../pull-request/draft-pr-store.js";
+import { parseGitHubRepositoryRemote } from "../pull-request/github-remote.js";
 import { acquireResultBundleLock } from "./result-bundle-lock.js";
 import type { GitHubAttestationClient } from "./github-attestation.js";
 import { attestGitHubPullRequest } from "./github-attestation.js";
@@ -308,18 +309,22 @@ async function _buildResultBundle(ctx: {
 
   // ── Step 3: GitHub PR attestation (read-only) ─────────────────────────────
   const remoteUrl = String(p5aRaw.allowed_remote_url ?? "");
-  const repoMatch = remoteUrl.match(/github\.com\/([^/]+)\/([^/.]+)/);
-  if (!repoMatch) {
-    throw new ResultBundleError("RESULT_PR_RECEIPT_INCONSISTENT", `Cannot parse GitHub owner/repo from remote URL: ${remoteUrl}`);
+  let repositoryIdentity;
+  try {
+    repositoryIdentity = parseGitHubRepositoryRemote(remoteUrl);
+  } catch (error) {
+    throw new ResultBundleError("RESULT_PR_RECEIPT_INCONSISTENT", `Cannot validate GitHub repository identity from the publish receipt: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const [, repoOwner, repoName] = repoMatch;
+  if (p5bRaw.repository_owner !== repositoryIdentity.owner || p5bRaw.repository_name !== repositoryIdentity.repository) {
+    throw new ResultBundleError("RESULT_PR_RECEIPT_INCONSISTENT", "Phase 5A remote repository identity does not match the Phase 5B Draft PR receipt.");
+  }
   const headBranch = String((p5aRaw as unknown as Record<string, unknown>).branch_name ?? "");
   const baseBranch = String((executionRaw as unknown as Record<string, unknown>).base_branch ?? p5aRaw.base_commit ?? "main");
 
   const prAttestation: PullRequestAttestation = await attestGitHubPullRequest(
     githubClient,
-    repoOwner!,
-    repoName!,
+    repositoryIdentity.owner,
+    repositoryIdentity.repository,
     prNumber,
     { headBranch, headSha: publishedCommitSha, baseBranch: String(p5bRaw.base_branch ?? baseBranch) }
   );
