@@ -20,18 +20,20 @@ function pushError(receipt: ExecutorReceipt, code: string, message: string, now:
   receipt.errors.push({ code: code.slice(0, 128), message: message.slice(0, 8192), at: timestamp(now) });
   if (receipt.errors.length > 32) receipt.errors.splice(0, receipt.errors.length - 32);
 }
+function safeUsageAdd(left: number, right: number): number {
+  const value = left + right;
+  if (!Number.isSafeInteger(value)) throw new ExecutorError("EXECUTOR_OPERATIONAL_ERROR", "Reviewer usage counter overflowed safe integer bounds.");
+  return value;
+}
 function recordUsage(receipt: ExecutorReceipt, usage: ExecutorUsage | undefined): void {
   if (!usage) return;
   const current = receipt.usage ?? { model_turns: 0, input_tokens: 0, output_tokens: 0 };
   const values = [usage.model_turns, usage.input_tokens, usage.output_tokens];
   if (values.some((value) => !Number.isSafeInteger(value) || value < 0)) throw new ExecutorError("EXECUTOR_OPERATIONAL_ERROR", "Reviewer usage contains an invalid counter.");
-  for (const [left, right] of [[current.model_turns, usage.model_turns], [current.input_tokens, usage.input_tokens], [current.output_tokens, usage.output_tokens]]) {
-    if (!Number.isSafeInteger(left + right)) throw new ExecutorError("EXECUTOR_OPERATIONAL_ERROR", "Reviewer usage counter overflowed safe integer bounds.");
-  }
   receipt.usage = {
-    model_turns: current.model_turns + usage.model_turns,
-    input_tokens: current.input_tokens + usage.input_tokens,
-    output_tokens: current.output_tokens + usage.output_tokens,
+    model_turns: safeUsageAdd(current.model_turns, usage.model_turns),
+    input_tokens: safeUsageAdd(current.input_tokens, usage.input_tokens),
+    output_tokens: safeUsageAdd(current.output_tokens, usage.output_tokens),
   };
 }
 function assertReceiptAuthority(receipt: ExecutorReceipt, source: Awaited<ReturnType<typeof loadExecutorSource>>): void {
