@@ -133,7 +133,7 @@ export async function verifyResultBundleZip(
       const fail = (error: unknown, zipfile?: yauzl.ZipFile): void => {
         if (settled) return;
         settled = true;
-        try { zipfile?.close(); } catch { /* best-effort close; fd is owned outside */ }
+        try { zipfile?.close(); } catch { /* best-effort close; outer handle cleanup is idempotent */ }
         reject(error instanceof ResultBundleError ? error : new ResultBundleError(
           "RESULT_ARCHIVE_VERIFY_FAILED",
           `Verification failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -280,7 +280,9 @@ export async function verifyResultBundleZip(
         zipfile.on("end", async () => {
           if (settled) return;
           try {
-            zipfile.close();
+            // `fromFd(..., { autoClose: false })` prevents the automatic end→close
+            // behavior, but an explicit zipfile.close() would still close this
+            // caller-owned fd. Keep it live until the stable-fd hash completes.
             if (!manifestBuffer) throw new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", "Missing manifest.json");
             let manifestObj: unknown;
             try { manifestObj = JSON.parse(manifestBuffer.toString("utf8")); }
