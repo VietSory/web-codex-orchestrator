@@ -282,7 +282,7 @@ export async function prepareTask(options: PreparationOptions): Promise<Preparat
     receipt.status = "FETCHING_BASE"; receipt.state = "FETCHING_BASE"; receipt.updated_at = now().toISOString();
     await appendRunEvent(stateDirectory, receipt.task_id, receipt.archive_sha256, receipt.run_id, "RESOLVING_REPOSITORY", "FETCHING_BASE", {}, now);
     await writeRunReceipt(stateDirectory, receipt);
-    const base = await prepareBase(repository, execution.contract.repository.base_branch, execution.contract.repository.base_commit, runner);
+    const base = await prepareBase(repository, execution.contract.repository.base_branch, execution.contract.repository.base_commit, runner, remote.matched_url);
     receipt.status = "VERIFYING_BASE"; receipt.state = "VERIFYING_BASE"; receipt.updated_at = now().toISOString();
     await appendRunEvent(stateDirectory, receipt.task_id, receipt.archive_sha256, receipt.run_id, "FETCHING_BASE", "VERIFYING_BASE", { trusted_ref: base.trusted_ref, fetched: base.fetched }, now);
     receipt.checks.push("base-commit-verified");
