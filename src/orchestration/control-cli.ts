@@ -8,6 +8,7 @@ import {
   resolveCodexRuntime,
 } from "../runtime/codex-runtime.js";
 import { spawnBounded, type SpawnBoundedResult } from "../runtime/spawn-bounded.js";
+import { CodexVerificationSandbox } from "../verifier/codex-sandbox.js";
 import { pauseRun, resumeRun } from "./controller.js";
 import { readRunLedger } from "./ledger.js";
 import { runDoctor, type DoctorProbe, type DoctorReport } from "./doctor.js";
@@ -310,6 +311,14 @@ function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
         return { severity: "OK" as const, summary: "Codex authentication available" };
       },
     },
+    {
+      id: "codex-sandbox",
+      async run() {
+        const runtime = await runtimePromise;
+        await new CodexVerificationSandbox(runtime).checkAvailability(5_000);
+        return { severity: "OK" as const, summary: "Codex verification sandbox available with network disabled" };
+      },
+    },
   ];
 }
 
@@ -353,7 +362,7 @@ export async function runControlCommand(command: string, argv: string[], io: Con
       return 0;
     }
     if (command === "doctor") {
-      const report = await runDoctor(productionDoctorProbes(args), { probe_timeout_ms: 6_000 });
+      const report = await runDoctor(productionDoctorProbes(args), { probe_timeout_ms: 8_000 });
       emit(io, args.json, humanDoctor(report), report);
       return report.status === "FAIL" ? 2 : 0;
     }
