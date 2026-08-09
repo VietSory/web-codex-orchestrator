@@ -13,11 +13,12 @@ import { DEFAULT_RESULT_BUNDLE_LIMITS } from "./contracts.js";
 import { resultBundlePaths, resultBundleArchiveFilename, SOURCE_ENTRY_PREFIX } from "./result-bundle-paths.js";
 import { readResultBundleReceipt, writeResultBundleReceipt } from "./result-bundle-store.js";
 import { reattestReadyResultBundleAuthority } from "./ready-result-attestation.js";
-import { executionPaths, readExecutionReceipt } from "../execution/execution-store.js";
+import { readExecutionReceiptSnapshot } from "../execution/execution-receipt-snapshot.js";
 import { readGitPublishReceiptSnapshot } from "../publish/publish-store.js";
 import { canonicalGitPublishReceiptDigest } from "../publish/receipt-digest.js";
 import { readDraftPullRequestReceiptSnapshot } from "../pull-request/draft-pr-store.js";
 import { parseGitHubRepositoryRemote } from "../pull-request/github-remote.js";
+import { readStableFile, StableFileError } from "../shared/stable-file.js";
 import { acquireResultBundleLock } from "./result-bundle-lock.js";
 import type { GitHubAttestationClient } from "./github-attestation.js";
 import { attestGitHubPullRequest } from "./github-attestation.js";
@@ -67,6 +68,11 @@ export interface Phase6Options {
   authority?: Phase6AuthorityOverride;
 }
 
+interface BundleTopLevelSnapshot {
+  treeSha256: string;
+  files: Map<string, Buffer>;
+}
+
 function sha256Hex(data: Buffer | string): string {
   return crypto.createHash("sha256")
     .update(typeof data === "string" ? Buffer.from(data, "utf8") : data)
@@ -99,37 +105,64 @@ function validateAuthorityOverride(authority: Phase6AuthorityOverride): void {
   }
 }
 
-async function readTextFile(filePath: string, errorCode: ResultBundleError["code"]): Promise<Buffer> {
+async function snapshotBundleTopLevel(bundlePath: string, maximumEntryBytes: number): Promise<BundleTopLevelSnapshot> {
+  const root = path.resolve(bundlePath);
+  let before;
   try {
-    return await fs.promises.readFile(filePath);
-  } catch (error) {
-    throw new ResultBundleError(errorCode, `Cannot read required file ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-
-/** Compute tree sha256 by hashing all bundle files deterministically */
-async function computeBundleTreeSha256(bundlePath: string): Promise<string> {
-  const files = await fs.promises.readdir(bundlePath);
-  files.sort();
-  const hash = crypto.createHash("sha256");
-  for (const file of files) {
-    const filePath = path.join(bundlePath, file);
-    const stat = await fs.promises.stat(filePath);
-    if (stat.isFile()) {
-      hash.update(file);
-      hash.update(await fs.promises.readFile(filePath));
+    before = await fs.promises.lstat(root);
+    if (before.isSymbolicLink() || !before.isDirectory() || await fs.promises.realpath(root) !== root) {
+      throw new ResultBundleError("RESULT_BUNDLE_INVALID", "Accepted bundle root must be one canonical real directory.");
     }
+  } catch (error) {
+    if (error instanceof ResultBundleError) throw error;
+    throw new ResultBundleError("RESULT_BUNDLE_INVALID", `Cannot inspect accepted bundle root: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return hash.digest("hex");
+
+  const names = await fs.promises.readdir(root);
+  names.sort();
+  const hash = crypto.createHash("sha256");
+  const files = new Map<string, Buffer>();
+  for (const name of names) {
+    const filePath = path.join(root, name);
+    const info = await fs.promises.lstat(filePath);
+    if (info.isSymbolicLink()) {
+      throw new ResultBundleError("RESULT_BUNDLE_INVALID", `Accepted bundle contains a symbolic link: ${name}`);
+    }
+    if (info.isDirectory()) continue; // Preserve the frozen top-level tree-hash contract.
+    if (!info.isFile()) {
+      throw new ResultBundleError("RESULT_BUNDLE_INVALID", `Accepted bundle contains an unsupported special file: ${name}`);
+    }
+    let bytes: Buffer;
+    try {
+      bytes = (await readStableFile(filePath, maximumEntryBytes)).bytes;
+    } catch (error) {
+      const message = error instanceof StableFileError ? error.message : error instanceof Error ? error.message : String(error);
+      throw new ResultBundleError("RESULT_BUNDLE_INVALID", `Cannot stably snapshot accepted bundle file '${name}': ${message}`);
+    }
+    files.set(name, bytes);
+    hash.update(name);
+    hash.update(bytes);
+  }
+
+  const after = await fs.promises.lstat(root);
+  if (after.isSymbolicLink() || !after.isDirectory() || before.dev !== after.dev || before.ino !== after.ino) {
+    throw new ResultBundleError("RESULT_BUNDLE_INVALID", "Accepted bundle root changed during snapshot.");
+  }
+  return { treeSha256: hash.digest("hex"), files };
 }
 
-function scanForSecrets(content: Buffer, secrets: string[]): string | null {
-  if (secrets.length === 0) return null;
-  const text = content.toString("utf8");
-  for (const secret of secrets) {
-    if (secret.length >= 8 && text.includes(secret)) return secret.slice(0, 4) + "***";
+function assertVerifiedArchiveMatchesReceipt(verified: Awaited<ReturnType<typeof verifyResultBundleZip>>, receipt: ResultBundleReceipt): void {
+  if (
+    receipt.archive_sha256 === null || receipt.archive_size_bytes === null || receipt.entry_count === null ||
+    receipt.uncompressed_size_bytes === null || receipt.reviewed_entry_set_sha256 === null ||
+    verified.sha256 !== receipt.archive_sha256 ||
+    verified.sizeBytes !== receipt.archive_size_bytes ||
+    verified.entryCount !== receipt.entry_count ||
+    verified.uncompressedBytes !== receipt.uncompressed_size_bytes ||
+    verified.reviewedEntrySetSha256 !== receipt.reviewed_entry_set_sha256
+  ) {
+    throw new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", "Result Bundle archive no longer matches its sealed receipt metadata.");
   }
-  return null;
 }
 
 /**
@@ -170,28 +203,19 @@ export async function packageResultBundle(options: Phase6Options): Promise<Resul
     const archiveFilename = existingReceipt.archive_relative_path ? path.basename(existingReceipt.archive_relative_path) : "";
     const archivePath = archiveFilename ? paths.archivePath(archiveFilename) : "";
     if (archivePath) {
-      try {
-        const stat = await fs.promises.stat(archivePath);
-        if (stat.size === existingReceipt.archive_size_bytes) {
-          const verified = await verifyResultBundleZip(archivePath);
-          if (verified.sha256 === existingReceipt.archive_sha256) {
-            await reattestReadyResultBundleAuthority({
-              stateDirectory: resolvedStateDir,
-              runId,
-              receipt: existingReceipt,
-              githubClient,
-              ...(options.authority ? {
-                publishReceiptPath: containedAuthorityPath(resolvedStateDir, options.authority.publishReceiptPath, "Ready Result Bundle publish receipt path"),
-                draftReceiptPath: containedAuthorityPath(resolvedStateDir, options.authority.draftReceiptPath, "Ready Result Bundle Draft PR receipt path"),
-              } : {}),
-            });
-            return existingReceipt;
-          }
-        }
-        throw new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", "Existing archive mismatch. Cannot overwrite.");
-      } catch (err) {
-        if (err instanceof ResultBundleError) throw err;
-      }
+      const verified = await verifyResultBundleZip(archivePath, limits);
+      assertVerifiedArchiveMatchesReceipt(verified, existingReceipt);
+      await reattestReadyResultBundleAuthority({
+        stateDirectory: resolvedStateDir,
+        runId,
+        receipt: existingReceipt,
+        githubClient,
+        ...(options.authority ? {
+          publishReceiptPath: containedAuthorityPath(resolvedStateDir, options.authority.publishReceiptPath, "Ready Result Bundle publish receipt path"),
+          draftReceiptPath: containedAuthorityPath(resolvedStateDir, options.authority.draftReceiptPath, "Ready Result Bundle Draft PR receipt path"),
+        } : {}),
+      });
+      return existingReceipt;
     }
   }
 
@@ -230,11 +254,10 @@ async function _buildResultBundle(ctx: {
     executionRaw = options.authority.executionEvidence;
     executionReceiptSha256 = sha256Hex(options.authority.executionReceiptBytes);
   } else {
-    const legacyExecution = await readExecutionReceipt(resolvedStateDir, taskId, archiveSha);
+    const legacyExecution = await readExecutionReceiptSnapshot(resolvedStateDir, taskId, archiveSha);
     if (!legacyExecution) throw new ResultBundleError("RESULT_EXECUTION_RECEIPT_INVALID", "Execution receipt not found.");
-    executionRaw = legacyExecution as unknown as Record<string, unknown>;
-    const execPaths = executionPaths(resolvedStateDir, taskId, archiveSha);
-    executionReceiptSha256 = sha256Hex(await fs.promises.readFile(execPaths.execution));
+    executionRaw = legacyExecution.receipt as unknown as Record<string, unknown>;
+    executionReceiptSha256 = sha256Hex(legacyExecution.bytes);
   }
   if (executionRaw.run_id !== runId) throw new ResultBundleError("RESULT_EXECUTION_RECEIPT_INCONSISTENT", "Execution receipt run_id mismatch.");
   if (executionRaw.state !== "READY_FOR_PUBLISH") throw new ResultBundleError("RESULT_EXECUTION_NOT_READY", `Execution state is '${String(executionRaw.state)}', expected READY_FOR_PUBLISH.`);
@@ -280,7 +303,8 @@ async function _buildResultBundle(ctx: {
   } catch (error) {
     throw new ResultBundleError("RESULT_BUNDLE_INVALID", `Bundle checksum verification failed: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const acceptedBundleTreeSha256 = await computeBundleTreeSha256(bundlePath);
+  const bundleSnapshot = await snapshotBundleTopLevel(bundlePath, limits.maximum_entry_bytes);
+  const acceptedBundleTreeSha256 = bundleSnapshot.treeSha256;
 
   const remoteUrl = String(p5aRaw.allowed_remote_url ?? "");
   let repositoryIdentity;
@@ -317,7 +341,11 @@ async function _buildResultBundle(ctx: {
   const publicDraftPr = projectDraftPrEvidence(p5bRaw as unknown as Record<string, unknown>, gitPublishReceiptSha256, changeSetSha256);
   const verificationRaw = executionRaw.verification as Record<string, unknown> | undefined ?? {};
   const publicVerification = projectVerificationEvidence(verificationRaw, limits.maximum_public_output_bytes_per_command);
-  const readBundleFile = async (name: string): Promise<Buffer> => readTextFile(path.join(bundlePath, name), "RESULT_OPERATIONAL_ERROR");
+  const readBundleFile = (name: string): Buffer => {
+    const bytes = bundleSnapshot.files.get(name);
+    if (!bytes) throw new ResultBundleError("RESULT_OPERATIONAL_ERROR", `Accepted bundle snapshot is missing required file '${name}'.`);
+    return bytes;
+  };
   const archiveFilename = resultBundleArchiveFilename(taskId, publishedCommitSha);
   const allEntries: ZipEntry[] = [];
 
@@ -353,7 +381,7 @@ async function _buildResultBundle(ctx: {
     "manifest.json", "REQUEST.md", "PLAN.md", "RULES.md", "RESEARCH.md", "SOURCES.md", "VALIDATION.md", "acceptance.json",
     "checksums.json", "test-matrix.json", "validation.json", "risk-policy.json",
   ]) {
-    const buf = await readBundleFile(name);
+    const buf = readBundleFile(name);
     taskFiles.push({ name, buffer: buf });
     addBuffer(`task/${name}`, buf);
   }
@@ -475,10 +503,8 @@ async function _buildResultBundle(ctx: {
   baseReceipt.uncompressed_size_bytes = builtArchive.uncompressedBytes;
   await writeResultBundleReceipt(paths.receiptPath, baseReceipt);
 
-  const verified = await verifyResultBundleZip(builtArchive.archivePath);
-  if (verified.reviewedEntrySetSha256 !== baseReceipt.reviewed_entry_set_sha256) {
-    throw new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", `Independent verifier reviewed_entry_set_sha256 mismatch: got ${verified.reviewedEntrySetSha256}, expected ${baseReceipt.reviewed_entry_set_sha256}`);
-  }
+  const verified = await verifyResultBundleZip(builtArchive.archivePath, limits);
+  assertVerifiedArchiveMatchesReceipt(verified, baseReceipt);
   const verifiedAt = String(executionRaw.created_at ?? currentIso(now));
   baseReceipt.state = "VERIFIED";
   baseReceipt.updated_at = currentIso(now);
