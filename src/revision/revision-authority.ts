@@ -123,7 +123,7 @@ export function assertRevisionReceiptAuthority(receipt: RevisionReceipt, expecte
   same("implementer.model", receipt.implementer.model, expected.implementer.model);
   same("implementer.reasoning_effort", receipt.implementer.reasoning_effort, expected.implementer.reasoningEffort);
   same("terra_review.model", receipt.terra_review.model, expected.terra.model);
-  same("terra_review.reasoning_effort", receipt.terra_review.reasoningEffort, expected.terra.reasoningEffort);
+  same("terra_review.reasoning_effort", receipt.terra_review.reasoning_effort, expected.terra.reasoningEffort);
   same("sol_review.model", receipt.sol_review.model, expected.sol.model);
   same("sol_review.reasoning_effort", receipt.sol_review.reasoning_effort, expected.sol.reasoningEffort);
   if (mismatches.length > 0) throw new RevisionError("REVISION_STATE_INVALID", `Persisted revision checkpoint attempts to redefine sealed authority: ${mismatches.join(", ")}.`);
