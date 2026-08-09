@@ -27,7 +27,9 @@ function reviewUsage(usage: { input_tokens?: number; output_tokens?: number } | 
   if (!usage) throw new ExecutorError("EXECUTOR_BUDGET_EXHAUSTED", "Provider token usage is unavailable; WCO will not continue with an unaccounted review turn.");
   return { model_turns: 0, input_tokens: measuredTokenCount(usage.input_tokens, "input-token"), output_tokens: measuredTokenCount(usage.output_tokens, "output-token") };
 }
-function quotedPath(value: string): string { return JSON.stringify(value); }
+function quotedPath(value: string): string {
+  return JSON.stringify(value).replace(/[\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
 async function loadValidationDocument(acceptedBundlePath: string): Promise<unknown> {
   try {
     const bytes = await readBoundedStableAuthorityFile(path.join(acceptedBundlePath, "validation.json"), MAX_VALIDATION_BYTES, "WEB_AUTHORITY_BINDING_MISMATCH", "accepted validation.json");
@@ -92,10 +94,31 @@ export async function createProductionExecutorGates(options: { runId: string; st
       const result = request.reviewer === "terra"
         ? await reviewWithTerra(agentClient, { model: profile.model, reasoning_effort: profile.reasoning_effort, prompt, threadId: undefined, workspacePath: request.worktree_path, acceptedBundlePath: request.accepted_bundle_path, ...(request.signal ? { signal: request.signal } : {}) })
         : await reviewWithSol(agentClient, { model: profile.model, reasoning_effort: profile.reasoning_effort, prompt, threadId: undefined, workspacePath: request.worktree_path, acceptedBundlePath: request.accepted_bundle_path, ...(request.signal ? { signal: request.signal } : {}) });
-      if (result.review.reviewed_change_set_sha256 !== request.change_set_digest) throw new ExecutorError("EXECUTOR_REVIEW_REJECTED", `${request.reviewer} reviewed stale digest '${result.review.reviewed_change_set_sha256}'.`);
+      const usage = reviewUsage(result.response.usage);
+      const digestMatches = result.review.reviewed_change_set_sha256 === request.change_set_digest;
       return {
-        verdict: mappedVerdict(result.review.verdict), usage: reviewUsage(result.response.usage),
-        evidence: { kind: `phase10-${request.reviewer}-review`, reviewer: request.reviewer, change_set_digest: request.change_set_digest, context_selection_sha256: request.context_selection.selection_sha256, context_source: request.context_selection.source, context_paths: request.context_selection.paths, context_candidate_count: request.context_selection.candidate_count, context_truncated: request.context_selection.truncated, verdict: result.review.verdict, summary: result.review.summary, acceptance_results: result.review.acceptance_results, blocking_findings: result.review.blocking_findings, non_blocking_findings: result.review.non_blocking_findings, scope_violations: result.review.scope_violations, unverified_acceptance: result.review.unverified_acceptance, usage: result.response.usage },
+        verdict: digestMatches ? mappedVerdict(result.review.verdict) : "ESCALATE",
+        usage,
+        evidence: {
+          kind: `phase10-${request.reviewer}-review`,
+          reviewer: request.reviewer,
+          change_set_digest: request.change_set_digest,
+          reviewed_change_set_sha256: result.review.reviewed_change_set_sha256,
+          authority_binding_valid: digestMatches,
+          context_selection_sha256: request.context_selection.selection_sha256,
+          context_source: request.context_selection.source,
+          context_paths: request.context_selection.paths,
+          context_candidate_count: request.context_selection.candidate_count,
+          context_truncated: request.context_selection.truncated,
+          verdict: result.review.verdict,
+          summary: result.review.summary,
+          acceptance_results: result.review.acceptance_results,
+          blocking_findings: result.review.blocking_findings,
+          non_blocking_findings: result.review.non_blocking_findings,
+          scope_violations: result.review.scope_violations,
+          unverified_acceptance: result.review.unverified_acceptance,
+          usage: result.response.usage,
+        },
       };
     },
   };
