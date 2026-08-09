@@ -1,6 +1,5 @@
 import path from "node:path";
 import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
-import { ReservedAgentClient, type ModelTurnReservation } from "../agent/reserved-agent-client.js";
 import { reviewWithSol } from "../agent/sol-reviewer.js";
 import { reviewWithTerra } from "../agent/terra-reviewer.js";
 import { loadPhase4Config } from "../execution/execution-config.js";
@@ -27,8 +26,10 @@ function boundedTokenCount(value: unknown): number {
 }
 
 function reviewUsage(usage: { input_tokens?: number; output_tokens?: number } | undefined): ExecutorUsage {
+  // The executor reserves the model turn durably before the provider call.
+  // The response contributes only measured token usage to avoid double-counting.
   return {
-    model_turns: 1,
+    model_turns: 0,
     input_tokens: boundedTokenCount(usage?.input_tokens),
     output_tokens: boundedTokenCount(usage?.output_tokens),
   };
@@ -71,25 +72,15 @@ function mappedVerdict(verdict: string): "APPROVE" | "REVISE" | "ESCALATE" {
   return "ESCALATE";
 }
 
-export async function createProductionExecutorGates(options: {
-  runId: string;
-  stateDirectory: string;
-  configPath: string;
-  beforeModelTurn?: (reservation: ModelTurnReservation) => Promise<void>;
-}): Promise<{ verifier: ExecutorVerifierPort; reviewer: ExecutorReviewerPort }> {
+export async function createProductionExecutorGates(options: { runId: string; stateDirectory: string; configPath: string }): Promise<{ verifier: ExecutorVerifierPort; reviewer: ExecutorReviewerPort }> {
   const [config, trusted] = await Promise.all([
     loadPhase4Config(options.configPath),
     resolveTrustedRunContext(options.runId, options.stateDirectory, options.configPath),
   ]);
   const runtime = await resolveCodexRuntime(config.runtime, options.stateDirectory);
-  const baseAgentClient = new CodexSdkAgentClient(runtime);
-  const agentClient = options.beforeModelTurn
-    ? new ReservedAgentClient(baseAgentClient, options.beforeModelTurn)
-    : baseAgentClient;
+  const agentClient = new CodexSdkAgentClient(runtime);
   const sandbox = new CodexVerificationSandbox(runtime);
-  // Availability probes are deliberately outside model-turn accounting because
-  // they do not start a provider-backed model turn.
-  await Promise.all([baseAgentClient.checkAvailability(), sandbox.checkAvailability()]);
+  await Promise.all([agentClient.checkAvailability(), sandbox.checkAvailability()]);
   const validation = await loadValidationDocument(trusted.runReceipt.accepted_bundle_path);
 
   const verifier: ExecutorVerifierPort = {
@@ -127,6 +118,13 @@ export async function createProductionExecutorGates(options: {
   };
 
   const reviewer: ExecutorReviewerPort = {
+    budget_policy: {
+      maximum_model_turns: Math.min(
+        config.agents.limits.maximum_total_agent_turns,
+        config.agents.limits.maximum_internal_review_rounds + config.agents.limits.maximum_sol_review_rounds,
+      ),
+      maximum_elapsed_ms: config.agents.limits.maximum_total_seconds * 1000,
+    },
     async review(request: ExecutorReviewRequest) {
       const prompt = reviewPrompt(request);
       const profile = request.reviewer === "terra" ? config.agents.internal_reviewer : config.agents.final_reviewer;
