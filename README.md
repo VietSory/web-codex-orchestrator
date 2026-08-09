@@ -24,16 +24,21 @@ wco run ./task-bundle.zip \
   --config ./.wco/config.json
 ```
 
-`wco run` prepares the exact run and advances the existing durable controller until the next explicit input, human, or terminal boundary. It does not create a second shortcut around Web implementation authority, deterministic verification, independent review, or Draft-PR attestation.
+`wco run` prepares the exact run and advances the existing durable controller until the next explicit input, human, retry, or terminal boundary. It does not create a second shortcut around Web implementation authority, deterministic verification, independent review, or Draft-PR attestation.
 
-At any point:
+Inspect a run at any time:
 
 ```bash
 wco status --run-id '<task-id>:<bundle-sha256>' --state-dir ./.wco/state
+```
+
+If you explicitly paused the run, clear that pause with:
+
+```bash
 wco resume --run-id '<task-id>:<bundle-sha256>' --state-dir ./.wco/state
 ```
 
-Human `status` output shows workflow progress plus durable WCO runtime usage. `resume` reuses exact receipts and re-attests completed side effects before the next one, instead of trusting a previous terminal/session message.
+`resume` only clears an explicit operator pause. It does **not** itself execute recovery or another transition. Recovery and exact-state re-attestation happen when the next `wco run`/`wco continue` attempts a side effect. After a process interruption, rerun the same Task Bundle with `wco run` (or use the lower-level `continue` command) rather than treating `resume` as session replay.
 
 ## What happens underneath
 
@@ -59,7 +64,9 @@ human merge decision
 
 WCO deliberately does not treat browser tabs, chat transcripts, model sessions, or a previous success message as lifecycle authority. Durable receipts and exact content identities drive recovery and continuation.
 
-Independent review uses a deterministic bounded context hint derived from the registered project map/read coverage. It does not replace the changed files or accepted Task Bundle as authority. Model turns and wall-clock review limits are checked before provider calls; token usage is measured after responses and can stop later calls. WCO does not present measured token thresholds as a strict current-call billing cap. See [Operations and packaging](docs/operations.md) for the exact semantics.
+Independent review uses a deterministic bounded context hint derived from the registered project map/read coverage. Context selection is least-privilege: it can prioritize only paths already attested in Web read coverage, excludes prohibited/hard-sensitive paths, and cannot introduce project-map-only read targets. It does not replace the changed files or accepted Task Bundle as authority.
+
+Model turns and wall-clock review limits are checked before provider calls; token usage is measured after responses and can stop later calls. WCO does not present measured token thresholds as a strict current-call billing cap. See [Operations and packaging](docs/operations.md) for the exact semantics.
 
 ## Requirements
 
@@ -120,7 +127,13 @@ Once a run identity exists, it can also be exported once:
 ```bash
 export WCO_RUN_ID='<task-id>:<task-bundle-sha256>'
 wco status
+```
+
+If that run is explicitly paused:
+
+```bash
 wco resume
+wco run ./task-bundle.zip
 ```
 
 Flags always override the need for environment defaults, so automation can remain fully explicit.
@@ -131,7 +144,7 @@ Flags always override the need for environment defaults, so automation can remai
 wco preview      validate and inspect a task without touching the repository
 wco run          prepare and advance the durable workflow
 wco status       human-readable progress plus durable runtime evidence
-wco resume       resume a paused/interrupted run using exact persisted state
+wco resume       clear an explicit operator pause; it does not execute a transition
 wco doctor       machine/config/runtime/sandbox preflight
 wco next         next durable transition, read-only
 wco continue     lower-level bounded transition runner
