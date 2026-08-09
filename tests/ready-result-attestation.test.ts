@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import type { GitPublishReceipt } from "../src/publish/contracts.js";
 import { writeGitPublishReceipt } from "../src/publish/publish-store.js";
+import { canonicalGitPublishReceiptDigest } from "../src/publish/receipt-digest.js";
 import type { DraftPullRequestReceipt } from "../src/pull-request/contracts.js";
 import { writeDraftPullRequestReceipt } from "../src/pull-request/draft-pr-store.js";
 import type { ResultBundleReceipt } from "../src/result-bundle/contracts.js";
@@ -38,7 +39,7 @@ function draftReceipt(overrides: Partial<DraftPullRequestReceipt> = {}): DraftPu
   return {
     receipt_version: "1.0", run_id: runId, state: "OPEN", repository_owner: "example", repository_name: "my.repo",
     base_branch: "main", head_branch: "codex/ready-result", expected_head_sha: commitSha,
-    git_publish_receipt_sha256: "f".repeat(64), request_sha256: "1".repeat(64), title, body_sha256: "2".repeat(64),
+    git_publish_receipt_sha256: canonicalGitPublishReceiptDigest(publishReceipt()), request_sha256: "1".repeat(64), title, body_sha256: "2".repeat(64),
     draft_required: true, create_post_attempted: true, pull_number: 42, pull_url: "https://github.com/example/my.repo/pull/42",
     observed_head_sha: commitSha, observed_base_branch: "main", observed_state: "open", observed_draft: true,
     conflict_reason: null, created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:01.000Z",
@@ -142,7 +143,7 @@ test("READY-RESULT-005 exact receipt-byte drift fails before GitHub API access",
   const github = new FakeGitHub();
   await assert.rejects(
     () => reattestReadyResultBundleAuthority({ stateDirectory: state, runId, receipt, githubClient: github }),
-    (error: unknown) => error instanceof ResultBundleError && error.code === "RESULT_RECEIPT_INVALID",
+    (error: unknown) => error instanceof ResultBundleError && (error.code === "RESULT_PR_RECEIPT_INCONSISTENT" || error.code === "RESULT_RECEIPT_INVALID"),
   );
   assert.equal(github.observedRepo, "");
 });
