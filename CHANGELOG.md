@@ -1,28 +1,54 @@
 # Changelog
 
-All notable user-facing changes to Web Codex Orchestrator are documented here. The project follows semantic versioning once tagged releases begin.
+All notable changes to this project will be documented in this file.
+
+The format is based on Keep a Changelog, and the project intends to follow Semantic Versioning once tagged releases begin.
 
 ## [Unreleased]
 
+### Planned
+
+- Public release artifacts, SBOM, checksums, and provenance/attestation after native release validation.
+
+## [0.2.0] - 2026-08-09
+
 ### Added
 
-- secure Task Bundle validation, archive intake, and isolated worktree preparation;
-- content-addressed Web implementation authority and exact operation preimages;
-- deterministic constrained execution with verification plus independent Terra and Sol review;
-- exact Git publication, Draft pull-request attestation, deterministic Result Bundles, explicit Web verdicts, and bounded same-PR revision;
-- durable orchestration with pause/resume, retry backoff, crash recovery, token/time/attempt budgets, and bounded diagnostics;
-- one public `wco` CLI with explicit environment defaults for routine control commands;
-- package-surface verification and Apache-2.0 licensing.
-
-### Security
-
-- exact-head CI checkout and identity assertion;
-- bounded/stable trusted config and durable receipt reads;
-- subprocess deadlines and output caps for text and binary Git evidence;
-- fail-closed resource ceilings for inbox, archive, model-turn, token, and result-bundle limits;
-- symlink/path/remote/PR/race protections across intake, execution, publication, and recovery.
+- `wco preview <task-bundle.zip>` for secure, no-worktree/no-network task inspection before repository mutation.
+- `wco run <task-bundle.zip>` as the primary bounded durable workflow entry point.
+- Human-readable workflow progress and WCO-owned model/token accounting in `wco status`.
+- Codex verification-sandbox readiness to `wco doctor`; failed sandbox preflight never falls back to unrestricted verification.
+- Deterministic least-privilege Smart Context for Terra/Sol review, derived only from already-bound Web read coverage/project-map/prohibition evidence.
+- Repeatable offline Smart Context selector benchmark and an opt-in real Codex A/B benchmark harness for provider-reported tokens, latency, and exact-digest approval rate.
 
 ### Changed
 
-- repository documentation is organized by product function instead of historical development phases;
-- source-checkout commands and CI use stable purpose-based scripts such as `check`, `test:e2e`, and `test:cli`.
+- Draft PR descriptions now present exact verified head/change-set/review evidence instead of internal phase labels.
+- `wco resume` is documented and presented as clearing an explicit operator pause; recovery/re-attestation executes on the next workflow transition, not inside `resume` itself.
+- Initial Terra/Sol review usage is durably propagated into executor/orchestration accounting and adopted exactly once during safe recovery.
+- Review prompts JSON-quote repository paths and escape Unicode line/bidi controls so filenames remain data rather than prompt instructions.
+
+### Security
+
+- Executor review turns are durably reserved before provider calls; model-turn and wall-clock budgets can stop a call before it starts.
+- Provider-reported token usage is persisted after responses and can stop later calls; missing/malformed usage fails closed. This is intentionally not advertised as a strict current-call provider billing cap.
+- Interrupted executor Terra/Sol calls with no sealed verdict fail closed instead of being replayed automatically.
+- Revision checkpoints that may span an unsealed provider-backed turn fail closed as ambiguous recovery instead of replaying a model call.
+- Smart Context cannot expand the read surface from project-map-only nodes and excludes registered prohibited paths plus hard-sensitive Git/.env paths.
+- Preview re-reads accepted authority through bounded stable non-symlink reads to close pathname replacement/TOCTOU gaps.
+
+### Validation
+
+- Exact-head CI validates templates, strict TypeScript, deterministic/unit tests, the offline context benchmark, E2E workflow, build, compiled CLI integration, and `npm pack --dry-run`.
+- Real Codex A/B benchmarking is opt-in and intentionally excluded from CI; WCO does not fabricate provider cost/quality claims without an authenticated native run.
+
+## [0.1.0] - 2026-08-09
+
+### Added
+
+- Secure Task Bundle intake and isolated Git worktree preparation.
+- Web implementation authority registration with content-addressed bindings.
+- Deterministic apply, verification, Terra review, and Sol review.
+- Exact Git publication and Draft pull-request delivery with no force-push or automatic merge.
+- Result Bundle packaging, explicit Web verdict handling, and bounded same-PR revision orchestration.
+- Durable run ledger, crash recovery, bounded retry/circuit behavior, and exact-head CI.

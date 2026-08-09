@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { verifyBundleChecksums } from "../intake/checksum-verifier.js";
-import { RevisionError, type RevisionReceipt } from "./contracts.js";
+import { RevisionError, type RevisionReceipt, type RevisionResumeState, type RevisionState } from "./contracts.js";
 
 function lexicalCompare(left: string, right: string): number { return left < right ? -1 : left > right ? 1 : 0; }
 
@@ -55,8 +55,26 @@ export interface RevisionReceiptAuthority {
   sol: { model: string; reasoningEffort: string };
 }
 
+const AMBIGUOUS_MODEL_STATES = new Set<RevisionState>(["IMPLEMENTING", "VERIFYING", "TERRA_REVIEWING", "SOL_REVIEWING"]);
+const AMBIGUOUS_MODEL_RESUME_STATES = new Set<RevisionResumeState>(["IMPLEMENTING", "VERIFYING", "TERRA_REVIEWING", "SOL_REVIEWING"]);
+
+function assertNoAmbiguousModelReplay(receipt: RevisionReceipt): void {
+  // This authority check runs only when an existing receipt is being adopted by
+  // a new reviseRun invocation. These checkpoints span provider-backed work (or
+  // a verifier/correction boundary), so the previous process may have started a
+  // model call whose outcome was never sealed. Replaying it would violate the
+  // pre-call reservation guarantee. Fail closed instead of guessing.
+  if (AMBIGUOUS_MODEL_STATES.has(receipt.state)) {
+    throw new RevisionError("REVISION_AMBIGUOUS_RECOVERY", `Revision checkpoint '${receipt.state}' may contain an unsealed provider-backed turn; automatic replay is forbidden.`);
+  }
+  if (receipt.state === "RETRYABLE" && receipt.resume_state && AMBIGUOUS_MODEL_RESUME_STATES.has(receipt.resume_state)) {
+    throw new RevisionError("REVISION_AMBIGUOUS_RECOVERY", `Revision retry checkpoint '${receipt.resume_state}' may contain an unsealed provider-backed turn; automatic replay is forbidden.`);
+  }
+}
+
 /** A mutable checkpoint may record progress; it may never redefine authority. */
 export function assertRevisionReceiptAuthority(receipt: RevisionReceipt, expected: RevisionReceiptAuthority): void {
+  assertNoAmbiguousModelReplay(receipt);
   const mismatches: string[] = [];
   const same = (field: string, actual: unknown, wanted: unknown): void => { if (actual !== wanted) mismatches.push(field); };
   same("run_id", receipt.run_id, expected.runId);

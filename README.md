@@ -2,11 +2,45 @@
 
 [![CI](https://github.com/VietSory/web-codex-orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/VietSory/web-codex-orchestrator/actions/workflows/ci.yml)
 
-Web Codex Orchestrator (WCO) is a security-focused CLI that turns externally authored implementation evidence into a durable, reviewable Git workflow. It validates untrusted handoffs, operates in isolated worktrees, runs deterministic verification and independent model review, publishes only exact approved changes, opens a Draft pull request, and keeps merge authority with a human.
+Web Codex Orchestrator (WCO) is a security-focused CLI for turning a structured coding task into a durable, verified Draft-PR workflow. It validates untrusted handoffs, works in isolated Git worktrees, verifies exact changes, records model/runtime evidence, survives interruption through durable recovery, and keeps merge authority with a human.
 
 > Status: pre-release. The repository is suitable for development and technical evaluation; a stable binary/package release has not been published yet.
 
-## What WCO does
+## The user workflow
+
+Preview a Task Bundle before WCO touches a repository:
+
+```bash
+wco preview ./task-bundle.zip --state-dir ./.wco/state
+```
+
+Preview reports the target repository/base commit, allowed and forbidden scope, verification commands, delivery policy, and human-approval boundaries. It securely validates/stores the bundle in WCO state but does **not** create a worktree, modify repository files, or request network access.
+
+Start or continue the durable workflow with one primary command:
+
+```bash
+wco run ./task-bundle.zip \
+  --state-dir ./.wco/state \
+  --config ./.wco/config.json
+```
+
+`wco run` prepares the exact run and advances the existing durable controller until the next explicit input, human, retry, or terminal boundary. It does not create a second shortcut around Web implementation authority, deterministic verification, independent review, or Draft-PR attestation.
+
+Inspect a run at any time:
+
+```bash
+wco status --run-id '<task-id>:<bundle-sha256>' --state-dir ./.wco/state
+```
+
+If you explicitly paused the run, clear that pause with:
+
+```bash
+wco resume --run-id '<task-id>:<bundle-sha256>' --state-dir ./.wco/state
+```
+
+`resume` only clears an explicit operator pause. It does **not** itself execute recovery or another transition. Recovery and exact-state re-attestation happen when the next `wco run`/`wco continue` attempts a side effect. After a process interruption, rerun the same Task Bundle with `wco run` (or use the lower-level `continue` command) rather than treating `resume` as session replay.
+
+## What happens underneath
 
 ```text
 Task Bundle
@@ -29,6 +63,10 @@ human merge decision
 ```
 
 WCO deliberately does not treat browser tabs, chat transcripts, model sessions, or a previous success message as lifecycle authority. Durable receipts and exact content identities drive recovery and continuation.
+
+Independent review uses a deterministic bounded context hint derived from the registered project map/read coverage. Context selection is least-privilege: it can prioritize only paths already attested in Web read coverage, excludes prohibited/hard-sensitive paths, and cannot introduce project-map-only read targets. It does not replace the changed files or accepted Task Bundle as authority.
+
+Model turns and wall-clock review limits are checked before provider calls; token usage is measured after responses and can stop later calls. WCO does not present measured token thresholds as a strict current-call billing cap. See [Operations and packaging](docs/operations.md) for the exact semantics.
 
 ## Requirements
 
@@ -73,13 +111,29 @@ Run the preflight:
 wco doctor
 ```
 
-Once a run exists, set its identity once:
+`doctor` includes a bounded Codex verification-sandbox smoke test with network disabled; WCO does not fall back to unrestricted host verification if that check fails.
+
+Then preview and run a bundle:
+
+```bash
+wco preview ./task-bundle.zip
+wco run ./task-bundle.zip
+```
+
+When a workflow reaches an external input boundary, WCO tells you exactly which input is required. Advanced automation can provide those inputs explicitly, for example `--web-pack <zip>` or `--web-verdict <json>`.
+
+Once a run identity exists, it can also be exported once:
 
 ```bash
 export WCO_RUN_ID='<task-id>:<task-bundle-sha256>'
 wco status
-wco next
-wco continue
+```
+
+If that run is explicitly paused:
+
+```bash
+wco resume
+wco run ./task-bundle.zip
 ```
 
 Flags always override the need for environment defaults, so automation can remain fully explicit.
@@ -87,12 +141,14 @@ Flags always override the need for environment defaults, so automation can remai
 ## Common commands
 
 ```text
-wco doctor       machine/config/runtime preflight
-wco status       durable run status
+wco preview      validate and inspect a task without touching the repository
+wco run          prepare and advance the durable workflow
+wco status       human-readable progress plus durable runtime evidence
+wco resume       clear an explicit operator pause; it does not execute a transition
+wco doctor       machine/config/runtime/sandbox preflight
 wco next         next durable transition, read-only
-wco continue     advance the workflow within bounded transition limits
+wco continue     lower-level bounded transition runner
 wco pause        prevent new transitions
-wco resume       resume an explicitly paused run
 wco validate     validate a Task Bundle directory
 wco intake       securely ingest a Task Bundle archive
 wco scan/watch   process an inbox of Task Bundles
@@ -106,7 +162,9 @@ Use `--json` where supported for machine-readable output. Human output stays con
 npm run check
 ```
 
-`check` runs template validation, strict TypeScript checking, the complete deterministic test suite, end-to-end workflow coverage, the build, and compiled CLI integration tests.
+`check` runs template validation, strict TypeScript checking, the complete deterministic test suite, the deterministic Smart Context selector benchmark, end-to-end workflow coverage, the build, and compiled CLI integration tests.
+
+The selector benchmark is intentionally narrow: it measures deterministic context-path selection overhead and byte reduction, not provider token/cost/quality claims.
 
 Native opt-in checks are separate because CI must not pretend to prove a developer's local Codex or sandbox environment:
 

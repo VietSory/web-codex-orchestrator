@@ -11,7 +11,15 @@ function passingVerifier(): ExecutorVerifierPort {
   return { async verify(request) { return { passed: true, evidence: { kind: "verification", digest: request.change_set_digest, passed: true } }; } };
 }
 function passingReviewer(): ExecutorReviewerPort {
-  return { async review(request) { return { verdict: "APPROVE", evidence: { reviewer: request.reviewer, digest: request.change_set_digest, verdict: "APPROVE" } }; } };
+  return { async review(request) {
+    return {
+      verdict: "APPROVE",
+      usage: request.reviewer === "terra"
+        ? { model_turns: 1, input_tokens: 120, output_tokens: 30 }
+        : { model_turns: 1, input_tokens: 80, output_tokens: 20 },
+      evidence: { reviewer: request.reviewer, digest: request.change_set_digest, verdict: "APPROVE" },
+    };
+  } };
 }
 
 async function setup(t: test.TestContext) {
@@ -29,6 +37,7 @@ test("P10-SVC-001 exact registered pack reaches READY_FOR_PUBLISH through verifi
   assert.equal(receipt.verification.passed, true);
   assert.equal(receipt.terra_review.verdict, "APPROVE");
   assert.equal(receipt.sol_review.verdict, "APPROVE");
+  assert.deepEqual(receipt.usage, { model_turns: 2, input_tokens: 200, output_tokens: 50 });
   assert.equal(await fs.readFile(path.join(fixture.repo, "app.txt"), "utf8"), "after\n");
 });
 

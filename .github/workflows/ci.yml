@@ -60,6 +60,9 @@ jobs:
       - name: Unit and deterministic integration tests
         run: npm test
 
+      - name: Deterministic context benchmark
+        run: npm run benchmark:context
+
       - name: End-to-end workflow test
         run: npm run test:e2e
         timeout-minutes: 2
