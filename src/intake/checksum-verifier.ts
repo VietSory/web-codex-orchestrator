@@ -1,15 +1,15 @@
-import { createReadStream } from "node:fs";
-import { lstat, readdir } from "node:fs/promises";
+import { lstat, readdir, realpath, type Stats } from "node:fs/promises";
 import path from "node:path";
-import { createHash } from "node:crypto";
 
-import { readJsonFile } from "../shared/read-json.js";
+import { hashStableFile, readStableFile, StableFileError } from "../shared/stable-file.js";
 import { IntakeError } from "./errors.js";
 
 interface ChecksumDocument {
   algorithm: "sha256";
   files: Record<string, string>;
 }
+
+const MAX_CHECKSUM_DOCUMENT_BYTES = 1 * 1024 * 1024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -22,16 +22,27 @@ function validateChecksumPath(value: string): boolean {
   return segments.every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
 }
 
-async function hashFile(filePath: string): Promise<string> {
-  const hash = createHash("sha256");
-  for await (const chunk of createReadStream(filePath)) hash.update(chunk);
-  return hash.digest("hex");
+function sameDirectoryIdentity(left: Stats, right: Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
 }
 
 async function listRegularFiles(root: string, current = root): Promise<string[]> {
+  const before = await lstat(current);
+  if (before.isSymbolicLink() || !before.isDirectory()) {
+    throw new IntakeError("CHECKSUMS_INVALID", "Checksum traversal requires real directories.", path.relative(root, current));
+  }
+  const canonical = await realpath(current);
+  if (canonical !== path.resolve(current)) {
+    throw new IntakeError("CHECKSUMS_INVALID", "Checksum traversal encountered a non-canonical directory.", path.relative(root, current));
+  }
+
   const result: string[] = [];
   for (const name of await readdir(current)) {
     const absolute = path.join(current, name);
+    const relative = path.relative(root, absolute);
+    if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new IntakeError("CHECKSUMS_INVALID", "Checksum traversal escaped the bundle directory.", name);
+    }
     const info = await lstat(absolute);
     if (info.isSymbolicLink()) {
       throw new IntakeError("CHECKSUMS_INVALID", "Extracted symbolic links are not allowed.", name);
@@ -39,21 +50,28 @@ async function listRegularFiles(root: string, current = root): Promise<string[]>
     if (info.isDirectory()) {
       result.push(...(await listRegularFiles(root, absolute)));
     } else if (info.isFile()) {
-      result.push(path.relative(root, absolute).split(path.sep).join("/"));
+      result.push(relative.split(path.sep).join("/"));
     } else {
       throw new IntakeError("CHECKSUMS_INVALID", "Extracted special files are not allowed.", name);
     }
+  }
+
+  const after = await lstat(current);
+  if (after.isSymbolicLink() || !after.isDirectory() || !sameDirectoryIdentity(before, after)) {
+    throw new IntakeError("CHECKSUMS_INVALID", "Checksum directory changed during traversal.", path.relative(root, current));
   }
   return result;
 }
 
 export async function verifyBundleChecksums(bundleDirectory: string): Promise<void> {
+  const resolvedBundle = path.resolve(bundleDirectory);
   let raw: unknown;
   try {
-    raw = await readJsonFile(path.join(bundleDirectory, "checksums.json"));
+    const snapshot = await readStableFile(path.join(resolvedBundle, "checksums.json"), MAX_CHECKSUM_DOCUMENT_BYTES);
+    raw = JSON.parse(snapshot.bytes.toString("utf8"));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new IntakeError("CHECKSUMS_INVALID", `checksums.json is not valid JSON: ${message}`);
+    throw new IntakeError("CHECKSUMS_INVALID", `checksums.json is not stable valid JSON: ${message}`);
   }
 
   if (!isRecord(raw) || raw.algorithm !== "sha256" || !isRecord(raw.files)) {
@@ -68,11 +86,18 @@ export async function verifyBundleChecksums(bundleDirectory: string): Promise<vo
     if (typeof digest !== "string" || !/^[0-9a-f]{64}$/.test(digest)) {
       throw new IntakeError("CHECKSUMS_INVALID", `Invalid sha256 digest for ${fileName}.`);
     }
-    listed.set(fileName.normalize("NFC"), digest);
+    const normalized = fileName.normalize("NFC");
+    if (listed.has(normalized)) {
+      throw new IntakeError("CHECKSUMS_INVALID", `Duplicate checksum path after NFC normalization: ${fileName}`);
+    }
+    listed.set(normalized, digest);
   }
 
-  const actual = (await listRegularFiles(bundleDirectory)).filter((name) => name !== "checksums.json");
+  const actual = (await listRegularFiles(resolvedBundle)).filter((name) => name !== "checksums.json");
   const actualSet = new Set(actual.map((name) => name.normalize("NFC")));
+  if (actualSet.size !== actual.length) {
+    throw new IntakeError("CHECKSUMS_INVALID", "Bundle contains duplicate file paths after NFC normalization.");
+  }
 
   for (const fileName of actualSet) {
     if (!listed.has(fileName)) throw new IntakeError("CHECKSUM_MISSING_FILE", `File is missing from checksums.json: ${fileName}`);
@@ -83,7 +108,13 @@ export async function verifyBundleChecksums(bundleDirectory: string): Promise<vo
 
   for (const fileName of actual) {
     const normalized = fileName.normalize("NFC");
-    const actualDigest = await hashFile(path.join(bundleDirectory, ...fileName.split("/")));
+    let actualDigest: string;
+    try {
+      actualDigest = (await hashStableFile(path.join(resolvedBundle, ...fileName.split("/")))).sha256;
+    } catch (error) {
+      const message = error instanceof StableFileError ? error.message : error instanceof Error ? error.message : String(error);
+      throw new IntakeError("CHECKSUMS_INVALID", `Cannot stably hash ${fileName}: ${message}`, fileName);
+    }
     if (actualDigest !== listed.get(normalized)) {
       throw new IntakeError("CHECKSUM_MISMATCH", `Checksum mismatch for ${fileName}.`);
     }
