@@ -333,7 +333,11 @@ export async function verifyResultBundleZip(
 
         zipfile.on("error", (error: Error) => {
           const message = error.message.toLowerCase();
-          if (message.includes("relative path") || message.includes("absolute path")) {
+          if (
+            message.includes("relative path") ||
+            message.includes("absolute path") ||
+            message.includes("invalid characters in filename")
+          ) {
             fail(new ResultBundleError("RESULT_SOURCE_PATH_UNSAFE", `Unsafe ZIP entry path: ${error.message}`), zipfile);
             return;
           }
