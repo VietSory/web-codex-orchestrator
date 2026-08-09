@@ -20,6 +20,13 @@ export interface ExecuteDraftPrInput {
   verifyRemoteHead: () => Promise<void>;
 }
 
+interface DraftRequestHashes {
+  title: string;
+  body: string;
+  bodySha256: string;
+  requestSha256: string;
+}
+
 export class DraftPullRequestStateMachine {
   constructor(
     private readonly client: GitHubPullRequestClient,
@@ -57,7 +64,7 @@ export class DraftPullRequestStateMachine {
     this.validateIdentifier("gitPublishReceiptSha256", input.gitPublishReceiptSha256, DIGEST, 64, 64);
   }
 
-  private getHashes(input: ExecuteDraftPrInput) {
+  private getHashes(input: ExecuteDraftPrInput): DraftRequestHashes {
     const title = `WCO: ${input.taskId}`;
     const body = `## Verified Draft PR
 
@@ -108,6 +115,24 @@ This PR is intentionally **Draft**. WCO will not mark it ready, merge it, enable
     return { title, body, bodySha256, requestSha256 };
   }
 
+  private assertReceiptBoundToInput(receipt: DraftPullRequestReceipt, input: ExecuteDraftPrInput, hashes: DraftRequestHashes): void {
+    if (
+      receipt.run_id !== input.runId ||
+      receipt.repository_owner !== input.owner ||
+      receipt.repository_name !== input.repository ||
+      receipt.base_branch !== input.baseBranch ||
+      receipt.head_branch !== input.headBranch ||
+      receipt.expected_head_sha !== input.expectedHeadSha ||
+      receipt.git_publish_receipt_sha256 !== input.gitPublishReceiptSha256 ||
+      receipt.request_sha256 !== hashes.requestSha256 ||
+      receipt.title !== hashes.title ||
+      receipt.body_sha256 !== hashes.bodySha256 ||
+      receipt.draft_required !== true
+    ) {
+      throw new DraftPullRequestError("PR_RECEIPT_INCONSISTENT", "Existing receipt no longer binds the exact current Draft PR request authority.");
+    }
+  }
+
   private classifyCandidates(candidates: GitHubPullRequest[], input: ExecuteDraftPrInput) {
     const validCandidates = candidates.filter(c => {
       const isHtmlUrlValid = /^https:\/\/github\.com\/[^\/]+\/[^\/]+\/pull\/[1-9][0-9]*$/.test(c.html_url);
@@ -149,7 +174,7 @@ This PR is intentionally **Draft**. WCO will not mark it ready, merge it, enable
     return { exact: null, conflict: null, pr: null };
   }
 
-  private createBaseReceipt(input: ExecuteDraftPrInput, hashes: any): DraftPullRequestReceipt {
+  private createBaseReceipt(input: ExecuteDraftPrInput, hashes: DraftRequestHashes): DraftPullRequestReceipt {
     const timestamp = this.now().toISOString();
     return {
       receipt_version: "1.0",
@@ -191,9 +216,7 @@ This PR is intentionally **Draft**. WCO will not mark it ready, merge it, enable
     let receipt = input.existingReceipt;
 
     if (receipt) {
-      if (receipt.request_sha256 !== hashes.requestSha256 || receipt.git_publish_receipt_sha256 !== input.gitPublishReceiptSha256) {
-        throw new DraftPullRequestError("PR_RECEIPT_INCONSISTENT", "Existing receipt identities do not match current inputs.");
-      }
+      this.assertReceiptBoundToInput(receipt, input, hashes);
     } else {
       const candidates = await this.client.listByHead({ owner: input.owner, repository: input.repository, headOwner: input.owner, headBranch: input.headBranch });
       const cls = this.classifyCandidates(candidates, input);
@@ -209,9 +232,13 @@ This PR is intentionally **Draft**. WCO will not mark it ready, merge it, enable
     if (receipt.state === "CONFLICT") return receipt;
 
     if (receipt.state === "OPEN") {
-      const pr = await this.client.get({ owner: input.owner, repository: input.repository, pullNumber: receipt.pull_number! });
-      if (pr.head.sha !== input.expectedHeadSha || pr.base.ref !== input.baseBranch || pr.state !== "open" || pr.draft !== true || pr.merged_at !== null) {
-        receipt = this.mutateReceipt(receipt, { state: "CONFLICT", conflict_reason: "OPEN_PR_MUTATED", conflict_at: this.now().toISOString() });
+      if (receipt.pull_number === null || receipt.pull_url === null) {
+        throw new DraftPullRequestError("PR_RECEIPT_INCONSISTENT", "OPEN receipt is missing its pull request identity.");
+      }
+      const pr = await this.client.get({ owner: input.owner, repository: input.repository, pullNumber: receipt.pull_number });
+      const cls = this.classifyCandidates([pr], input);
+      if (!cls.exact || cls.exact.number !== receipt.pull_number || cls.exact.html_url !== receipt.pull_url) {
+        receipt = this.mutateReceipt(receipt, { state: "CONFLICT", conflict_reason: cls.conflict ?? "OPEN_PR_MUTATED", conflict_at: this.now().toISOString() });
         await this.persistReceipt(receipt);
       }
       return receipt;
