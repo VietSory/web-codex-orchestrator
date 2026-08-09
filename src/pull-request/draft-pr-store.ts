@@ -3,7 +3,7 @@ import path from "node:path";
 import { readStableFile, StableFileError } from "../shared/stable-file.js";
 import { DraftPullRequestError, type DraftPullRequestReceipt } from "./contracts.js";
 
-const SHA1 = /^[0-9a-f]{40}$/;
+const GIT_OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const MAX_DRAFT_PR_RECEIPT_BYTES = 65_536;
 
@@ -33,12 +33,12 @@ function assertReceipt(value: unknown): asserts value is DraftPullRequestReceipt
     receipt_version !== "1.0" || typeof run_id !== "string" ||
     (state !== "READY_FOR_CREATE" && state !== "CREATE_UNCERTAIN" && state !== "OPEN" && state !== "CONFLICT") ||
     typeof repository_owner !== "string" || typeof repository_name !== "string" || typeof base_branch !== "string" || typeof head_branch !== "string" ||
-    typeof expected_head_sha !== "string" || !SHA1.test(expected_head_sha) ||
+    typeof expected_head_sha !== "string" || !GIT_OID.test(expected_head_sha) ||
     typeof git_publish_receipt_sha256 !== "string" || !SHA256.test(git_publish_receipt_sha256) ||
     typeof request_sha256 !== "string" || !SHA256.test(request_sha256) || typeof title !== "string" ||
     typeof body_sha256 !== "string" || !SHA256.test(body_sha256) || draft_required !== true || typeof create_post_attempted !== "boolean" ||
-    (pull_number !== null && (typeof pull_number !== "number" || pull_number <= 0)) || (pull_url !== null && typeof pull_url !== "string") ||
-    (observed_head_sha !== null && (typeof observed_head_sha !== "string" || !SHA1.test(observed_head_sha))) ||
+    (pull_number !== null && (!Number.isSafeInteger(pull_number) || pull_number <= 0)) || (pull_url !== null && typeof pull_url !== "string") ||
+    (observed_head_sha !== null && (typeof observed_head_sha !== "string" || !GIT_OID.test(observed_head_sha))) ||
     (observed_base_branch !== null && typeof observed_base_branch !== "string") ||
     (observed_state !== null && observed_state !== "open" && observed_state !== "closed") ||
     (observed_draft !== null && typeof observed_draft !== "boolean") ||
@@ -63,7 +63,7 @@ function assertReceipt(value: unknown): asserts value is DraftPullRequestReceipt
   } else if (state === "CREATE_UNCERTAIN") {
     if (!create_post_attempted || create_attempted_at === null || conflict_reason !== null || opened_at !== null || conflict_at !== null) throw new DraftPullRequestError("PR_RECEIPT_INVALID", "CREATE_UNCERTAIN has invalid fields.");
   } else if (state === "OPEN") {
-    if (pull_number === null || pull_number <= 0 || pull_url === null || observed_head_sha !== expected_head_sha || observed_base_branch !== base_branch || observed_state !== "open" || observed_draft !== true || opened_at === null || conflict_reason !== null || conflict_at !== null) throw new DraftPullRequestError("PR_RECEIPT_INVALID", "OPEN state invariants violated.");
+    if (pull_number === null || !Number.isSafeInteger(pull_number) || pull_number <= 0 || pull_url === null || observed_head_sha !== expected_head_sha || observed_base_branch !== base_branch || observed_state !== "open" || observed_draft !== true || opened_at === null || conflict_reason !== null || conflict_at !== null) throw new DraftPullRequestError("PR_RECEIPT_INVALID", "OPEN state invariants violated.");
   } else if (state === "CONFLICT" && (conflict_reason === null || conflict_at === null)) {
     throw new DraftPullRequestError("PR_RECEIPT_INVALID", "CONFLICT state requires reason and timestamp.");
   }
