@@ -28,6 +28,9 @@ const DEFAULT_LIMITS: GitRunnerLimits = {
   stderrMaxBytes: GIT_STDERR_MAX_BYTES,
 };
 
+const CHECKIN_HELPER_PATTERN = "^filter\\..*\\.(clean|process)$";
+const NETWORK_HELPER_PATTERN = "^(credential(\\..*)?\\.helper|remote\\..*\\.receivepack)$";
+
 export class GitRunner {
   private readonly limits: GitRunnerLimits;
 
@@ -97,20 +100,81 @@ export class GitRunner {
     return result;
   }
 
+  private runtimePrefix(): string[] {
+    if (this.runtimeDirectory === undefined) return [];
+    return [
+      "-c",
+      `core.hooksPath=${path.join(this.runtimeDirectory, "empty-hooks")}`,
+      "-c",
+      "core.fsmonitor=false",
+      "-c",
+      "credential.helper=",
+    ];
+  }
+
+  private helperPatternFor(subcommand: string | undefined, args: readonly string[]): string | null {
+    if (this.runtimeDirectory === undefined) return null;
+    if (subcommand === "add") return CHECKIN_HELPER_PATTERN;
+    if (subcommand === "hash-object" && args.some((arg) => arg === "--path" || arg.startsWith("--path="))) return CHECKIN_HELPER_PATTERN;
+    if (subcommand === "push" || subcommand === "ls-remote") return NETWORK_HELPER_PATTERN;
+    return null;
+  }
+
+  private async unsafeLocalHelper(
+    gitExecutable: string,
+    cwd: string,
+    env: Record<string, string>,
+    pattern: string,
+  ): Promise<{ unsafe: boolean; diagnostic: string | null }> {
+    const probe = await spawnBounded({
+      executable: gitExecutable,
+      args: [
+        ...this.runtimePrefix(),
+        "config",
+        "--local",
+        "--includes",
+        "--name-only",
+        "--get-regexp",
+        pattern,
+      ],
+      cwd,
+      environment: env,
+      timeoutMs: this.limits.localTimeoutMs,
+      stdoutMaxBytes: Math.min(this.limits.stdoutMaxBytes, 1024 * 1024),
+      stderrMaxBytes: Math.min(this.limits.stderrMaxBytes, 1024 * 1024),
+      shell: false,
+    });
+
+    if (probe.spawnError || probe.timedOut || probe.stdoutTruncated || probe.stderrTruncated) {
+      return { unsafe: true, diagnostic: "local Git helper policy could not be inspected safely" };
+    }
+    if (probe.exitCode === 1 && probe.stdout.length === 0) return { unsafe: false, diagnostic: null };
+    if (probe.exitCode !== 0) return { unsafe: true, diagnostic: "local Git helper policy probe failed closed" };
+    const key = probe.stdout.split(/\r?\n/).find((line) => line.trim().length > 0)?.trim() ?? "configured helper";
+    return { unsafe: true, diagnostic: `executable local Git helper is forbidden (${key})` };
+  }
+
   async run(args: readonly string[], cwd: string): Promise<GitCommandResult> {
     const { subcommand, varTarget } = this.getCommandTarget(args);
-    const effectiveArgs = this.runtimeDirectory === undefined
-      ? [...args]
-      : [
-          "-c",
-          `core.hooksPath=${path.join(this.runtimeDirectory, "empty-hooks")}`,
-          "-c",
-          "core.fsmonitor=false",
-          ...args,
-        ];
-
     const env = this.safeEnvironment(subcommand, varTarget);
     const gitExecutable = env.WCO_GIT_EXECUTABLE || "git";
+    const helperPattern = this.helperPatternFor(subcommand, args);
+    if (helperPattern) {
+      const helper = await this.unsafeLocalHelper(gitExecutable, cwd, env, helperPattern);
+      if (helper.unsafe) {
+        return {
+          executable: "git",
+          args: [...this.runtimePrefix(), ...args],
+          cwd,
+          exitCode: 3,
+          stdout: "",
+          stderr: `WCO_GIT_UNSAFE_CONFIG: ${helper.diagnostic ?? "unsafe local Git helper configuration"}`,
+          duration_ms: 0,
+        };
+      }
+    }
+
+    const effectiveArgs = [...this.runtimePrefix(), ...args];
     const networkCommand = subcommand === "fetch" || subcommand === "push" || subcommand === "ls-remote";
     const timeoutMs = networkCommand ? this.limits.networkTimeoutMs : this.limits.localTimeoutMs;
     const result = await spawnBounded({
