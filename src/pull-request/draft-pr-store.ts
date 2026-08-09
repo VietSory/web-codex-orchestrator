@@ -1,6 +1,6 @@
-import { constants as fsConstants, type Stats } from "node:fs";
 import { lstat, mkdir, open, realpath, rename, rm } from "node:fs/promises";
 import path from "node:path";
+import { readStableFile, StableFileError } from "../shared/stable-file.js";
 import { DraftPullRequestError, type DraftPullRequestReceipt } from "./contracts.js";
 
 const SHA1 = /^[0-9a-f]{40}$/;
@@ -96,45 +96,24 @@ async function assertRegularOrMissing(filePath: string): Promise<void> {
   }
 }
 
-function sameFileIdentity(left: Stats, right: Stats): boolean {
-  return left.dev === right.dev && left.ino === right.ino && left.size === right.size;
-}
-
 async function readStableDraftReceiptBytes(receiptPath: string): Promise<Buffer | null> {
-  let pathBefore: Stats;
   try {
-    pathBefore = await lstat(receiptPath);
+    const before = await lstat(receiptPath);
+    if (before.isSymbolicLink() || !before.isFile() || before.size > MAX_DRAFT_PR_RECEIPT_BYTES) {
+      throw new DraftPullRequestError("PR_RECEIPT_INVALID", `Receipt must be a regular non-symlink file no larger than ${MAX_DRAFT_PR_RECEIPT_BYTES} bytes.`);
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
-  if (pathBefore.isSymbolicLink() || !pathBefore.isFile() || pathBefore.size > MAX_DRAFT_PR_RECEIPT_BYTES) throw new DraftPullRequestError("PR_RECEIPT_INVALID", `Receipt must be a regular non-symlink file no larger than ${MAX_DRAFT_PR_RECEIPT_BYTES} bytes.`);
-  const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
-  let handle;
+
   try {
-    handle = await open(receiptPath, fsConstants.O_RDONLY | noFollow);
+    return (await readStableFile(receiptPath, MAX_DRAFT_PR_RECEIPT_BYTES)).bytes;
   } catch (error) {
-    throw new DraftPullRequestError("PR_RECEIPT_INVALID", `Cannot safely open Draft PR receipt: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  try {
-    const before = await handle.stat();
-    if (!before.isFile() || !sameFileIdentity(pathBefore, before) || before.size > MAX_DRAFT_PR_RECEIPT_BYTES) throw new DraftPullRequestError("PR_RECEIPT_INVALID", "Draft PR receipt changed before it could be opened safely.");
-    const bytes = Buffer.alloc(before.size);
-    let offset = 0;
-    while (offset < bytes.length) {
-      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
-      if (bytesRead === 0) throw new DraftPullRequestError("PR_RECEIPT_INVALID", "Draft PR receipt was truncated while reading.");
-      offset += bytesRead;
+    if (error instanceof StableFileError) {
+      throw new DraftPullRequestError("PR_RECEIPT_INVALID", `Cannot safely read Draft PR receipt: ${error.message}`);
     }
-    if ((await handle.read(Buffer.alloc(1), 0, 1, offset)).bytesRead !== 0) throw new DraftPullRequestError("PR_RECEIPT_INVALID", "Draft PR receipt grew while reading.");
-    const afterHandle = await handle.stat();
-    let afterPath: Stats;
-    try { afterPath = await lstat(receiptPath); }
-    catch (error) { throw new DraftPullRequestError("PR_RECEIPT_INVALID", `Draft PR receipt path disappeared while reading: ${error instanceof Error ? error.message : String(error)}`); }
-    if (afterPath.isSymbolicLink() || !afterPath.isFile() || !sameFileIdentity(before, afterHandle) || !sameFileIdentity(before, afterPath)) throw new DraftPullRequestError("PR_RECEIPT_INVALID", "Draft PR receipt changed while reading.");
-    return bytes;
-  } finally {
-    await handle.close();
+    throw error;
   }
 }
 
