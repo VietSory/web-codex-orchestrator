@@ -34,7 +34,15 @@ export interface ExecutorReviewResult {
   usage?: ExecutorUsage;
 }
 
+export interface ExecutorReviewBudgetPolicy {
+  maximum_model_turns: number;
+  maximum_elapsed_ms: number;
+}
+
 export interface ExecutorReviewerPort {
+  /** Optional trusted policy. When present, the executor durably reserves one
+   * turn in its own receipt before each review call. */
+  budget_policy?: ExecutorReviewBudgetPolicy;
   review(request: ExecutorReviewRequest): Promise<ExecutorReviewResult>;
 }
 
