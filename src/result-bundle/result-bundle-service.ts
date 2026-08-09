@@ -38,9 +38,17 @@ import { validateWebVerdict } from "./web-verdict-validator.js";
 import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RESOURCES_DIR = path.join(__dirname, "resources");
+const MAX_AUTHORITY_RECEIPT_BYTES = 4 * 1024 * 1024;
 
 function readResource(filename: string): Buffer {
   return fs.readFileSync(path.join(RESOURCES_DIR, filename));
+}
+
+export interface Phase6AuthorityOverride {
+  executionEvidence: Record<string, unknown>;
+  executionReceiptBytes: Buffer;
+  publishReceiptPath: string;
+  draftReceiptPath: string;
 }
 
 export interface Phase6Options {
@@ -52,6 +60,13 @@ export interface Phase6Options {
   limits?: Partial<ResultBundleLimits>;
   now?: () => Date;
   secrets?: string[]; // secret values to scan for
+  /**
+   * Internal orchestration adapter for Phase 10+ executor-scoped authority.
+   * The caller must supply bytes from an already re-attested executor receipt;
+   * receipt paths remain confined to the trusted state directory and are read
+   * again by the hardened Phase 5 stores before packaging.
+   */
+  authority?: Phase6AuthorityOverride;
 }
 
 function sha256Hex(data: Buffer | string): string {
@@ -62,6 +77,28 @@ function sha256Hex(data: Buffer | string): string {
 
 function currentIso(now?: () => Date): string {
   return (now ? now() : new Date()).toISOString();
+}
+
+function containedAuthorityPath(stateDirectory: string, candidate: string, label: string): string {
+  const root = path.resolve(stateDirectory);
+  const resolved = path.resolve(candidate);
+  const relative = path.relative(root, resolved);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new ResultBundleError("RESULT_RECEIPT_INVALID", `${label} escapes the trusted state directory.`);
+  }
+  return resolved;
+}
+
+function validateAuthorityOverride(authority: Phase6AuthorityOverride): void {
+  if (!authority.executionEvidence || typeof authority.executionEvidence !== "object" || Array.isArray(authority.executionEvidence)) {
+    throw new ResultBundleError("RESULT_EXECUTION_RECEIPT_INVALID", "Executor authority evidence must be a JSON object.");
+  }
+  if (!Buffer.isBuffer(authority.executionReceiptBytes) || authority.executionReceiptBytes.byteLength === 0 || authority.executionReceiptBytes.byteLength > MAX_AUTHORITY_RECEIPT_BYTES) {
+    throw new ResultBundleError("RESULT_EXECUTION_RECEIPT_INVALID", `Executor authority receipt bytes must be between 1 and ${MAX_AUTHORITY_RECEIPT_BYTES} bytes.`);
+  }
+  if (!authority.publishReceiptPath || !authority.draftReceiptPath) {
+    throw new ResultBundleError("RESULT_RECEIPT_INVALID", "Executor authority receipt paths are required.");
+  }
 }
 
 async function readJsonFile(filePath: string, errorCode: ResultBundleError["code"]): Promise<Record<string, unknown>> {
@@ -141,6 +178,7 @@ export async function packageResultBundle(options: Phase6Options): Promise<Resul
   const limits = { ...DEFAULT_RESULT_BUNDLE_LIMITS, ...options.limits };
   const secrets = options.secrets ?? [];
   const resolvedStateDir = path.resolve(stateDirectory);
+  if (options.authority) validateAuthorityOverride(options.authority);
   
   // Extract taskId and archiveSha to use for resultBundlePaths
   const sep = runId.lastIndexOf(":");
@@ -163,6 +201,18 @@ export async function packageResultBundle(options: Phase6Options): Promise<Resul
   // Check for existing receipt first (idempotency)
   const existingReceipt = await readResultBundleReceipt(paths.receiptPath);
   if (existingReceipt?.run_id === runId && existingReceipt.state === "READY_FOR_WEB_REVIEW") {
+    if (options.authority) {
+      const currentExecutionSha256 = sha256Hex(options.authority.executionReceiptBytes);
+      const currentChangeSetSha256 = String(options.authority.executionEvidence.change_set_sha256 ?? "");
+      const currentBaseCommit = String(options.authority.executionEvidence.base_commit ?? "");
+      if (
+        existingReceipt.execution_receipt_sha256 !== currentExecutionSha256 ||
+        existingReceipt.change_set_sha256 !== currentChangeSetSha256 ||
+        existingReceipt.base_commit !== currentBaseCommit
+      ) {
+        throw new ResultBundleError("RESULT_RECEIPT_INCONSISTENT", "Existing ready Result Bundle is not bound to the currently selected executor authority.");
+      }
+    }
     // Idempotent return requires both exact archive bytes and fresh external PR authority.
     const archiveFilename = existingReceipt.archive_relative_path ? path.basename(existingReceipt.archive_relative_path) : "";
     const archivePath = archiveFilename ? paths.archivePath(archiveFilename) : "";
@@ -177,6 +227,10 @@ export async function packageResultBundle(options: Phase6Options): Promise<Resul
               runId,
               receipt: existingReceipt,
               githubClient,
+              ...(options.authority ? {
+                publishReceiptPath: containedAuthorityPath(resolvedStateDir, options.authority.publishReceiptPath, "Ready Result Bundle publish receipt path"),
+                draftReceiptPath: containedAuthorityPath(resolvedStateDir, options.authority.draftReceiptPath, "Ready Result Bundle Draft PR receipt path"),
+              } : {}),
             });
             return existingReceipt;
           }
@@ -226,7 +280,7 @@ async function _buildResultBundle(ctx: {
   gitRunner: GitRunner;
   now?: () => Date;
 }): Promise<ResultBundleReceipt> {
-  const { limits, secrets, resolvedStateDir, paths, runId, githubClient, gitRunner, now } = ctx;
+  const { options, limits, secrets, resolvedStateDir, paths, runId, githubClient, gitRunner, now } = ctx;
   const warnings: string[] = [];
   const createdAt = currentIso(now);
   const sep = runId.lastIndexOf(":");
@@ -236,10 +290,19 @@ async function _buildResultBundle(ctx: {
 
   // ── Step 1: Load and validate all upstream receipts ──────────────────────
 
-  // Phase 4 execution receipt
-  const executionRaw = await readExecutionReceipt(resolvedStateDir, taskId, archiveSha);
-  if (!executionRaw) {
-    throw new ResultBundleError("RESULT_EXECUTION_RECEIPT_INVALID", "Execution receipt not found.");
+  let executionRaw: Record<string, unknown>;
+  let executionReceiptSha256: string;
+  if (options.authority) {
+    executionRaw = options.authority.executionEvidence;
+    executionReceiptSha256 = sha256Hex(options.authority.executionReceiptBytes);
+  } else {
+    const legacyExecution = await readExecutionReceipt(resolvedStateDir, taskId, archiveSha);
+    if (!legacyExecution) {
+      throw new ResultBundleError("RESULT_EXECUTION_RECEIPT_INVALID", "Execution receipt not found.");
+    }
+    executionRaw = legacyExecution as unknown as Record<string, unknown>;
+    const execPaths = executionPaths(resolvedStateDir, taskId, archiveSha);
+    executionReceiptSha256 = sha256Hex(await fs.promises.readFile(execPaths.execution));
   }
   if (executionRaw.run_id !== runId) {
     throw new ResultBundleError("RESULT_EXECUTION_RECEIPT_INCONSISTENT", "Execution receipt run_id mismatch.");
@@ -247,9 +310,6 @@ async function _buildResultBundle(ctx: {
   if (executionRaw.state !== "READY_FOR_PUBLISH") {
     throw new ResultBundleError("RESULT_EXECUTION_NOT_READY", `Execution state is '${String(executionRaw.state)}', expected READY_FOR_PUBLISH.`);
   }
-  const execPaths = executionPaths(resolvedStateDir, taskId, archiveSha);
-  const executionFilePath = execPaths.execution;
-  const executionReceiptSha256 = sha256Hex(await fs.promises.readFile(executionFilePath));
 
   const bundlePath = String(executionRaw.accepted_bundle_path ?? path.join(resolvedStateDir, "runs", taskId, archiveSha, "bundle"));
   const worktreePath = String(executionRaw.worktree_path ?? "");
@@ -257,7 +317,9 @@ async function _buildResultBundle(ctx: {
   const changeSetSha256 = String(executionRaw.change_set_sha256 ?? "");
 
   // Phase 5A publish receipt
-  const p5aPath = path.join(resolvedStateDir, "runs", taskId, archiveSha, "execution", "publish", "git-publish.json");
+  const p5aPath = options.authority
+    ? containedAuthorityPath(resolvedStateDir, options.authority.publishReceiptPath, "Result Bundle publish receipt path")
+    : path.join(resolvedStateDir, "runs", taskId, archiveSha, "execution", "publish", "git-publish.json");
   const p5aRaw = await readGitPublishReceipt(p5aPath);
   if (!p5aRaw) {
     throw new ResultBundleError("RESULT_PUBLISH_RECEIPT_INVALID", "Phase 5A receipt not found.");
@@ -282,7 +344,9 @@ async function _buildResultBundle(ctx: {
   const gitPublishReceiptSha256 = sha256Hex(await fs.promises.readFile(p5aPath));
 
   // Phase 5B draft PR receipt
-  const p5bPath = path.join(resolvedStateDir, "publish", "github-draft-pr.json");
+  const p5bPath = options.authority
+    ? containedAuthorityPath(resolvedStateDir, options.authority.draftReceiptPath, "Result Bundle Draft PR receipt path")
+    : path.join(resolvedStateDir, "publish", "github-draft-pr.json");
   const p5bRaw = await readDraftPullRequestReceipt(p5bPath);
   if (!p5bRaw) {
     throw new ResultBundleError("RESULT_PR_RECEIPT_INVALID", "Phase 5B receipt not found.");
