@@ -1,10 +1,45 @@
-# Operations and Packaging
+# Operations and User Workflow
 
-## Configuration
+This guide answers the practical questions a WCO user has after reading the README: what to configure, what to run, what WCO is doing, why it may stop, and how to continue safely.
 
-Start from `examples/config.example.json`. Keep real configuration and state outside version control; `.wco/` is ignored by default.
+For architecture and security internals, see [Architecture](architecture.md) and [Protocols and Authority](protocols.md).
 
-A convenient source-checkout layout is:
+## The normal WCO workflow
+
+Most users should think about WCO as this loop:
+
+```text
+prepare the task
+      ↓
+wco doctor
+      ↓
+wco preview task-bundle.zip
+      ↓
+wco run task-bundle.zip
+      ↓
+WCO works until it needs outside input
+      ↓
+provide the requested input
+      ↓
+wco run task-bundle.zip again
+      ↓
+Draft PR + result
+      ↓
+you decide whether to merge or revise
+```
+
+You normally do **not** need to drive the lower-level state machine step by step.
+
+## 1. Prepare local configuration
+
+Start from the example and keep real configuration outside Git:
+
+```bash
+mkdir -p .wco
+cp examples/config.example.json .wco/config.json
+```
+
+A convenient layout is:
 
 ```text
 .wco/
@@ -12,15 +47,241 @@ A convenient source-checkout layout is:
   state/
 ```
 
-Set explicit defaults once per shell/session:
+The most important configuration sections are:
+
+### `repositories`
+
+This tells WCO which local repository it is allowed to work on and which remote URL it expects.
+
+Check:
+
+- `path` points to the real local repository;
+- `remote` matches the Git remote name, normally `origin`;
+- `expected_remote_urls` contains the remote you actually trust;
+- `fetch_policy` matches how you want missing Git objects handled.
+
+### `runtime`
+
+WCO uses the Codex version bundled with the project. If you set `codex_home`, it must point to the Codex authentication directory you intend WCO to use.
+
+### `agents`
+
+This selects the implementation and review models and limits how much model work one run may consume.
+
+The default example uses separate implementation/internal-review and final-review roles. The point is not the model names themselves; the point is that implementation is not accepted only because the same agent says its own code is good.
+
+### `verification`
+
+This is the command allow-list and resource limits for task verification.
+
+If a task asks WCO to run a command that is not allowed here, WCO should stop instead of quietly running it anyway.
+
+### `publish` and `github_pull_request`
+
+These settings are used only for Git/GitHub publication steps. Keep real tokens in environment variables, not in the JSON file.
+
+## 2. Set convenient shell defaults
+
+Instead of repeating paths on every command:
 
 ```bash
 export WCO_CONFIG="$PWD/.wco/config.json"
 export WCO_STATE_DIR="$PWD/.wco/state"
+```
+
+After a run exists, you can also set:
+
+```bash
 export WCO_RUN_ID='<task-id>:<task-bundle-sha256>'
 ```
 
-Then normal operation is intentionally short:
+Flags such as `--config`, `--state-dir`, and `--run-id` still override these defaults.
+
+## 3. Run `wco doctor`
+
+Before giving WCO a real coding task:
+
+```bash
+wco doctor
+```
+
+`doctor` checks the things that are expensive or confusing to discover halfway through a run:
+
+- Node and Git availability;
+- trusted WCO configuration;
+- the pinned Codex runtime;
+- Codex authentication;
+- required credentials when configured;
+- whether the verification sandbox works with network disabled.
+
+If the sandbox check fails, fix the environment first. WCO does not treat “sandbox unavailable” as permission to run verification unrestricted on the host.
+
+## 4. Understand the Task Bundle before running it
+
+A Task Bundle is the job WCO is being asked to carry out. It should answer questions such as:
+
+- Which repository is this for?
+- Which base revision does the task belong to?
+- What is the requested change?
+- Which files may change?
+- Which files or behaviors must not change?
+- What counts as success?
+- Which commands must pass?
+
+The current reference template is in `templates/task-bundle/`.
+
+WCO does not currently create a complete Task Bundle from a single plain-language goal. The bundle may be authored by ChatGPT Web, another task-authoring workflow, or manually from the template.
+
+You can validate a directory while authoring it:
+
+```bash
+wco validate ./my-task-bundle
+```
+
+When you have the archive that will actually be executed, preview it:
+
+```bash
+wco preview ./task-bundle.zip
+```
+
+`preview` is intentionally safe to run before committing to the workflow. It reports the target, allowed scope, checks, delivery policy, and human boundaries. It may store intake state, but it does not create the implementation worktree or start model/network work.
+
+## 5. Start or continue with `wco run`
+
+```bash
+wco run ./task-bundle.zip
+```
+
+Think of `run` as “do everything that is currently safe and fully specified.”
+
+It keeps advancing until one of these things happens:
+
+- it needs an external input;
+- it needs a human decision;
+- a retry boundary has been reached;
+- configuration/authentication/environment needs fixing;
+- the workflow reaches a final state.
+
+When `run` stops, read the reported next action instead of assuming the whole task failed.
+
+## 6. Check progress with `wco status`
+
+```bash
+wco status
+```
+
+or explicitly:
+
+```bash
+wco status \
+  --run-id '<task-id>:<bundle-sha256>' \
+  --state-dir ./.wco/state
+```
+
+`status` is for questions such as:
+
+- What task is this run for?
+- What stage has completed?
+- What is WCO waiting for?
+- How many WCO-controlled model turns have been consumed?
+- Is the run paused?
+- Has publication or review completed?
+
+Use `--json` where supported when another tool needs to read the status.
+
+## 7. External inputs are expected, not hidden
+
+WCO intentionally keeps some boundaries explicit.
+
+Depending on the workflow, it may ask for an implementation pack produced outside the current WCO process or for a verdict over the exact Result Bundle.
+
+Advanced automation can provide those explicitly, for example:
+
+```bash
+wco run ./task-bundle.zip --web-pack ./implementation-pack.zip
+```
+
+or:
+
+```bash
+wco run ./task-bundle.zip --web-verdict ./verdict.json
+```
+
+The important behavior is that WCO does not silently invent missing outside decisions just to keep the process moving.
+
+## 8. What WCO checks before calling work “done”
+
+WCO is built around a simple user expectation: a success message is not enough.
+
+Before later stages rely on earlier work, WCO checks the real state again. In practical terms, this is intended to prevent situations like:
+
+- tests passed on one version of the code, but a different version was pushed;
+- review approved one change, but the Draft PR points at another commit;
+- a branch or PR changed while the workflow was interrupted;
+- an old local success record is reused even though the files changed;
+- a crash causes a model call, push, or PR creation to be repeated blindly.
+
+The implementation details live in the protocol docs; users mainly need to know that WCO prefers stopping over guessing when the evidence no longer matches.
+
+## 9. If the process crashes or you close the terminal
+
+For an ordinary interruption, run the same task again:
+
+```bash
+wco run ./task-bundle.zip
+```
+
+WCO stores enough state to check already-completed work and continue when it can prove that work is still valid.
+
+It does not use an old terminal message or model transcript as the source of truth.
+
+If an interruption happened during a provider-backed model call and WCO cannot prove whether that call completed, it fails closed instead of automatically spending another turn and hoping the duplicate is harmless.
+
+## 10. Pause and resume
+
+Pause prevents WCO from starting new transitions:
+
+```bash
+wco pause
+```
+
+Clear an explicit pause with:
+
+```bash
+wco resume
+```
+
+`resume` does not itself continue the job. Run the task again afterward:
+
+```bash
+wco run ./task-bundle.zip
+```
+
+This distinction matters after crashes: normal crash recovery happens when the next operation is attempted; `resume` is only for a run that you explicitly paused.
+
+## 11. Draft PR and final decision
+
+WCO can publish the checked change and create or re-check a GitHub Draft PR.
+
+It deliberately does not expose automatic merge, Mark Ready, auto-merge, or branch-deletion authority as part of the autonomous workflow.
+
+The intended end of the loop is:
+
+```text
+WCO verifies the result
+        ↓
+Draft PR + Result Bundle
+        ↓
+external review/verdict
+        ↓
+you decide whether to merge
+```
+
+A revision request can authorize another bounded round on the same PR; an approval still stops before the human merge decision.
+
+## Common command map
+
+For normal use:
 
 ```bash
 wco doctor
@@ -29,99 +290,110 @@ wco run ./task-bundle.zip
 wco status
 ```
 
-Automation may pass `--config`, `--state-dir`, and `--run-id` explicitly instead of using environment defaults. Lower-level `next` and `continue` remain available for automation and debugging, but they are not the primary user workflow.
+For authoring/inspection:
 
-## Operational model
+```bash
+wco validate ./task-bundle-directory
+wco next
+```
 
-`doctor` is a bounded preflight. It verifies local machine/config/runtime prerequisites without starting a model turn. In addition to Node, Git, trusted configuration, credentials, pinned Codex runtime and authentication, it performs a bounded Codex verification-sandbox smoke test with network disabled. A failed sandbox check is a failed preflight, not a reason to fall back to unrestricted host execution.
+For explicit control or automation:
 
-`preview` securely intakes and validates a Task Bundle and reports repository target, scope, validation commands, delivery policy, and human-approval boundaries. It may write WCO intake state, but it does not create a worktree, modify repository files, or request network access. Preview re-reads accepted JSON through bounded stable non-symlink reads rather than trusting a pathname that was checked earlier.
+```bash
+wco pause
+wco resume
+wco continue
+wco intake ./task-bundle.zip
+wco scan
+wco watch
+```
 
-`run` prepares the exact run and advances the durable controller until an explicit external input, human, retry, or terminal boundary. `status` and `next` are read-oriented. `pause` prevents new transitions. `resume` only clears an explicit operator pause; it does not itself execute recovery or another transition. Recovery/re-attestation happens before the next side effect attempted by `run` or lower-level `continue`.
+`next` and `continue` are intentionally lower-level tools. Start with `run` unless you are debugging or building automation around WCO.
 
-On a crash or retry, WCO first tries to adopt already-completed lower-layer work by re-attesting exact receipts and external identities. It does not assume that a previous terminal message proves the side effect still exists. If a persisted checkpoint spans a provider-backed model call whose outcome was never sealed, WCO fails closed instead of replaying that ambiguous call automatically.
+## Model usage and token limits
 
-## Model budget semantics
+WCO tries to spend model work deliberately rather than treating every stage as one giant Codex conversation.
 
-WCO distinguishes limits it can enforce before a provider-backed model call from usage it can only measure after that call returns.
+Before a provider-backed review call, WCO checks the limits it can know in advance, such as allowed turns and elapsed time. After a response returns, it records provider-reported token usage when available and can prevent later calls once configured continuation thresholds are reached.
 
-For the initial executor review path, each Terra/Sol model turn is **reserved and durably persisted before the provider call**. Trusted model-turn and wall-clock limits are checked at that boundary. If the turn/time budget is exhausted, the provider call is not started. A reservation remains consumed after a crash; this deliberately prefers fail-safe over-counting to replaying a model turn beyond the configured limit.
+There is an important limitation: the pinned Codex SDK does not give WCO a reliable hard output-token cap for the model call that is already in progress. For that reason WCO does **not** claim that its token settings are an exact billing ceiling for the current call.
 
-Provider-reported input/output token usage is recorded after each completed review response. If measured token usage reaches or exceeds the configured continuation threshold, WCO records the usage and does not start a later review call. Missing or malformed provider usage fails closed instead of silently treating the turn as zero-cost.
-
-The revision engine also persists its budget counters before model calls. Existing revision checkpoints that could span an unsealed implementer/Terra/Sol call are treated as **ambiguous recovery** on a new invocation and are not replayed automatically. Safe deterministic/publication checkpoints remain adoptable.
-
-**Token limits are not described as a strict current-call provider billing cap.** The pinned Codex TypeScript SDK does not give WCO a reliable per-call output-token ceiling to enforce that stronger guarantee. WCO therefore reports what it can prove: hard pre-call turn/time gating plus measured token continuation thresholds.
-
-`wco status` reports WCO-owned durable counters. External browser/Chat research is outside this runtime and is not silently included in those counters.
+Likewise, WCO is designed to avoid unnecessary Codex work, but the project does not claim a fixed token/cost saving percentage without a real provider-backed benchmark for the workload being discussed.
 
 ## Smart Context
 
-Initial Terra/Sol review uses a deterministic bounded context selector derived from the registered Web pack's already-bound `project-map.json`, `read-coverage.json`, and `prohibited-changes.json` evidence.
+Independent review does not need to treat every file in a large repository as equally relevant.
 
-The selector:
+WCO can build a small, repeatable list of already-approved/read-covered paths that are likely to help reviewers understand the changed files. It never uses this list to expand what the task is allowed to change.
 
-- always treats changed files as mandatory review targets;
-- may prioritize **only paths already present in attested Web read coverage**; project-map metadata may re-rank that set but cannot introduce a new read target by itself;
-- prioritizes fully read same-directory files, then partial same-directory files, read-covered same-role files, and broader read coverage;
-- excludes registered prohibited paths plus hard-sensitive Git metadata and `.env`-style paths;
-- selects at most 24 additional paths and at most 16 KiB of path metadata;
-- hashes the selection and records that identity in review evidence;
-- treats selected paths as review hints only, never as lifecycle, architecture, acceptance, or authorization authority;
-- JSON-quotes repository paths before adding them to prompts so hostile filename characters cannot escape into instructions.
+The offline benchmark:
 
-`npm run benchmark:context` is a repeatable offline selector benchmark. It measures selector overhead and context-path byte reduction only. It deliberately does **not** claim provider token savings, latency savings, model quality, cost reduction, or task-success improvements without an actual model-backed experiment.
+```bash
+npm run benchmark:context
+```
 
-## State and backup policy
+measures only selector overhead and selected-path byte reduction. It does not claim provider token savings, latency savings, model-quality improvement, or task-success improvement.
 
-WCO state contains security-relevant receipts and recovery evidence. Treat the state directory as application data:
+A separate opt-in native benchmark exists for real provider-backed review calls and should only be run when you intentionally want to spend those model turns.
 
-- do not edit it manually while a run is active;
-- do not synchronize it concurrently through tools that may replace files or symlinks;
-- back it up together with the corresponding repository state if long-running missions must survive machine loss;
-- do not copy secrets into task bundles, verdicts, or diagnostics.
+## State and backups
 
-Diagnostic journals are bounded per record, but long-lived forensic logs may still need an operator retention/archive policy.
+The WCO state directory is important application data. It contains the records WCO uses to continue and verify long-running work.
+
+Practical rules:
+
+- do not hand-edit WCO state while a run is active;
+- do not concurrently sync/replace the state directory with tools that may swap files or links underneath WCO;
+- back up state together with the corresponding repository if a long-running mission must survive machine loss;
+- do not put secrets into Task Bundles, verdict files, or diagnostic logs.
 
 ## Native installation versus Docker
 
-### Primary recommendation: native CLI
+### Recommended today: native CLI
 
-Use native Node/Git integration for the first stable WCO releases. This is the least surprising deployment model because WCO intentionally needs access to:
+Native Node/Git integration is the primary target because WCO intentionally needs access to:
 
 - host Git repositories and worktrees;
 - local Git identity and credential helpers;
 - Codex authentication/runtime state;
 - GitHub credentials supplied by the operator environment;
-- optional browser/bridge tools that may live outside a container.
+- optional browser/bridge tooling that may live outside a container.
 
-Containerizing those dependencies would require several bind mounts, credential forwarding, UID/GID handling, and possibly host sockets. That can make a one-line `docker run` look simple while moving complexity into opaque mount/auth failures.
+A container can still be useful for development or CI, but making Docker the default user runtime today would move much of the complexity into mounts, credential forwarding, file ownership, and host integration.
 
-### Where Docker helps
+## Native pre-release validation
 
-A Docker image or devcontainer can be valuable for reproducible development, deterministic test dependencies, and CI experiments. It should be treated as an optional development environment until native release behavior is stable.
+Hosted CI intentionally cannot prove your local Codex authentication, WSL/Git behavior, or native sandbox support.
 
-If WCO later gains a remote worker mode with a narrow repository/artifact API instead of direct host integration, a container becomes a much stronger runtime deployment option.
+For the current pre-release candidate, run:
+
+```bash
+WCO_RUN_SANDBOX_INTEGRATION=1 npm run test:native:sandbox
+WCO_RUN_CODEX_INTEGRATION=1 npm run test:native:codex
+```
+
+The second test uses real provider-backed Codex execution. It should be an intentional opt-in action.
+
+See [Development](development.md) for the full test matrix and release-candidate checks.
 
 ## Release path
 
-The recommended sequence is:
+The current release sequence is:
 
 1. **Now:** source checkout for contributors and technical evaluators.
-2. **Release candidate:** `npm pack` artifact attached to a GitHub Release, with SHA-256 checksum and provenance/attestation.
-3. **Stable CLI:** optionally publish the same package to npm after supported native environments pass compatibility checks.
-4. **Optional container:** publish a separate development/worker image only when its host-integration contract is explicit.
-5. **Automatic updater:** only then consider a TUF-style update metadata design to protect update and rollback behavior.
+2. **Release candidate:** package artifact attached to a GitHub Release, with checksum and provenance/attestation.
+3. **Stable CLI:** optional npm publication after supported native environments pass compatibility checks.
+4. **Optional container:** only after the host-integration contract is clear enough to make it useful rather than misleadingly simple.
 
-The package remains `private: true` during pre-release so an accidental `npm publish` cannot create an unsupported public release. `npm run pack:check` still verifies which files would be shipped.
+The package remains `private: true` during pre-release so an accidental `npm publish` cannot create an unsupported public release. `npm run pack:check` verifies the future distributable surface.
 
 ## Release integrity roadmap
 
-For public releases, add the following without weakening current exact-head CI:
+For a public release, the project should add release-facing supply-chain evidence without weakening the current exact-head checks:
 
 - SBOM generation for runtime dependencies;
-- SLSA-compatible build provenance or GitHub artifact attestation;
+- build provenance/artifact attestation;
 - checksums for downloadable archives;
-- documented supported Node/OS matrix;
-- dependency and CodeQL/security scanning with reviewed findings;
-- signed/tag-protected release workflow where practical.
+- a documented supported Node/OS matrix;
+- dependency and code/security scanning with reviewed findings;
+- protected/signed release tags or workflow where practical.
