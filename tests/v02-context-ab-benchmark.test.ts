@@ -4,6 +4,10 @@ import { benchmarkOrder, runContextAbBenchmark, sameOrderedPaths } from "../src/
 
 const DIGEST = "a".repeat(64);
 
+function isTimeoutError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "TimeoutError";
+}
+
 test("v0.2 native A/B benchmark alternates arm order to reduce fixed ordering bias", () => {
   assert.deepEqual(benchmarkOrder(1), ["baseline", "smart"]);
   assert.deepEqual(benchmarkOrder(3), ["baseline", "smart", "smart", "baseline", "baseline", "smart"]);
@@ -46,32 +50,66 @@ test("v0.2 A/B benchmark re-attests before every sample and summarizes provider 
   assert.equal(report.smart.elapsed_ms.median, 82.5);
 });
 
-test("v0.2 A/B benchmark gives each provider sample a bounded abort signal", async () => {
+test("v0.2 A/B benchmark aborts a cooperative provider sample at its deadline", async () => {
+  let observedSignal: AbortSignal | undefined;
   await assert.rejects(
     () => runContextAbBenchmark({
       repetitions: 1,
       expectedChangeSetSha256: DIGEST,
-      sampleTimeoutMs: 10,
-      runSample: async (_arm, _sequence, signal) => await new Promise((resolve, reject) => {
-        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-      }),
+      sampleTimeoutMs: 25,
+      runSample: async (_arm, _sequence, signal) => {
+        observedSignal = signal;
+        return await new Promise<never>((_resolve, reject) => {
+          if (signal.aborted) {
+            reject(signal.reason);
+            return;
+          }
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      },
     }),
-    (error: unknown) => error instanceof DOMException && error.name === "TimeoutError",
+    isTimeoutError,
   );
+  assert.equal(observedSignal?.aborted, true);
+});
+
+test("v0.2 A/B benchmark deadline settles even when a provider ignores AbortSignal", async () => {
+  let observedSignal: AbortSignal | undefined;
+  await assert.rejects(
+    () => runContextAbBenchmark({
+      repetitions: 1,
+      expectedChangeSetSha256: DIGEST,
+      sampleTimeoutMs: 25,
+      runSample: async (_arm, _sequence, signal) => {
+        observedSignal = signal;
+        return await new Promise<never>(() => {});
+      },
+    }),
+    isTimeoutError,
+  );
+  assert.equal(observedSignal?.aborted, true);
+});
+
+test("v0.2 A/B benchmark rejects invalid sample deadlines before provider work", async () => {
+  let called = false;
   await assert.rejects(
     () => runContextAbBenchmark({
       repetitions: 1,
       expectedChangeSetSha256: DIGEST,
       sampleTimeoutMs: 0,
-      runSample: async () => ({
-        elapsed_ms: 1,
-        verdict: "APPROVE",
-        reviewed_change_set_sha256: DIGEST,
-        usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
-      }),
+      runSample: async () => {
+        called = true;
+        return {
+          elapsed_ms: 1,
+          verdict: "APPROVE",
+          reviewed_change_set_sha256: DIGEST,
+          usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+        };
+      },
     }),
     /positive safe integer/,
   );
+  assert.equal(called, false);
 });
 
 test("v0.2 A/B benchmark counts only APPROVE on the exact expected digest as success", async () => {
