@@ -3,7 +3,7 @@ import { performance } from "node:perf_hooks";
 import { CodexSdkAgentClient } from "../src/agent/codex-sdk-client.js";
 import { reviewWithSol } from "../src/agent/sol-reviewer.js";
 import { reviewWithTerra } from "../src/agent/terra-reviewer.js";
-import { runContextAbBenchmark } from "../src/benchmark/context-ab.js";
+import { runContextAbBenchmark, sameOrderedPaths } from "../src/benchmark/context-ab.js";
 import { loadPhase4Config } from "../src/execution/execution-config.js";
 import { reviewPrompt } from "../src/executor/production-gates.js";
 import { selectSmartContext } from "../src/executor/smart-context.js";
@@ -104,12 +104,17 @@ const baseRequest = {
   context_selection: selection,
 } as const;
 const profile = args.reviewer === "terra" ? config.agents.internal_reviewer : config.agents.final_reviewer;
+const sampleTimeoutMs = Math.min(
+  config.agents.limits.maximum_turn_seconds * 1000,
+  config.agents.limits.maximum_total_seconds * 1000,
+);
 
-console.error(`WCO native context A/B benchmark: ${args.repetitions * 2} read-only ${args.reviewer} model turns on exact digest ${initial.changeSetDigest}.`);
+console.error(`WCO native context A/B benchmark: ${args.repetitions * 2} read-only ${args.reviewer} model turns on exact digest ${initial.changeSetDigest}. Per-sample timeout=${sampleTimeoutMs}ms.`);
 
 const report = await runContextAbBenchmark({
   repetitions: args.repetitions,
   expectedChangeSetSha256: initial.changeSetDigest,
+  sampleTimeoutMs,
   beforeSample: async () => {
     const fresh = await attestReadyExecutorSnapshot({
       runId: args.runId,
@@ -117,11 +122,15 @@ const report = await runContextAbBenchmark({
       stateDirectory: args.stateDirectory,
       configPath: args.configPath,
     });
-    if (fresh.changeSetDigest !== initial.changeSetDigest || fresh.receipt.worktree_path !== initial.receipt.worktree_path || fresh.changedPaths.join("\n") !== initial.changedPaths.join("\n")) {
+    if (
+      fresh.changeSetDigest !== initial.changeSetDigest ||
+      fresh.receipt.worktree_path !== initial.receipt.worktree_path ||
+      !sameOrderedPaths(fresh.changedPaths, initial.changedPaths)
+    ) {
       throw new Error("Exact READY snapshot drifted during benchmark; refusing to compare different code states.");
     }
   },
-  runSample: async (arm) => {
+  runSample: async (arm, _sequence, signal) => {
     const prompt = reviewPrompt(baseRequest, { smart_context: arm === "smart" });
     const started = performance.now();
     const result = args.reviewer === "terra"
@@ -132,6 +141,7 @@ const report = await runContextAbBenchmark({
           threadId: undefined,
           workspacePath: initial.receipt.worktree_path,
           acceptedBundlePath: initial.source.trusted.runReceipt.accepted_bundle_path,
+          signal,
         })
       : await reviewWithSol(client, {
           model: profile.model,
@@ -140,6 +150,7 @@ const report = await runContextAbBenchmark({
           threadId: undefined,
           workspacePath: initial.receipt.worktree_path,
           acceptedBundlePath: initial.source.trusted.runReceipt.accepted_bundle_path,
+          signal,
         });
     const elapsed = performance.now() - started;
     const after = await attestReadyExecutorSnapshot({
@@ -148,7 +159,13 @@ const report = await runContextAbBenchmark({
       stateDirectory: args.stateDirectory,
       configPath: args.configPath,
     });
-    if (after.changeSetDigest !== initial.changeSetDigest) throw new Error("Read-only benchmark changed or observed drift in the exact snapshot.");
+    if (
+      after.changeSetDigest !== initial.changeSetDigest ||
+      after.receipt.worktree_path !== initial.receipt.worktree_path ||
+      !sameOrderedPaths(after.changedPaths, initial.changedPaths)
+    ) {
+      throw new Error("Read-only benchmark changed or observed drift in the exact snapshot.");
+    }
     return {
       elapsed_ms: elapsed,
       verdict: result.review.verdict,
@@ -168,6 +185,7 @@ console.log(JSON.stringify({
   reasoning_effort: profile.reasoning_effort,
   smart_context_selection_sha256: selection.selection_sha256,
   smart_context_selected_paths: selection.paths.length,
+  sample_timeout_ms: sampleTimeoutMs,
   lifecycle_mutation: false,
   report,
   note: "This opt-in benchmark performs real read-only Codex review turns. Compare provider-reported tokens, latency, and exact-digest APPROVE rate; the benchmark does not mutate WCO lifecycle receipts.",
