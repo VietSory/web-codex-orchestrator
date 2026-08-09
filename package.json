@@ -1,6 +1,6 @@
 {
   "name": "web-codex-orchestrator",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "A durable, security-focused CLI for orchestrating Web-authored code changes through verification, review, and Draft PR delivery.",
   "license": "Apache-2.0",
@@ -52,6 +52,7 @@
     "test:native:sandbox": "tsx --test tests/integration/codex-sandbox.integration.ts",
     "test:native:codex": "tsx --test tests/integration/codex-execution.integration.ts",
     "benchmark:context": "tsx scripts/benchmark-smart-context.mts",
+    "benchmark:native:context": "tsx scripts/benchmark-native-context.mts",
     "check": "npm run validate:template && npm run typecheck && npm test && npm run benchmark:context && npm run test:e2e && npm run build && npm run test:cli",
     "pack:check": "npm pack --dry-run --json",
     "prepack": "npm run build"
