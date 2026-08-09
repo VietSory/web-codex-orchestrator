@@ -35,11 +35,11 @@ Automation may pass `--config`, `--state-dir`, and `--run-id` explicitly instead
 
 `doctor` is a bounded preflight. It verifies local machine/config/runtime prerequisites without starting a model turn. In addition to Node, Git, trusted configuration, credentials, pinned Codex runtime and authentication, it performs a bounded Codex verification-sandbox smoke test with network disabled. A failed sandbox check is a failed preflight, not a reason to fall back to unrestricted host execution.
 
-`preview` securely intakes and validates a Task Bundle and reports repository target, scope, validation commands, delivery policy, and human-approval boundaries. It may write WCO intake state, but it does not create a worktree, modify repository files, or request network access.
+`preview` securely intakes and validates a Task Bundle and reports repository target, scope, validation commands, delivery policy, and human-approval boundaries. It may write WCO intake state, but it does not create a worktree, modify repository files, or request network access. Preview re-reads accepted JSON through bounded stable non-symlink reads rather than trusting a pathname that was checked earlier.
 
-`run` prepares the exact run and advances the durable controller until an explicit external input, human, retry, or terminal boundary. `status` and `next` are read-oriented. `pause` prevents new transitions; `resume` does not erase terminal or policy state and recovery re-attests durable evidence before another side effect.
+`run` prepares the exact run and advances the durable controller until an explicit external input, human, retry, or terminal boundary. `status` and `next` are read-oriented. `pause` prevents new transitions. `resume` only clears an explicit operator pause; it does not itself execute recovery or another transition. Recovery/re-attestation happens before the next side effect attempted by `run` or lower-level `continue`.
 
-On a crash or retry, WCO first tries to adopt already-completed lower-layer work by re-attesting exact receipts and external identities. It does not assume that a previous terminal message proves the side effect still exists.
+On a crash or retry, WCO first tries to adopt already-completed lower-layer work by re-attesting exact receipts and external identities. It does not assume that a previous terminal message proves the side effect still exists. If a persisted checkpoint spans a provider-backed model call whose outcome was never sealed, WCO fails closed instead of replaying that ambiguous call automatically.
 
 ## Model budget semantics
 
@@ -49,7 +49,7 @@ For the initial executor review path, each Terra/Sol model turn is **reserved an
 
 Provider-reported input/output token usage is recorded after each completed review response. If measured token usage reaches or exceeds the configured continuation threshold, WCO records the usage and does not start a later review call. Missing or malformed provider usage fails closed instead of silently treating the turn as zero-cost.
 
-The revision engine independently applies the same important ordering principle through its existing durable budget tracker: turn/time checks happen before model calls, while measured token usage is persisted after responses.
+The revision engine also persists its budget counters before model calls. Existing revision checkpoints that could span an unsealed implementer/Terra/Sol call are treated as **ambiguous recovery** on a new invocation and are not replayed automatically. Safe deterministic/publication checkpoints remain adoptable.
 
 **Token limits are not described as a strict current-call provider billing cap.** The pinned Codex TypeScript SDK does not give WCO a reliable per-call output-token ceiling to enforce that stronger guarantee. WCO therefore reports what it can prove: hard pre-call turn/time gating plus measured token continuation thresholds.
 
@@ -57,12 +57,14 @@ The revision engine independently applies the same important ordering principle 
 
 ## Smart Context
 
-Initial Terra/Sol review uses a deterministic bounded context selector derived from the registered Web pack's already-bound `project-map.json` and `read-coverage.json` evidence.
+Initial Terra/Sol review uses a deterministic bounded context selector derived from the registered Web pack's already-bound `project-map.json`, `read-coverage.json`, and `prohibited-changes.json` evidence.
 
 The selector:
 
 - always treats changed files as mandatory review targets;
-- prioritizes fully read same-directory files, then partial same-directory files, same-role project-map nodes, and broader read coverage;
+- may prioritize **only paths already present in attested Web read coverage**; project-map metadata may re-rank that set but cannot introduce a new read target by itself;
+- prioritizes fully read same-directory files, then partial same-directory files, read-covered same-role files, and broader read coverage;
+- excludes registered prohibited paths plus hard-sensitive Git metadata and `.env`-style paths;
 - selects at most 24 additional paths and at most 16 KiB of path metadata;
 - hashes the selection and records that identity in review evidence;
 - treats selected paths as review hints only, never as lifecycle, architecture, acceptance, or authorization authority;
