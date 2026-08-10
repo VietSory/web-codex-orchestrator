@@ -133,7 +133,7 @@ function retryWaiting(result: ContinueResult): boolean {
 export async function driveAutopilotJob(options: {
   bridge: WebBridge;
   runId: string;
-  webPackPath: string;
+  webPackPath?: string;
   stateDirectory: string;
   configPath: string;
   pollIntervalMs?: number;
@@ -146,12 +146,12 @@ export async function driveAutopilotJob(options: {
   const now = options.now ?? (() => new Date());
   const pollIntervalMs = Math.max(250, Math.min(options.pollIntervalMs ?? 1_000, 10_000));
   const maxCycles = Math.max(1, Math.min(options.maxCycles ?? 96, 512));
-  const resolvedPack = path.resolve(options.webPackPath);
   let receipt = await readAutopilotReceipt(options.stateDirectory, options.runId);
   if (!receipt) {
-    receipt = initialReceipt(options.runId, resolvedPack, now);
+    if (!options.webPackPath) throw new Error("AUTOPILOT_PACK_REQUIRED: the first AUTOPILOT drive requires the sealed Web implementation pack path.");
+    receipt = initialReceipt(options.runId, options.webPackPath, now);
     await persist(options.stateDirectory, receipt, now);
-  } else if (receipt.web_pack_path !== resolvedPack) {
+  } else if (options.webPackPath && receipt.web_pack_path !== path.resolve(options.webPackPath)) {
     throw new Error("AUTOPILOT_PACK_CONFLICT: an existing job is bound to a different Web implementation pack.");
   }
 
