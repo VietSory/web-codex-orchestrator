@@ -15,7 +15,6 @@ export async function driveJob(options: {
   mode?: JobMode | string | null;
   bridge: WebBridge;
   runId: string;
-  webPackPath?: string;
   stateDirectory: string;
   configPath: string;
   pollIntervalMs?: number;
@@ -38,7 +37,6 @@ export async function driveJob(options: {
     runId: options.runId,
     stateDirectory: options.stateDirectory,
     configPath: options.configPath,
-    ...(options.webPackPath ? { webPackPath: options.webPackPath } : {}),
     ...(options.pollIntervalMs !== undefined ? { pollIntervalMs: options.pollIntervalMs } : {}),
     ...(options.maxCycles !== undefined ? { maxCycles: options.maxCycles } : {}),
     ...(options.signal ? { signal: options.signal } : {}),
