@@ -1,0 +1,41 @@
+name: Export v0.3.1 generated lockfile
+
+on:
+  push:
+    branches:
+      - fix/v0.3.1-runtime-dependencies
+    paths:
+      - .github/workflows/hotfix-lock-export-v0.3.1.yml
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: fix/v0.3.1-runtime-dependencies
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Regenerate lockfile
+        run: npm install --package-lock-only --ignore-scripts
+
+      - name: Verify lock metadata
+        run: npm run lock:check
+
+      - name: Upload exact generated lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-lock-v0.3.1
+          path: package-lock.json
+          if-no-files-found: error
+          retention-days: 1
