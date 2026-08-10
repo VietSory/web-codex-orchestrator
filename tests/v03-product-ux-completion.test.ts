@@ -12,6 +12,7 @@ import { PersonalBearerAuthenticator } from "../src/web-bridge/relay/auth.js";
 import { createRelayServer } from "../src/web-bridge/relay/server.js";
 import { planSelfUninstall } from "../src/uninstall/self-uninstall.js";
 import { listLocalTaskHistory } from "../src/web-bridge/session-history.js";
+import { runWebCommand } from "../src/web-bridge/web-cli.js";
 
 function minimalConfig(repoPath: string): any {
   return {
@@ -58,6 +59,41 @@ test("one-time Web connect verifies relay before persisting actions_relay config
   }
 });
 
+test("disconnected manual bridge status never claims the relay is connected", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-v03-web-status-"));
+  const old = process.env.WCO_HOME;
+  process.env.WCO_HOME = root;
+  try {
+    await writeTrustedConfigAtomic(path.join(root, "config.json"), minimalConfig(path.join(root, "repo")));
+    const stdout: string[] = [], stderr: string[] = [];
+    const code = await runWebCommand(["status"], { write: (value) => stdout.push(value), error: (value) => stderr.push(value) });
+    assert.equal(code, 1);
+    assert.match(stdout.join(""), /Relay\s+disconnected/);
+    assert.doesNotMatch(stdout.join(""), /Relay\s+connected/);
+    assert.equal(stderr.join(""), "");
+  } finally {
+    if (old === undefined) delete process.env.WCO_HOME; else process.env.WCO_HOME = old;
+  }
+});
+
+test("Web CLI preserves stable structured error codes for unsafe relay input", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-v03-web-error-code-"));
+  const old = process.env.WCO_HOME;
+  process.env.WCO_HOME = root;
+  try {
+    await writeTrustedConfigAtomic(path.join(root, "config.json"), minimalConfig(path.join(root, "repo")));
+    const answers = ["http://example.com/relay", "https://chatgpt.com/g/test", "x".repeat(40)];
+    const stderr: string[] = [];
+    const code = await runWebCommand(["connect"], { write: () => undefined, error: (value) => stderr.push(value), question: async () => answers.shift()! });
+    assert.equal(code, 1);
+    assert.match(stderr.join(""), /^WEB_RELAY_URL_UNSAFE:/);
+    assert.doesNotMatch(stderr.join(""), /x{16,}/);
+    await assert.rejects(readRelayToken(path.join(root, "credentials"), {}), /not configured|AUTH_UNAVAILABLE/i);
+  } finally {
+    if (old === undefined) delete process.env.WCO_HOME; else process.env.WCO_HOME = old;
+  }
+});
+
 test("history reader returns bounded repository-specific sessions newest first", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-v03-history-"));
   const history = path.join(root, "bridge", "sessions", "history");
@@ -74,8 +110,11 @@ test("history reader returns bounded repository-specific sessions newest first",
 test("global install plan schedules npm self-removal while source checkout remains protected", () => {
   const globalPlan = planSelfUninstall("/usr/local/lib/node_modules/web-codex-orchestrator/dist/uninstall/self-uninstall.js");
   assert.equal(globalPlan.supported, true);
-  assert.deepEqual(globalPlan.command?.slice(-3), ["uninstall", "-g", "web-codex-orchestrator"]);
-  assert.match(globalPlan.command?.join(" ") ?? "", /uninstall -g web-codex-orchestrator/);
+  assert.deepEqual(globalPlan.command, ["npm", "uninstall", "--global", "--prefix", "/usr/local", "web-codex-orchestrator"]);
+  const isolatedGlobalPlan = planSelfUninstall("/tmp/wco-prefix/lib/node_modules/web-codex-orchestrator/dist/uninstall/self-uninstall.js");
+  assert.deepEqual(isolatedGlobalPlan.command, ["npm", "uninstall", "--global", "--prefix", "/tmp/wco-prefix", "web-codex-orchestrator"]);
+  const localPlan = planSelfUninstall("/tmp/wco-prefix/node_modules/web-codex-orchestrator/dist/uninstall/self-uninstall.js");
+  assert.deepEqual(localPlan.command, ["npm", "uninstall", "--prefix", "/tmp/wco-prefix", "web-codex-orchestrator"]);
   const sourcePlan = planSelfUninstall("/work/web-codex-orchestrator/dist/uninstall/self-uninstall.js");
   assert.equal(sourcePlan.supported, false);
   assert.match(sourcePlan.explanation, /source checkout|npm link/i);

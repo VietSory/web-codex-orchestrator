@@ -4,6 +4,8 @@ import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { canonicalSlashCommand, commandPalette, parseInteractiveInput } from "../src/tui/slash-commands.js";
+import { runInteractiveSession } from "../src/tui/session.js";
+import { questionWithoutEcho } from "../src/shared/secret-prompt.js";
 import { resolveWcoPaths } from "../src/setup/default-paths.js";
 import { resolveGitHubToken } from "../src/setup/credential-provider.js";
 import { RelayFileStore } from "../src/web-bridge/relay/file-store.js";
@@ -11,9 +13,40 @@ import { purgeWcoHome } from "../src/uninstall/purge.js";
 
 test("v0.3 slash palette supports idle goals, sealed safety, and /unitsall", () => {
   assert.match(commandPalette(), /\/new\s+Start a new task/);
+  assert.match(commandPalette(), /\/web status\s+Show Web Architect connection/);
+  assert.match(commandPalette(), /\/web connect\s+Verify and save/);
+  assert.match(commandPalette(), /\/config web\s+Configure/);
+  assert.match(commandPalette(), /\/unitsall\s+Alias for \/uninstall/);
   assert.equal(canonicalSlashCommand("/unitsall"), "/uninstall");
   assert.deepEqual(parseInteractiveInput("build it", { active: false, sealed: false }), { kind: "new", goal: "build it" });
   assert.equal(parseInteractiveInput("change scope", { active: true, sealed: true }).kind, "sealed_block");
+});
+
+test("interactive session treats a closed readline after Ctrl+C as a clean exit", async () => {
+  const output: string[] = [];
+  await runInteractiveSession({
+    input: process.stdin,
+    output: process.stdout,
+    write: (value) => output.push(value),
+    question: async () => { throw new Error("readline was closed"); },
+    close: () => undefined,
+  }, {
+    state: async () => ({ active: false, sealed: false, summary: "READY" }),
+    newTask: async () => "unused",
+    clarify: async () => "unused",
+    command: async () => ({ message: "unused" }),
+  });
+  assert.match(output.join(""), /Web Codex Orchestrator/);
+});
+
+test("secret prompt suppresses credential echo while preserving the answer", async () => {
+  const output: string[] = [];
+  const fake = {
+    _writeToOutput(value: string) { output.push(value); },
+    async question() { fake._writeToOutput("secret-token-must-not-echo"); return "secret-token-must-not-echo"; },
+  };
+  assert.equal(await questionWithoutEcho(fake, "Token: ", (value) => output.push(value)), "secret-token-must-not-echo");
+  assert.equal(output.join(""), "Token: \n");
 });
 
 test("v0.3 default paths honor explicit, env, WCO_HOME, and platform order", () => {

@@ -1,11 +1,26 @@
 import readline from "node:readline/promises";
+import { questionWithoutEcho } from "../shared/secret-prompt.js";
 import { commandPalette, parseInteractiveInput } from "./slash-commands.js";
 
-export interface InteractiveIo { input: NodeJS.ReadableStream; output: NodeJS.WritableStream; write(value: string): void; question(prompt: string): Promise<string>; close(): void; }
+export interface InteractiveIo { input: NodeJS.ReadableStream; output: NodeJS.WritableStream; write(value: string): void; question(prompt: string): Promise<string>; secret?(prompt: string): Promise<string>; close(): void; }
 export function terminalIo(): InteractiveIo {
   let rl: ReturnType<typeof readline.createInterface> | undefined;
   const get = () => rl ??= readline.createInterface({ input: process.stdin, output: process.stdout });
-  return { input: process.stdin, output: process.stdout, write: (value) => process.stdout.write(value), question: async (prompt) => await get().question(prompt), close: () => rl?.close() };
+  const secret = async (prompt: string): Promise<string> => {
+    rl?.close();
+    rl = undefined;
+    const hidden = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
+    try { return await questionWithoutEcho(hidden, prompt, (value) => process.stdout.write(value)); }
+    finally { hidden.close(); }
+  };
+  return {
+    input: process.stdin,
+    output: process.stdout,
+    write: (value) => process.stdout.write(value),
+    question: async (prompt) => await get().question(prompt),
+    secret,
+    close: () => rl?.close(),
+  };
 }
 export interface InteractiveHandlers { state(): Promise<{ active: boolean; sealed: boolean; summary: string }>; newTask(goal: string): Promise<string>; clarify(value: string): Promise<string>; command(command: string, args: string): Promise<{ message: string; quit?: boolean }>; }
 export async function runInteractiveSession(io: InteractiveIo, handlers: InteractiveHandlers): Promise<void> {
@@ -25,5 +40,10 @@ export async function runInteractiveSession(io: InteractiveIo, handlers: Interac
       io.write(`${result.message}\n`);
       if (result.quit) return;
     }
+  } catch (error) {
+    const code = error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code) : "";
+    const message = error instanceof Error ? error.message : String(error);
+    if (code === "ERR_USE_AFTER_CLOSE" || /readline was closed/i.test(message)) return;
+    throw error;
   } finally { io.close(); }
 }

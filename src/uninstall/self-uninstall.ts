@@ -10,11 +10,24 @@ export interface SelfUninstallSchedule { scheduled: boolean; helper_path?: strin
 
 export function planSelfUninstall(currentFile = fileURLToPath(import.meta.url)): SelfUninstallPlan {
   const normalized = currentFile.replaceAll("\\", "/");
-  if (normalized.includes("/lib/node_modules/web-codex-orchestrator/") || normalized.includes("/node_modules/web-codex-orchestrator/")) {
+  const globalMarker = "/lib/node_modules/web-codex-orchestrator/";
+  const globalIndex = normalized.indexOf(globalMarker);
+  if (globalIndex > 0) {
+    const prefix = normalized.slice(0, globalIndex);
     return {
       supported: true,
-      command: [process.platform === "win32" ? "npm.cmd" : "npm", "uninstall", "-g", "web-codex-orchestrator"],
-      explanation: "The global npm package will be removed by a detached post-exit helper.",
+      command: [process.platform === "win32" ? "npm.cmd" : "npm", "uninstall", "--global", "--prefix", prefix, "web-codex-orchestrator"],
+      explanation: `The global npm package under '${prefix}' will be removed by a detached post-exit helper.`,
+    };
+  }
+  const localMarker = "/node_modules/web-codex-orchestrator/";
+  const localIndex = normalized.indexOf(localMarker);
+  if (localIndex > 0) {
+    const prefix = normalized.slice(0, localIndex);
+    return {
+      supported: true,
+      command: [process.platform === "win32" ? "npm.cmd" : "npm", "uninstall", "--prefix", prefix, "web-codex-orchestrator"],
+      explanation: `The npm package under '${prefix}' will be removed by a detached post-exit helper.`,
     };
   }
   return {

@@ -27,6 +27,7 @@ import { runControlCommand } from "../orchestration/control-cli.js";
 import { formatTaskPreview, previewTaskBundle } from "../preview/task-preview.js";
 import { runInteractiveApp } from "../tui/interactive-app.js";
 import { runSetupCommand } from "../setup/setup-cli.js";
+import { resolveWcoPaths } from "../setup/default-paths.js";
 import { runWebCommand } from "../web-bridge/web-cli.js";
 import { runUninstallCommand } from "../uninstall/uninstall-cli.js";
 
@@ -96,6 +97,11 @@ function controlArgumentsWithEnvironment(command: string, args: string[]): strin
   if (command !== "doctor") addDefault("--run-id", "WCO_RUN_ID");
   addDefault("--state-dir", "WCO_STATE_DIR");
   if (command === "doctor" || command === "continue") addDefault("--config", "WCO_CONFIG");
+  if (command === "doctor") {
+    const paths = resolveWcoPaths({});
+    if (!hasFlag(resolved, "--state-dir")) resolved.push("--state-dir", paths.state);
+    if (!hasFlag(resolved, "--config")) resolved.push("--config", paths.config);
+  }
   return resolved;
 }
 

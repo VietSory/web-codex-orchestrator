@@ -1,4 +1,6 @@
 import { mkdir } from "node:fs/promises";
+import path from "node:path";
+import { loadTrustedConfig } from "../config/config-loader.js";
 import type { TrustedConfig } from "../config/contracts.js";
 import { writeTrustedConfigAtomic } from "./config-writer.js";
 import { resolveWcoPaths, type WcoPaths } from "./default-paths.js";
@@ -53,11 +55,39 @@ export async function performFirstRunSetup(options: { cwd: string; configPath?: 
   });
   const repository = await detectRepository(options.cwd);
   const project = await detectProject(repository.root);
-  const config = buildFirstRunConfig(repository, project);
+  const discovered = buildFirstRunConfig(repository, project);
   for (const directory of [paths.home, paths.credentials, paths.state, paths.cache, paths.logs, paths.bridge]) await mkdir(directory, { recursive: true, mode: 0o700 });
-  const written = await writeTrustedConfigAtomic(paths.config, config, {
-    ...(options.overwrite !== undefined ? { overwrite: options.overwrite } : {}),
-  });
-  await atomicWriteJson(paths.install_manifest, { schema_version: "1.0", product: "web-codex-orchestrator", version: "0.3.1", home: paths.home, owned_paths: [paths.config, paths.credentials, paths.state, paths.cache, paths.logs, paths.bridge, paths.install_manifest] });
+  let current: TrustedConfig | null = null;
+  try {
+    current = await loadTrustedConfig(paths.config);
+  } catch (error) {
+    if (!error || typeof error !== "object" || !("code" in error) || error.code !== "CONFIG_NOT_FOUND") throw error;
+  }
+  let config = discovered;
+  let write = true;
+  if (current) {
+    const previous = current.repositories[repository.repository_id];
+    if (previous) {
+      const samePath = path.resolve(previous.path) === repository.root;
+      const sameRemote = previous.remote === repository.remote && repository.expected_remote_urls.every((url) => previous.expected_remote_urls.includes(url));
+      if (!samePath || !sameRemote) {
+        throw new Error(`SETUP_REPOSITORY_ID_CONFLICT: '${repository.repository_id}' is already registered to a different path or remote. Existing trusted configuration was preserved.`);
+      }
+      config = current;
+      write = false;
+    } else {
+      const allowedExecutables = new Set([...(current.verification?.allowed_executables ?? []), ...(discovered.verification?.allowed_executables ?? [])]);
+      config = {
+        ...current,
+        repositories: { ...current.repositories, [repository.repository_id]: discovered.repositories[repository.repository_id]! },
+        ...(current.verification ? { verification: { ...current.verification, allowed_executables: [...allowedExecutables].sort() } } : {}),
+        ...(!current.github_pull_request && discovered.github_pull_request ? { github_pull_request: discovered.github_pull_request } : {}),
+      };
+    }
+  }
+  const written = write
+    ? await writeTrustedConfigAtomic(paths.config, config, { overwrite: Boolean(current) || options.overwrite === true })
+    : { config, backup_path: null };
+  await atomicWriteJson(paths.install_manifest, { schema_version: "1.0", product: "web-codex-orchestrator", version: "0.3.2", home: paths.home, owned_paths: [paths.config, paths.credentials, paths.state, paths.cache, paths.logs, paths.bridge, paths.install_manifest] });
   return { paths, repository, project, config: written.config };
 }

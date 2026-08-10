@@ -8,11 +8,13 @@ import { configureWebBridgeConnection, disconnectWebBridgeConnection } from "./c
 import { PersonalBearerAuthenticator } from "./relay/auth.js";
 import { RelayFileStore } from "./relay/file-store.js";
 import { createRelayServer } from "./relay/server.js";
+import { questionWithoutEcho } from "../shared/secret-prompt.js";
 
 export interface WebCommandIo {
   write(value: string): void;
   error(value: string): void;
   question?(prompt: string): Promise<string>;
+  secret?(prompt: string): Promise<string>;
 }
 
 const defaultIo: WebCommandIo = {
@@ -38,10 +40,24 @@ function withDefault(value: string, fallback?: string): string {
   return trimmed || fallback || "";
 }
 
+function formatWebError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : "";
+  return code && !message.startsWith(`${code}:`) ? `${code}: ${message}` : message;
+}
+
 async function promptConnection(io: WebCommandIo, config: TrustedConfig): Promise<{ relayUrl: string; gptUrl: string; token: string } | null> {
   let owned: ReturnType<typeof readline.createInterface> | undefined;
+  let secret = io.secret;
   const question = io.question ?? (process.stdin.isTTY && process.stdout.isTTY ? (() => {
     owned = readline.createInterface({ input: process.stdin, output: process.stdout });
+    secret = async (prompt: string) => {
+      owned?.close();
+      owned = undefined;
+      const hidden = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
+      try { return await questionWithoutEcho(hidden, prompt, (value) => process.stdout.write(value)); }
+      finally { hidden.close(); }
+    };
     return async (prompt: string) => await owned!.question(prompt);
   })() : undefined);
   if (!question) {
@@ -54,7 +70,7 @@ async function promptConnection(io: WebCommandIo, config: TrustedConfig): Promis
     const relayUrl = withDefault(await question(`Relay HTTPS URL${currentRelay ? ` [${currentRelay}]` : ""}: `), currentRelay);
     const gptUrl = withDefault(await question(`WCO Senior Architect GPT URL${currentGpt ? ` [${currentGpt}]` : ""}: `), currentGpt);
     let token = process.env.WCO_RELAY_TOKEN ?? "";
-    if (!token) token = (await question("Relay bearer token (stored only in WCO credentials): ")).trim();
+    if (!token) token = (await (secret ?? question)("Relay bearer token (input hidden; stored only in WCO credentials): ")).trim();
     if (!relayUrl || !gptUrl || !token) {
       io.error("WEB_CONNECT_CANCELLED: relay URL, GPT URL and relay credential are required.\n");
       return null;
@@ -114,12 +130,16 @@ export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = d
       io.write("Web bridge disconnected locally. WCO removed its stored relay credential; revoke the server/GPT credential separately if needed.\n");
       return 0;
     }
+    if (config.web_bridge?.mode !== "actions_relay") {
+      io.write(`Web Architect GPT     ${config.web_bridge?.gpt_url ? "configured" : "missing"}\nRelay                 disconnected\nAccount               missing\nPending author task   none\nPending final review  none\n`);
+      return 1;
+    }
     const bridge = createConfiguredWebBridge(config, paths.bridge);
     const status = await bridge.getConnectionStatus();
     io.write(`Web Architect GPT     ${config.web_bridge?.gpt_url ? "configured" : "missing"}\nRelay                 ${status.connected ? "connected" : "offline"}\nAccount               ${status.account ?? "missing"}\nPending author task   ${status.pending_author_job ?? "none"}\nPending final review  ${status.pending_final_review ?? "none"}\n`);
     return status.connected ? 0 : 1;
   } catch (error) {
-    io.error(`${error instanceof Error ? error.message : String(error)}\nNo repository files or workflow authority were changed. Try: wco web status\n`);
+    io.error(`${formatWebError(error)}\nNo repository files or workflow authority were changed. Try: wco web status\n`);
     return 1;
   }
 }

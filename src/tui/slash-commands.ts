@@ -1,5 +1,23 @@
 export const SLASH_COMMANDS = [
-  ["/new", "Start a new task"], ["/status", "Current task and workflow progress"], ["/task", "View current goal/contract summary"], ["/run", "Start or continue the workflow"], ["/web", "Open/connect the WCO Web Architect"], ["/review", "Latest reviews, Result Bundle and Draft PR"], ["/pause", "Pause before the next safe transition"], ["/resume", "Clear an explicit pause and continue"], ["/history", "Previous WCO runs for this repository"], ["/config", "View user-facing settings"], ["/doctor", "Diagnose local environment"], ["/uninstall", "Remove WCO-owned local resources and WCO itself"], ["/help", "Command help"], ["/quit", "Exit WCO"],
+  ["/new", "Start a new task"],
+  ["/status", "Current task and workflow progress"],
+  ["/task", "View current goal/contract summary"],
+  ["/run", "Start or continue the workflow"],
+  ["/web status", "Show Web Architect connection and pending work"],
+  ["/web connect", "Verify and save a Web Architect connection"],
+  ["/web open", "Open the configured WCO Senior Architect GPT"],
+  ["/web disconnect", "Remove the locally stored Web credential"],
+  ["/review", "Latest reviews, Result Bundle and Draft PR"],
+  ["/pause", "Pause before the next safe transition"],
+  ["/resume", "Clear an explicit pause and continue"],
+  ["/history", "Previous WCO runs for this repository"],
+  ["/config", "View user-facing settings"],
+  ["/config web", "Configure the Web Architect connection"],
+  ["/doctor", "Diagnose local environment"],
+  ["/uninstall", "Remove WCO-owned local resources and WCO itself"],
+  ["/unitsall", "Alias for /uninstall"],
+  ["/help", "Command help"],
+  ["/quit", "Exit WCO"],
 ] as const;
 export type SlashCommandName = typeof SLASH_COMMANDS[number][0];
 export function canonicalSlashCommand(value: string): string { const trimmed = value.trim(); return trimmed === "/unitsall" || trimmed.startsWith("/unitsall ") ? `/uninstall${trimmed.slice(9)}` : trimmed; }
