@@ -68,5 +68,5 @@ test("compiled preview rejects duplicate explicit state-dir even when it equals 
 test("compiled wco reports package version", async () => {
   const result = await run(["--version"]);
   assert.equal(result.code, 0, result.stderr);
-  assert.equal(result.stdout.trim(), "0.2.0");
+  assert.equal(result.stdout.trim(), "0.3.0");
 });

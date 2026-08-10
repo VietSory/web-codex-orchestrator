@@ -397,3 +397,10 @@ For a public release, the project should add release-facing supply-chain evidenc
 - a documented supported Node/OS matrix;
 - dependency and code/security scanning with reviewed findings;
 - protected/signed release tags or workflow where practical.
+# v0.3 operator entry points
+
+Run `wco setup` once from a target repository, then use `wco` for the interactive workflow. `/web status` verifies the Action relay connection; opening the GPT URL alone is not a connection proof. The TUI drives the same durable controller as `wco run` and `wco continue`, so restart recovery re-attests receipts instead of replaying uncertain model calls.
+
+The reference dogfood relay is `wco web relay`, bound to loopback by default and authenticated with `WCO_RELAY_TOKEN`. A ChatGPT Web Action needs a separately hosted HTTPS endpoint. Keep OAuth/bearer credentials outside repositories.
+
+Final APPROVE stops at `ASK_USER_TO_MERGE`. Mark Ready, merge, auto-merge, deployment and release remain manual.

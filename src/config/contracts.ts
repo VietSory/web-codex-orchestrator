@@ -27,6 +27,9 @@ export type PublishAuthenticationConfig =
   | {
       mode: "https_token";
       token_environment_key: string;
+    }
+  | {
+      mode: "gh_cli";
     };
 
 export interface PublishConfig {
@@ -34,10 +37,9 @@ export interface PublishConfig {
   authentication: PublishAuthenticationConfig;
 }
 
-export interface GitHubPullRequestAuthenticationConfig {
-  mode: "https_token";
-  token_environment_key: string;
-}
+export type GitHubPullRequestAuthenticationConfig =
+  | { mode: "https_token"; token_environment_key: string }
+  | { mode: "gh_cli" };
 
 export interface GitHubPullRequestConfig {
   provider: "github.com";
@@ -56,6 +58,18 @@ export interface ResultBundleConfig {
   github_attestation?: "required" | "optional";
 }
 
+export interface UiConfig {
+  interactive: boolean;
+}
+
+export interface WebBridgeConfig {
+  mode: "actions_relay" | "manual_file";
+  relay_url?: string;
+  gpt_url?: string;
+  poll_interval_ms: number;
+  job_ttl_seconds: number;
+}
+
 export interface TrustedConfig {
   config_version: "1.0";
   inbox: InboxConfig;
@@ -66,6 +80,8 @@ export interface TrustedConfig {
   publish?: PublishConfig;
   github_pull_request?: GitHubPullRequestConfig;
   result_bundle?: ResultBundleConfig;
+  ui?: UiConfig;
+  web_bridge?: WebBridgeConfig;
 }
 
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";

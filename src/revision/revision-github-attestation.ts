@@ -1,4 +1,5 @@
 import type { TrustedConfig } from "../config/contracts.js";
+import { resolveGitHubToken } from "../setup/credential-provider.js";
 import type { GitHubAttestationClient } from "../result-bundle/github-attestation.js";
 import { RevisionError } from "./contracts.js";
 
@@ -89,9 +90,14 @@ export async function attestRevisionPullRequest(params: {
     try { raw = await githubClient.getPullRequest(owner, repo, expected.pullRequestNumber); }
     catch (error) { throw error instanceof RevisionError ? error : new RevisionError("REVISION_OPERATIONAL_ERROR", `Injected GitHub attestation client failed: ${error instanceof Error ? error.message : String(error)}`); }
   } else {
-    const tokenKey = config.github_pull_request?.authentication?.token_environment_key;
-    const token = tokenKey ? process.env[tokenKey] : undefined;
-    if (!token) throw new RevisionError("REVISION_CONFIG_INVALID", `GitHub token environment variable '${tokenKey ?? "<unconfigured>"}' is unavailable.`);
+    const authentication = config.github_pull_request?.authentication;
+    if (!authentication) throw new RevisionError("REVISION_CONFIG_INVALID", "GitHub authentication is not configured.");
+    let token: string;
+    try {
+      token = await resolveGitHubToken(authentication);
+    } catch {
+      throw new RevisionError("REVISION_CONFIG_INVALID", "GitHub credentials are unavailable.");
+    }
     const url = `${PINNED_GITHUB_API_URL}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${expected.pullRequestNumber}`;
     let response: Response;
     try {

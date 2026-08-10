@@ -3,6 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import os from "node:os";
 import type { PublishConfig } from "../config/contracts.js";
+import { resolveGitHubToken } from "../setup/credential-provider.js";
 import { GitPublishError } from "./contracts.js";
 
 export type PreparedPublishGitSecurity =
@@ -141,13 +142,14 @@ export async function preparePublishGitSecurity(
   }
 
   if (protocol === "https") {
-    if (auth.mode !== "https_token") {
-      throw new GitPublishError("PUBLISH_AUTH_UNAVAILABLE", "HTTPS remote requires mode: https_token.");
+    if (auth.mode === "none") {
+      throw new GitPublishError("PUBLISH_AUTH_UNAVAILABLE", "HTTPS remote requires token or gh_cli authentication.");
     }
-
-    const token = env[auth.token_environment_key];
-    if (typeof token !== "string" || token.length < 1 || token.length > 4096 || token !== token.trim() || token.includes("\n") || token.includes("\r") || token.includes("\0")) {
-      throw new GitPublishError("PUBLISH_AUTH_UNAVAILABLE", "The HTTPS token is missing or invalid in the environment.");
+    let token: string;
+    try {
+      token = await resolveGitHubToken(auth, env);
+    } catch {
+      throw new GitPublishError("PUBLISH_AUTH_UNAVAILABLE", "GitHub credentials are missing or invalid.");
     }
 
     const askpassScriptPath = await writeAskpassHelper(runtimeDirectory);

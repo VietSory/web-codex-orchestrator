@@ -1,0 +1,136 @@
+openapi: 3.1.0
+info:
+  title: WCO Senior Architect Relay
+  version: 1.0.0
+  description: Bounded transport actions for WCO Web authoring and final review. The relay is not orchestration authority.
+servers:
+  - url: https://relay.example.invalid
+security:
+  - bearerAuth: []
+paths:
+  /v1/authoring/pending:
+    get:
+      operationId: getPendingTask
+      responses:
+        '200': { description: Pending authoring task, content: { application/json: { schema: { type: object } } } }
+  /v1/jobs/{jobId}/events:
+    get:
+      operationId: pollJobEvents
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string } }
+        - { name: after, in: query, required: false, schema: { type: integer, minimum: 0 } }
+      responses:
+        '200': { description: Next bounded event, content: { application/json: { schema: { type: object } } } }
+    post:
+      operationId: submitAuthoringEvent
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string } }
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [type, payload]
+              properties:
+                type: { enum: [repository_command, contract_sealed, implementation_sealed] }
+                payload: { type: object }
+      responses:
+        '201': { description: Idempotently accepted transport event, content: { application/json: { schema: { type: object } } } }
+  /v1/jobs/{jobId}/repository/summary:
+    post:
+      operationId: getRepositorySummary
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string } }
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses:
+        '201': { description: Bounded exact-base read request queued for local WCO, content: { application/json: { schema: { type: object } } } }
+  /v1/jobs/{jobId}/repository/tree:
+    post:
+      operationId: listRepositoryTree
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string } }
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses:
+        '201': { description: Bounded exact-base tree request queued, content: { application/json: { schema: { type: object } } } }
+  /v1/jobs/{jobId}/repository/search:
+    post:
+      operationId: searchRepository
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string } }
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [query], properties: { query: { type: string, maxLength: 256 } } } } } }
+      responses:
+        '201': { description: Bounded exact-base search queued, content: { application/json: { schema: { type: object } } } }
+  /v1/jobs/{jobId}/repository/files:
+    post:
+      operationId: readRepositoryFiles
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string } }
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [paths], properties: { paths: { type: array, maxItems: 32, items: { type: string } } } } } } }
+      responses:
+        '201': { description: Bounded exact-base file read queued, content: { application/json: { schema: { type: object } } } }
+  /v1/jobs/{jobId}/repository-results/{requestId}:
+    get:
+      operationId: getRepositoryCommandResult
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string } }
+        - { name: requestId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Local WCO result or null while pending, content: { application/json: { schema: { type: object } } } }
+  /v1/final-reviews/pending:
+    get:
+      operationId: getPendingReview
+      responses:
+        '200': { description: Pending exact final-review binding, content: { application/json: { schema: { type: object } } } }
+  /v1/final-reviews/{reviewId}/verdict:
+    post:
+      operationId: submitWebVerdict
+      parameters:
+        - { name: reviewId, in: path, required: true, schema: { type: string } }
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [protocol_version, review_id, run_id, result_bundle_sha256, verdict, summary, findings]
+              properties:
+                protocol_version: { const: wco-web-bridge-v1 }
+                review_id: { type: string }
+                run_id: { type: string }
+                result_bundle_sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+                verdict: { enum: [APPROVE, REVISE, BLOCK] }
+                summary: { type: string, maxLength: 16384 }
+                findings:
+                  type: array
+                  maxItems: 256
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [id, severity, description]
+                    properties:
+                      id: { type: string }
+                      severity: { enum: [blocking, non_blocking] }
+                      description: { type: string, maxLength: 8192 }
+      responses:
+        '201': { description: Verdict transported for local canonical validation, content: { application/json: { schema: { type: object } } } }
+  /v1/final-reviews/{reviewId}/evidence:
+    get:
+      operationId: readResultEvidence
+      parameters:
+        - { name: reviewId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Bounded exact verified Result evidence, content: { application/json: { schema: { type: object } } } }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer

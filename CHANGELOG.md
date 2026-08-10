@@ -6,6 +6,21 @@ The format is based on Keep a Changelog, and the project intends to follow Seman
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-10
+
+### Added
+
+- First-run setup and a plain-terminal interactive `wco` shell with the user-facing slash palette.
+- Authenticated ChatGPT Web bridge abstraction, bounded reference relay, exact-base repository reads, and durable read receipts.
+- Deterministic local materializers for Task Bundle 1.3, Web Implementation Pack v2, and canonical Web verdict submission.
+- `gh_cli` credential mode, `/web` connection controls, and conservative WCO-owned resource uninstall.
+
+### Security
+
+- Relay state remains transport only; every artifact and verdict passes the existing local authority validators.
+- Web reads deny sensitive paths and never read uncommitted working-tree content by default.
+- Publication, merge, Mark Ready, deployment, destructive Git operations, and release remain human-owned.
+
 ### Planned
 
 - Public release artifacts, SBOM, checksums, and provenance/attestation after native release validation.

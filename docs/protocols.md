@@ -58,3 +58,6 @@ An approval stops at human merge authority. A revision request seals only the fi
 The controller checkpoints an exact request before external/model/mutating work. Attempts are fenced by identity, retries use durable budgets/backoff, and crash recovery adopts prior side effects only after re-attestation.
 
 Session/transcript/browser state is never searched to synthesize missing protocol input.
+# Web bridge v1
+
+`wco-web-bridge-v1` is a transport envelope for authoring jobs, repository commands, implementation submissions and final-review verdicts. It is deliberately separate from Task Bundle 1.3 and Web Implementation Pack 2.0. Relay IDs, events or acknowledgements never substitute for those canonical artifact bindings. Mutations require idempotency keys and conflicting replays fail closed.

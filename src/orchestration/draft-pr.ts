@@ -12,6 +12,7 @@ import { readDraftPullRequestReceipt } from "../pull-request/draft-pr-store.js";
 import type { DraftPullRequestReceipt } from "../pull-request/contracts.js";
 import { attestReadyExecutorSnapshot } from "./executor-ready.js";
 import { OrchestrationError } from "./contracts.js";
+import { resolveGitHubToken } from "../setup/credential-provider.js";
 
 async function cleanupPublishAuth(auth: PreparedPublishGitSecurity): Promise<void> {
   if (auth.mode !== "https_token") return;
@@ -43,9 +44,12 @@ export async function openDraftPullRequestForExecutorSnapshot(options: {
   if (!config.github_pull_request || config.github_pull_request.provider !== "github.com" || !config.publish?.identity) {
     throw new OrchestrationError("ORCHESTRATION_DRAFT_PR_CONFIG_INVALID", "Trusted GitHub Draft PR and publish identity configuration are required.");
   }
-  const tokenKey = config.github_pull_request.authentication.token_environment_key;
-  const token = process.env[tokenKey];
-  if (!token) throw new OrchestrationError("ORCHESTRATION_DRAFT_PR_AUTH_UNAVAILABLE", `Missing GitHub token at ${tokenKey}.`);
+  let token: string;
+  try {
+    token = await resolveGitHubToken(config.github_pull_request.authentication);
+  } catch {
+    throw new OrchestrationError("ORCHESTRATION_DRAFT_PR_AUTH_UNAVAILABLE", "GitHub credentials are unavailable.");
+  }
 
   const repo = parseGitHubRepositoryRemote(publish.allowed_remote_url);
   const runtimeDirectory = path.join(ready.executorDirectory, "publish", "git-runtime");

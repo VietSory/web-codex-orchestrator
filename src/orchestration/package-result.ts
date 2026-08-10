@@ -11,6 +11,7 @@ import { DEFAULT_RESULT_BUNDLE_LIMITS, type ResultBundleReceipt, type ResultBund
 import { packageResultBundle } from "../result-bundle/result-bundle-service.js";
 import { readSelectedArtifact } from "./artifact-binding.js";
 import { OrchestrationError } from "./contracts.js";
+import { resolveGitHubToken } from "../setup/credential-provider.js";
 import { attestReadyExecutorSnapshot } from "./executor-ready.js";
 import { prepareOrchestrationDirectory } from "./ledger.js";
 
@@ -116,9 +117,12 @@ export async function packageResultForRun(options: {
   if (!github) throw new OrchestrationError("ORCHESTRATION_RESULT_CONFIG_INVALID", "github_pull_request config is required to package a Result Bundle.");
   if (!config.agents) throw new OrchestrationError("ORCHESTRATION_RESULT_CONFIG_INVALID", "agent profiles are required to project executor review evidence into the Result Bundle.");
 
-  const tokenKey = github.authentication.token_environment_key;
-  const token = process.env[tokenKey];
-  if (!token) throw new OrchestrationError("ORCHESTRATION_RESULT_AUTH_UNAVAILABLE", `GitHub token not found at configured environment key ${tokenKey}.`);
+  let token: string;
+  try {
+    token = await resolveGitHubToken(github.authentication);
+  } catch {
+    throw new OrchestrationError("ORCHESTRATION_RESULT_AUTH_UNAVAILABLE", "GitHub credentials are unavailable.");
+  }
 
   const selected = await readSelectedArtifact(options.stateDirectory, options.runId);
   if (!selected) throw new OrchestrationError("ORCHESTRATION_ARTIFACT_INVALID", "Result packaging requires the currently selected registered Web artifact.");

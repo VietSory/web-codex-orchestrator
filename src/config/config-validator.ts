@@ -2,7 +2,7 @@ import path from "node:path";
 import type { ConfigIssue, ConfigValidationReport, TrustedConfig } from "./contracts.js";
 import { hasSensitiveHttpUserInfo } from "./remote-url.js";
 
-const TOP_LEVEL = new Set(["config_version", "inbox", "repositories", "runtime", "agents", "verification", "publish", "github_pull_request", "result_bundle"]);
+const TOP_LEVEL = new Set(["config_version", "inbox", "repositories", "runtime", "agents", "verification", "publish", "github_pull_request", "result_bundle", "ui", "web_bridge"]);
 const INBOX_FIELDS = new Set(["poll_interval_ms", "stable_age_ms", "stable_observations", "maximum_candidates_per_scan"]);
 const REPOSITORY_FIELDS = new Set(["path", "remote", "expected_remote_urls", "fetch_policy"]);
 const REPOSITORY_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -22,6 +22,8 @@ const AGENT_LIMIT_KEYS = [
 const AGENT_LIMIT_FIELDS = new Set<string>(AGENT_LIMIT_KEYS);
 const VERIFICATION_FIELDS = new Set(["allowed_executables", "allowed_environment_keys", "maximum_command_seconds", "maximum_output_bytes", "maximum_file_bytes", "maximum_changed_files", "maximum_diff_lines", "allowed_generated_paths"]);
 const RUNTIME_FIELDS = new Set(["source", "codex_home"]);
+const UI_FIELDS = new Set(["interactive"]);
+const WEB_BRIDGE_FIELDS = new Set(["mode", "relay_url", "gpt_url", "poll_interval_ms", "job_ttl_seconds"]);
 
 export const TRUSTED_CONFIG_HARD_LIMITS = {
   inbox: {
@@ -50,7 +52,24 @@ export const TRUSTED_CONFIG_HARD_LIMITS = {
     maximum_public_output_bytes_per_command: 4_194_304,
     maximum_github_response_bytes: 8_388_608,
   },
+  web_bridge: {
+    poll_interval_ms: 60_000,
+    job_ttl_seconds: 604_800,
+  },
 } as const;
+
+function safeWebUrl(value: unknown, allowChatGpt = false): boolean {
+  if (typeof value !== "string" || value.length < 1 || value.length > 4096 || value !== value.trim()) return false;
+  try {
+    const parsed = new URL(value);
+    if (parsed.username || parsed.password || parsed.hash) return false;
+    if (allowChatGpt) return parsed.protocol === "https:";
+    const loopback = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "::1" || parsed.hostname === "[::1]";
+    return parsed.protocol === "https:" || loopback && parsed.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -182,6 +201,8 @@ export function validateConfig(value: unknown): ConfigValidationReport {
           if ("token_environment_key" in authentication) add(issues, "publish.authentication.mode none cannot have token field.");
         } else if (authentication.mode === "https_token") {
           if (typeof authentication.token_environment_key !== "string" || !/^WCO_GIT_[A-Z0-9_]{1,48}$/.test(authentication.token_environment_key)) add(issues, "publish.authentication.token_environment_key is invalid.");
+        } else if (authentication.mode === "gh_cli") {
+          if ("token_environment_key" in authentication) add(issues, "publish.authentication.mode gh_cli cannot have token fields.");
         } else {
           add(issues, "publish.authentication.mode is invalid.");
         }
@@ -202,8 +223,11 @@ export function validateConfig(value: unknown): ConfigValidationReport {
       else {
         for (const key of unknownFields(auth, new Set(["mode", "token_environment_key"]))) add(issues, `Unknown github_pull_request.authentication field: ${key}`);
         if ("token" in auth) add(issues, "github_pull_request.authentication cannot have token field directly.");
-        if (auth.mode !== "https_token") add(issues, "github_pull_request.authentication.mode must be https_token.");
-        else if (typeof auth.token_environment_key !== "string" || !/^WCO_GITHUB_[A-Z0-9_]{1,48}$/.test(auth.token_environment_key)) add(issues, "github_pull_request.authentication.token_environment_key is invalid.");
+        if (auth.mode === "https_token") {
+          if (typeof auth.token_environment_key !== "string" || !/^WCO_GITHUB_[A-Z0-9_]{1,48}$/.test(auth.token_environment_key)) add(issues, "github_pull_request.authentication.token_environment_key is invalid.");
+        } else if (auth.mode === "gh_cli") {
+          if ("token_environment_key" in auth) add(issues, "github_pull_request.authentication.mode gh_cli cannot have token fields.");
+        } else add(issues, "github_pull_request.authentication.mode must be https_token or gh_cli.");
       }
     }
   }
@@ -227,6 +251,29 @@ export function validateConfig(value: unknown): ConfigValidationReport {
       if (resultBundle.github_attestation !== undefined && resultBundle.github_attestation !== "required" && resultBundle.github_attestation !== "optional") {
         add(issues, "result_bundle.github_attestation must be 'required' or 'optional'.");
       }
+    }
+  }
+
+  const ui = value.ui;
+  if (ui !== undefined) {
+    if (!isRecord(ui)) add(issues, "ui must be an object.");
+    else {
+      for (const key of unknownFields(ui, UI_FIELDS)) add(issues, `Unknown ui field: ${key}`);
+      if (typeof ui.interactive !== "boolean") add(issues, "ui.interactive must be boolean.");
+    }
+  }
+
+  const webBridge = value.web_bridge;
+  if (webBridge !== undefined) {
+    if (!isRecord(webBridge)) add(issues, "web_bridge must be an object.");
+    else {
+      for (const key of unknownFields(webBridge, WEB_BRIDGE_FIELDS)) add(issues, `Unknown web_bridge field: ${key}`);
+      if (webBridge.mode !== "actions_relay" && webBridge.mode !== "manual_file") add(issues, "web_bridge.mode is invalid.");
+      if (webBridge.mode === "actions_relay" && !safeWebUrl(webBridge.relay_url)) add(issues, "web_bridge.relay_url must be HTTPS or an HTTP loopback URL.");
+      if (webBridge.relay_url !== undefined && !safeWebUrl(webBridge.relay_url)) add(issues, "web_bridge.relay_url is invalid.");
+      if (webBridge.gpt_url !== undefined && !safeWebUrl(webBridge.gpt_url, true)) add(issues, "web_bridge.gpt_url must be an HTTPS URL without credentials or fragments.");
+      if (!positiveIntegerWithin(webBridge.poll_interval_ms, TRUSTED_CONFIG_HARD_LIMITS.web_bridge.poll_interval_ms)) add(issues, `web_bridge.poll_interval_ms must be a positive integer <= ${TRUSTED_CONFIG_HARD_LIMITS.web_bridge.poll_interval_ms}.`);
+      if (!positiveIntegerWithin(webBridge.job_ttl_seconds, TRUSTED_CONFIG_HARD_LIMITS.web_bridge.job_ttl_seconds)) add(issues, `web_bridge.job_ttl_seconds must be a positive integer <= ${TRUSTED_CONFIG_HARD_LIMITS.web_bridge.job_ttl_seconds}.`);
     }
   }
 

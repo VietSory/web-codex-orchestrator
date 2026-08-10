@@ -4,7 +4,7 @@
 
 **Spend Codex on coding. Get a second opinion. Verify the result before it reaches you.**
 
-Web Codex Orchestrator (WCO) is a local CLI for larger AI-assisted coding jobs. It coordinates the handoff between a task definition, Codex implementation, independent review, automated checks, GitHub Draft PR delivery, and your final decision.
+Web Codex Orchestrator (WCO) is a local CLI for larger AI-assisted coding jobs. Start in a Git repository, run `wco`, and type the goal. WCO coordinates ChatGPT Web authoring, exact local artifact validation, Codex execution, independent review, automated checks, GitHub Draft PR delivery, and your final decision.
 
 > Status: pre-release. WCO is ready for development and technical evaluation, but a stable public package has not been released yet.
 
@@ -62,13 +62,25 @@ Use Codex directly when you are pair-programming, exploring, prototyping, fixing
 
 ## What do I give WCO, and what do I get back?
 
-### Input: a Task Bundle
+### Input: a goal
+
+The normal v0.3 path is:
+
+```bash
+cd /path/to/project
+wco
+# then type what you want to build
+```
+
+The configured WCO Senior Architect GPT inspects bounded files from the exact base commit and returns a sealed contract and implementation submission through the authenticated relay. WCO materializes those into the same canonical artifacts used by the engine.
+
+### Internal/automation authority: Task Bundles
 
 A **Task Bundle** is the job description WCO accepts. It tells WCO what repository and base state the task belongs to, what may change, what must not change, what “done” means, and which commands must pass.
 
 The reference shape lives in [`templates/task-bundle/`](templates/task-bundle/).
 
-A Task Bundle can be prepared by ChatGPT Web, another trusted task-authoring workflow, or manually from the template. WCO does not currently turn one plain-English sentence into a full Task Bundle by itself.
+A Task Bundle can also be supplied manually for automation and backward compatibility. In the interactive path users do not edit JSON, checksum files, or transfer ZIP files.
 
 Before any repository work starts, you can inspect the bundle with:
 
@@ -129,19 +141,13 @@ cd web-codex-orchestrator
 npm ci
 npm run build
 npm link
-wco --help
+wco setup
+wco
 ```
 
 `npm link` is optional. Without it, run commands from the checkout with `npm run wco -- <command>`.
 
-Create local configuration:
-
-```bash
-mkdir -p .wco
-cp examples/config.example.json .wco/config.json
-```
-
-Edit `.wco/config.json`. At minimum, check these parts carefully:
+`wco setup` safely detects the Git repository, project tools, GitHub CLI credentials and pinned Codex runtime, then writes the user-level config atomically. Advanced operators may still maintain explicit config. At minimum, these are the important policy areas:
 
 - `repositories`: the local repository WCO may work on and the expected remote URL;
 - `runtime.codex_home`: your Codex authentication directory when you use an explicit one;

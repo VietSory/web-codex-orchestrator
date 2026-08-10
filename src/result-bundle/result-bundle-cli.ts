@@ -4,6 +4,7 @@ import { DEFAULT_RESULT_BUNDLE_LIMITS, isResultBundleError, resultBundleExitCode
 import { GitHubRestAttestationClient } from "./github-attestation.js";
 import type { GitRunner } from "./git-evidence-reader.js";
 import { loadTrustedConfig } from "../config/config-loader.js";
+import { resolveGitHubToken } from "../setup/credential-provider.js";
 import { spawnBounded, spawnBoundedBinary } from "../runtime/spawn-bounded.js";
 
 export const PACKAGE_RESULT_USAGE = `\
@@ -114,10 +115,11 @@ export async function runPackageResultCommand(args: string[]): Promise<number> {
     if (!githubConfig) {
       throw Object.assign(new Error("github_pull_request config is required for Phase 6."), { code: "RESULT_CONFIG_INVALID" });
     }
-    const tokenKey = githubConfig.authentication.token_environment_key;
-    const token = process.env[tokenKey];
-    if (!token) {
-      const err = new Error(`GitHub token not found at environment key: ${tokenKey}`);
+    let token: string;
+    try {
+      token = await resolveGitHubToken(githubConfig.authentication);
+    } catch {
+      const err = new Error("GitHub credentials are unavailable.");
       Object.assign(err, { code: "RESULT_PR_AUTH_UNAVAILABLE" });
       throw err;
     }
