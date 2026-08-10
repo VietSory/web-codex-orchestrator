@@ -1,56 +1,57 @@
 # WCO job modes
 
-WCO has two orchestration boundaries. They share the same secure execution, verification, review, publication, Draft PR, and Web review primitives. The difference is who owns the next safe step.
+WCO has two orchestration boundaries. They preserve the same security and human-merge rules, but differ in who owns the next safe step.
 
 ## PAIR — default
 
-PAIR is the existing interactive WCO experience. The user and Web Architect collaborate on intent and task authoring, and the TUI remains the normal control surface.
+PAIR is the existing interactive WCO experience. The user and Web Architect collaborate on intent and implementation authoring, and the current TUI remains the normal control surface.
 
-PAIR must never silently turn a free-form task into a fully autonomous background workflow. Existing onboarding, Web connection prompts, progress language, `/status`, `/review`, `/pause`, `/resume`, and other TUI behavior remain unchanged.
-
-Use PAIR when the user expects to stay in the loop or may change direction while the task is being shaped.
+PAIR must never silently turn a free-form task into autonomous execution. Existing onboarding, Web connection prompts, progress language, `/status`, `/review`, `/pause`, `/resume`, and other TUI behavior remain unchanged.
 
 ## AUTOPILOT — explicit job ownership
 
-AUTOPILOT starts only after WCO has an exact prepared run and a sealed Web implementation pack. It does not replace Web authoring authority and it does not invent a task contract locally.
+AUTOPILOT starts from an exact **prepared Task Bundle run**. Web remains the architecture/specification authority; Codex owns implementation and bounded repair after that sealed handoff.
 
-After that handoff, the durable AUTOPILOT driver owns the safe continuation loop:
+The durable driver composes existing WCO services rather than replacing them:
 
-1. register the exact Web implementation pack;
-2. execute the existing deterministic implementation/repair pipeline;
-3. require deterministic verification;
-4. require independent Terra and Sol approval of the same change-set digest;
-5. publish the verified change through the existing publisher;
-6. open an exact Draft PR;
-7. package the exact Result Bundle;
-8. request Web final review;
-9. adopt an exact Web verdict;
-10. if revision is requested, reuse the existing revision/verification/review pipeline and request Web review again;
-11. stop at a human boundary.
+1. run the existing Phase 4 `ExecutionService`;
+   - Terra implements;
+   - deterministic verification runs;
+   - verifier failures feed bounded evidence back to Terra;
+   - Terra review `REVISE` feeds blocking findings back to Terra;
+   - Sol review `REVISE` feeds blocking findings back to Terra;
+   - every correction is re-verified and independently re-reviewed;
+   - only one exact change-set digest approved by verification, Terra, and Sol becomes publishable;
+2. reuse Phase 5A to publish the verified digest;
+3. reuse Phase 5B to open/attest an exact Draft PR;
+4. reuse Phase 6 to build and verify the Result Bundle;
+5. send that exact result to Web final review;
+6. if Web requests revision, reuse the existing Phase 8 same-PR revision service, including its own Terra fix → verify → Terra review → Sol review loop;
+7. send the revised Result Bundle back to Web;
+8. repeat until Web approves or an explicit human boundary is reached;
+9. stop at `READY_FOR_YOU` and ask the user to merge.
 
-No separate implementation, verifier, reviewer, Git publisher, PR client, revision engine, retry framework, or Web verdict processor is introduced for AUTOPILOT. The driver composes the existing WCO primitives.
+No second implementation engine, verifier, reviewer, Git publisher, PR client, revision engine, or Web-verdict processor is introduced for AUTOPILOT.
+
+## Why AUTOPILOT does not reuse the PAIR Web-pack executor
+
+PAIR's current Web implementation-pack path deliberately enforces closed-world postimages: the published files must exactly match the registered Web operations. Allowing a local repair agent to edit that path would weaken the authority invariant.
+
+AUTOPILOT therefore reuses the already-existing Task Bundle execution pipeline that was designed for Codex implementation and repair, while PAIR keeps its exact Web-pack semantics unchanged.
 
 ## Durable state and recovery
 
-AUTOPILOT writes `autopilot.json` inside the canonical run directory. The receipt binds the run ID, exact Web pack path, pending Web review job, review-round count, latest transition, status, and terminal action.
+AUTOPILOT writes `autopilot.json` inside the canonical run directory. It records the run ID, current service stage, per-stage transient retry count, pending Web review job ID, Web review rounds, revision rounds, status, and terminal action.
 
-Waiting is not progress. Web polling and retry/backoff waiting do not consume AUTOPILOT progressing-cycle budget. The existing orchestration ledger, retry policy, circuit breaker, model/token budgets, and transition attempt limits remain authoritative for repeated failures.
+Each underlying WCO service also keeps its own durable receipt. A process restart therefore re-enters the same idempotent service stage instead of trusting browser/model conversation history. If the job was waiting for Web, the pending review job ID is reused rather than creating a duplicate review.
 
-An interrupted job records `PAUSED` and can be driven again from durable WCO state. Browser/model conversation history is never recovery authority.
+Waiting is not progress. Web polling and transient retry/backoff do not consume completed-stage budget. Transient failures reuse WCO's existing retry classifier and deterministic exponential-backoff calculation; policy, replan, human-action, and exhausted-budget boundaries fail closed to `NEEDS_YOU`.
 
 ## User boundaries
 
-`READY_FOR_YOU` means the exact Draft PR head has passed the required review boundary and WCO may ask the user to merge. WCO still does not merge it.
+`READY_FOR_YOU` means the exact Draft PR head has passed Web final review. WCO may ask the user to merge, but never merges it.
 
-`NEEDS_YOU` is reserved for boundaries that should not be guessed through, including:
-
-- Web or reviewer escalation;
-- a replan that requires a fresh Web implementation pack;
-- a terminal policy or operational block;
-- exhausted bounded execution resources;
-- another consequential decision that existing WCO policy assigns to a human.
-
-If Web authority asks for a new implementation pack after replan, AUTOPILOT must not replay the previous pack.
+`NEEDS_YOU` is reserved for boundaries that should not be guessed through, including replan/contract conflicts, explicit human action, policy blocks, exhausted bounded execution resources, Web escalation, or non-retryable operational failures.
 
 ## Human-owned actions
 
@@ -58,16 +59,15 @@ Both modes preserve the same hard boundary: WCO does not automatically merge, ma
 
 ## Headless integration
 
-The AUTOPILOT driver is available as `src/orchestration/autopilot-job.ts`. The repository also builds `dist/orchestration/autopilot-standalone-cli.js` for headless automation integration without changing the default `wco` TUI.
+The AUTOPILOT driver is `src/orchestration/autopilot-job.ts`. The build also emits `dist/orchestration/autopilot-standalone-cli.js` without changing the default `wco` TUI.
 
-From a built checkout, the advanced entry point is:
+Prepare the Task Bundle through the existing trusted preparation flow, then drive that exact run:
 
 ```text
 node dist/orchestration/autopilot-standalone-cli.js \
-  --run-id <task-id:sha256> \
-  --web-pack <exact-web-pack.zip> \
+  --run-id <prepared-task-id:archive-sha256> \
   --state-dir <state-directory> \
   --config <config.json>
 ```
 
-This advanced entry point is intentionally separate from the default interactive UX while the AUTOPILOT product surface is validated.
+This advanced entry point remains separate from the optimized interactive UX while the AUTOPILOT product surface is validated.
