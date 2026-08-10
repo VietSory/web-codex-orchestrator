@@ -167,7 +167,10 @@ export class CodexSdkAgentClient implements AgentClient {
         approvalPolicy: "never",
         networkAccessEnabled: false,
         webSearchMode: "disabled",
-        additionalDirectories: [],
+        // The accepted Task Bundle is immutable authority. Expose it only to
+        // read-only turns; adding it to a workspace-write turn would widen the
+        // SDK sandbox's writable roots and violate that authority boundary.
+        additionalDirectories: request.read_only ? [path.resolve(request.accepted_bundle_path)] : [],
       };
       const thread = request.thread_id
         ? codex.resumeThread(request.thread_id, threadOptions)

@@ -94,6 +94,9 @@ test("v0.2 review prompt identifies smart context as bounded hints rather than a
   assert.match(prompt, new RegExp(selection.selection_sha256));
   assert.match(prompt, /Priority context paths \(JSON-quoted hints only; not lifecycle, architecture, or acceptance authority\)/);
   assert.match(prompt, /Start with the changed files and these priority context paths/);
+  assert.match(prompt, /Accepted Task Bundle directory \(trusted local read-only authority\): "\/tmp\/bundle"/);
+  assert.match(prompt, /Read the accepted Task Bundle directory above/);
+  assert.match(prompt, /Direct artifact access is not required/);
   assert.ok(Buffer.byteLength(prompt, "utf8") < 64 * 1024);
 });
 
