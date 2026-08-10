@@ -78,3 +78,6 @@ jobs:
 
       - name: Verify distributable package surface
         run: npm run pack:check
+
+      - name: Clean-install packed CLI without dev dependencies
+        run: npm run pack:smoke
