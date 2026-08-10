@@ -58,6 +58,6 @@ export async function performFirstRunSetup(options: { cwd: string; configPath?: 
   const written = await writeTrustedConfigAtomic(paths.config, config, {
     ...(options.overwrite !== undefined ? { overwrite: options.overwrite } : {}),
   });
-  await atomicWriteJson(paths.install_manifest, { schema_version: "1.0", product: "web-codex-orchestrator", version: "0.3.0", home: paths.home, owned_paths: [paths.config, paths.credentials, paths.state, paths.cache, paths.logs, paths.bridge, paths.install_manifest] });
+  await atomicWriteJson(paths.install_manifest, { schema_version: "1.0", product: "web-codex-orchestrator", version: "0.3.1", home: paths.home, owned_paths: [paths.config, paths.credentials, paths.state, paths.cache, paths.logs, paths.bridge, paths.install_manifest] });
   return { paths, repository, project, config: written.config };
 }
