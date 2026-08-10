@@ -15,7 +15,7 @@ function splitRunId(runId: string): { taskId: string; taskBundleSha256: string }
   return { taskId: runId.slice(0, split), taskBundleSha256: runId.slice(split + 1) };
 }
 
-export async function loadExecutorResumeSource(options: { runId: string; artifactSha256: string; stateDirectory: string; configPath: string }): Promise<ExecutorSource> {
+export async function loadExecutorResumeSource(options: { runId: string; artifactSha256: string; stateDirectory: string; configPath: string; expectedWorktreeHead?: string }): Promise<ExecutorSource> {
   if (!SHA256.test(options.artifactSha256)) throw new ExecutorError("EXECUTOR_REGISTRATION_INVALID", "artifact SHA-256 is invalid.");
   const identity = splitRunId(options.runId);
   const registration = await readArtifactRegistration(options.stateDirectory, identity.taskId, identity.taskBundleSha256, options.artifactSha256);
@@ -28,6 +28,6 @@ export async function loadExecutorResumeSource(options: { runId: string; artifac
   const trusted = await resolveTrustedRunContext(options.runId, options.stateDirectory, options.configPath).catch((error) => {
     throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", `Canonical run authority drifted during resume: ${error instanceof Error ? error.message : String(error)}`);
   });
-  await attestExecutorResumeAuthority({ run: trusted.runReceipt, trustedRepoPath: trusted.trustedRepoPath, registration });
+  await attestExecutorResumeAuthority({ run: trusted.runReceipt, trustedRepoPath: trusted.trustedRepoPath, registration, ...(options.expectedWorktreeHead ? { expectedWorktreeHead: options.expectedWorktreeHead } : {}) });
   return { registration, pack, trusted, archivePath: paths.archivePath };
 }
