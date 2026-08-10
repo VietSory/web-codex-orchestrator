@@ -7,7 +7,6 @@ import { driveAutopilotJob } from "./autopilot-job.js";
 
 interface Args {
   runId: string;
-  webPackPath?: string;
   stateDirectory: string;
   configPath: string;
   maxCycles?: number;
@@ -17,10 +16,10 @@ interface Args {
 function usage(): string {
   return [
     "Usage:",
-    "  node dist/orchestration/autopilot-standalone-cli.js --run-id <task-id:sha256> [--web-pack <pack.zip>] [--state-dir <directory>] [--config <config.json>] [--max-cycles <1-512>] [--json]",
+    "  node dist/orchestration/autopilot-standalone-cli.js --run-id <prepared-task-id:sha256> [--state-dir <directory>] [--config <config.json>] [--max-cycles <1-128>] [--json]",
     "",
-    "--web-pack is required only for the first drive of a run; durable AUTOPILOT resume reuses the exact bound pack path.",
-    "PAIR remains the default `wco` interactive workflow. AUTOPILOT starts only after the sealed Web implementation handoff exists.",
+    "AUTOPILOT starts from an already prepared Task Bundle run and reuses WCO's repair-capable execution, publish, Draft PR, Result Bundle, Web review, and revision services.",
+    "PAIR remains the default `wco` interactive workflow.",
   ].join("\n");
 }
 
@@ -29,13 +28,8 @@ function parseArgs(argv: string[]): Args {
   for (let index = 0; index < argv.length; index += 1) {
     const key = argv[index]!;
     if (!key.startsWith("--") || values.has(key)) throw new Error(`AUTOPILOT_CLI_INVALID: unexpected or duplicate option '${key}'.`);
-    if (key === "--json") {
-      values.set(key, true);
-      continue;
-    }
-    if (!["--run-id", "--web-pack", "--state-dir", "--config", "--max-cycles"].includes(key)) {
-      throw new Error(`AUTOPILOT_CLI_INVALID: unknown option '${key}'.`);
-    }
+    if (key === "--json") { values.set(key, true); continue; }
+    if (!["--run-id", "--state-dir", "--config", "--max-cycles"].includes(key)) throw new Error(`AUTOPILOT_CLI_INVALID: unknown option '${key}'.`);
     const value = argv[index + 1];
     if (!value || value.startsWith("--")) throw new Error(`AUTOPILOT_CLI_INVALID: option '${key}' requires a value.`);
     values.set(key, value);
@@ -47,49 +41,33 @@ function parseArgs(argv: string[]): Args {
     ...(typeof values.get("--config") === "string" ? { configPath: path.resolve(values.get("--config") as string) } : {}),
   });
   const runId = values.get("--run-id");
-  const webPack = values.get("--web-pack");
   if (typeof runId !== "string" || !runId) throw new Error("AUTOPILOT_CLI_INVALID: missing '--run-id'.");
   const maxCyclesRaw = values.get("--max-cycles");
   let maxCycles: number | undefined;
   if (typeof maxCyclesRaw === "string") {
     maxCycles = Number(maxCyclesRaw);
-    if (!Number.isSafeInteger(maxCycles) || maxCycles < 1 || maxCycles > 512) {
-      throw new Error("AUTOPILOT_CLI_INVALID: --max-cycles must be 1..512.");
-    }
+    if (!Number.isSafeInteger(maxCycles) || maxCycles < 1 || maxCycles > 128) throw new Error("AUTOPILOT_CLI_INVALID: --max-cycles must be 1..128.");
   }
-  return {
-    runId,
-    ...(typeof webPack === "string" ? { webPackPath: path.resolve(webPack) } : {}),
-    stateDirectory: paths.state,
-    configPath: paths.config,
-    ...(maxCycles !== undefined ? { maxCycles } : {}),
-    json: values.get("--json") === true,
-  };
+  return { runId, stateDirectory: paths.state, configPath: paths.config, ...(maxCycles !== undefined ? { maxCycles } : {}), json: values.get("--json") === true };
 }
 
 function human(receipt: Awaited<ReturnType<typeof driveAutopilotJob>>): string {
   return [
     `AUTOPILOT ${receipt.status}`,
     `Run: ${receipt.run_id}`,
+    `Stage: ${receipt.stage}`,
     `Web review rounds: ${receipt.web_review_rounds}`,
-    `Last transition: ${receipt.last_transition ?? "none"}`,
+    `Revision rounds: ${receipt.revision_rounds_completed}`,
     `Action: ${receipt.terminal_action ?? "none"}`,
     ...(receipt.reason ? [`Reason: ${receipt.reason}`] : []),
   ].join("\n");
 }
 
 async function main(): Promise<number> {
-  if (process.argv.includes("--help") || process.argv.includes("-h")) {
-    process.stdout.write(`${usage()}\n`);
-    return 0;
-  }
+  if (process.argv.includes("--help") || process.argv.includes("-h")) { process.stdout.write(`${usage()}\n`); return 0; }
   let parsed: Args;
-  try {
-    parsed = parseArgs(process.argv.slice(2));
-  } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n${usage()}\n`);
-    return 2;
-  }
+  try { parsed = parseArgs(process.argv.slice(2)); }
+  catch (error) { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n${usage()}\n`); return 2; }
 
   try {
     const config = await loadTrustedConfig(parsed.configPath);
@@ -100,7 +78,6 @@ async function main(): Promise<number> {
       runId: parsed.runId,
       stateDirectory: parsed.stateDirectory,
       configPath: parsed.configPath,
-      ...(parsed.webPackPath ? { webPackPath: parsed.webPackPath } : {}),
       ...(parsed.maxCycles !== undefined ? { maxCycles: parsed.maxCycles } : {}),
     });
     process.stdout.write(parsed.json ? `${JSON.stringify(receipt)}\n` : `${human(receipt)}\n`);
