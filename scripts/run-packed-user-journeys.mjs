@@ -309,6 +309,33 @@ try {
     assert.match(noRemote.stderr, /no Git remote is configured/);
   });
 
+  await check("SETUP-005/006/007/DOCTOR-004", "packed setup supports authenticated legacy GitHub CLI without leaking its token", async () => {
+    const legacyBin = path.join(workspace, "legacy-gh", "bin");
+    const legacyHome = path.join(workspace, "legacy-gh", "home");
+    const legacyWcoHome = path.join(legacyHome, "wco");
+    const legacyGh = path.join(legacyBin, "gh");
+    await mkdir(legacyBin, { recursive: true });
+    await writeFile(legacyGh, `#!/usr/bin/env bash
+if [[ "$1 $2" == "auth status" ]]; then exit 0; fi
+if [[ "$1 $2" == "auth token" ]]; then exit 1; fi
+if [[ "$1 $2 $3" == "config get oauth_token" ]]; then printf '%s\\n' 'legacy-packed-secret-token'; exit 0; fi
+exit 1
+`);
+    await chmod(legacyGh, 0o755);
+    const result = await wco(["setup", "--yes"], {
+      cwd: genericRepo,
+      env: {
+        HOME: legacyHome,
+        WCO_HOME: legacyWcoHome,
+        XDG_CONFIG_HOME: path.join(legacyHome, ".config"),
+        PATH: `${legacyBin}${path.delimiter}${path.dirname(installedBinary())}:/usr/bin:/bin`,
+      },
+    });
+    assert.equal(result.code, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /✓ GitHub\s+gh authenticated/);
+    assert.doesNotMatch(result.stdout + result.stderr, /legacy-packed-secret-token/);
+  });
+
   await check("SETUP-016/ERR-001/003/004", "corrupt trusted config fails closed without overwrite or stack trace", async () => {
     const configPath = path.join(wcoHome, "config.json");
     const valid = await readFile(configPath);

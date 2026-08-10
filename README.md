@@ -6,7 +6,7 @@
 
 Web Codex Orchestrator (WCO) is a local CLI for medium and large AI-assisted coding jobs. Start it inside a Git repository, type a goal, and let WCO coordinate bounded repository inspection, a sealed implementation contract, Codex execution, deterministic checks, independent Terra/Sol review, and GitHub Draft PR delivery.
 
-Latest public release: **v0.3.1**. The package is distributed as a checksummed GitHub release tarball and remains private on npm.
+Latest public release: **v0.3.2**. The package is distributed as a checksummed GitHub release tarball and remains private on npm.
 
 ## Install the Latest release
 
@@ -22,14 +22,14 @@ Requirements:
 Download and verify the release artifact:
 
 ```bash
-curl -LO https://github.com/VietSory/web-codex-orchestrator/releases/download/v0.3.1/web-codex-orchestrator-0.3.1.tgz
-curl -LO https://github.com/VietSory/web-codex-orchestrator/releases/download/v0.3.1/web-codex-orchestrator-0.3.1.tgz.sha256
-sha256sum -c web-codex-orchestrator-0.3.1.tgz.sha256
-npm install --global ./web-codex-orchestrator-0.3.1.tgz
+curl -LO https://github.com/VietSory/web-codex-orchestrator/releases/download/v0.3.2/web-codex-orchestrator-0.3.2.tgz
+curl -LO https://github.com/VietSory/web-codex-orchestrator/releases/download/v0.3.2/web-codex-orchestrator-0.3.2.tgz.sha256
+sha256sum -c web-codex-orchestrator-0.3.2.tgz.sha256
+npm install --global ./web-codex-orchestrator-0.3.2.tgz
 wco --version
 ```
 
-`wco --version` must print `0.3.1` for the Latest artifact. Installing the Latest artifact also repairs the incomplete v0.3.0 package.
+`wco --version` must print `0.3.2` for the Latest artifact. Installing the Latest artifact also repairs the incomplete v0.3.0 package.
 
 ## Daily use
 

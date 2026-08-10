@@ -64,6 +64,33 @@ test("gh_cli credential resolver verifies status and returns token only in proce
   assert.equal(token, "secret-token"); assert.deepEqual(calls.map((item) => item.slice(0, 2)), [["auth", "status"], ["auth", "token"]]);
 });
 
+test("gh_cli credential resolver supports authenticated gh versions without auth token", async () => {
+  const calls: string[][] = [];
+  const token = await resolveGitHubToken({ mode: "gh_cli" }, {}, async (args) => {
+    calls.push(args);
+    const modernTokenCommand = args[0] === "auth" && args[1] === "token";
+    return {
+      exitCode: modernTokenCommand ? 1 : 0,
+      signal: null,
+      stdout: args[0] === "config" ? "legacy-secret-token\n" : "",
+      stderr: modernTokenCommand ? "unknown command token" : "",
+      stdoutBytes: 1,
+      stderrBytes: 0,
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      timedOut: false,
+      cancelled: false,
+      durationMs: 1,
+    };
+  });
+  assert.equal(token, "legacy-secret-token");
+  assert.deepEqual(calls, [
+    ["auth", "status", "--hostname", "github.com"],
+    ["auth", "token", "--hostname", "github.com"],
+    ["config", "get", "oauth_token", "--host", "github.com"],
+  ]);
+});
+
 test("relay file store is idempotent, rejects conflicts, enforces TTL", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-relay-test-")); let now = new Date("2026-01-01T00:00:00.000Z");
   const store = new RelayFileStore(root, {}, () => now);

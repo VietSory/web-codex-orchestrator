@@ -37,8 +37,13 @@ export async function resolveGitHubToken(
   const clean = ghEnvironment(env);
   const status = await probe(["auth", "status", "--hostname", "github.com"], clean);
   if (failed(status)) throw new Error(`GITHUB_AUTH_UNAVAILABLE: gh authentication could not be verified: ${redact(status.stderr).slice(-512) || "gh unavailable"}`);
-  const tokenResult = await probe(["auth", "token", "--hostname", "github.com"], clean);
-  const token = tokenResult.stdout.trim();
-  if (failed(tokenResult) || !validToken(token)) throw new Error("GITHUB_AUTH_UNAVAILABLE: gh did not return a valid in-process token.");
-  return token;
+  for (const args of [
+    ["auth", "token", "--hostname", "github.com"],
+    ["config", "get", "oauth_token", "--host", "github.com"],
+  ]) {
+    const tokenResult = await probe(args, clean);
+    const token = tokenResult.stdout.trim();
+    if (!failed(tokenResult) && validToken(token)) return token;
+  }
+  throw new Error("GITHUB_AUTH_UNAVAILABLE: gh did not return a valid in-process token.");
 }
