@@ -126,6 +126,10 @@ function retryDelay(result: ContinueResult, now: () => Date, fallback: number): 
   return Math.max(1, Math.min(due, fallback));
 }
 
+function retryWaiting(result: ContinueResult): boolean {
+  return result.ledger.status === "WAITING" && result.ledger.retry.next_retry_at !== null;
+}
+
 export async function driveAutopilotJob(options: {
   bridge: WebBridge;
   runId: string;
@@ -154,7 +158,7 @@ export async function driveAutopilotJob(options: {
   if (receipt.status === "READY_FOR_YOU" || receipt.status === "NEEDS_YOU") return receipt;
 
   let cycles = 0;
-  while (cycles < maxCycles) {
+  while (true) {
     if (options.signal?.aborted) {
       receipt.status = "PAUSED";
       receipt.reason = "Autopilot execution was interrupted and can be resumed from its durable checkpoint.";
@@ -167,6 +171,14 @@ export async function driveAutopilotJob(options: {
 
     if (plan.transition === "WAIT_HUMAN" || plan.transition === "DONE") {
       Object.assign(receipt, finalStatus(snapshot, plan));
+      await persist(options.stateDirectory, receipt, now);
+      return receipt;
+    }
+
+    if (cycles >= maxCycles) {
+      receipt.status = "NEEDS_YOU";
+      receipt.terminal_action = "ASK_USER_TO_INTERVENE";
+      receipt.reason = `AUTOPILOT_CYCLE_BUDGET_EXHAUSTED: exceeded ${maxCycles} progressing orchestration cycles without reaching a safe terminal boundary.`;
       await persist(options.stateDirectory, receipt, now);
       return receipt;
     }
@@ -187,13 +199,31 @@ export async function driveAutopilotJob(options: {
         now,
       });
       receipt.last_transition = result.planned.transition;
-      receipt.status = result.progressed ? "RUNNING" : result.needs_input === "resume" ? "PAUSED" : "NEEDS_YOU";
-      receipt.reason = result.progressed ? null : result.planned.reason;
-      if (receipt.status === "NEEDS_YOU") receipt.terminal_action = "ASK_USER_TO_INTERVENE";
-      if (result.progressed) cycles += 1;
+      if (result.progressed) {
+        cycles += 1;
+        receipt.status = "RUNNING";
+        receipt.reason = null;
+        await persist(options.stateDirectory, receipt, now);
+        continue;
+      }
+      if (result.needs_input === "resume") {
+        receipt.status = "PAUSED";
+        receipt.reason = "The durable orchestration ledger is paused.";
+        await persist(options.stateDirectory, receipt, now);
+        return receipt;
+      }
+      if (retryWaiting(result)) {
+        receipt.status = "WAITING_RETRY";
+        receipt.reason = result.planned.reason;
+        await persist(options.stateDirectory, receipt, now);
+        await deps.sleep(retryDelay(result, now, pollIntervalMs), options.signal);
+        continue;
+      }
+      receipt.status = "NEEDS_YOU";
+      receipt.terminal_action = "ASK_USER_TO_INTERVENE";
+      receipt.reason = result.planned.reason;
       await persist(options.stateDirectory, receipt, now);
-      if (!result.progressed) return receipt;
-      continue;
+      return receipt;
     }
 
     if (plan.transition === "WAIT_WEB_VERDICT") {
@@ -258,7 +288,7 @@ export async function driveAutopilotJob(options: {
       await persist(options.stateDirectory, receipt, now);
       return receipt;
     }
-    if (result.ledger.status === "WAITING" && result.ledger.retry.next_retry_at) {
+    if (retryWaiting(result)) {
       receipt.status = "WAITING_RETRY";
       receipt.reason = result.planned.reason;
       await persist(options.stateDirectory, receipt, now);
@@ -271,10 +301,4 @@ export async function driveAutopilotJob(options: {
     await persist(options.stateDirectory, receipt, now);
     return receipt;
   }
-
-  receipt.status = "NEEDS_YOU";
-  receipt.terminal_action = "ASK_USER_TO_INTERVENE";
-  receipt.reason = `AUTOPILOT_CYCLE_BUDGET_EXHAUSTED: exceeded ${maxCycles} progressing orchestration cycles without reaching a safe terminal boundary.`;
-  await persist(options.stateDirectory, receipt, now);
-  return receipt;
 }
