@@ -7,7 +7,7 @@ import { driveAutopilotJob } from "./autopilot-job.js";
 
 interface Args {
   runId: string;
-  webPackPath: string;
+  webPackPath?: string;
   stateDirectory: string;
   configPath: string;
   maxCycles?: number;
@@ -17,8 +17,9 @@ interface Args {
 function usage(): string {
   return [
     "Usage:",
-    "  wco-autopilot --run-id <task-id:sha256> --web-pack <pack.zip> [--state-dir <directory>] [--config <config.json>] [--max-cycles <1-512>] [--json]",
+    "  node dist/orchestration/autopilot-standalone-cli.js --run-id <task-id:sha256> [--web-pack <pack.zip>] [--state-dir <directory>] [--config <config.json>] [--max-cycles <1-512>] [--json]",
     "",
+    "--web-pack is required only for the first drive of a run; durable AUTOPILOT resume reuses the exact bound pack path.",
     "PAIR remains the default `wco` interactive workflow. AUTOPILOT starts only after the sealed Web implementation handoff exists.",
   ].join("\n");
 }
@@ -48,7 +49,6 @@ function parseArgs(argv: string[]): Args {
   const runId = values.get("--run-id");
   const webPack = values.get("--web-pack");
   if (typeof runId !== "string" || !runId) throw new Error("AUTOPILOT_CLI_INVALID: missing '--run-id'.");
-  if (typeof webPack !== "string" || !webPack) throw new Error("AUTOPILOT_CLI_INVALID: missing '--web-pack'.");
   const maxCyclesRaw = values.get("--max-cycles");
   let maxCycles: number | undefined;
   if (typeof maxCyclesRaw === "string") {
@@ -59,7 +59,7 @@ function parseArgs(argv: string[]): Args {
   }
   return {
     runId,
-    webPackPath: path.resolve(webPack),
+    ...(typeof webPack === "string" ? { webPackPath: path.resolve(webPack) } : {}),
     stateDirectory: paths.state,
     configPath: paths.config,
     ...(maxCycles !== undefined ? { maxCycles } : {}),
@@ -98,9 +98,9 @@ async function main(): Promise<number> {
     const receipt = await driveAutopilotJob({
       bridge,
       runId: parsed.runId,
-      webPackPath: parsed.webPackPath,
       stateDirectory: parsed.stateDirectory,
       configPath: parsed.configPath,
+      ...(parsed.webPackPath ? { webPackPath: parsed.webPackPath } : {}),
       ...(parsed.maxCycles !== undefined ? { maxCycles: parsed.maxCycles } : {}),
     });
     process.stdout.write(parsed.json ? `${JSON.stringify(receipt)}\n` : `${human(receipt)}\n`);
