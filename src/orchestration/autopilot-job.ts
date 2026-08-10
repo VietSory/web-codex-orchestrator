@@ -179,7 +179,6 @@ export async function driveAutopilotJob(options: {
         await persist(options.stateDirectory, receipt, now);
         return receipt;
       }
-      cycles += 1;
       const result = await deps.runNext({
         runId: options.runId,
         stateDirectory: options.stateDirectory,
@@ -191,6 +190,7 @@ export async function driveAutopilotJob(options: {
       receipt.status = result.progressed ? "RUNNING" : result.needs_input === "resume" ? "PAUSED" : "NEEDS_YOU";
       receipt.reason = result.progressed ? null : result.planned.reason;
       if (receipt.status === "NEEDS_YOU") receipt.terminal_action = "ASK_USER_TO_INTERVENE";
+      if (result.progressed) cycles += 1;
       await persist(options.stateDirectory, receipt, now);
       if (!result.progressed) return receipt;
       continue;
@@ -238,7 +238,6 @@ export async function driveAutopilotJob(options: {
       return receipt;
     }
 
-    cycles += 1;
     const result = await deps.runNext({
       runId: options.runId,
       stateDirectory: options.stateDirectory,
@@ -247,6 +246,7 @@ export async function driveAutopilotJob(options: {
     });
     receipt.last_transition = result.planned.transition;
     if (result.progressed) {
+      cycles += 1;
       receipt.status = "RUNNING";
       receipt.reason = null;
       await persist(options.stateDirectory, receipt, now);
