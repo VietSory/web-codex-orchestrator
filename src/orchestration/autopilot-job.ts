@@ -27,7 +27,10 @@ export type AutopilotTerminalAction = "ASK_USER_TO_MERGE" | "ASK_USER_TO_INTERVE
 export type AutopilotStage = "EXECUTE" | "PUBLISH" | "DRAFT_PR" | "PACKAGE_RESULT" | "WAIT_WEB" | "REVISE" | "DONE";
 
 type ActiveAutopilotStage = Exclude<AutopilotStage, "DONE">;
-const STAGES: AutopilotStage[] = ["EXECUTE", "PUBLISH", "DRAFT_PR", "PACKAGE_RESULT", "WAIT_WEB", "REVISE", "DONE"];
+const ACTIVE_STAGES: ActiveAutopilotStage[] = ["EXECUTE", "PUBLISH", "DRAFT_PR", "PACKAGE_RESULT", "WAIT_WEB", "REVISE"];
+const STAGES: AutopilotStage[] = [...ACTIVE_STAGES, "DONE"];
+const STATUSES: AutopilotJobStatus[] = ["RUNNING", "WAITING_WEB", "WAITING_RETRY", "PAUSED", "READY_FOR_YOU", "NEEDS_YOU"];
+const TERMINAL_ACTIONS: Exclude<AutopilotTerminalAction, null>[] = ["ASK_USER_TO_MERGE", "ASK_USER_TO_INTERVENE"];
 const MAX_RETRY_ATTEMPTS = 5;
 
 export interface AutopilotJobReceipt {
@@ -37,6 +40,7 @@ export interface AutopilotJobReceipt {
   status: AutopilotJobStatus;
   stage: AutopilotStage;
   stage_attempts: Record<ActiveAutopilotStage, number>;
+  next_retry_at: string | null;
   pending_review_job_id: string | null;
   web_review_rounds: number;
   revision_rounds_completed: number;
@@ -83,7 +87,16 @@ const productionDependencies: AutopilotDependencies = {
   revise: reviseRunForOrchestration,
   sleep: async (milliseconds, signal) => {
     if (signal?.aborted) return;
-    await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+    await new Promise<void>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (): void => {
+        if (timer) clearTimeout(timer);
+        signal?.removeEventListener("abort", finish);
+        resolve();
+      };
+      timer = setTimeout(finish, milliseconds);
+      signal?.addEventListener("abort", finish, { once: true });
+    });
   },
 };
 
@@ -113,6 +126,7 @@ function initialReceipt(runId: string, now: () => Date): AutopilotJobReceipt {
     status: "RUNNING",
     stage: "EXECUTE",
     stage_attempts: emptyAttempts(),
+    next_retry_at: null,
     pending_review_job_id: null,
     web_review_rounds: 0,
     revision_rounds_completed: 0,
@@ -123,9 +137,29 @@ function initialReceipt(runId: string, now: () => Date): AutopilotJobReceipt {
   };
 }
 
-function validReceipt(value: AutopilotJobReceipt, runId: string): boolean {
-  return value.schema_version === "2.0" && value.mode === "AUTOPILOT" && value.run_id === runId && STAGES.includes(value.stage) &&
-    value.stage_attempts !== null && typeof value.stage_attempts === "object" && Object.values(value.stage_attempts).every((count) => Number.isSafeInteger(count) && count >= 0 && count <= 10_000);
+function boundedCounter(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= 10_000;
+}
+
+function validTimestamp(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function validReceipt(value: unknown, runId: string): value is AutopilotJobReceipt {
+  if (!value || typeof value !== "object") return false;
+  const receipt = value as Partial<AutopilotJobReceipt>;
+  if (receipt.schema_version !== "2.0" || receipt.mode !== "AUTOPILOT" || receipt.run_id !== runId) return false;
+  if (typeof receipt.stage !== "string" || !STAGES.includes(receipt.stage as AutopilotStage)) return false;
+  if (typeof receipt.status !== "string" || !STATUSES.includes(receipt.status as AutopilotJobStatus)) return false;
+  if (!receipt.stage_attempts || typeof receipt.stage_attempts !== "object") return false;
+  const attemptKeys = Object.keys(receipt.stage_attempts);
+  if (attemptKeys.length !== ACTIVE_STAGES.length || !ACTIVE_STAGES.every((stage) => boundedCounter(receipt.stage_attempts?.[stage]))) return false;
+  if (receipt.next_retry_at !== null && !validTimestamp(receipt.next_retry_at)) return false;
+  if (receipt.pending_review_job_id !== null && (typeof receipt.pending_review_job_id !== "string" || receipt.pending_review_job_id.length === 0 || receipt.pending_review_job_id.length > 4096)) return false;
+  if (!boundedCounter(receipt.web_review_rounds) || !boundedCounter(receipt.revision_rounds_completed)) return false;
+  if (receipt.terminal_action !== null && (typeof receipt.terminal_action !== "string" || !TERMINAL_ACTIONS.includes(receipt.terminal_action as Exclude<AutopilotTerminalAction, null>))) return false;
+  if (receipt.reason !== null && (typeof receipt.reason !== "string" || receipt.reason.length > 8_192)) return false;
+  return validTimestamp(receipt.created_at) && validTimestamp(receipt.updated_at);
 }
 
 export async function readAutopilotReceipt(stateDirectory: string, runId: string): Promise<AutopilotJobReceipt | null> {
@@ -133,7 +167,7 @@ export async function readAutopilotReceipt(stateDirectory: string, runId: string
   try {
     const info = await lstat(receiptPath);
     if (info.isSymbolicLink() || !info.isFile() || info.size > 256 * 1024) throw new Error("AUTOPILOT_RECEIPT_UNSAFE: durable receipt is not a bounded regular file.");
-    const parsed = JSON.parse(await readFile(receiptPath, "utf8")) as AutopilotJobReceipt;
+    const parsed: unknown = JSON.parse(await readFile(receiptPath, "utf8"));
     if (!validReceipt(parsed, runId)) throw new Error("AUTOPILOT_RECEIPT_INVALID: durable receipt does not match the requested run or schema.");
     return parsed;
   } catch (error) {
@@ -173,20 +207,59 @@ async function retryOrStop(options: {
   const attempt = options.receipt.stage_attempts[options.stage] + 1;
   options.receipt.stage_attempts[options.stage] = attempt;
   if (retryableFailureCode(code) && attempt <= MAX_RETRY_ATTEMPTS) {
+    const delay = computeRetryDelay(retryIdentity(options.receipt.run_id, options.stage), attempt);
     options.receipt.status = "WAITING_RETRY";
+    options.receipt.next_retry_at = new Date(options.now().getTime() + delay).toISOString();
     options.receipt.reason = `${code}: ${errorMessage(options.error)}`;
     await persist(options.stateDirectory, options.receipt, options.now);
-    await options.deps.sleep(computeRetryDelay(retryIdentity(options.receipt.run_id, options.stage), attempt), options.signal);
+    await options.deps.sleep(delay, options.signal);
+    if (options.signal?.aborted) {
+      options.receipt.status = "PAUSED";
+      options.receipt.reason = "AUTOPILOT was interrupted during retry backoff and will preserve the retry deadline on resume.";
+      await persist(options.stateDirectory, options.receipt, options.now);
+      return false;
+    }
+    options.receipt.next_retry_at = null;
     options.receipt.status = "RUNNING";
     options.receipt.reason = null;
     await persist(options.stateDirectory, options.receipt, options.now);
     return true;
   }
+  options.receipt.next_retry_at = null;
   options.receipt.status = "NEEDS_YOU";
   options.receipt.terminal_action = "ASK_USER_TO_INTERVENE";
   options.receipt.reason = `${code}: ${errorMessage(options.error)}`;
   await persist(options.stateDirectory, options.receipt, options.now);
   return false;
+}
+
+async function honorPersistedRetryDeadline(options: {
+  receipt: AutopilotJobReceipt;
+  stateDirectory: string;
+  now: () => Date;
+  deps: AutopilotDependencies;
+  signal?: AbortSignal;
+}): Promise<boolean> {
+  if (!options.receipt.next_retry_at) return true;
+  const deadline = Date.parse(options.receipt.next_retry_at);
+  if (!Number.isFinite(deadline)) throw new Error("AUTOPILOT_RECEIPT_INVALID: retry deadline is invalid.");
+  const remaining = deadline - options.now().getTime();
+  if (remaining > 0) {
+    options.receipt.status = "WAITING_RETRY";
+    await persist(options.stateDirectory, options.receipt, options.now);
+    await options.deps.sleep(remaining, options.signal);
+  }
+  if (options.signal?.aborted) {
+    options.receipt.status = "PAUSED";
+    options.receipt.reason = "AUTOPILOT was interrupted while honoring a persisted retry deadline.";
+    await persist(options.stateDirectory, options.receipt, options.now);
+    return false;
+  }
+  options.receipt.next_retry_at = null;
+  options.receipt.status = "RUNNING";
+  options.receipt.reason = null;
+  await persist(options.stateDirectory, options.receipt, options.now);
+  return true;
 }
 
 function executionBoundary(execution: ExecutionReceipt): { status: AutopilotJobStatus; reason: string } | null {
@@ -214,6 +287,7 @@ export async function driveAutopilotJob(options: {
   let receipt = await readAutopilotReceipt(options.stateDirectory, options.runId) ?? initialReceipt(options.runId, now);
   await persist(options.stateDirectory, receipt, now);
   if (receipt.status === "READY_FOR_YOU" || receipt.status === "NEEDS_YOU") return receipt;
+  if (!await honorPersistedRetryDeadline({ receipt, stateDirectory: options.stateDirectory, now, deps, ...(options.signal ? { signal: options.signal } : {}) })) return receipt;
 
   let cycles = 0;
   while (true) {
@@ -225,6 +299,7 @@ export async function driveAutopilotJob(options: {
     }
     if (receipt.stage === "DONE") return receipt;
     if (cycles >= maxCycles) {
+      receipt.next_retry_at = null;
       receipt.status = "NEEDS_YOU";
       receipt.terminal_action = "ASK_USER_TO_INTERVENE";
       receipt.reason = `AUTOPILOT_CYCLE_BUDGET_EXHAUSTED: exceeded ${maxCycles} completed orchestration stages.`;
@@ -242,12 +317,14 @@ export async function driveAutopilotJob(options: {
       }
       const boundary = executionBoundary(execution);
       if (boundary) {
+        receipt.next_retry_at = null;
         receipt.status = boundary.status;
         receipt.terminal_action = boundary.status === "NEEDS_YOU" ? "ASK_USER_TO_INTERVENE" : null;
         receipt.reason = boundary.reason;
         await persist(options.stateDirectory, receipt, now);
         return receipt;
       }
+      receipt.next_retry_at = null;
       receipt.stage = "PUBLISH";
       receipt.stage_attempts.EXECUTE = 0;
       receipt.reason = null;
@@ -264,6 +341,7 @@ export async function driveAutopilotJob(options: {
         if (await retryOrStop({ receipt, stateDirectory: options.stateDirectory, stage: "PUBLISH", error, now, deps, ...(options.signal ? { signal: options.signal } : {}) })) continue;
         return receipt;
       }
+      receipt.next_retry_at = null;
       receipt.stage = "DRAFT_PR";
       receipt.stage_attempts.PUBLISH = 0;
       cycles += 1;
@@ -279,6 +357,7 @@ export async function driveAutopilotJob(options: {
         if (await retryOrStop({ receipt, stateDirectory: options.stateDirectory, stage: "DRAFT_PR", error, now, deps, ...(options.signal ? { signal: options.signal } : {}) })) continue;
         return receipt;
       }
+      receipt.next_retry_at = null;
       receipt.stage = "PACKAGE_RESULT";
       receipt.stage_attempts.DRAFT_PR = 0;
       cycles += 1;
@@ -294,6 +373,7 @@ export async function driveAutopilotJob(options: {
         if (await retryOrStop({ receipt, stateDirectory: options.stateDirectory, stage: "PACKAGE_RESULT", error, now, deps, ...(options.signal ? { signal: options.signal } : {}) })) continue;
         return receipt;
       }
+      receipt.next_retry_at = null;
       receipt.stage = "WAIT_WEB";
       receipt.stage_attempts.PACKAGE_RESULT = 0;
       cycles += 1;
@@ -316,6 +396,7 @@ export async function driveAutopilotJob(options: {
           continue;
         }
         const adopted = await deps.materializeVerdict({ envelope, stateDirectory: options.stateDirectory, configPath: options.configPath, ...(options.now ? { now: options.now } : {}) });
+        receipt.next_retry_at = null;
         receipt.pending_review_job_id = null;
         receipt.web_review_rounds += 1;
         receipt.stage_attempts.WAIT_WEB = 0;
@@ -356,6 +437,7 @@ export async function driveAutopilotJob(options: {
         if (await retryOrStop({ receipt, stateDirectory: options.stateDirectory, stage: "REVISE", error, now, deps, ...(options.signal ? { signal: options.signal } : {}) })) continue;
         return receipt;
       }
+      receipt.next_retry_at = null;
       receipt.stage = "WAIT_WEB";
       receipt.stage_attempts.REVISE = 0;
       receipt.status = "RUNNING";
