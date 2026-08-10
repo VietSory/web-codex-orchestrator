@@ -74,7 +74,7 @@ test("history reader returns bounded repository-specific sessions newest first",
 test("global install plan schedules npm self-removal while source checkout remains protected", () => {
   const globalPlan = planSelfUninstall("/usr/local/lib/node_modules/web-codex-orchestrator/dist/uninstall/self-uninstall.js");
   assert.equal(globalPlan.supported, true);
-  assert.deepEqual(globalPlan.command?.slice(-3), ["-g", "web-codex-orchestrator"].length === 2 ? globalPlan.command?.slice(-2) : []);
+  assert.deepEqual(globalPlan.command?.slice(-3), ["uninstall", "-g", "web-codex-orchestrator"]);
   assert.match(globalPlan.command?.join(" ") ?? "", /uninstall -g web-codex-orchestrator/);
   const sourcePlan = planSelfUninstall("/work/web-codex-orchestrator/dist/uninstall/self-uninstall.js");
   assert.equal(sourcePlan.supported, false);
