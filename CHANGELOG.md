@@ -6,6 +6,25 @@ The format is based on Keep a Changelog, and the project intends to follow Seman
 
 ## [Unreleased]
 
+### Fixed
+
+- First-run setup now completes and enters the interactive shell even when credential preflight reports actionable warnings.
+- `wco doctor` automatically discovers the saved user config/state paths.
+- Repeated setup is idempotent and distinct repositories are registered without replacing existing trusted configuration.
+- Disconnected Web status no longer reports the local fallback bridge as connected.
+- Web errors retain stable subsystem codes, and bearer-token input is hidden from terminal output.
+- Ctrl+C during nested Web setup exits cleanly without a readline implementation error.
+- Packed npm self-uninstall is bound to the exact detected global/local prefix.
+
+### Added
+
+- A reusable clean-pack/install/PTTY/uninstall/reinstall daily-user gate: `npm run test:user:packed`.
+- Hosted CI coverage for the packed daily-user journey.
+
+### Changed
+
+- README and operations guidance now describe the released interactive Web-first workflow; internal Task Bundle/run-ID commands are explicitly advanced automation.
+
 ## [0.3.0] - 2026-08-10
 
 ### Added

@@ -77,7 +77,12 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
   const [repositoryId, repositoryConfig] = registration;
   let bridge: WebBridge = createConfiguredWebBridge(config, paths.bridge);
   let latest = await readLocalWorkerSession(paths.state, repositoryId);
-  const webIo = { write: (value: string) => io.write(value), error: (value: string) => io.write(value), question: async (prompt: string) => await io.question(prompt) };
+  const webIo = {
+    write: (value: string) => io.write(value),
+    error: (value: string) => io.write(value),
+    question: async (prompt: string) => await io.question(prompt),
+    secret: async (prompt: string) => io.secret ? await io.secret(prompt) : await io.question(prompt),
+  };
 
   const reloadBridge = async (): Promise<void> => {
     config = await loadTrustedConfig(paths.config);
@@ -171,7 +176,8 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
       }
       if (command === "/task") return { message: latest ? `Goal: ${latest.goal}\nContract: ${latest.sealed ? "sealed" : "open"}\nRun: ${latest.run_id ?? "not prepared"}` : "No active task." };
       if (command === "/web") {
-        const code = await runWebCommand(args ? [args] : ["status"], webIo);
+        const webArgs = args ? args.split(/\s+/u).filter(Boolean) : ["status"];
+        const code = await runWebCommand(webArgs, webIo);
         await reloadBridge();
         return { message: `Web command finished with exit ${code}.` };
       }
