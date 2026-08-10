@@ -58,6 +58,11 @@ function configSummary(config: TrustedConfig, paths: ReturnType<typeof resolveWc
   ].join("\n");
 }
 
+export function initialWorkflowContinueArguments(session: Pick<LocalWorkerSession, "run_id" | "state" | "web_pack_path">, stateDirectory: string, configPath: string): string[] {
+  if (session.state !== "IMPLEMENTATION_REGISTERED" || !session.run_id || !session.web_pack_path) throw new Error("WEB_PACK_NOT_REGISTERED: the durable local worker has no exact implementation pack to continue.");
+  return ["--run-id", session.run_id, "--state-dir", stateDirectory, "--config", configPath, "--web-pack", session.web_pack_path, "--max-transitions", "8"];
+}
+
 export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promise<number> {
   const paths = resolveWcoPaths({});
   try { await access(paths.config); }
@@ -123,7 +128,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
   const continueThroughFinalReview = async (): Promise<string> => {
     if (!latest?.run_id || latest.state !== "IMPLEMENTATION_REGISTERED") return `Workflow is waiting at ${latest?.state ?? "NO_TASK"}.`;
     const lines: string[] = [];
-    let code = await runControlCommand("continue", ["--run-id", latest.run_id, "--state-dir", paths.state, "--config", paths.config, "--max-transitions", "8"], { stdout: (value) => { lines.push(value); io.write(`${value}\n`); }, stderr: (value) => { lines.push(value); io.write(`${value}\n`); } });
+    let code = await runControlCommand("continue", initialWorkflowContinueArguments(latest, paths.state, paths.config), { stdout: (value) => { lines.push(value); io.write(`${value}\n`); }, stderr: (value) => { lines.push(value); io.write(`${value}\n`); } });
     try {
       const review = await createPendingFinalReview({ bridge, runId: latest.run_id, stateDirectory: paths.state });
       await openWebArchitect();

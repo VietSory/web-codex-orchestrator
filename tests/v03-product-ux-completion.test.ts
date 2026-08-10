@@ -13,6 +13,7 @@ import { createRelayServer } from "../src/web-bridge/relay/server.js";
 import { planSelfUninstall } from "../src/uninstall/self-uninstall.js";
 import { listLocalTaskHistory } from "../src/web-bridge/session-history.js";
 import { runWebCommand } from "../src/web-bridge/web-cli.js";
+import { initialWorkflowContinueArguments } from "../src/tui/interactive-app.js";
 
 function minimalConfig(repoPath: string): any {
   return {
@@ -125,4 +126,17 @@ test("Senior Architect instructions ship positive and negative behavioral exampl
   assert.match(source, /Positive authoring example/);
   assert.match(source, /Negative prompt-injection example/);
   assert.match(source, /untrusted data/);
+});
+
+test("TUI hands the exact durable Web pack to the first orchestration continue", () => {
+  const runId = `TASK-EXAMPLE:${"a".repeat(64)}`;
+  const webPack = "/tmp/wco/state/bridge/artifacts/job/web-implementation-pack.zip";
+  assert.deepEqual(initialWorkflowContinueArguments({ run_id: runId, state: "IMPLEMENTATION_REGISTERED", web_pack_path: webPack }, "/tmp/wco/state", "/tmp/wco/config.json"), [
+    "--run-id", runId,
+    "--state-dir", "/tmp/wco/state",
+    "--config", "/tmp/wco/config.json",
+    "--web-pack", webPack,
+    "--max-transitions", "8",
+  ]);
+  assert.throws(() => initialWorkflowContinueArguments({ run_id: runId, state: "IMPLEMENTATION_REGISTERED", web_pack_path: null }, "/tmp/wco/state", "/tmp/wco/config.json"), /WEB_PACK_NOT_REGISTERED/);
 });
