@@ -328,7 +328,7 @@ exit 1
         HOME: legacyHome,
         WCO_HOME: legacyWcoHome,
         XDG_CONFIG_HOME: path.join(legacyHome, ".config"),
-        PATH: `${legacyBin}${path.delimiter}${path.dirname(installedBinary())}:/usr/bin:/bin`,
+        PATH: `${legacyBin}${path.delimiter}${path.dirname(installedBinary())}${path.delimiter}${path.dirname(process.execPath)}:/usr/bin:/bin`,
       },
     });
     assert.equal(result.code, 0, result.stdout + result.stderr);
