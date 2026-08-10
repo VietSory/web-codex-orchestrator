@@ -153,7 +153,8 @@ export async function driveAutopilotJob(options: {
 
   if (receipt.status === "READY_FOR_YOU" || receipt.status === "NEEDS_YOU") return receipt;
 
-  for (let cycle = 0; cycle < maxCycles; cycle += 1) {
+  let cycles = 0;
+  while (cycles < maxCycles) {
     if (options.signal?.aborted) {
       receipt.status = "PAUSED";
       receipt.reason = "Autopilot execution was interrupted and can be resumed from its durable checkpoint.";
@@ -178,6 +179,7 @@ export async function driveAutopilotJob(options: {
         await persist(options.stateDirectory, receipt, now);
         return receipt;
       }
+      cycles += 1;
       const result = await deps.runNext({
         runId: options.runId,
         stateDirectory: options.stateDirectory,
@@ -211,6 +213,7 @@ export async function driveAutopilotJob(options: {
         await deps.sleep(pollIntervalMs, options.signal);
         continue;
       }
+      cycles += 1;
       const adopted = await deps.materializeVerdict({
         envelope: verdict,
         stateDirectory: options.stateDirectory,
@@ -220,17 +223,22 @@ export async function driveAutopilotJob(options: {
       receipt.web_review_rounds += 1;
       receipt.pending_review_job_id = null;
       receipt.last_transition = "WAIT_WEB_VERDICT";
-      receipt.status = adopted.receipt.state === "APPROVED" ? "RUNNING" : adopted.receipt.state === "ESCALATED" ? "NEEDS_YOU" : "RUNNING";
-      receipt.reason = adopted.receipt.state === "ESCALATED" ? "Web final review escalated a consequential decision to the user." : null;
-      if (receipt.status === "NEEDS_YOU") {
-        receipt.terminal_action = "ASK_USER_TO_INTERVENE";
+      if (adopted.receipt.state === "APPROVED" || adopted.receipt.state === "REVISION_REQUESTED") {
+        receipt.status = "RUNNING";
+        receipt.reason = null;
         await persist(options.stateDirectory, receipt, now);
-        return receipt;
+        continue;
       }
+      receipt.status = "NEEDS_YOU";
+      receipt.terminal_action = "ASK_USER_TO_INTERVENE";
+      receipt.reason = adopted.receipt.state === "ESCALATED"
+        ? "Web final review escalated a consequential decision to the user."
+        : `Web final review stopped in non-autonomous state ${adopted.receipt.state}.`;
       await persist(options.stateDirectory, receipt, now);
-      continue;
+      return receipt;
     }
 
+    cycles += 1;
     const result = await deps.runNext({
       runId: options.runId,
       stateDirectory: options.stateDirectory,
@@ -266,7 +274,7 @@ export async function driveAutopilotJob(options: {
 
   receipt.status = "NEEDS_YOU";
   receipt.terminal_action = "ASK_USER_TO_INTERVENE";
-  receipt.reason = `AUTOPILOT_CYCLE_BUDGET_EXHAUSTED: exceeded ${maxCycles} orchestration cycles without reaching a safe terminal boundary.`;
+  receipt.reason = `AUTOPILOT_CYCLE_BUDGET_EXHAUSTED: exceeded ${maxCycles} progressing orchestration cycles without reaching a safe terminal boundary.`;
   await persist(options.stateDirectory, receipt, now);
   return receipt;
 }
