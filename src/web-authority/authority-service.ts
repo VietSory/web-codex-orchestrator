@@ -108,7 +108,10 @@ async function readWorktreePreimage(worktreePath: string, relativePath: string):
     let stat;
     try { stat = await fs.lstat(current); }
     catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT" && index === segments.length - 1) return null;
+      // A create_file target may have one or more missing parent directories.
+      // Returning null is still fail-closed for replace/delete because their
+      // exact preimage checks below require existing bytes.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw new WebAuthorityError("WEB_AUTHORITY_PREIMAGE_INVALID", `Cannot inspect operation preimage '${relativePath}'.`);
     }
     if (stat.isSymbolicLink()) throw new WebAuthorityError("WEB_AUTHORITY_PREIMAGE_INVALID", `Operation path crosses a symbolic link: '${relativePath}'.`);

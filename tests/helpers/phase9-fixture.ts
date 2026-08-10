@@ -143,21 +143,23 @@ export interface Phase9PackOptions {
   wrongPreimage?: boolean;
   wrongInventory?: boolean;
   corruptPayloadAfterChecksums?: boolean;
+  nestedCreate?: boolean;
 }
 
 export async function buildPhase9Pack(fixture: Phase9Fixture, options: Phase9PackOptions = {}): Promise<string> {
   const entries = new Map<string, Buffer>();
   const addJson = (name: string, value: unknown): void => { entries.set(name, canonicalJsonBuffer(value)); };
   const before = await fs.readFile(path.join(fixture.repo, "app.txt"));
-  const preimage = options.wrongPreimage ? "b".repeat(64) : sha256(before);
+  const preimage = options.nestedCreate ? null : options.wrongPreimage ? "b".repeat(64) : sha256(before);
+  const operationPath = options.nestedCreate ? "src/new.txt" : "app.txt";
   const inventory = fixture.inventory.map((entry) => ({ ...entry }));
   if (options.wrongInventory && inventory.length > 0) inventory[0] = { ...inventory[0]!, object_sha: "c".repeat(40) };
 
   addJson("repository-inventory.json", { schema_version: "2.0", repository_tree_sha: fixture.treeSha, entries: inventory });
-  addJson("read-coverage.json", { schema_version: "2.0", repository_tree_sha: fixture.treeSha, reads: [{ path: "app.txt", object_sha: fixture.appObjectSha, coverage: "full" }] });
+  addJson("read-coverage.json", { schema_version: "2.0", repository_tree_sha: fixture.treeSha, reads: options.nestedCreate ? [] : [{ path: "app.txt", object_sha: fixture.appObjectSha, coverage: "full" }] });
   addJson("project-map.json", { schema_version: "2.0", repository_tree_sha: fixture.treeSha, nodes: [{ path: "app.txt", role: "fixture" }] });
   addJson("source-receipts.json", { schema_version: "2.0", receipts: [{ source_id: "SRC-001", source_type: "document", locator: "fixture://requirements", accessed_at: "2026-08-08T00:00:00.000Z", content_sha256: sha256("requirements"), authority: "primary" }] });
-  addJson("preimages.json", { schema_version: "2.0", entries: [{ path: "app.txt", sha256: preimage }] });
+  addJson("preimages.json", { schema_version: "2.0", entries: [{ path: operationPath, sha256: preimage }] });
   addJson("architecture-lock.json", { schema_version: "2.0", spec_set_sha256: fixture.specSetSha, decisions: [{ id: "ARCH-001", decision: "replace fixture content" }] });
   addJson("acceptance-lock.json", { schema_version: "2.0", spec_set_sha256: fixture.specSetSha, criteria: [{ id: "ACC-001", text: "app.txt contains after" }] });
   addJson("prohibited-changes.json", { schema_version: "2.0", paths: [".git/**"], rules: ["no redesign"] });
@@ -166,8 +168,8 @@ export async function buildPhase9Pack(fixture: Phase9Fixture, options: Phase9Pac
   entries.set("payload/OP-001.bin", payload);
   addJson("operations.json", { schema_version: "2.0", operations: [{
     op_id: "OP-001",
-    kind: "replace_file",
-    path: "app.txt",
+    kind: options.nestedCreate ? "create_file" : "replace_file",
+    path: operationPath,
     preimage_sha256: preimage,
     payload_entry: "payload/OP-001.bin",
     payload_sha256: sha256(payload),

@@ -100,3 +100,16 @@ test("P9-AUTH-006 response envelope is closed-world and artifact-bound", () => {
   assert.equal(valid.decision, "REVISE");
   assert.throws(() => validateWebResponseEnvelope({ ...valid, loose_patch: "override" }), WebAuthorityError);
 });
+
+test("P9-AUTH-007 create_file may create a target below missing parent directories", async (t) => {
+  const fixture = await createPhase9Fixture();
+  t.after(async () => fs.rm(fixture.root, { recursive: true, force: true }));
+  const archive = await buildPhase9Pack(fixture, { nestedCreate: true });
+  const record = await registerWebImplementationPack({
+    runId: fixture.runId,
+    stateDirectory: fixture.state,
+    configPath: fixture.config,
+    archivePath: archive,
+  });
+  assert.match(record.artifact_sha256, /^[a-f0-9]{64}$/);
+});
