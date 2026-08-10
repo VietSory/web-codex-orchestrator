@@ -13,6 +13,7 @@ import { WebBridgeError, contentDigest, parseWebContractEnvelope, type Repositor
 const TEMPLATE_FILES = ["README.md", "REQUEST.md", "RESEARCH.md", "SOURCES.md", "PLAN.md", "RULES.md", "VALIDATION.md", "manifest.json", "acceptance.json", "test-matrix.json", "validation.json", "risk-policy.json"] as const;
 const HARD_FORBIDDEN = [".env", ".env.*", ".git/**", "**/*.pem", "**/*.key", "**/credentials*", "**/secrets*"];
 function sha256(value: Buffer | string): string { return crypto.createHash("sha256").update(value).digest("hex"); }
+function lexical(left: string, right: string): number { return left < right ? -1 : left > right ? 1 : 0; }
 function markdown(title: string, values: string[]): Buffer { return Buffer.from(`# ${title}\n\n${values.length ? values.map((value) => `- ${value}`).join("\n") : "None."}\n`, "utf8"); }
 async function safeOwnedDirectory(directory: string): Promise<string> { const absolute = path.resolve(directory); await mkdir(absolute, { recursive: true, mode: 0o700 }); const stat = await lstat(absolute); if (!stat.isDirectory() || stat.isSymbolicLink() || await realpath(absolute) !== absolute) throw new WebBridgeError("WEB_ARTIFACT_ROOT_UNSAFE", "Artifact root must be a canonical WCO-owned directory."); return absolute; }
 function templateRoot(): string { return fileURLToPath(new URL("../../templates/task-bundle/", import.meta.url)); }
@@ -47,7 +48,7 @@ export async function materializeTaskBundle(options: { envelope: WebContractEnve
   entries.set("VALIDATION.md", markdown("Required validation", envelope.verification_commands.map((command) => `${command.id}: ${[command.executable, ...command.args].join(" ")}`)));
   entries.set("README.md", Buffer.from(`# WCO Task Bundle\n\nTask ID: \`${taskId}\`\n\nGenerated deterministically from sealed Web contract job \`${envelope.job_id}\`. Local validation remains authoritative.\n`, "utf8"));
   const checksums: Record<string, string> = {};
-  for (const [name, content] of [...entries.entries()].sort(([a], [b]) => a.localeCompare(b))) checksums[name] = sha256(content);
+  for (const [name, content] of [...entries.entries()].sort(([a], [b]) => lexical(a, b))) checksums[name] = sha256(content);
   entries.set("checksums.json", canonicalJsonBuffer({ algorithm: "sha256", files: checksums }));
   for (const [name, content] of entries) {
     const target = path.join(directory, name);
@@ -56,7 +57,7 @@ export async function materializeTaskBundle(options: { envelope: WebContractEnve
   }
   const report = await validateBundleDirectory(directory);
   if (!report.ok) throw new WebBridgeError("WEB_TASK_BUNDLE_INVALID", report.errors.join(" "));
-  const archive = await buildDeterministicZip([...entries.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([entryPath, content]) => ({ path: entryPath, content })), root, "task-bundle.zip", { maximumEntries: 256, maximumArchiveBytes: 16_777_216, maximumTotalUncompressedBytes: 33_554_432 });
+  const archive = await buildDeterministicZip([...entries.entries()].sort(([a], [b]) => lexical(a, b)).map(([entryPath, content]) => ({ path: entryPath, content })), root, "task-bundle.zip", { maximumEntries: 256, maximumArchiveBytes: 16_777_216, maximumTotalUncompressedBytes: 33_554_432 });
   const intake = await intakeArchive(archive.archivePath, options.stateDirectory);
   if (intake.status !== "accepted") throw new WebBridgeError("WEB_TASK_BUNDLE_INTAKE_REJECTED", intake.errors.map((error) => `${error.code}: ${error.message}`).join(" "));
   return { task_id: taskId, directory, archive_path: archive.archivePath, archive_sha256: archive.sha256, intake_receipt: intake };
