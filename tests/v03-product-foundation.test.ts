@@ -14,8 +14,8 @@ import { purgeWcoHome } from "../src/uninstall/purge.js";
 test("v0.3 slash palette supports idle goals, sealed safety, and /unitsall", () => {
   assert.match(commandPalette(), /\/new\s+Start a new task/);
   assert.match(commandPalette(), /\/web status\s+Show Web Architect connection/);
-  assert.match(commandPalette(), /\/web connect\s+Verify and save/);
-  assert.match(commandPalette(), /\/config web\s+Configure/);
+  assert.match(commandPalette(), /\/web connect\s+Connect the managed/);
+  assert.match(commandPalette(), /\/config web\s+Reconnect the managed/);
   assert.match(commandPalette(), /\/unitsall\s+Alias for \/uninstall/);
   assert.equal(canonicalSlashCommand("/unitsall"), "/uninstall");
   assert.deepEqual(parseInteractiveInput("build it", { active: false, sealed: false }), { kind: "new", goal: "build it" });

@@ -17,6 +17,10 @@ import { readLifecycleSnapshot } from "./snapshot-reader.js";
 import { runNextTransition, type ContinueResult } from "./transition-runner.js";
 import { OrchestrationError, type RunLedger } from "./contracts.js";
 import { resolveGitHubToken } from "../setup/credential-provider.js";
+import { resolveWcoPaths } from "../setup/default-paths.js";
+import { resolveManagedWebService } from "../web-bridge/managed-service.js";
+import { ManagedWebOnboardingClient } from "../web-bridge/managed-onboarding.js";
+import { createConfiguredWebBridge } from "../web-bridge/bridge-factory.js";
 
 export interface ControlCliIo { stdout(value: string): void; stderr(value: string): void; }
 
@@ -211,6 +215,20 @@ function processFailureSummary(result: SpawnBoundedResult, fallback: string): st
 function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
   const configPromise = loadTrustedConfig(args.configPath!);
   const runtimePromise = configPromise.then((config) => resolveCodexRuntime(config.runtime, args.stateDirectory));
+  const webPaths = resolveWcoPaths({ configPath: args.configPath!, stateDirectory: args.stateDirectory });
+  const managedServicePromise = configPromise.then(async (config) => {
+    if (config.web_bridge?.mode !== "managed_actions") throw new Error("managed Web mode is not configured");
+    const metadata = resolveManagedWebService();
+    const client = new ManagedWebOnboardingClient({ metadata, credentialsDirectory: webPaths.credentials });
+    const service = await client.probeServiceStatus();
+    return { config, client, service };
+  });
+  const webConnectionPromise = managedServicePromise.then(async ({ config, client, service }) => {
+    await client.accessToken();
+    const connection = await createConfiguredWebBridge(config, webPaths.bridge).getConnectionStatus();
+    return { service, connection };
+  });
+  const webFailure = (label: string, error: unknown) => ({ severity: "WARN" as const, summary: `${label} FAIL - ${error instanceof Error ? error.message : String(error)}` });
 
   return [
     {
@@ -324,6 +342,22 @@ function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
         await new CodexVerificationSandbox(runtime).checkAvailability(5_000);
         return { severity: "OK" as const, summary: "Codex verification sandbox available with network disabled" };
       },
+    },
+    {
+      id: "wco-relay-service",
+      async run() { try { await managedServicePromise; return { severity: "OK" as const, summary: "PASS - managed service reachable and compatible" }; } catch (error) { return webFailure("WCO Relay service", error); } },
+    },
+    {
+      id: "wco-device-account",
+      async run() { try { const { client } = await managedServicePromise; await client.accessToken(); return { severity: "OK" as const, summary: "PASS - scoped device/account credential valid" }; } catch (error) { return webFailure("WCO device/account", error); } },
+    },
+    {
+      id: "chatgpt-web",
+      async run() { try { const value = await webConnectionPromise; return value.service.chatgpt_oauth_configured && value.connection.connected ? { severity: "OK" as const, summary: "linked" } : { severity: "WARN" as const, summary: "not-linked" }; } catch { return { severity: "WARN" as const, summary: "not-linked" }; } },
+    },
+    {
+      id: "senior-architect-gpt",
+      async run() { try { const value = await managedServicePromise; return value.service.senior_architect_gpt_configured ? { severity: "OK" as const, summary: "configured" } : { severity: "WARN" as const, summary: "not configured" }; } catch { return { severity: "WARN" as const, summary: "not configured" }; } },
     },
   ];
 }

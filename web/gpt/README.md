@@ -1,5 +1,5 @@
 # WCO Senior Architect GPT
 
-Configure a private Custom GPT with [WCO-SENIOR-ARCHITECT.md](WCO-SENIOR-ARCHITECT.md) as its instructions and import [openapi.yaml](openapi.yaml) as its Action schema. Point the server URL at an authenticated HTTPS WCO Relay deployment. Loopback HTTP is intended only for local dogfood clients and is not reachable from ChatGPT Web.
+These are maintainer deployment assets for the single managed WCO Senior Architect GPT. End users must never import them or edit a GPT. The maintainer configures [WCO-SENIOR-ARCHITECT.md](WCO-SENIOR-ARCHITECT.md), [openapi.yaml](openapi.yaml), the stable TLS relay, and OAuth once globally.
 
-Use a per-user OAuth or personal bearer credential. Never commit that credential. The relay transports bounded jobs and evidence; local WCO remains the authority for every artifact and workflow transition.
+The checked-in schema deliberately uses the reserved `deployment-required.invalid` origin until real managed infrastructure exists; it is not a usable or claimed production endpoint. At deployment, the maintainer replaces that origin with the one verified stable relay in both the Action/OAuth configuration and `web/managed-service.json`, then publishes the fixed GPT URL. No secret belongs in either file. The relay transports bounded jobs and evidence; local WCO remains the authority for every artifact and workflow transition.

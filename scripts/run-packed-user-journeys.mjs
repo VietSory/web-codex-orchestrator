@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { createServer } from "node:http";
 import {
   access,
   chmod,
@@ -25,8 +26,15 @@ const home = path.join(workspace, "home");
 const wcoHome = path.join(home, "wco");
 const fixtures = path.join(workspace, "fixtures");
 const evidence = path.join(workspace, "evidence");
+const browserBin = path.join(workspace, "browser-bin");
+const browserLog = path.join(evidence, "browser-opened.log");
+const managedGptUrl = "https://chatgpt.com/g/wco-packed-managed";
 const results = [];
 let tarball;
+let managedRelayUrl = "";
+let managedServer;
+let managedRevocations = 0;
+let managedJobs = 0;
 
 function safeEnvironment(extra = {}) {
   return {
@@ -38,6 +46,9 @@ function safeEnvironment(extra = {}) {
     XDG_CACHE_HOME: path.join(home, ".cache"),
     npm_config_cache: npmCache,
     GH_PROMPT_DISABLED: "1",
+    WCO_MANAGED_WEB_TEST_OVERRIDE: "1",
+    WCO_MANAGED_WEB_RELAY_URL: managedRelayUrl,
+    WCO_MANAGED_WEB_GPT_URL: managedGptUrl,
     ...extra,
   };
 }
@@ -140,17 +151,20 @@ function installedBinary() {
 async function wco(args, options = {}) {
   return await run(installedBinary(), args, {
     ...options,
-    env: safeEnvironment({ PATH: `${path.dirname(installedBinary())}${path.delimiter}${process.env.PATH ?? ""}`, ...(options.env ?? {}) }),
+    env: safeEnvironment({ PATH: `${browserBin}${path.delimiter}${path.dirname(installedBinary())}${path.delimiter}${process.env.PATH ?? ""}`, ...(options.env ?? {}) }),
   });
 }
 
 async function wcoTty(repository, steps, options = {}) {
   assert.equal(process.platform, "linux", "packed TUI journey currently targets the primary Linux/WSL environment");
-  const command = `env HOME=${home} WCO_HOME=${wcoHome} XDG_CONFIG_HOME=${path.join(home, ".config")} XDG_STATE_HOME=${path.join(home, ".local/state")} XDG_CACHE_HOME=${path.join(home, ".cache")} PATH=${path.dirname(installedBinary())}:/usr/local/bin:/usr/bin:/bin ${installedBinary()}`;
+  const journeyHome = options.home ?? home;
+  const journeyWcoHome = options.wcoHome ?? (journeyHome === home ? wcoHome : path.join(journeyHome, "wco"));
+  const command = `env HOME=${journeyHome} WCO_HOME=${journeyWcoHome} XDG_CONFIG_HOME=${path.join(journeyHome, ".config")} XDG_STATE_HOME=${path.join(journeyHome, ".local/state")} XDG_CACHE_HOME=${path.join(journeyHome, ".cache")} WCO_MANAGED_WEB_TEST_OVERRIDE=1 WCO_MANAGED_WEB_RELAY_URL=${managedRelayUrl} WCO_MANAGED_WEB_GPT_URL=${managedGptUrl} PATH=${browserBin}:${path.dirname(installedBinary())}:/usr/local/bin:/usr/bin:/bin ${installedBinary()}`;
   return await new Promise((resolve, reject) => {
     const child = spawn("script", ["--quiet", "--return", "--echo", "never", "--command", command, "/dev/null"], {
       cwd: repository,
       env: safeEnvironment(),
+      detached: true,
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -163,14 +177,16 @@ async function wcoTty(repository, steps, options = {}) {
         const match = typeof pattern === "string" ? (() => { const at = available.indexOf(pattern); return at < 0 ? null : { index: at, 0: pattern }; })() : pattern.exec(available);
         if (!match) return;
         cursor += match.index + match[0].length;
-        child.stdin.write(steps[index].send);
+        const step = steps[index];
         index += 1;
+        if (step.stop) { try { process.kill(-child.pid, "SIGINT"); } catch { child.kill("SIGINT"); } return; }
+        child.stdin.write(step.send);
       }
     };
     child.stdout.on("data", (chunk) => { stdout.push(chunk); source += chunk.toString("utf8"); advance(); });
     child.stderr.on("data", (chunk) => stderr.push(chunk));
     child.once("error", reject);
-    const timer = setTimeout(() => { timedOut = true; child.kill("SIGTERM"); }, options.timeoutMs ?? 45_000);
+    const timer = setTimeout(() => { timedOut = true; try { process.kill(-child.pid, "SIGTERM"); } catch { child.kill("SIGTERM"); } }, options.timeoutMs ?? 45_000);
     child.once("close", (code, signal) => {
       clearTimeout(timer);
       child.stdin.end();
@@ -181,6 +197,33 @@ async function wcoTty(repository, steps, options = {}) {
 
 try {
   await mkdir(evidence, { recursive: true });
+  await mkdir(browserBin, { recursive: true });
+  await writeFile(path.join(browserBin, "xdg-open"), `#!/usr/bin/env bash
+printf '%s\n' "$1" >> '${browserLog}'
+exit 0
+`);
+  await chmod(path.join(browserBin, "xdg-open"), 0o755);
+  const devices = new Map();
+  managedServer = createServer(async (request, response) => {
+    const chunks = []; for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
+    const send = (status, value) => { const bytes = Buffer.from(JSON.stringify(value)); response.writeHead(status, { "Content-Type": "application/json", "Content-Length": bytes.length, "Cache-Control": "no-store" }); response.end(bytes); };
+    const url = new URL(request.url ?? "/", "http://managed.invalid");
+    if (request.method === "GET" && url.pathname === "/v1/managed/service/status") { send(200, { protocol_version: "wco-web-bridge-v1", available: true, chatgpt_oauth_configured: true, senior_architect_gpt_configured: true }); return; }
+    if (request.method === "POST" && url.pathname === "/v1/managed/device/registrations") { const registration = `registration-${devices.size + 1}`; devices.set(registration, body.device_id); send(201, { registration_id: registration, device_code: `device-code-${devices.size}`, verification_uri_complete: managedGptUrl, expires_in: 600, interval: 1 }); return; }
+    if (request.method === "POST" && url.pathname === "/v1/managed/device/token") { const expected = devices.get(body.registration_id); if (!expected || expected !== body.device_id) { send(400, { error: "expired_token" }); return; } devices.delete(body.registration_id); send(200, { token_type: "Bearer", access_token: "packed-access-token-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", refresh_token: "packed-refresh-token-rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr", expires_in: 3_600, account_id: "packed-account", device_id: body.device_id, scope: "wco.relay" }); return; }
+    if (request.method === "POST" && url.pathname === "/v1/managed/token/refresh") { send(200, { token_type: "Bearer", access_token: "packed-refreshed-token-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", refresh_token: "packed-rotated-token-ssssssssssssssssssssssssssssssss", expires_in: 3_600, account_id: "packed-account", device_id: body.device_id, scope: "wco.relay" }); return; }
+    if (request.method === "POST" && url.pathname === "/v1/managed/device/revoke") { managedRevocations += 1; send(200, { revoked: true }); return; }
+    if (request.headers.authorization?.startsWith("Bearer ") !== true) { send(401, { error: "unauthorized" }); return; }
+    if (request.method === "GET" && url.pathname === "/v1/status") { send(200, { configured: true, connected: true, pending_author_job: null, pending_final_review: null }); return; }
+    if (request.method === "POST" && url.pathname === "/v1/authoring/jobs") { managedJobs += 1; const created = new Date().toISOString(); send(201, { protocol_version: "wco-web-bridge-v1", job_id: `job-packed-${managedJobs}`, owner: "packed-account", created_at: created, expires_at: new Date(Date.now() + 3_600_000).toISOString(), content_sha256: createHash("sha256").update(JSON.stringify(body)).digest("hex") }); return; }
+    if (request.method === "GET" && /^\/v1\/jobs\/[^/]+\/local-events$/.test(url.pathname)) { send(200, { event: null }); return; }
+    send(404, { error: "not_found" });
+  });
+  await new Promise((resolve, reject) => { managedServer.once("error", reject); managedServer.listen(0, "127.0.0.1", resolve); });
+  const managedAddress = managedServer.address();
+  assert.ok(managedAddress && typeof managedAddress === "object");
+  managedRelayUrl = `http://127.0.0.1:${managedAddress.port}`;
   const pkg = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
   tarball = path.join(root, `${pkg.name}-${pkg.version}.tgz`);
 
@@ -248,17 +291,45 @@ try {
   const noRemoteRepo = await createRepository("fixture-no-remote", { remote: false });
   const originalHead = (await checked("git", ["rev-parse", "HEAD"], { cwd: nodeRepo })).stdout.trim();
 
-  await check("SETUP-001/TUI-001/JOURNEY-01", "first no-arg run completes setup and enters the TUI", async () => {
+  await check("SETUP-001/TUI-001/MANAGED-001/JOURNEY-01", "first installed no-arg run completes setup, managed authorization, and enters the TUI", async () => {
     const result = await wcoTty(nodeRepo, [
       { waitFor: /Set up WCO for the current Git repository\? \[Y\/n\] /, send: "\n" },
+      { waitFor: /Connect ChatGPT Web\? \[Y\/n\] /, send: "\n" },
       { waitFor: /Status\s+READY[\s\S]*\n> /, send: "/quit\n" },
     ]);
     assert.equal(result.code, 0, result.stdout + result.stderr);
-    assert.equal(result.completedSteps, 2);
-    assert.match(result.stdout, /First-time setup/);
-    assert.match(result.stdout, /Setup is complete/);
+    assert.equal(result.completedSteps, 3);
+    assert.match(result.stdout, /Welcome to WCO/);
+    assert.match(result.stdout, /WCO Relay\s+available/);
+    assert.match(result.stdout, /ChatGPT Web\s+linked/);
     assert.match(result.stdout, /Status\s+READY/);
     assert.equal(await exists(path.join(wcoHome, "config.json")), true);
+    const saved = JSON.parse(await readFile(path.join(wcoHome, "config.json"), "utf8"));
+    assert.equal(saved.web_bridge.mode, "managed_actions");
+    assert.equal(saved.web_bridge.relay_url, undefined); assert.equal(saved.web_bridge.gpt_url, undefined);
+    const credential = path.join(wcoHome, "credentials", "managed-device.json");
+    assert.equal(await exists(credential), true);
+    if (process.platform !== "win32") assert.equal((await stat(credential)).mode & 0o777, 0o600);
+    assert.doesNotMatch(result.stdout + result.stderr, /Relay HTTPS URL|GPT URL|bearer token|cloudflared|OpenAPI YAML/);
+    assert.match(await readFile(browserLog, "utf8"), /https:\/\/chatgpt\.com\/g\/wco-packed-managed/);
+  });
+
+  await check("MANAGED-002", "returning installed user enters directly without repeated Web configuration", async () => {
+    const result = await wcoTty(nodeRepo, [{ waitFor: /Status\s+READY[\s\S]*\n> /, send: "/quit\n" }]);
+    assert.equal(result.code, 0, result.stdout + result.stderr); assert.equal(result.completedSteps, 1);
+    assert.doesNotMatch(result.stdout, /Connect ChatGPT Web\?|Relay HTTPS URL|GPT URL|bearer token/);
+  });
+
+  await check("MANAGED-003", "declining managed Web on a separate first run still leaves the TUI usable", async () => {
+    const declineHome = path.join(workspace, "decline-home"), declineWco = path.join(declineHome, "wco"), declineRepo = await createRepository("fixture-decline");
+    const result = await wcoTty(declineRepo, [
+      { waitFor: /Set up WCO for the current Git repository\? \[Y\/n\] /, send: "\n" },
+      { waitFor: /Connect ChatGPT Web\? \[Y\/n\] /, send: "n\n" },
+      { waitFor: /Status\s+READY[\s\S]*\n> /, send: "/quit\n" },
+    ], { home: declineHome, wcoHome: declineWco });
+    assert.equal(result.code, 0, result.stdout + result.stderr); assert.equal(result.completedSteps, 3);
+    assert.match(result.stdout, /not connected.*TUI remains available/i);
+    assert.equal(await exists(path.join(declineWco, "credentials", "managed-device.json")), false);
   });
 
   await check("SETUP-002/014/015", "setup is idempotent and safely registers another repository", async () => {
@@ -280,10 +351,11 @@ try {
       const before = (await checked("git", ["status", "--porcelain=v1"], { cwd: repository })).stdout;
       const result = await wcoTty(repository, [
         { waitFor: /Status\s+READY[\s\S]*\n> /, send: `${goal}\n` },
-        { waitFor: /Connect the WCO Senior Architect now\? \[Y\/n\] /, send: "n\n" },
-        { waitFor: /Task was not started[\s\S]*\n> /, send: "/quit\n" },
+        { waitFor: /Waiting for ChatGPT Web/, stop: true },
       ]);
-      assert.equal(result.code, 0, result.stdout + result.stderr);
+      assert.ok(result.code === 0 || result.code === 130 || result.signal === "SIGINT", result.stdout + result.stderr);
+      assert.equal(result.completedSteps, 2);
+      assert.match(result.stdout, /Task sent securely to WCO Web/);
       assert.equal((await checked("git", ["status", "--porcelain=v1"], { cwd: repository })).stdout, before);
       assert.doesNotMatch(result.stdout + result.stderr, /(?:terraform|kubectl)\s+(?:apply|destroy)|docker\s+(?:push|run)/i);
       assert.doesNotMatch(result.stdout, /state-dir|archive SHA|Task Bundle/);
@@ -375,39 +447,49 @@ exit 1
     assert.match(result.stdout, /Enter a task goal first/);
   });
 
-  await check("TASK-001/003/WEB-001", "English and Vietnamese goals guide Web connection without creating plumbing", async () => {
-    for (const goal of [
-      "Add rate limiting to POST /login, keep existing login behavior and add tests.",
-      "Thêm refresh token rotation nhưng giữ nguyên API login hiện tại, thêm test regression.",
-    ]) {
-      const result = await wcoTty(nodeRepo, [
+  await check("TASK-001/003/WEB-001/MANAGED-004", "returning users submit English and Vietnamese free-text tasks without Web configuration", async () => {
+    const journeys = [
+      [await createRepository("fixture-task-english"), "Add rate limiting to POST /login, keep existing login behavior and add tests."],
+      [await createRepository("fixture-task-vietnamese"), "Thêm refresh token rotation nhưng giữ nguyên API login hiện tại, thêm test regression."],
+    ];
+    for (const [repository, goal] of journeys) {
+      assert.equal((await wco(["setup", "--yes"], { cwd: repository })).code, 0);
+      const result = await wcoTty(repository, [
         { waitFor: /Status\s+READY[\s\S]*\n> /, send: `${goal}\n` },
-        { waitFor: /Connect the WCO Senior Architect now\? \[Y\/n\] /, send: "n\n" },
-        { waitFor: /Task was not started[\s\S]*\n> /, send: "/quit\n" },
+        { waitFor: /Waiting for ChatGPT Web/, stop: true },
       ]);
-      assert.equal(result.code, 0, result.stdout + result.stderr);
-      assert.match(result.stdout, /ChatGPT Web is not connected/);
-      assert.match(result.stdout, /Task was not started/);
-      assert.doesNotMatch(result.stdout, /state-dir|archive SHA|Task Bundle/);
+      assert.ok(result.code === 0 || result.code === 130 || result.signal === "SIGINT", result.stdout + result.stderr);
+      assert.equal(result.completedSteps, 2); assert.match(result.stdout, /Task sent securely to WCO Web/);
+      assert.doesNotMatch(result.stdout, /Connect ChatGPT Web|Relay HTTPS URL|GPT URL|bearer token|job-[A-Za-z0-9]|state-dir|archive SHA|Task Bundle/);
     }
   });
 
-  await check("WEB-002/010/011", "disconnected Web lifecycle is truthful and safe", async () => {
+  await check("WEB-002/010/011/MANAGED-005", "managed status, fixed GPT open, disconnect, and reconnect are truthful", async () => {
     const status = await wco(["web", "status"], { cwd: nodeRepo });
-    assert.equal(status.code, 1);
-    assert.match(status.stdout, /Relay\s+disconnected/);
-    assert.doesNotMatch(status.stdout, /Relay\s+connected/);
+    assert.equal(status.code, 0);
+    assert.match(status.stdout, /WCO Relay\s+connected/);
     const opened = await wco(["web", "open"], { cwd: nodeRepo });
-    assert.equal(opened.code, 1);
-    assert.match(opened.stderr, /WEB_GPT_NOT_CONFIGURED/);
-    assert.match(opened.stderr, /No repository files or workflow authority were changed/);
+    assert.equal(opened.code, 0); assert.match(opened.stdout, /Opened the configured WCO Senior Architect GPT/);
     assert.equal((await wco(["web", "disconnect"], { cwd: nodeRepo })).code, 0);
+    const disconnected = await wco(["web", "status"], { cwd: nodeRepo }); assert.equal(disconnected.code, 1); assert.match(disconnected.stderr, /RECONNECT_REQUIRED|not linked/);
+    const reconnected = await wco(["web", "connect"], { cwd: nodeRepo }); assert.equal(reconnected.code, 0, reconnected.stdout + reconnected.stderr);
+    assert.match(reconnected.stdout, /ChatGPT Web\s+linked/);
+  });
+
+  await check("MANAGED-006", "missing desktop opener prints the fixed GPT URL without crashing", async () => {
+    const noBrowserBin = path.join(workspace, "no-browser-bin"); await mkdir(noBrowserBin, { recursive: true });
+    await writeFile(path.join(noBrowserBin, "node"), `#!/bin/sh\nexec '${process.execPath}' "$@"\n`); await chmod(path.join(noBrowserBin, "node"), 0o755);
+    const opened = await wco(["web", "open"], { cwd: nodeRepo, env: { PATH: `${path.dirname(installedBinary())}:${noBrowserBin}` } });
+    assert.equal(opened.code, 0, opened.stdout + opened.stderr);
+    assert.match(opened.stdout, /Could not open a desktop browser automatically/);
+    assert.match(opened.stdout, /https:\/\/chatgpt\.com\/g\/wco-packed-managed/);
+    assert.doesNotMatch(opened.stderr, /\n\s+at\s/);
   });
 
   await check("WEB-004/005/006/007/008/013", "unsafe/offline Web connection attempts fail before persisting credentials", async () => {
     const configBefore = await readFile(path.join(wcoHome, "config.json"));
     const unsafeGpt = await wcoTty(nodeRepo, [
-      { waitFor: /Status\s+READY[\s\S]*\n> /, send: "/web connect\n" },
+      { waitFor: /Status\s+READY[\s\S]*\n> /, send: "/web connect --self-hosted\n" },
       { waitFor: /Relay HTTPS URL: /, send: "https://127.0.0.1:9\n" },
       { waitFor: /WCO Senior Architect GPT URL: /, send: "http://chatgpt.example/g/test#secret\n" },
       { waitFor: /Relay bearer token/, send: `${"x".repeat(40)}\n` },
@@ -415,7 +497,7 @@ exit 1
     ]);
     assert.match(unsafeGpt.stdout, /WEB_GPT_URL_UNSAFE/);
     const unsafeRelay = await wcoTty(nodeRepo, [
-      { waitFor: /Status\s+READY[\s\S]*\n> /, send: "/web connect\n" },
+      { waitFor: /Status\s+READY[\s\S]*\n> /, send: "/web connect --self-hosted\n" },
       { waitFor: /Relay HTTPS URL: /, send: "http://example.com/relay\n" },
       { waitFor: /WCO Senior Architect GPT URL: /, send: "https://chatgpt.com/g/test\n" },
       { waitFor: /Relay bearer token/, send: `${"x".repeat(40)}\n` },
@@ -429,7 +511,7 @@ exit 1
 
   await check("TUI-007/ERR-001", "Ctrl+C during nested Web setup exits cleanly", async () => {
     const result = await wcoTty(nodeRepo, [
-      { waitFor: /Status\s+READY[\s\S]*\n> /, send: "/config web\n" },
+      { waitFor: /Status\s+READY[\s\S]*\n> /, send: "/web connect --self-hosted\n" },
       { waitFor: /Relay HTTPS URL: /, send: "\u0003" },
     ]);
     assert.equal(result.code, 0, result.stdout + result.stderr);
@@ -442,6 +524,10 @@ exit 1
     assert.ok(result.code === 0 || result.code === 2, result.stdout + result.stderr);
     assert.match(result.stdout, /WCO Doctor/);
     assert.match(result.stdout, /config:/);
+    assert.match(result.stdout, /wco-relay-service: PASS/);
+    assert.match(result.stdout, /wco-device-account: PASS/);
+    assert.match(result.stdout, /chatgpt-web: linked/);
+    assert.match(result.stdout, /senior-architect-gpt: configured/);
     assert.doesNotMatch(result.stderr, /Missing '--config'|Missing '--state-dir'/);
   });
 
@@ -460,11 +546,13 @@ exit 1
 
   await check("UNINSTALL-002/003/005/009/JOURNEY-10", "confirmed uninstall scopes data/package, preserves repo, then reinstalls", async () => {
     const beforeStatus = (await checked("git", ["status", "--porcelain=v1"], { cwd: nodeRepo })).stdout;
+    const revocationsBefore = managedRevocations;
     const result = await wco(["uninstall", "--purge", "--yes"], { cwd: nodeRepo });
     assert.equal(result.code, 0, result.stdout + result.stderr);
     assert.equal(await exists(wcoHome), false);
     assert.equal((await checked("git", ["rev-parse", "HEAD"], { cwd: nodeRepo })).stdout.trim(), originalHead);
     assert.equal((await checked("git", ["status", "--porcelain=v1"], { cwd: nodeRepo })).stdout, beforeStatus);
+    assert.equal(managedRevocations, revocationsBefore + 1, "uninstall did not request managed device revocation");
     for (let attempt = 0; attempt < 100 && await exists(installedBinary()); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 100));
     assert.equal(await exists(installedBinary()), false, "scoped npm self-uninstall did not remove the packed binary");
     await checked(npm, ["install", "--global", "--prefix", prefix, "--omit=dev", "--ignore-scripts", tarball], { cwd: workspace, timeoutMs: 120_000 });
@@ -484,6 +572,7 @@ exit 1
   await writeFile(path.join(evidence, "packed-user-journeys.json"), `${JSON.stringify(report, null, 2)}\n`);
   process.stdout.write(`\nPacked user journeys PASS: ${report.pass}/${report.total}; skipped: 0\n`);
 } finally {
+  if (managedServer) await new Promise((resolve) => managedServer.close(() => resolve()));
   if (tarball && await exists(tarball)) await rm(tarball);
   if (keep) process.stdout.write(`Preserved packed-user evidence: ${workspace}\n`);
   else await rm(workspace, { recursive: true, force: true });

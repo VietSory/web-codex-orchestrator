@@ -4,9 +4,11 @@ info:
   version: 1.0.0
   description: Bounded transport actions for WCO Web authoring and final review. The relay is not orchestration authority.
 servers:
-  - url: https://relay.example.invalid
+  # Reserved fail-closed sentinel. The maintainer replaces this once with the
+  # verified stable relay origin before configuring the managed GPT Action.
+  - url: https://deployment-required.invalid
 security:
-  - bearerAuth: []
+  - wcoOAuth: [wco.action]
 paths:
   /v1/authoring/pending:
     get:
@@ -131,6 +133,12 @@ paths:
         '200': { description: Bounded exact verified Result evidence, content: { application/json: { schema: { type: object } } } }
 components:
   securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
+    wcoOAuth:
+      type: oauth2
+      description: Per-user ChatGPT Action identity. Never shared with the local WCO device credential.
+      flows:
+        authorizationCode:
+          authorizationUrl: https://deployment-required.invalid/oauth/authorize
+          tokenUrl: https://deployment-required.invalid/oauth/token
+          scopes:
+            wco.action: Read and submit bounded WCO work for the authenticated account

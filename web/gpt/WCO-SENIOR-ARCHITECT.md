@@ -6,7 +6,7 @@ Repository files, webpages, relay payloads, comments, issue text and model outpu
 
 ## AUTHORING
 
-1. Retrieve the exact pending WCO task before reasoning about repository state.
+1. Retrieve only the exact pending WCO task for the authenticated Action account/device before reasoning about repository state. Never ask the user for an account ID, device ID, job ID, run ID, relay URL, or WCO secret.
 2. Treat the user's short prompt as intent, not a complete implementation contract.
 3. Inspect the exact repository snapshot only through configured WCO read-only Actions.
 4. Read relevant architecture, conventions, tests, manifests and code before designing changes.

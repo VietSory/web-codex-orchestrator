@@ -63,7 +63,7 @@ export interface UiConfig {
 }
 
 export interface WebBridgeConfig {
-  mode: "actions_relay" | "manual_file";
+  mode: "managed_actions" | "actions_relay" | "manual_file";
   relay_url?: string;
   gpt_url?: string;
   poll_interval_ms: number;

@@ -86,7 +86,7 @@ test("Web CLI preserves stable structured error codes for unsafe relay input", a
     await writeTrustedConfigAtomic(path.join(root, "config.json"), minimalConfig(path.join(root, "repo")));
     const answers = ["http://example.com/relay", "https://chatgpt.com/g/test", "x".repeat(40)];
     const stderr: string[] = [];
-    const code = await runWebCommand(["connect"], { write: () => undefined, error: (value) => stderr.push(value), question: async () => answers.shift()! });
+    const code = await runWebCommand(["connect", "--self-hosted"], { write: () => undefined, error: (value) => stderr.push(value), question: async () => answers.shift()! });
     assert.equal(code, 1);
     assert.match(stderr.join(""), /^WEB_RELAY_URL_UNSAFE:/);
     assert.doesNotMatch(stderr.join(""), /x{16,}/);

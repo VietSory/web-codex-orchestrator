@@ -16,6 +16,8 @@ import { createPendingFinalReview } from "../web-bridge/final-review-service.js"
 import { materializeAndSubmitWebVerdict } from "../web-bridge/verdict-materializer.js";
 import type { WebBridge } from "../web-bridge/web-bridge.js";
 import { listLocalTaskHistory } from "../web-bridge/session-history.js";
+import { ManagedWebOnboardingClient } from "../web-bridge/managed-onboarding.js";
+import { resolveManagedWebService } from "../web-bridge/managed-service.js";
 import { commandPalette } from "./slash-commands.js";
 import { deriveUserStage } from "./stages.js";
 import { runInteractiveSession, terminalIo, type InteractiveIo } from "./session.js";
@@ -34,27 +36,25 @@ async function reviewSummary(runId: string, stateDirectory: string): Promise<str
   const execution = await readExecutionReceipt(stateDirectory, identity.taskId, identity.archiveSha);
   const result = await readResultBundleReceipt(resultBundlePaths(stateDirectory, identity.taskId, identity.archiveSha).receiptPath);
   const lines = [
-    `Run           ${runId}`,
     `Terra         ${execution?.internal_reviewer.verdict ?? "pending"}${execution ? ` · ${execution.internal_reviewer.rounds} round(s)` : ""}`,
     `Sol           ${execution?.final_reviewer.verdict ?? "pending"}${execution ? ` · ${execution.final_reviewer.rounds} round(s)` : ""}`,
-    `Result Bundle ${result?.archive_sha256 ?? "pending"}`,
-    `Published     ${result?.published_commit_sha ?? "pending"}`,
+    `Result Bundle ${result ? "ready" : "pending"}`,
+    `Published     ${result?.published_commit_sha ? "exact commit verified" : "pending"}`,
     `Draft PR      ${result?.pull_request?.url ?? "pending"}`,
   ];
   return lines.join("\n");
 }
 
-function configSummary(config: TrustedConfig, paths: ReturnType<typeof resolveWcoPaths>, repositoryId: string): string {
+function configSummary(config: TrustedConfig, repositoryId: string): string {
   return [
     `Repository    ${repositoryId}`,
     `Web bridge    ${config.web_bridge?.mode ?? "manual_file"}`,
-    `Web GPT       ${config.web_bridge?.gpt_url ?? "not connected"}`,
+    `ChatGPT Web   ${config.web_bridge?.mode === "managed_actions" ? "managed" : config.web_bridge?.mode === "actions_relay" ? "advanced self-hosted" : "not connected"}`,
     `Implementer   ${config.agents?.implementer.model ?? "default"} · ${config.agents?.implementer.reasoning_effort ?? "default"}`,
     `Review        ${config.agents?.internal_reviewer.model ?? "default"} → ${config.agents?.final_reviewer.model ?? "default"}`,
-    `Config        ${paths.config}`,
-    `State         ${paths.state}`,
     "",
-    "Change Web connection with `/config web` or `/web connect`.",
+    "Reconnect managed Web with `/config web` or `/web connect`.",
+    "Advanced self-hosting is available only through `/web connect --self-hosted`.",
   ].join("\n");
 }
 
@@ -65,10 +65,12 @@ export function initialWorkflowContinueArguments(session: Pick<LocalWorkerSessio
 
 export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promise<number> {
   const paths = resolveWcoPaths({});
+  let firstRun = false;
   try { await access(paths.config); }
   catch {
-    io.write("First-time setup\n");
-    const code = await runSetupCommand([], process.cwd());
+    firstRun = true;
+    io.write("Welcome to WCO\n\n");
+    const code = await runSetupCommand([], process.cwd(), { write: (value) => io.write(value), error: (value) => io.write(value), question: async (prompt) => await io.question(prompt) });
     if (code !== 0) return code;
   }
   let config = await loadTrustedConfig(paths.config);
@@ -80,7 +82,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     return 1;
   }
   const [repositoryId, repositoryConfig] = registration;
-  let bridge: WebBridge = createConfiguredWebBridge(config, paths.bridge);
+  let bridge: WebBridge | null = null;
   let latest = await readLocalWorkerSession(paths.state, repositoryId);
   const webIo = {
     write: (value: string) => io.write(value),
@@ -91,20 +93,33 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
 
   const reloadBridge = async (): Promise<void> => {
     config = await loadTrustedConfig(paths.config);
-    bridge = createConfiguredWebBridge(config, paths.bridge);
+    try { bridge = createConfiguredWebBridge(config, paths.bridge); }
+    catch { bridge = null; }
+  };
+
+  await reloadBridge();
+
+  const connectionWorks = async (): Promise<boolean> => {
+    if (!bridge || config.web_bridge?.mode === "manual_file") return false;
+    try { return (await bridge.getConnectionStatus()).connected; } catch { return false; }
+  };
+
+  const managedServiceAvailable = async (): Promise<boolean> => {
+    try {
+      const metadata = resolveManagedWebService();
+      await new ManagedWebOnboardingClient({ metadata, credentialsDirectory: paths.credentials }).probeService();
+      return true;
+    } catch { return false; }
   };
 
   const ensureWebConnected = async (): Promise<boolean> => {
-    if (config.web_bridge?.mode === "actions_relay") {
-      try { if ((await bridge.getConnectionStatus()).connected) return true; }
-      catch { /* offer reconnect below */ }
-    }
-    const answer = (await io.question("ChatGPT Web is not connected. Connect the WCO Senior Architect now? [Y/n] ")).trim();
+    if (await connectionWorks()) return true;
+    const answer = (await io.question(config.web_bridge?.mode === "managed_actions" ? "Connect ChatGPT Web? [Y/n] " : "Use the managed WCO Web service? [Y/n] ")).trim();
     if (answer && !/^y(es)?$/i.test(answer)) return false;
     const code = await runWebCommand(["connect"], webIo);
     if (code !== 0) return false;
     await reloadBridge();
-    return true;
+    return await connectionWorks();
   };
 
   const openWebArchitect = async (): Promise<void> => {
@@ -114,6 +129,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
 
   const waitForImplementation = async (): Promise<LocalWorkerSession> => {
     if (!latest) throw new Error("No active Web authoring session.");
+    if (!bridge) throw new Error("WCO Relay is not connected.");
     const poll = Math.max(250, Math.min(config.web_bridge?.poll_interval_ms ?? 1_000, 10_000));
     io.write("Waiting for ChatGPT Web to inspect the exact base, seal the contract, and submit implementation authority…\n");
     while (latest.state !== "IMPLEMENTATION_REGISTERED") {
@@ -127,8 +143,8 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
 
   const continueThroughFinalReview = async (): Promise<string> => {
     if (!latest?.run_id || latest.state !== "IMPLEMENTATION_REGISTERED") return `Workflow is waiting at ${latest?.state ?? "NO_TASK"}.`;
-    const lines: string[] = [];
-    let code = await runControlCommand("continue", initialWorkflowContinueArguments(latest, paths.state, paths.config), { stdout: (value) => { lines.push(value); io.write(`${value}\n`); }, stderr: (value) => { lines.push(value); io.write(`${value}\n`); } });
+    if (!bridge) throw new Error("WCO Relay is not connected.");
+    let code = await runControlCommand("continue", initialWorkflowContinueArguments(latest, paths.state, paths.config), { stdout: () => undefined, stderr: () => undefined });
     try {
       const review = await createPendingFinalReview({ bridge, runId: latest.run_id, stateDirectory: paths.state });
       await openWebArchitect();
@@ -137,25 +153,43 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
       let verdict = await bridge.waitForVerdict(review.job_id);
       while (!verdict) { await sleep(poll); verdict = await bridge.waitForVerdict(review.job_id); }
       const adopted = await materializeAndSubmitWebVerdict({ envelope: verdict, stateDirectory: paths.state, configPath: paths.config });
-      lines.push(`Web final review: ${adopted.receipt.state}`);
       io.write(`Web final review: ${adopted.receipt.state}\n`);
-      code = await runControlCommand("continue", ["--run-id", latest.run_id, "--state-dir", paths.state, "--config", paths.config, "--max-transitions", "8"], { stdout: (value) => { lines.push(value); io.write(`${value}\n`); }, stderr: (value) => { lines.push(value); io.write(`${value}\n`); } });
+      code = await runControlCommand("continue", ["--run-id", latest.run_id, "--state-dir", paths.state, "--config", paths.config, "--max-transitions", "8"], { stdout: () => undefined, stderr: () => undefined });
     } catch (error) {
       if (!(error instanceof Error) || !error.message.includes("not ready")) throw error;
     }
-    return `${lines.join("\n")}\nWorkflow exit: ${code}`;
+    return code === 0 ? "Workflow advanced safely. Use /status for progress or /review for verified review and Draft PR evidence." : `Workflow stopped safely with exit ${code}. Use /doctor, then retry /run.`;
   };
 
   const startAndDriveTask = async (goal: string, replaceExplicit = false): Promise<string> => {
     if (!await ensureWebConnected()) return "Task was not started because the Web Architect is not connected. Use /web connect when ready.";
+    if (!bridge) throw new Error("WCO Relay is not connected.");
     latest = await startLocalAuthoring({ bridge, repository: { repository_id: repositoryId, base_branch: detected.base_branch, base_commit: detected.base_commit }, goal, stateDirectory: paths.state, replaceExplicit });
-    io.write(`Web authoring job created: ${latest.job_id}\n`);
+    io.write("Task sent securely to WCO Web.\n");
+    io.write("Opening WCO Senior Architect...\n");
     await openWebArchitect();
     io.write("In ChatGPT Web, click “Start my pending WCO task”. No ZIP/download handoff is required.\n");
     await waitForImplementation();
     io.write("Web contract and implementation authority were accepted locally. Starting WCO execution…\n");
     return await continueThroughFinalReview();
   };
+
+  if (firstRun && config.web_bridge?.mode === "managed_actions") {
+    if (await managedServiceAvailable()) {
+      const answer = (await io.question("Connect ChatGPT Web? [Y/n] ")).trim();
+      if (!answer || /^y(es)?$/i.test(answer)) {
+        const code = await runWebCommand(["connect"], webIo);
+        await reloadBridge();
+        if (code !== 0) io.write("ChatGPT Web is not connected yet. You can continue locally and retry `/web connect`.\n");
+      } else io.write("ChatGPT Web is not connected. The TUI remains available; use `/web connect` later.\n");
+    } else io.write("! WCO Relay             managed service deployment required\nChatGPT Web onboarding is unavailable until the maintainer deploys the stable service.\n");
+  } else if (!await connectionWorks() && config.web_bridge?.mode === "managed_actions" && await managedServiceAvailable()) {
+    const answer = (await io.question("WCO connection expired or was revoked. Reconnect ChatGPT Web? [Y/n] ")).trim();
+    if (!answer || /^y(es)?$/i.test(answer)) {
+      await runWebCommand(["connect"], webIo);
+      await reloadBridge();
+    }
+  }
 
   await runInteractiveSession(io, {
     state: async () => {
@@ -169,7 +203,9 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     newTask: async (goal) => await startAndDriveTask(goal),
     clarify: async (value) => {
       if (!latest) return "No active task. Enter a goal to start one.";
-      await appendLocalClarification({ bridge, session: latest, value, stateDirectory: paths.state });
+      const connectedBridge = bridge;
+      if (!connectedBridge) return "WCO Relay is not connected.";
+      await appendLocalClarification({ bridge: connectedBridge, session: latest, value, stateDirectory: paths.state });
       return "Clarification sent before contract sealing.";
     },
     command: async (command, args) => {
@@ -179,7 +215,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
         if (!args) return { message: "Usage: /new <goal>" };
         return { message: await startAndDriveTask(args, true) };
       }
-      if (command === "/task") return { message: latest ? `Goal: ${latest.goal}\nContract: ${latest.sealed ? "sealed" : "open"}\nRun: ${latest.run_id ?? "not prepared"}` : "No active task." };
+      if (command === "/task") return { message: latest ? `Goal: ${latest.goal}\nContract: ${latest.sealed ? "sealed" : "open"}` : "No active task." };
       if (command === "/web") {
         const webArgs = args ? args.split(/\s+/u).filter(Boolean) : ["status"];
         const code = await runWebCommand(webArgs, webIo);
@@ -192,17 +228,14 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
         return { message: `${lines.join("\n")}\nDoctor exit: ${code}` };
       }
       if (command === "/status") {
-        if (!latest?.run_id) return { message: latest ? `Authoring state: ${latest.state}` : "No active run." };
-        const lines: string[] = [];
-        const code = await runControlCommand("status", ["--run-id", latest.run_id, "--state-dir", paths.state], { stdout: (value) => lines.push(value), stderr: (value) => lines.push(value) });
-        return { message: lines.join("\n") || `Status exit: ${code}` };
+        if (!latest) return { message: "No active run." };
+        return { message: `Status: ${deriveUserStage(latest)}\nGoal: ${latest.goal}\nContract: ${latest.sealed ? "sealed" : "open"}` };
       }
       if (command === "/review") return { message: latest?.run_id ? await reviewSummary(latest.run_id, paths.state) : "No active run." };
       if (command === "/pause" || command === "/resume") {
         if (!latest?.run_id) return { message: "No prepared run to pause/resume." };
-        const lines: string[] = [];
-        const code = await runControlCommand(command.slice(1), ["--run-id", latest.run_id, "--state-dir", paths.state], { stdout: (value) => lines.push(value), stderr: (value) => lines.push(value) });
-        return { message: lines.join("\n") || `Command exit: ${code}` };
+        const code = await runControlCommand(command.slice(1), ["--run-id", latest.run_id, "--state-dir", paths.state], { stdout: () => undefined, stderr: () => undefined });
+        return { message: code === 0 ? `Workflow ${command === "/pause" ? "paused" : "resumed"} safely.` : `${command === "/pause" ? "Pause" : "Resume"} failed safely with exit ${code}.` };
       }
       if (command === "/run") {
         if (!latest) return { message: "Enter a task goal first." };
@@ -223,14 +256,14 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
         if (args === "web") {
           const code = await runWebCommand(["connect"], webIo);
           await reloadBridge();
-          return { message: code === 0 ? configSummary(config, paths, repositoryId) : `Web configuration failed with exit ${code}.` };
+          return { message: code === 0 ? configSummary(config, repositoryId) : `Web configuration failed with exit ${code}.` };
         }
-        return { message: configSummary(config, paths, repositoryId) };
+        return { message: configSummary(config, repositoryId) };
       }
       if (command === "/history") {
         const previous = await listLocalTaskHistory(paths.state, repositoryId, 10);
         const entries = [...(latest ? [latest] : []), ...previous].slice(0, 10);
-        return { message: entries.length ? entries.map((item, index) => `${index + 1}. ${item.goal}\n   ${item.state} · ${item.run_id ?? "not prepared"} · ${item.updated_at}`).join("\n") : "No task history for this repository." };
+        return { message: entries.length ? entries.map((item, index) => `${index + 1}. ${item.goal}\n   ${item.state} · ${item.updated_at}`).join("\n") : "No task history for this repository." };
       }
       return { message: `Unknown command '${command}'. Type / for the command palette.` };
     },

@@ -1,6 +1,8 @@
 import { access } from "node:fs/promises";
 import { loadTrustedConfig } from "../config/config-loader.js";
 import { resolveWcoPaths } from "../setup/default-paths.js";
+import { ManagedWebOnboardingClient } from "../web-bridge/managed-onboarding.js";
+import { resolveManagedWebService } from "../web-bridge/managed-service.js";
 import { purgeWcoHome } from "./purge.js";
 import { planSelfUninstall, scheduleSelfUninstall } from "./self-uninstall.js";
 
@@ -16,7 +18,7 @@ export async function runUninstallCommand(args: string[]): Promise<number> {
   catch { /* missing config is still uninstallable */ }
   try {
     const selfPlan = planSelfUninstall();
-    const plan = await purgeWcoHome({ home: paths.home, ...(config ? { config } : {}), dryRun: !yes });
+    const plan = await purgeWcoHome({ home: paths.home, ...(config ? { config } : {}), dryRun: true });
     if (!yes) {
       if (json) process.stdout.write(`${JSON.stringify({ status: "confirmation_required", inventory: plan, self_uninstall: selfPlan })}\n`);
       else {
@@ -24,8 +26,15 @@ export async function runUninstallCommand(args: string[]): Promise<number> {
       }
       return 1;
     }
+    if (config?.web_bridge?.mode === "managed_actions") {
+      try {
+        const metadata = resolveManagedWebService();
+        await new ManagedWebOnboardingClient({ metadata, credentialsDirectory: paths.credentials }).revokeBestEffort();
+      } catch { /* uninstall remains local and complete when the managed service is unavailable */ }
+    }
+    const purged = await purgeWcoHome({ home: paths.home, ...(config ? { config } : {}) });
     const self = await scheduleSelfUninstall(selfPlan);
-    if (json) process.stdout.write(`${JSON.stringify({ status: "purged", inventory: plan, self_uninstall: self })}\n`);
+    if (json) process.stdout.write(`${JSON.stringify({ status: "purged", inventory: purged, self_uninstall: self })}\n`);
     else {
       process.stdout.write(`Remove Web Codex Orchestrator?\n\nWCO removed its owned local data. Source repositories, Git history, remote branches and Pull Requests were preserved.\n${self.explanation}\n`);
     }

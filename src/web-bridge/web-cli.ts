@@ -4,11 +4,13 @@ import { loadTrustedConfig } from "../config/config-loader.js";
 import type { TrustedConfig } from "../config/contracts.js";
 import { resolveWcoPaths } from "../setup/default-paths.js";
 import { createConfiguredWebBridge } from "./bridge-factory.js";
-import { configureWebBridgeConnection, disconnectWebBridgeConnection } from "./connection-setup.js";
+import { configureManagedWebBridgeConnection, configureWebBridgeConnection, disconnectManagedWebBridgeConnection, disconnectWebBridgeConnection } from "./connection-setup.js";
 import { PersonalBearerAuthenticator } from "./relay/auth.js";
 import { RelayFileStore } from "./relay/file-store.js";
 import { createRelayServer } from "./relay/server.js";
 import { questionWithoutEcho } from "../shared/secret-prompt.js";
+import { resolveManagedWebService } from "./managed-service.js";
+import { readManagedDeviceCredential } from "./managed-credential.js";
 
 export interface WebCommandIo {
   write(value: string): void;
@@ -42,8 +44,9 @@ export async function openBrowser(urlValue: string, spawnBrowser: BrowserSpawner
 }
 
 export async function openConfiguredWebArchitect(config: TrustedConfig): Promise<boolean> {
-  if (!config.web_bridge?.gpt_url) throw new Error("WEB_GPT_NOT_CONFIGURED: run `wco web connect` first.");
-  return await openBrowser(config.web_bridge.gpt_url);
+  const gptUrl = config.web_bridge?.mode === "managed_actions" ? resolveManagedWebService().gpt_url : config.web_bridge?.gpt_url;
+  if (!gptUrl) throw new Error("WEB_GPT_NOT_CONFIGURED: run `wco web connect` first.");
+  return await openBrowser(gptUrl);
 }
 
 function withDefault(value: string, fallback?: string): string {
@@ -57,7 +60,7 @@ function formatWebError(error: unknown): string {
   return code && !message.startsWith(`${code}:`) ? `${code}: ${message}` : message;
 }
 
-async function promptConnection(io: WebCommandIo, config: TrustedConfig): Promise<{ relayUrl: string; gptUrl: string; token: string } | null> {
+async function promptSelfHostedConnection(io: WebCommandIo, config: TrustedConfig): Promise<{ relayUrl: string; gptUrl: string; token: string } | null> {
   let owned: ReturnType<typeof readline.createInterface> | undefined;
   let secret = io.secret;
   const question = io.question ?? (process.stdin.isTTY && process.stdout.isTTY ? (() => {
@@ -92,7 +95,7 @@ async function promptConnection(io: WebCommandIo, config: TrustedConfig): Promis
   }
 }
 
-export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = defaultIo, openArchitect: (config: TrustedConfig) => Promise<boolean> = openConfiguredWebArchitect): Promise<number> {
+export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = defaultIo, openArchitect: (config: TrustedConfig) => Promise<boolean> = openConfiguredWebArchitect, openUrl: (url: string) => Promise<boolean> = openBrowser): Promise<number> {
   const operation = args[0] ?? "status";
   const io = suppliedIo;
   if (operation === "relay") {
@@ -110,46 +113,59 @@ export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = d
       process.once("SIGTERM", stop);
     });
   }
-  if (!["status", "open", "connect", "disconnect"].includes(operation) || args.length > 1) {
-    io.error("Usage: wco web [status|open|connect|disconnect|relay]\n");
+  const selfHosted = operation === "connect" && args[1] === "--self-hosted" && args.length === 2;
+  if (!["status", "open", "connect", "disconnect"].includes(operation) || args.length > (selfHosted ? 2 : 1)) {
+    io.error("Usage: wco web [status|open|connect [--self-hosted]|disconnect|relay]\n");
     return 2;
   }
   const paths = resolveWcoPaths({});
   try {
     let config = await loadTrustedConfig(paths.config);
     if (operation === "connect") {
-      const values = await promptConnection(io, config);
-      if (!values) return 1;
-      const connected = await configureWebBridgeConnection({
-        configPath: paths.config,
-        credentialsDirectory: paths.credentials,
-        relayUrl: values.relayUrl,
-        gptUrl: values.gptUrl,
-        token: values.token,
-      });
+      if (selfHosted) {
+        const values = await promptSelfHostedConnection(io, config);
+        if (!values) return 1;
+        const connected = await configureWebBridgeConnection({ configPath: paths.config, credentialsDirectory: paths.credentials, relayUrl: values.relayUrl, gptUrl: values.gptUrl, token: values.token });
+        config = connected.config;
+        io.write("Advanced self-hosted Web bridge connected. Credential stored in WCO-owned credentials.\n");
+        return 0;
+      }
+      const metadata = resolveManagedWebService();
+      io.write("Opening WCO Senior Architect...\n");
+      const connected = await configureManagedWebBridgeConnection({ configPath: paths.config, credentialsDirectory: paths.credentials, metadata, openAuthorization: openUrl });
       config = connected.config;
-      io.write(`Web Architect GPT     configured\nRelay                 connected\nAccount               ${connected.status.account ?? "connected"}\nCredential            stored in WCO-owned credentials\n`);
+      io.write("WCO Relay             connected\nChatGPT Web            linked\nCredential             protected WCO device storage\n");
+      if (!connected.gpt_opened) io.write(`A desktop browser could not be opened. Open the fixed WCO Senior Architect GPT: ${connected.gpt_url}\n`);
       return 0;
     }
     if (operation === "open") {
       const opened = await openArchitect(config);
+      const configuredGpt = config.web_bridge?.mode === "managed_actions" ? resolveManagedWebService().gpt_url : config.web_bridge?.gpt_url;
       io.write(opened
         ? "Opened the configured WCO Senior Architect GPT. In ChatGPT, start or continue the pending WCO task.\n"
-        : `Could not open a desktop browser automatically. Open the configured WCO Senior Architect GPT manually: ${config.web_bridge?.gpt_url}\n`);
+        : `Could not open a desktop browser automatically. Open the fixed WCO Senior Architect GPT: ${configuredGpt}\n`);
       return 0;
     }
     if (operation === "disconnect") {
-      await disconnectWebBridgeConnection({ configPath: paths.config, credentialsDirectory: paths.credentials });
-      io.write("Web bridge disconnected locally. WCO removed its stored relay credential; revoke the server/GPT credential separately if needed.\n");
+      if (config.web_bridge?.mode === "managed_actions") {
+        let metadata;
+        try { metadata = resolveManagedWebService(); } catch { /* local removal must still succeed if deployment is unavailable */ }
+        await disconnectManagedWebBridgeConnection({ configPath: paths.config, credentialsDirectory: paths.credentials, ...(metadata ? { metadata } : {}) });
+        io.write("ChatGPT Web disconnected. WCO removed the local device credential and requested remote revocation when available.\n");
+      } else {
+        await disconnectWebBridgeConnection({ configPath: paths.config, credentialsDirectory: paths.credentials });
+        io.write("Advanced self-hosted Web bridge disconnected locally.\n");
+      }
       return 0;
     }
-    if (config.web_bridge?.mode !== "actions_relay") {
-      io.write(`Web Architect GPT     ${config.web_bridge?.gpt_url ? "configured" : "missing"}\nRelay                 disconnected\nAccount               missing\nPending author task   none\nPending final review  none\n`);
+    if (config.web_bridge?.mode === "manual_file" || !config.web_bridge) {
+      io.write("Mode                   manual file (advanced)\nWCO Relay              disconnected\nChatGPT Web             not linked\n");
       return 1;
     }
+    if (config.web_bridge.mode === "managed_actions") await readManagedDeviceCredential(paths.credentials);
     const bridge = createConfiguredWebBridge(config, paths.bridge);
     const status = await bridge.getConnectionStatus();
-    io.write(`Web Architect GPT     ${config.web_bridge?.gpt_url ? "configured" : "missing"}\nRelay                 ${status.connected ? "connected" : "offline"}\nAccount               ${status.account ?? "missing"}\nPending author task   ${status.pending_author_job ?? "none"}\nPending final review  ${status.pending_final_review ?? "none"}\n`);
+    io.write(`Senior Architect GPT  configured\nWCO Relay              ${status.connected ? "connected" : "offline"}\nChatGPT Web             ${status.connected ? "linked" : "not linked"}\nPending author task    ${status.pending_author_job ? "yes" : "none"}\nPending final review   ${status.pending_final_review ? "yes" : "none"}\n`);
     return status.connected ? 0 : 1;
   } catch (error) {
     io.error(`${formatWebError(error)}\nNo repository files or workflow authority were changed. Try: wco web status\n`);

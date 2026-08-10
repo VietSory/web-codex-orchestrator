@@ -18,15 +18,11 @@ First-run setup detects the canonical Git root, the deterministic remote (`origi
 
 `WCO_HOME` may override this for isolated testing or advanced operation. Normal users do not set `WCO_CONFIG`, `WCO_STATE_DIR` or `WCO_RUN_ID`.
 
-### First task
+### First connection and task
 
-At the `>` prompt, type a goal. If ChatGPT Web is not connected, WCO offers connection setup and asks for:
+First run checks the stable managed WCO Relay and asks `Connect ChatGPT Web? [Y/n]`. On yes, WCO creates an expiring, replay-protected device registration, opens the fixed WCO Senior Architect authorization, and stores only the resulting scoped device credential in protected WCO-owned credential storage. The managed service and ChatGPT Action bind the local device and the GPT session to the same account.
 
-1. an HTTPS relay URL (loopback HTTP is accepted only for local development);
-2. a clean HTTPS WCO Senior Architect GPT URL;
-3. a bearer token, entered without terminal echo and stored only in WCO-owned credentials.
-
-WCO verifies the relay before changing trusted configuration. Invalid URLs, authentication failures, malformed responses and offline relays leave repository files and workflow authority unchanged.
+Normal users do not configure a Custom GPT, import OpenAPI, enter relay/GPT URLs, paste tokens, run a tunnel, or edit WCO JSON. Invalid metadata, authentication failures, malformed responses and offline services leave repository files and workflow authority unchanged.
 
 WCO creates the authoring job and opens the GPT. The hosted UI may require one click to start the pending WCO task. Repository inspection is bounded to exact Git objects at the sealed base; `.git/**`, `.env` and sensitive paths are denied. Search/read receipts become part of local authority validation.
 
@@ -84,11 +80,13 @@ Inside the interactive shell:
 /config web
 ```
 
-`/web disconnect` removes the local credential and returns configuration to disconnected mode. Revoke the server-side credential separately if required. Tokens must never be put in repository config, task text, logs, result bundles or screenshots.
+`/web disconnect` requests remote device revocation and removes the local credential. Expiring access credentials refresh silently; a revoked device causes one reconnect prompt. Tokens must never be put in repository config, task text, logs, result bundles or screenshots.
+
+The legacy relay is an explicit advanced path only: `/web connect --self-hosted`. Only that command may ask for relay URL, GPT URL, or relay authentication details.
 
 ## Doctor
 
-Run `/doctor` interactively or `wco doctor` from the repository. The command automatically discovers WCO-owned config/state defaults. It checks Node, Git, trusted config/state, the pinned bundled Codex runtime, Codex authentication, the network-disabled Codex sandbox and publication credentials.
+Run `/doctor` interactively or `wco doctor` from the repository. The command automatically discovers WCO-owned config/state defaults. It checks Node, Git, trusted config/state, the pinned bundled Codex runtime, Codex authentication, the network-disabled Codex sandbox, publication credentials, managed relay availability, device/account linkage, ChatGPT Web linkage, and Senior Architect GPT configuration.
 
 A failed sandbox check is fatal for model-backed work. There is no unrestricted fallback.
 

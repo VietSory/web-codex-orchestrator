@@ -17,7 +17,7 @@ Requirements:
 - Git;
 - Codex authentication for implementation/review;
 - GitHub CLI authentication for Draft PR delivery;
-- an HTTPS WCO Action relay and configured WCO Senior Architect GPT for the hosted Web handoff.
+- a browser for the one-time managed ChatGPT Web authorization.
 
 Resolve, download, and verify the current Latest release artifact:
 
@@ -46,7 +46,8 @@ On the first run, WCO:
 2. detects the repository root, remote, base branch and project tools;
 3. writes WCO-owned configuration/state under the user data directory;
 4. reports Codex and GitHub credential readiness;
-5. enters the interactive shell.
+5. checks the managed WCO Relay and offers one-time ChatGPT Web authorization;
+6. enters the interactive shell.
 
 Then type a normal-language goal, for example:
 
@@ -54,7 +55,9 @@ Then type a normal-language goal, for example:
 Add rate limiting to POST /login, preserve existing login behavior, and add regression tests.
 ```
 
-The first task offers to connect the Web Architect if it is not configured. Connection setup verifies the relay before saving anything. The bearer token is stored only in WCO-owned credentials and is hidden during terminal input.
+WCO opens the preconfigured WCO Senior Architect GPT. ChatGPT may ask the user to Connect/authorize WCO once. The user does not configure a Custom GPT, import YAML, enter relay/GPT URLs, copy a bearer token, run a tunnel, or edit WCO JSON. WCO stores only a scoped, expiring device credential in protected WCO-owned credential storage.
+
+Maintainers deploy and configure the stable managed relay, GPT Action schema, GPT and OAuth once globally. Advanced self-hosting remains available only through `/web connect --self-hosted` and is not the normal workflow.
 
 After the one-time Web setup, the returning-user path is simply:
 
@@ -84,15 +87,15 @@ At the WCO prompt, enter `/` or `/help`:
 /task             show the current goal and contract state
 /run              continue the active workflow
 /web status       diagnose the Web connection
-/web connect      verify and save a Web connection
-/web open         open the configured Senior Architect GPT
-/web disconnect   remove the local relay credential
+/web connect      connect the managed Senior Architect once
+/web open         open the fixed Senior Architect GPT
+/web disconnect   revoke/remove the local device credential
 /review           show Terra/Sol/result/Draft PR evidence
 /pause            stop before the next safe transition
 /resume           clear an explicit pause
 /history          show bounded history for this repository
 /config           show user-facing settings
-/config web       configure the Web connection
+/config web       reconnect the managed Web connection
 /doctor           check runtime, authentication and sandbox readiness
 /uninstall        remove WCO-owned local resources
 /unitsall         alias for /uninstall
