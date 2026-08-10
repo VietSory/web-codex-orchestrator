@@ -1,6 +1,7 @@
 import { WebReviewError, type WebReviewVerdict } from "./contracts.js";
 import type { ResultBundleReceipt } from "../result-bundle/contracts.js";
 import type { TrustedConfig } from "../config/contracts.js";
+import { resolveGitHubToken } from "../setup/credential-provider.js";
 import type { GitHubAttestationClient } from "../result-bundle/github-attestation.js";
 
 export interface VerifiedGitHubAttestation {
@@ -139,12 +140,15 @@ export async function verifyGitHubAttestation(params: {
       );
     }
   } else {
-    const tokenEnvKey = config.github_pull_request?.authentication?.token_environment_key ?? "WCO_GITHUB_TOKEN";
-    const token = process.env[tokenEnvKey];
-    if (!token) {
+    const authentication = config.github_pull_request?.authentication;
+    let token: string;
+    try {
+      if (!authentication) throw new Error("missing configuration");
+      token = await resolveGitHubToken(authentication);
+    } catch {
       throw new WebReviewError(
         "WEB_REVIEW_AUTH_ERROR",
-        `Mandatory GitHub attestation failed: environment variable '${tokenEnvKey}' is not set`
+        "Mandatory GitHub attestation failed: GitHub credentials are unavailable"
       );
     }
 

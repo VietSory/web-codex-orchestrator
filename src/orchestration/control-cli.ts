@@ -16,6 +16,7 @@ import { deriveNextTransition, type LifecycleSnapshot, type PlannedTransition } 
 import { readLifecycleSnapshot } from "./snapshot-reader.js";
 import { runNextTransition, type ContinueResult } from "./transition-runner.js";
 import { OrchestrationError, type RunLedger } from "./contracts.js";
+import { resolveGitHubToken } from "../setup/credential-provider.js";
 
 export interface ControlCliIo { stdout(value: string): void; stderr(value: string): void; }
 
@@ -247,9 +248,14 @@ function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
         if (config.publish?.authentication.mode === "https_token") requiredKeys.push(config.publish.authentication.token_environment_key);
         if (config.github_pull_request?.authentication.mode === "https_token") requiredKeys.push(config.github_pull_request.authentication.token_environment_key);
         const missing = [...new Set(requiredKeys)].filter((key) => !process.env[key]);
-        return missing.length === 0
-          ? { severity: "OK" as const, summary: requiredKeys.length === 0 ? "no Git/GitHub token env required by config" : "configured Git/GitHub credential env keys are present" }
-          : { severity: "WARN" as const, summary: `missing credential env keys: ${missing.join(", ")}`, details: { missing_keys: missing } };
+        if (missing.length) return { severity: "WARN" as const, summary: `missing credential env keys: ${missing.join(", ")}`, details: { missing_keys: missing } };
+        const ghAuthentication = config.github_pull_request?.authentication.mode === "gh_cli" ? config.github_pull_request.authentication : config.publish?.authentication.mode === "gh_cli" ? config.publish.authentication : undefined;
+        if (ghAuthentication) {
+          try { await resolveGitHubToken(ghAuthentication); }
+          catch { return { severity: "FAIL" as const, summary: "GitHub CLI authentication is unavailable; run `gh auth login` and retry" }; }
+          return { severity: "OK" as const, summary: "GitHub CLI authentication available" };
+        }
+        return { severity: "OK" as const, summary: requiredKeys.length === 0 ? "no Git/GitHub token env required by config" : "configured Git/GitHub credential env keys are present" };
       },
     },
     {

@@ -63,3 +63,8 @@ Never share files from `~/.codex-chatgpt-web/browser`.
 ## Native context A/B benchmark
 
 The v0.2 context benchmark is intentionally opt-in and provider-backed. Run it only against an exact `READY_FOR_PUBLISH` executor snapshot after the normal native gates pass. The benchmark must compare the same exact change-set digest with fresh read-only reviewer turns and report provider token usage, latency, and exact-digest approval rate. Offline context-path-byte measurements are not token-cost claims.
+# v0.3 native product dogfood gate
+
+After deterministic gates pass, build a tarball and install it in a clean environment. From a different real GitHub repository run `wco`, complete setup, enter one rough goal, and use the configured Senior Architect GPT. Prove contract and implementation arrive without Downloads/manual ZIP transfer; WCO executes verification, Terra/Sol review, Draft PR and Result Bundle; final Web verdict returns without a manual JSON file; the workflow stops before merge. Finally run `/uninstall` (or `wco uninstall --purge --yes`) and verify the target repository, `.git`, remote branch and PR remain intact.
+
+Record the run ID, Task Bundle SHA, Web Pack SHA, exact base/published commit, Result Bundle SHA, Terra/Sol exact change-set digests, Draft status and uninstall inventory. Provider-backed calls are not part of normal CI.

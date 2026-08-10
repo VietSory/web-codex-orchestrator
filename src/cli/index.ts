@@ -25,6 +25,10 @@ import { runSubmitWebVerdictCommand, runWebReviewStatusCommand, SUBMIT_WEB_VERDI
 import { runReviseCli, runRevisionStatusCli } from "../revision/revision-cli.js";
 import { runControlCommand } from "../orchestration/control-cli.js";
 import { formatTaskPreview, previewTaskBundle } from "../preview/task-preview.js";
+import { runInteractiveApp } from "../tui/interactive-app.js";
+import { runSetupCommand } from "../setup/setup-cli.js";
+import { runWebCommand } from "../web-bridge/web-cli.js";
+import { runUninstallCommand } from "../uninstall/uninstall-cli.js";
 
 const CONTROL_COMMANDS = new Set(["doctor", "status", "next", "continue", "pause", "resume"]);
 
@@ -32,9 +36,17 @@ function printUsage(): void {
   console.log("Web Codex Orchestrator (wco)");
   console.log("");
   console.log("Usage:");
-  console.log("  wco <command> [options]");
+  console.log("  wco                         Interactive UI");
+  console.log("  wco setup                   First-run setup wizard");
+  console.log("  wco web [status|open|connect|disconnect]");
+  console.log("  wco uninstall --purge [--yes]");
   console.log("");
-  console.log("Primary workflow:");
+  console.log("User workflow:");
+  console.log("  wco run <task-bundle.zip> ...   Run an existing bundle non-interactively");
+  console.log("  wco status ...                  Inspect a durable run");
+  console.log("  wco doctor ...                  Diagnose runtime/auth/sandbox");
+  console.log("");
+  console.log("Advanced / automation:");
   console.log("  wco preview <task-bundle.zip> --state-dir <directory> [--json]");
   console.log("  wco run <task-bundle.zip> --state-dir <directory> --config <config.json> [--web-pack <zip>] [--web-verdict <json>] [--max-transitions <1-32>] [--json]");
   console.log("  wco status --run-id <run-id> --state-dir <directory> [--json]");
@@ -378,9 +390,21 @@ async function runExecutionStatus(args: string[]): Promise<void> {
 
 async function main(): Promise<void> {
   const [, , command, ...args] = process.argv;
+  if (command === undefined) {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      process.stderr.write("Interactive WCO requires a TTY. Use an explicit command such as `wco setup --yes`, `wco run ...`, or `wco --help`.\n");
+      process.exitCode = 2;
+      return;
+    }
+    process.exitCode = await runInteractiveApp();
+    return;
+  }
   if (command === "--help" || command === "-h" || command === "help") { printUsage(); return; }
   if (command === "--version" || command === "-V" || command === "version") { console.log(await packageVersion()); return; }
   if (command === "preview") return runPreview(args);
+  if (command === "setup") { process.exitCode = await runSetupCommand(args); return; }
+  if (command === "web") { process.exitCode = await runWebCommand(args); return; }
+  if (command === "uninstall") { process.exitCode = await runUninstallCommand(args); return; }
   if (command === "run") return runWorkflow(args);
   if (command && CONTROL_COMMANDS.has(command)) { process.exitCode = await runControlCommand(command, controlArgumentsWithEnvironment(command, args), controlIo); return; }
   if (command === "validate") return runValidate(args[0]);

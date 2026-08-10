@@ -6,6 +6,7 @@ import { assertPhase4ExecutionContract } from "../execution/execution-validator.
 import { readGitPublishReceipt } from "../publish/publish-store.js";
 import { canonicalGitPublishReceiptDigest } from "../publish/receipt-digest.js";
 import { preparePublishGitSecurity } from "../publish/publish-auth.js";
+import { resolveGitHubToken } from "../setup/credential-provider.js";
 import { GitRunner } from "../git/git-runner.js";
 import { verifyBundleChecksums } from "../intake/checksum-verifier.js";
 import { DraftPullRequestError, type DraftPullRequestReceipt } from "./contracts.js";
@@ -106,9 +107,12 @@ export async function createDraftPullRequestForRun(options: Phase5BDraftPrOption
     const runtimeDirectory = path.join(stateDirectory, "git-runtime");
     const gitAuth = await preparePublishGitSecurity(config.publish, p5aReceipt.allowed_remote_url, runtimeDirectory, process.env);
     const gitRunner = new GitRunner(process.env, runtimeDirectory, { identity: config.publish.identity, auth: gitAuth, allowedRemoteUrl: p5aReceipt.allowed_remote_url });
-    const githubEnvKey = config.github_pull_request.authentication.token_environment_key;
-    const githubToken = process.env[githubEnvKey];
-    if (!githubToken) throw new DraftPullRequestError("PR_AUTH_UNAVAILABLE", `Missing GitHub token at ${githubEnvKey}`);
+    let githubToken: string;
+    try {
+      githubToken = await resolveGitHubToken(config.github_pull_request.authentication);
+    } catch {
+      throw new DraftPullRequestError("PR_AUTH_UNAVAILABLE", "GitHub credentials are unavailable.");
+    }
     const client = new GitHubRestPullRequestClient(githubToken);
     const storePath = path.join(stateDirectory, "publish", "github-draft-pr.json");
     const existingReceipt = await readDraftPullRequestReceipt(storePath);

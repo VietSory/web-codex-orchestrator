@@ -90,3 +90,8 @@ Before a tagged release:
 5. keep release/merge publication human-approved.
 
 A future release workflow should add a Node 22/24 compatibility matrix, SBOM/provenance generation, and artifact attestation rather than relying only on a successful CI badge.
+# v0.3 validation
+
+Web bridge tests use `FakeWebBridge` or the loopback reference relay and must not contact ChatGPT, GitHub or model providers. Cover exact-base Git reads, local materialization into current Task Bundle/Web Pack schemas, idempotent relay recovery, final verdict adoption and uninstall protection with temporary repositories.
+
+Before proposing a v0.3 change run `npm run check` and `npm run pack:check`. Native sandbox/provider tests are opt-in and should be run once at the release boundary, not during ordinary edit loops.

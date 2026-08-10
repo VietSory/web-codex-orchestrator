@@ -1,6 +1,6 @@
 {
   "name": "web-codex-orchestrator",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "A durable, security-focused CLI for orchestrating Web-authored code changes through verification, review, and Draft PR delivery.",
   "license": "Apache-2.0",
@@ -30,6 +30,7 @@
     "examples/",
     "schemas/",
     "templates/",
+    "web/",
     "README.md",
     "LICENSE",
     "SECURITY.md"

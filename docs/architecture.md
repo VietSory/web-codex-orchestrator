@@ -88,3 +88,6 @@ WCO's release engineering should continue to align with established software-sup
 - Command Line Interface Guidelines: keep the CLI human-first, consistent with common conventions, concise by default, and composable through stable machine output. https://clig.dev/
 
 These references guide boundaries and release engineering; they are not compliance claims.
+# v0.3 product entry point
+
+The interactive TUI and Web bridge are adapters over the existing durable controller, not a second state machine. ChatGPT Web submits untrusted semantic envelopes through a transport-only relay. Local materializers bind exact Git objects, accepted artifact hashes and read receipts before invoking the canonical v0.2 intake, preparation, Web authority, execution, publication, Result Bundle and verdict services. See [web-bridge.md](web-bridge.md).
