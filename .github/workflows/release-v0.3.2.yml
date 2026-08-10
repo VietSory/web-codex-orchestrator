@@ -1,0 +1,130 @@
+name: Publish WCO v0.3.2
+
+on:
+  push:
+    branches:
+      - release/v0.3.2-publish
+    paths:
+      - .github/workflows/release-v0.3.2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      TARGET_SHA: 2ff4dec6be74826c6ee147e74ecaa37e3129cc8b
+      RELEASE_TAG: v0.3.2
+    steps:
+      - name: Checkout exact merged main
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TARGET_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Confirm exact release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(node -p "require('./package.json').version")" = "0.3.2"
+          echo "Release target: $TARGET_SHA"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install exact dependencies
+        run: npm ci
+
+      - name: Re-run clean-install package smoke
+        run: npm run pack:smoke
+
+      - name: Re-run packed daily-user journeys
+        run: npm run test:user:packed
+        timeout-minutes: 3
+
+      - name: Build release tarball and checksum
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack --json > pack.json
+          tarball="$(node -e "const p=require('./pack.json'); process.stdout.write(p[0].filename)")"
+          sha256sum "$tarball" > "$tarball.sha256"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum "$tarball" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Write release notes
+        shell: bash
+        run: |
+          cat > RELEASE_NOTES.md <<'EOF'
+          ## WCO v0.3.2
+
+          Daily-user hardening release for the interactive Web-first WCO workflow.
+
+          ### Fixed
+          - First-run setup now completes even when optional Codex/GitHub credential checks need attention.
+          - `wco doctor` discovers normal saved config/state paths automatically.
+          - Repeated setup is idempotent and multiple repositories can be registered safely.
+          - Disconnected Web status is truthful; Web errors preserve stable subsystem codes.
+          - Relay bearer-token input is hidden and terminal echo is restored safely on interruption.
+          - Ctrl+C during nested Web setup exits cleanly.
+          - `/help` and the command palette reflect implemented Web/config/uninstall commands.
+          - npm self-uninstall is scoped to the exact detected installation prefix.
+          - User documentation now describes the packed interactive product instead of the obsolete internal workflow.
+
+          ### Regression protection
+          - Adds the permanent `npm run test:user:packed` gate.
+          - The gate packs the product, installs only the tarball into a clean prefix, uses disposable homes/repos and a pseudo-TTY, and verifies ordinary daily-user journeys.
+          - Coverage includes Node API, DevOps, monorepo, generic and failure fixtures; setup/recovery; Web disconnected/error paths; secret suppression; uninstall/reinstall; dirty-work preservation; English and Vietnamese goals.
+          - CI continues to enforce clean production-only tarball install before release acceptance.
+
+          ### Validation
+          - Release target: `2ff4dec6be74826c6ee147e74ecaa37e3129cc8b`.
+          - GitHub merge commit from PR #29.
+          - Exact-head PR CI #723: PASS.
+          - Exact merged-main CI #724: PASS, including clean-install and packed daily-user gates.
+          - Native Codex/Terra/Sol validation was completed during the v0.3.2 dogfood candidate run without publishing.
+          - Bundled Codex runtime remains pinned to `0.145.0`.
+
+          The package remains private on npm; install from the attached checksummed `.tgz`.
+          EOF
+
+      - name: Publish GitHub Latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball="${{ steps.pack.outputs.tarball }}"
+          gh release create "$RELEASE_TAG" \
+            "$tarball" \
+            "$tarball.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$TARGET_SHA" \
+            --title "WCO v0.3.2" \
+            --notes-file RELEASE_NOTES.md \
+            --latest
+
+      - name: Verify published release target and assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")"
+          test "$(jq -r .tag_name <<<"$release")" = "$RELEASE_TAG"
+          test "$(jq -r .target_commitish <<<"$release")" = "$TARGET_SHA"
+          test "$(jq -r .draft <<<"$release")" = "false"
+          test "$(jq -r .prerelease <<<"$release")" = "false"
+          jq -e '.assets | map(.name) | index("web-codex-orchestrator-0.3.2.tgz") != null' <<<"$release" >/dev/null
+          jq -e '.assets | map(.name) | index("web-codex-orchestrator-0.3.2.tgz.sha256") != null' <<<"$release" >/dev/null
+          latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest")"
+          test "$(jq -r .tag_name <<<"$latest")" = "$RELEASE_TAG"
+          echo "Published $RELEASE_TAG at $TARGET_SHA"
+          echo "Tarball SHA-256: ${{ steps.pack.outputs.sha256 }}"
