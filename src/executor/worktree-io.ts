@@ -24,9 +24,24 @@ async function assertAncestorChain(root: string, relativePath: string): Promise<
   for (let index = 0; index < segments.length - 1; index += 1) {
     current = path.join(current, segments[index]!);
     const stat = await fs.lstat(current).catch(() => null);
-    if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) throw new ExecutorError("EXECUTOR_WORKTREE_UNSAFE", `Operation ancestor is missing, non-directory, or symlink: ${relativePath}`);
+    if (!stat) break;
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new ExecutorError("EXECUTOR_WORKTREE_UNSAFE", `Operation ancestor is non-directory or symlink: ${relativePath}`);
   }
   return { root: realRoot, target, parent: path.dirname(target) };
+}
+
+async function ensureCreateAncestorChain(root: string, relativePath: string): Promise<{ root: string; target: string; parent: string }> {
+  const resolved = await assertAncestorChain(root, relativePath);
+  const segments = path.relative(resolved.root, resolved.parent).split(path.sep).filter(Boolean);
+  let current = resolved.root;
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    try { await fs.mkdir(current, { mode: 0o755 }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw new ExecutorError("EXECUTOR_WORKTREE_UNSAFE", `Cannot create operation ancestor: ${relativePath}`); }
+    const stat = await fs.lstat(current).catch(() => null);
+    if (!stat || stat.isSymbolicLink() || !stat.isDirectory() || await fs.realpath(current) !== current) throw new ExecutorError("EXECUTOR_WORKTREE_UNSAFE", `Operation ancestor is missing, non-directory, or symlink: ${relativePath}`);
+  }
+  return resolved;
 }
 
 async function assertStableAfter(target: string, before: Stats, handle: fs.FileHandle): Promise<void> {
@@ -64,7 +79,7 @@ export async function readStableWorktreeFile(worktree: string, relativePath: str
 
 export async function writeExactWorktreeFile(worktree: string, relativePath: string, bytes: Buffer, mode: number, mustBeAbsent: boolean): Promise<void> {
   if (bytes.byteLength > MAX_EXECUTOR_FILE_BYTES) throw new ExecutorError("EXECUTOR_POSTIMAGE_MISMATCH", `Postimage exceeds executor file cap: ${relativePath}`);
-  const { target, parent } = await assertAncestorChain(worktree, relativePath);
+  const { target, parent } = mustBeAbsent ? await ensureCreateAncestorChain(worktree, relativePath) : await assertAncestorChain(worktree, relativePath);
   if (mustBeAbsent) {
     const exists = await fs.lstat(target).catch((error) => (error as NodeJS.ErrnoException).code === "ENOENT" ? null : Promise.reject(error));
     if (exists) throw new ExecutorError("EXECUTOR_PREIMAGE_STALE", `Create target exists: ${relativePath}`);
