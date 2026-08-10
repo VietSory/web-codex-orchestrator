@@ -9,7 +9,7 @@ The format is based on Keep a Changelog, and the project intends to follow Seman
 ### Fixed
 
 - Authenticated GitHub CLI releases that predate `gh auth token` now use their supported host-scoped `gh config get oauth_token` fallback without logging the credential.
-- README Latest-release links and version checks now point at the published v0.3.2 artifact.
+- README installation resolves GitHub Latest dynamically, and regression coverage rejects stale release literals in that workflow.
 - First-run setup now completes and enters the interactive shell even when credential preflight reports actionable warnings.
 - `wco doctor` automatically discovers the saved user config/state paths.
 - Repeated setup is idempotent and distinct repositories are registered without replacing existing trusted configuration.

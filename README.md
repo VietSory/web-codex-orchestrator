@@ -6,7 +6,7 @@
 
 Web Codex Orchestrator (WCO) is a local CLI for medium and large AI-assisted coding jobs. Start it inside a Git repository, type a goal, and let WCO coordinate bounded repository inspection, a sealed implementation contract, Codex execution, deterministic checks, independent Terra/Sol review, and GitHub Draft PR delivery.
 
-Latest public release: **v0.3.2**. The package is distributed as a checksummed GitHub release tarball and remains private on npm.
+The public release is resolved from GitHub's **Latest** release. The package is distributed as a checksummed GitHub release tarball and remains private on npm.
 
 ## Install the Latest release
 
@@ -19,17 +19,19 @@ Requirements:
 - GitHub CLI authentication for Draft PR delivery;
 - an HTTPS WCO Action relay and configured WCO Senior Architect GPT for the hosted Web handoff.
 
-Download and verify the release artifact:
+Resolve, download, and verify the current Latest release artifact:
 
 ```bash
-curl -LO https://github.com/VietSory/web-codex-orchestrator/releases/download/v0.3.2/web-codex-orchestrator-0.3.2.tgz
-curl -LO https://github.com/VietSory/web-codex-orchestrator/releases/download/v0.3.2/web-codex-orchestrator-0.3.2.tgz.sha256
-sha256sum -c web-codex-orchestrator-0.3.2.tgz.sha256
-npm install --global ./web-codex-orchestrator-0.3.2.tgz
-wco --version
+release_tag="$(gh release view --repo VietSory/web-codex-orchestrator --json tagName --jq '.tagName')"
+release_version="${release_tag#v}"
+release_asset="web-codex-orchestrator-${release_version}.tgz"
+gh release download "$release_tag" --repo VietSory/web-codex-orchestrator --pattern "${release_asset}*"
+sha256sum -c "${release_asset}.sha256"
+npm install --global "./${release_asset}"
+test "$(wco --version)" = "$release_version"
 ```
 
-`wco --version` must print `0.3.2` for the Latest artifact. Installing the Latest artifact also repairs the incomplete v0.3.0 package.
+The final command must exit successfully, proving the installed binary reports the version selected by GitHub Latest. Installing Latest also repairs incomplete older installations.
 
 ## Daily use
 
