@@ -117,6 +117,11 @@ async function createRepository(name, options = {}) {
   } else {
     await writeFile(path.join(repository, "README.md"), `# ${name}\n`);
   }
+  for (const [relativePath, content] of Object.entries(options.files ?? {})) {
+    const target = path.join(repository, relativePath);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, content);
+  }
   await checked("git", ["init", "-b", "main"], { cwd: repository });
   await checked("git", ["config", "user.name", "WCO Packed Journey"], { cwd: repository });
   await checked("git", ["config", "user.email", "wco-packed@example.invalid"], { cwd: repository });
@@ -222,6 +227,23 @@ try {
   });
 
   const nodeRepo = await createRepository("fixture-node-api");
+  const devopsRepo = await createRepository("fixture-devops", {
+    node: false,
+    files: {
+      "Dockerfile": "FROM scratch\n",
+      ".github/workflows/ci.yml": "name: fixture\non: [push]\njobs: {}\n",
+      "infra/main.tf": "terraform { required_version = \">= 1.6.0\" }\n",
+      "k8s/deployment.yaml": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: fixture\n",
+    },
+  });
+  const monorepoRepo = await createRepository("fixture-monorepo", {
+    files: {
+      "packages/api/package.json": "{\"name\":\"fixture-api\",\"private\":true}\n",
+      "packages/api/src/server.js": "export const service = 'api';\n",
+      "packages/web/package.json": "{\"name\":\"fixture-web\",\"private\":true}\n",
+      "pnpm-workspace.yaml": "packages:\n  - packages/*\n",
+    },
+  });
   const genericRepo = await createRepository("fixture-generic", { node: false });
   const noRemoteRepo = await createRepository("fixture-no-remote", { remote: false });
   const originalHead = (await checked("git", ["rev-parse", "HEAD"], { cwd: nodeRepo })).stdout.trim();
@@ -242,8 +264,30 @@ try {
   await check("SETUP-002/014/015", "setup is idempotent and safely registers another repository", async () => {
     assert.equal((await wco(["setup", "--yes"], { cwd: nodeRepo })).code, 0);
     assert.equal((await wco(["setup", "--yes"], { cwd: genericRepo })).code, 0);
+    assert.equal((await wco(["setup", "--yes"], { cwd: devopsRepo })).code, 0);
+    assert.equal((await wco(["setup", "--yes"], { cwd: monorepoRepo })).code, 0);
     const config = JSON.parse(await readFile(path.join(wcoHome, "config.json"), "utf8"));
-    assert.deepEqual(Object.keys(config.repositories).sort(), ["fixture-generic", "fixture-node-api"]);
+    assert.deepEqual(Object.keys(config.repositories).sort(), ["fixture-devops", "fixture-generic", "fixture-monorepo", "fixture-node-api"]);
+  });
+
+  await check("WORK-006/007/008/009/010/011/JOURNEY-09", "DevOps, monorepo, and generic goals remain scoped without deployment side effects", async () => {
+    const journeys = [
+      [devopsRepo, "Update the Terraform, Kubernetes deployment, Dockerfile, and GitHub Actions checks without applying or deploying anything."],
+      [monorepoRepo, "Refactor only the backend API package and preserve the web package behavior."],
+      [genericRepo, "Improve these repository notes without assuming a package manager."],
+    ];
+    for (const [repository, goal] of journeys) {
+      const before = (await checked("git", ["status", "--porcelain=v1"], { cwd: repository })).stdout;
+      const result = await wcoTty(repository, [
+        { waitFor: /Status\s+READY[\s\S]*\n> /, send: `${goal}\n` },
+        { waitFor: /Connect the WCO Senior Architect now\? \[Y\/n\] /, send: "n\n" },
+        { waitFor: /Task was not started[\s\S]*\n> /, send: "/quit\n" },
+      ]);
+      assert.equal(result.code, 0, result.stdout + result.stderr);
+      assert.equal((await checked("git", ["status", "--porcelain=v1"], { cwd: repository })).stdout, before);
+      assert.doesNotMatch(result.stdout + result.stderr, /(?:terraform|kubectl)\s+(?:apply|destroy)|docker\s+(?:push|run)/i);
+      assert.doesNotMatch(result.stdout, /state-dir|archive SHA|Task Bundle/);
+    }
   });
 
   await check("SETUP-003/013", "subdirectory setup detects root without modifying dirty user work", async () => {
