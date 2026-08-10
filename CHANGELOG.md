@@ -8,6 +8,7 @@ The format is based on Keep a Changelog, and the project intends to follow Seman
 
 ### Fixed
 
+- Missing desktop URL opener commands now produce an actionable manual ChatGPT link instead of crashing the interactive workflow with an unhandled child-process error.
 - Authenticated GitHub CLI releases that predate `gh auth token` now use their supported host-scoped `gh config get oauth_token` fallback without logging the credential.
 - README installation resolves GitHub Latest dynamically, and regression coverage rejects stale release literals in that workflow.
 - First-run setup now completes and enters the interactive shell even when credential preflight reports actionable warnings.

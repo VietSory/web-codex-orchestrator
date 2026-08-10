@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { EventEmitter } from "node:events";
 import { writeTrustedConfigAtomic } from "../src/setup/config-writer.js";
 import { loadTrustedConfig } from "../src/config/config-loader.js";
 import { writeRelayToken, readRelayToken, removeRelayToken } from "../src/web-bridge/relay-credential.js";
@@ -12,7 +13,7 @@ import { PersonalBearerAuthenticator } from "../src/web-bridge/relay/auth.js";
 import { createRelayServer } from "../src/web-bridge/relay/server.js";
 import { planSelfUninstall } from "../src/uninstall/self-uninstall.js";
 import { listLocalTaskHistory } from "../src/web-bridge/session-history.js";
-import { runWebCommand } from "../src/web-bridge/web-cli.js";
+import { openBrowser, runWebCommand } from "../src/web-bridge/web-cli.js";
 import { initialWorkflowContinueArguments } from "../src/tui/interactive-app.js";
 
 function minimalConfig(repoPath: string): any {
@@ -90,6 +91,33 @@ test("Web CLI preserves stable structured error codes for unsafe relay input", a
     assert.match(stderr.join(""), /^WEB_RELAY_URL_UNSAFE:/);
     assert.doesNotMatch(stderr.join(""), /x{16,}/);
     await assert.rejects(readRelayToken(path.join(root, "credentials"), {}), /not configured|AUTH_UNAVAILABLE/i);
+  } finally {
+    if (old === undefined) delete process.env.WCO_HOME; else process.env.WCO_HOME = old;
+  }
+});
+
+test("missing desktop URL opener is an actionable fallback instead of an unhandled process error", async () => {
+  const child = new EventEmitter() as EventEmitter & { unref(): void };
+  child.unref = () => undefined;
+  const opened = openBrowser("https://chatgpt.com/g/example-wco", () => {
+    queueMicrotask(() => child.emit("error", Object.assign(new Error("spawn xdg-open ENOENT"), { code: "ENOENT" })));
+    return child as any;
+  });
+  assert.equal(await opened, false);
+
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-v03-browser-fallback-"));
+  const old = process.env.WCO_HOME;
+  process.env.WCO_HOME = root;
+  try {
+    await writeTrustedConfigAtomic(path.join(root, "config.json"), {
+      ...minimalConfig(path.join(root, "repo")),
+      web_bridge: { mode: "manual_file", poll_interval_ms: 1_000, job_ttl_seconds: 86_400, gpt_url: "https://chatgpt.com/g/example-wco" },
+    });
+    const stdout: string[] = [];
+    const code = await runWebCommand(["open"], { write: (value) => stdout.push(value), error: () => undefined }, async () => false);
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), /Could not open a desktop browser automatically/);
+    assert.match(stdout.join(""), /https:\/\/chatgpt\.com\/g\/example-wco/);
   } finally {
     if (old === undefined) delete process.env.WCO_HOME; else process.env.WCO_HOME = old;
   }

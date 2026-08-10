@@ -22,17 +22,28 @@ const defaultIo: WebCommandIo = {
   error: (value) => process.stderr.write(value),
 };
 
-export function openBrowser(urlValue: string): void {
+interface BrowserProcess {
+  once(event: "error", listener: (error: Error) => void): BrowserProcess;
+  once(event: "spawn", listener: () => void): BrowserProcess;
+  unref(): void;
+}
+
+type BrowserSpawner = (command: string, args: string[]) => BrowserProcess;
+
+export async function openBrowser(urlValue: string, spawnBrowser: BrowserSpawner = (command, args) => spawn(command, args, { detached: true, stdio: "ignore", shell: false }) as BrowserProcess): Promise<boolean> {
   const url = new URL(urlValue);
   if (url.protocol !== "https:" || url.username || url.password || url.hash) throw new Error("WEB_GPT_URL_UNSAFE: GPT URL must use clean HTTPS.");
   const command = process.platform === "win32" ? "explorer.exe" : process.platform === "darwin" ? "open" : "xdg-open";
-  const child = spawn(command, [url.href], { detached: true, stdio: "ignore", shell: false });
-  child.unref();
+  return await new Promise<boolean>((resolve) => {
+    const child = spawnBrowser(command, [url.href]);
+    child.once("error", () => resolve(false));
+    child.once("spawn", () => { child.unref(); resolve(true); });
+  });
 }
 
-export function openConfiguredWebArchitect(config: TrustedConfig): void {
+export async function openConfiguredWebArchitect(config: TrustedConfig): Promise<boolean> {
   if (!config.web_bridge?.gpt_url) throw new Error("WEB_GPT_NOT_CONFIGURED: run `wco web connect` first.");
-  openBrowser(config.web_bridge.gpt_url);
+  return await openBrowser(config.web_bridge.gpt_url);
 }
 
 function withDefault(value: string, fallback?: string): string {
@@ -81,7 +92,7 @@ async function promptConnection(io: WebCommandIo, config: TrustedConfig): Promis
   }
 }
 
-export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = defaultIo): Promise<number> {
+export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = defaultIo, openArchitect: (config: TrustedConfig) => Promise<boolean> = openConfiguredWebArchitect): Promise<number> {
   const operation = args[0] ?? "status";
   const io = suppliedIo;
   if (operation === "relay") {
@@ -121,8 +132,10 @@ export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = d
       return 0;
     }
     if (operation === "open") {
-      openConfiguredWebArchitect(config);
-      io.write("Opened the configured WCO Senior Architect GPT. In ChatGPT, start or continue the pending WCO task.\n");
+      const opened = await openArchitect(config);
+      io.write(opened
+        ? "Opened the configured WCO Senior Architect GPT. In ChatGPT, start or continue the pending WCO task.\n"
+        : `Could not open a desktop browser automatically. Open the configured WCO Senior Architect GPT manually: ${config.web_bridge?.gpt_url}\n`);
       return 0;
     }
     if (operation === "disconnect") {
