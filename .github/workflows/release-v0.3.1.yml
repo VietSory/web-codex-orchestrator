@@ -1,0 +1,116 @@
+name: Publish WCO v0.3.1
+
+on:
+  push:
+    branches:
+      - release/v0.3.1-publish
+    paths:
+      - .github/workflows/release-v0.3.1.yml
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TARGET_SHA: d20b6ec881cf0e2dae39180f48fd55effae94383
+      RELEASE_TAG: v0.3.1
+    steps:
+      - name: Checkout exact merged main
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TARGET_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Confirm exact release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(node -p "require('./package.json').version")" = "0.3.1"
+          echo "Release target: $TARGET_SHA"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install exact dependencies
+        run: npm ci
+
+      - name: Re-run clean-install package smoke
+        run: npm run pack:smoke
+
+      - name: Build release tarball and checksum
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack --json > pack.json
+          tarball="$(node -e "const p=require('./pack.json'); process.stdout.write(p[0].filename)")"
+          sha256sum "$tarball" > "$tarball.sha256"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum "$tarball" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Write release notes
+        shell: bash
+        run: |
+          cat > RELEASE_NOTES.md <<'EOF'
+          ## WCO v0.3.1
+
+          Packaging hotfix for the v0.3 interactive Web-Bridge release.
+
+          ### Fixed
+          - Clean installs from the published tarball no longer fail on missing runtime dependencies.
+          - `yazl` and `ajv` are now shipped as production dependencies instead of dev-only dependencies.
+          - Package/install metadata is consistently versioned as `0.3.1`.
+
+          ### Regression protection
+          - CI now packs the actual distributable tarball.
+          - CI installs that tarball into a clean prefix with dev dependencies omitted.
+          - CI runs `wco --version` and `wco --help` from the clean installation before release acceptance.
+
+          ### Validation
+          - Release target: `d20b6ec881cf0e2dae39180f48fd55effae94383`.
+          - GitHub-signed merge commit from PR #28.
+          - Exact-head PR CI #720: PASS.
+          - Exact merged-main CI #721: PASS, including the clean-install packed CLI gate.
+          - Bundled Codex runtime remains pinned to `0.145.0`.
+
+          `v0.3.0` is superseded by this hotfix for clean installations. The package remains private on npm; install from the attached `.tgz`.
+          EOF
+
+      - name: Publish GitHub Latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball="${{ steps.pack.outputs.tarball }}"
+          gh release create "$RELEASE_TAG" \
+            "$tarball" \
+            "$tarball.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$TARGET_SHA" \
+            --title "WCO v0.3.1" \
+            --notes-file RELEASE_NOTES.md \
+            --latest
+
+      - name: Verify published release target and assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")"
+          test "$(jq -r .tag_name <<<"$release")" = "$RELEASE_TAG"
+          test "$(jq -r .target_commitish <<<"$release")" = "$TARGET_SHA"
+          test "$(jq -r .draft <<<"$release")" = "false"
+          test "$(jq -r .prerelease <<<"$release")" = "false"
+          jq -e '.assets | map(.name) | index("web-codex-orchestrator-0.3.1.tgz") != null' <<<"$release" >/dev/null
+          jq -e '.assets | map(.name) | index("web-codex-orchestrator-0.3.1.tgz.sha256") != null' <<<"$release" >/dev/null
+          echo "Published $RELEASE_TAG at $TARGET_SHA"
+          echo "Tarball SHA-256: ${{ steps.pack.outputs.sha256 }}"
