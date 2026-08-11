@@ -1,4 +1,5 @@
 import type { ReasoningEffort } from "../config/contracts.js";
+import type { ReviewerRepairOperation } from "../execution/contracts.js";
 
 export type ExecutorState =
   | "VALIDATING"
@@ -8,6 +9,8 @@ export type ExecutorState =
   | "VERIFYING"
   | "REVIEWING_TERRA"
   | "REVIEWING_SOL"
+  | "REPAIR_APPLYING"
+  | "REPAIR_APPLIED"
   | "READY_FOR_PUBLISH"
   | "ESCALATE_TO_WEB"
   | "FAILED";
@@ -38,6 +41,15 @@ export interface ExecutorReviewReceipt {
   verdict: "APPROVE" | "REVISE" | "ESCALATE" | null;
   change_set_digest: string | null;
   evidence_sha256: string | null;
+}
+
+export interface ExecutorRepairReceipt {
+  reviewer: "terra" | "sol";
+  source_change_set_digest: string;
+  source_review_evidence_sha256: string;
+  operations: ReviewerRepairOperation[];
+  state: "PROPOSED" | "APPLYING" | "APPLIED" | "VERIFIED";
+  final_change_set_digest: string | null;
 }
 
 export interface ExecutorUsage {
@@ -76,6 +88,8 @@ export interface ExecutorReceipt {
     model: string;
     reasoning_effort: ReasoningEffort;
   };
+  /** A single durable adaptive repair proposal, never direct model write authority. */
+  repair?: ExecutorRepairReceipt;
   verification: {
     rounds: number;
     passed: boolean;
@@ -99,6 +113,7 @@ export type ExecutorErrorCode =
   | "EXECUTOR_WORKTREE_UNSAFE"
   | "EXECUTOR_PREIMAGE_STALE"
   | "EXECUTOR_TRANSACTION_INVALID"
+  | "EXECUTOR_REPAIR_INVALID"
   | "EXECUTOR_AMBIGUOUS_RECOVERY"
   | "EXECUTOR_POSTIMAGE_MISMATCH"
   | "EXECUTOR_UNREGISTERED_CHANGE"
