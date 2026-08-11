@@ -5,9 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import { driveAutopilotJob, readAutopilotReceipt } from "../src/orchestration/autopilot-job.js";
 import type { WebBridge } from "../src/web-bridge/web-bridge.js";
-import { PUSHED, READY_EXECUTION, openDraft, readyResult } from "./v04-autopilot-fixtures.js";
+import { PUSHED, READY_EXECUTION, openDraft, readyResult, webReview } from "./v04-autopilot-fixtures.js";
 
-test("V04-AUTO-008 restart during retry backoff honors the persisted deadline before normal completion", async () => {
+test("V04-AUTO-008 restart during retry backoff honors the persisted deadline, then completes mandatory Web final review", async () => {
   const stateDirectory = await mkdtemp(path.join(os.tmpdir(), "wco-auto-retry-resume-"));
   const runId = `task-retry-resume:${"6".repeat(64)}`;
   const controller = new AbortController();
@@ -38,8 +38,8 @@ test("V04-AUTO-008 restart during retry backoff honors the persisted deadline be
     let currentNow = initialNow + Math.floor(firstDelay / 2);
     const events: string[] = [];
     let resumedSleep = 0;
-    let webTouched = false;
-    const bridge = { async waitForVerdict() { webTouched = true; throw new Error("normal AUTOPILOT must not poll Web review"); } } as unknown as WebBridge;
+    let webPolls = 0;
+    const bridge = { async waitForVerdict() { webPolls += 1; events.push("web-verdict"); return { review_id: "approved-after-resume" } as never; } } as unknown as WebBridge;
     const resumed = await driveAutopilotJob({
       bridge,
       runId,
@@ -53,13 +53,15 @@ test("V04-AUTO-008 restart during retry backoff honors the persisted deadline be
         publish: async () => { events.push("publish"); return PUSHED; },
         draft: async () => { events.push("draft"); return openDraft(); },
         packageResult: async () => { events.push("package"); return readyResult(runId); },
-        createFinalReview: async () => { webTouched = true; throw new Error("normal AUTOPILOT must not create Web review"); },
+        createFinalReview: async () => { events.push("web-job"); return { job_id: "review-after-resume" }; },
+        materializeVerdict: async () => { events.push("materialize-verdict"); return { verdict_path: "/tmp/approve.json", receipt: webReview("APPROVED", runId) }; },
       },
     });
     assert.ok(resumedSleep > 0);
     assert.equal(resumedSleep, initialNow + firstDelay - (initialNow + Math.floor(firstDelay / 2)));
-    assert.deepEqual(events, ["retry-deadline-sleep", "execute", "publish", "draft", "package"]);
-    assert.equal(webTouched, false);
+    assert.deepEqual(events, ["retry-deadline-sleep", "execute", "publish", "draft", "package", "web-job", "web-verdict", "materialize-verdict"]);
+    assert.equal(webPolls, 1);
+    assert.equal(resumed.web_review_rounds, 1);
     assert.equal(resumed.status, "READY_FOR_YOU");
     assert.equal(resumed.stage, "DONE");
     assert.equal(resumed.next_retry_at, null);
