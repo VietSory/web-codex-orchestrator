@@ -68,7 +68,11 @@ export function reviewPrompt(request: ExecutorReviewRequest, options: { smart_co
     "Read the accepted Task Bundle directory above and use its contracts as the requirement/acceptance source of truth.",
     "WCO already authenticated and validated the registered artifact before applying its exact operations. Direct artifact access is not required; review the resulting changed files and diff bound to the required change-set digest.",
     "Focus on correctness, security, regressions, tests, scope and performance.",
-    "If a blocking correction is needed return REVISE; if authority/requirements are insufficient return ESCALATE. Never edit the worktree.",
+    "For APPROVE, REPLAN or ESCALATE return repair_operations=[].",
+    "For REVISE, return the complete minimal bounded repair in repair_operations in this same response; there will be no second reviewer call.",
+    "Repair operations are proposals only. Never edit the worktree or run a mutation command. The Harness validates and applies them.",
+    "Repair may target only paths already listed in Changed paths. Use exact current SHA-256 as preimage_sha256; create_file requires null preimage, delete_file requires null postimage, and create/replace require canonical base64 postimage plus its SHA-256.",
+    "If the required correction needs a new path, wider architecture, unsafe authority, credentials, network, or more context than can be justified, return ESCALATE instead of a repair proposal.",
   ].join("\n");
   if (Buffer.byteLength(body, "utf8") > MAX_REVIEW_PROMPT_BYTES) throw new ExecutorError("EXECUTOR_OPERATIONAL_ERROR", `Harness review prompt exceeds ${MAX_REVIEW_PROMPT_BYTES} bytes.`);
   return body;
@@ -130,9 +134,12 @@ export async function createProductionModelReviewer(options: ProductionGateOptio
         : await reviewWithSol(agentClient, { model: reviewMode.model, reasoning_effort: reviewMode.reasoning_effort, prompt, threadId: undefined, workspacePath: request.worktree_path, acceptedBundlePath: request.accepted_bundle_path, ...(request.signal ? { signal: request.signal } : {}) });
       const usage = reviewUsage(result.response.usage);
       const digestMatches = result.review.reviewed_change_set_sha256 === request.change_set_digest;
+      const repairOperations = result.review.repair_operations ?? [];
+      const proposalValidForVerdict = result.review.verdict === "REVISE" ? repairOperations.length > 0 : repairOperations.length === 0;
       return {
-        verdict: digestMatches ? mappedVerdict(result.review.verdict) : "ESCALATE",
+        verdict: digestMatches && proposalValidForVerdict ? mappedVerdict(result.review.verdict) : "ESCALATE",
         usage,
+        ...(digestMatches && proposalValidForVerdict && result.review.verdict === "REVISE" ? { repair_operations: repairOperations } : {}),
         evidence: {
           kind: `harness-${reviewMode.kind}-review`,
           reviewer: reviewMode.kind,
@@ -141,6 +148,8 @@ export async function createProductionModelReviewer(options: ProductionGateOptio
           change_set_digest: request.change_set_digest,
           reviewed_change_set_sha256: result.review.reviewed_change_set_sha256,
           authority_binding_valid: digestMatches,
+          repair_proposal_valid: proposalValidForVerdict,
+          repair_operation_count: repairOperations.length,
           context_selection_sha256: request.context_selection.selection_sha256,
           context_source: request.context_selection.source,
           context_paths: request.context_selection.paths,
@@ -153,6 +162,7 @@ export async function createProductionModelReviewer(options: ProductionGateOptio
           non_blocking_findings: result.review.non_blocking_findings,
           scope_violations: result.review.scope_violations,
           unverified_acceptance: result.review.unverified_acceptance,
+          repair_operations: repairOperations,
           usage: result.response.usage,
         },
       };
