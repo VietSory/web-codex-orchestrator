@@ -81,7 +81,9 @@ export async function readStableAutopilotBytes(filePath: string): Promise<Buffer
     ) {
       throw new Error("AUTOPILOT_RECEIPT_UNSAFE: durable receipt changed while reading.");
     }
-    await assertSafeAncestorChain(filePath);
+    if (!await assertSafeAncestorChain(filePath)) {
+      throw new Error("AUTOPILOT_RECEIPT_UNSAFE: durable receipt ancestry disappeared while reading.");
+    }
     return bytes;
   } finally {
     await handle.close();
