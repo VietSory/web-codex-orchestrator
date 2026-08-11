@@ -2,11 +2,11 @@
 
 [![CI](https://github.com/VietSory/web-codex-orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/VietSory/web-codex-orchestrator/actions/workflows/ci.yml)
 
-**Spend Codex on implementation. Use ChatGPT Web to architect the task. Verify the exact result before it reaches you.**
+**Spend Codex on implementation. Use ChatGPT Web to architect the task and independently review the final result. Verify the exact result before it reaches you.**
 
-Web Codex Orchestrator (WCO) is a local CLI for medium and large AI-assisted coding jobs. Start it inside a Git repository, type a goal, and let WCO coordinate bounded repository inspection, a sealed implementation contract, Codex execution, deterministic checks, **one selected independent model review**, and GitHub Draft PR delivery.
+Web Codex Orchestrator (WCO) is a local CLI for medium and large AI-assisted coding jobs. Start it inside a Git repository, type a goal, and let WCO coordinate bounded repository inspection, a sealed implementation contract, Codex execution, deterministic checks, **one selected independent model/code review**, exact GitHub Draft PR delivery, and a **mandatory independent ChatGPT Web final review** before `READY_FOR_YOU`.
 
-The default reviewer is **Sol with high reasoning effort**. Use `/mode` to select Sol or Terra and the reasoning effort for new tasks. WCO never stacks both reviewers in the normal product flow.
+The default code reviewer is **Sol with high reasoning effort**. Use `/mode` to select Sol or Terra and the reasoning effort for new tasks. WCO never stacks both model reviewers in the normal product flow; ChatGPT Web remains the separate final review stage.
 
 The public release is resolved from GitHub's **Latest** release. The package is distributed as a checksummed GitHub release tarball and remains private on npm.
 
@@ -63,13 +63,13 @@ Plain goals and `/new <goal>` keep the existing **PAIR** workflow. To explicitly
 /auto Fix the authentication race condition and add regression tests.
 ```
 
-Normal review policy is deliberately simple:
+Normal model/code review policy is deliberately simple:
 
 ```text
 Default: Sol · high
 ```
 
-Inspect or change the reviewer preference for new tasks:
+Inspect or change the code reviewer preference for new tasks:
 
 ```text
 /mode
@@ -78,9 +78,9 @@ Inspect or change the reviewer preference for new tasks:
 /mode terra xhigh
 ```
 
-Supported reasoning efforts are `minimal`, `low`, `medium`, `high`, and `xhigh`. The selected reviewer is snapshotted when a task starts and frozen to the prepared run, so changing `/mode` later cannot silently switch an in-progress or resumed task.
+Supported reasoning efforts are `minimal`, `low`, `medium`, `high`, and `xhigh`. The selected code reviewer is snapshotted when a task starts and frozen to the prepared run, so changing `/mode` later cannot silently switch an in-progress or resumed task. `/mode` does not disable or replace the mandatory ChatGPT Web final review.
 
-AUTOPILOT is a normal `wco` command. The user does not create a Task Bundle, move a ZIP, copy a run ID, set a state directory, or invoke an internal Node entry point. Web inspects the exact repository and seals the contract; Codex/ExecutionService owns implementation and bounded repair; deterministic verification runs; then **exactly one selected reviewer** reviews the verified change. A `REVISE` in AUTOPILOT returns to the implementer, re-runs verification, and returns to the same selected reviewer. `APPROVE` proceeds to exact publication, Draft PR creation and Result Bundle attestation.
+AUTOPILOT is a normal `wco` command. The user does not create a Task Bundle, move a ZIP, copy a run ID, set a state directory, or invoke an internal Node entry point. Web inspects the exact repository and seals the contract; Codex/ExecutionService owns implementation and bounded repair; deterministic verification runs; then **exactly one selected model reviewer** reviews the verified change. A `REVISE` in AUTOPILOT returns to the implementer, re-runs verification, and returns to the same selected reviewer. `APPROVE` proceeds to exact publication, Draft PR creation and Result Bundle attestation, then ChatGPT Web independently reviews that exact published result before WCO can return `READY_FOR_YOU`.
 
 WCO opens the preconfigured WCO Senior Architect GPT. ChatGPT may ask the user to Connect/authorize WCO once. The user does not configure a Custom GPT, import YAML, enter relay/GPT URLs, copy a bearer token, run a tunnel, or edit WCO JSON. WCO stores only a scoped, expiring device credential in protected WCO-owned credential storage.
 
@@ -108,10 +108,14 @@ user goal
 → Web seals architecture + exact implementation authority
 → WCO applies the exact authorized change
 → deterministic verification
-→ selected reviewer (default Sol/high)
+→ selected code reviewer (default Sol/high)
 → publish exact branch
 → open Draft PR
 → bind Result Bundle to exact published/Draft-PR head
+→ ChatGPT Web final review
+   ├─ REVISION_REQUESTED → sealed same-PR revision → verify → same selected reviewer → Web again
+   ├─ ESCALATED → NEEDS YOU
+   └─ APPROVED
 → READY FOR YOU
 → human reviews/merges
 ```
@@ -123,18 +127,22 @@ user /auto goal
 → Web inspects exact repository/base and seals the contract
 → Codex/Terra implementer
 → deterministic verification
-→ selected reviewer (default Sol/high)
-   ├─ REVISE → implementer repair → verify again → same reviewer
+→ selected code reviewer (default Sol/high)
+   ├─ REVISE → implementer repair → verify again → same selected reviewer
    ├─ REPLAN / policy / consequential ambiguity → NEEDS YOU
    └─ APPROVE
 → publish exact branch
 → open Draft PR
 → bind Result Bundle to exact published/Draft-PR head
+→ ChatGPT Web final review
+   ├─ REVISION_REQUESTED → same-PR repair → verify → same selected reviewer → updated Result Bundle → Web again
+   ├─ ESCALATED → NEEDS YOU
+   └─ APPROVED
 → READY FOR YOU
 → human reviews/merges
 ```
 
-There is **one reviewer per normal task**. Selecting Sol does not add Terra review. Selecting Terra does not add Sol review. ChatGPT Web is the architect/handoff authority, not a second automatic final-review layer.
+There is **exactly one model/code reviewer per review round**. Selecting Sol does not add Terra review; selecting Terra does not add Sol review. ChatGPT Web is an independent second/final review stage with a different responsibility: validate the actual published result against the original user intent, architecture, acceptance contract and evidence. The normal pipeline is therefore `selected code reviewer → Web final review`, not `Terra → Sol → Web` and not `selected reviewer → READY`.
 
 ## What the Web handoff does
 
@@ -144,7 +152,7 @@ The pending request carries the explicit orchestration mode. Missing mode is tre
 
 WCO locally validates and materializes the sealed contract and, for PAIR, implementation authority. The relay cannot authorize code, weaken path policy, publish, merge, or replace WCO receipts. Normal AUTOPILOT authoring becomes terminal at contract seal, so Web cannot submit implementation authority afterward.
 
-The previous Web final-review / Phase 8 same-PR revision machinery remains available only as an explicit low-level compatibility path. It is not part of the normal PAIR or `/auto` flow and is not an additional reviewer layer.
+After deterministic verification and the selected model/code reviewer approve the exact change, WCO publishes and attests the Draft PR/Result Bundle, then creates a separately bound Web final-review job. Web can return `APPROVE`, a bounded `REVISION_REQUESTED`, or `ESCALATE`. A Web-requested revision is repaired only under sealed Phase 8 authority on the same Draft PR, re-verified, reviewed again by the **same frozen code reviewer**, re-packaged, and sent back to Web. Web approval is fresh-attested against the live Draft PR head before merge readiness is returned.
 
 ## Discoverable commands
 
@@ -153,7 +161,7 @@ At the WCO prompt, enter `/` or `/help`:
 ```text
 /new <goal>       start a different PAIR task
 /auto <goal>      start an AUTOPILOT task
-/mode             show the reviewer for new tasks
+/mode             show the code reviewer for new tasks
 /mode <model> <effort>  choose Sol/Terra + effort for new tasks
 /status           show current progress
 /task             show the current goal and contract state
@@ -162,7 +170,7 @@ At the WCO prompt, enter `/` or `/help`:
 /web connect      connect the managed Senior Architect once
 /web open         open the fixed Senior Architect GPT
 /web disconnect   revoke/remove the local device credential
-/review           show selected-review/result/Draft PR evidence
+/review           show selected-review/Web-final/result/Draft PR evidence
 /pause            stop before the next safe transition
 /resume           clear an explicit pause
 /history          show bounded history for this repository
@@ -184,9 +192,9 @@ If the terminal closes or the machine restarts, return to the same repository an
 wco
 ```
 
-WCO discovers repository-scoped durable state and re-attests completed work. It does not blindly replay an ambiguous model call, push, or PR creation. Use `/status` for progress, `/doctor` for local prerequisites, `/web status` for relay problems, `/run` to continue the active PAIR/AUTOPILOT workflow, and `/resume` only when you explicitly paused the run.
+WCO discovers repository-scoped durable state and re-attests completed work. It does not blindly replay an ambiguous model call, push, PR creation or Web verdict. Use `/status` for progress, `/doctor` for local prerequisites, `/web status` for relay problems, `/run` to continue the active PAIR/AUTOPILOT workflow, and `/resume` only when you explicitly paused the run.
 
-AUTOPILOT resumes from its durable prepared run without exposing internal identities. Its selected reviewer/model/effort is frozen per run. A cached normal-path `READY_FOR_YOU` re-attests the exact Result Bundle and current open Draft PR binding before WCO returns the merge action. Ctrl+C during an interactive AUTOPILOT drive requests a resumable safe pause rather than weakening authority.
+AUTOPILOT resumes from its durable prepared run without exposing internal identities. Its selected reviewer/model/effort is frozen per run and missing/tampered reviewer authority fails closed instead of inheriting a later global `/mode` setting. A cached `READY_FOR_YOU` re-attests the accepted Web final approval against the current exact open Draft PR head before WCO returns the merge action. Ctrl+C during an interactive AUTOPILOT drive requests a resumable safe pause rather than weakening authority.
 
 WCO preserves uncommitted work in the original repository and performs implementation in a managed isolated worktree. If state or an external side effect cannot be proven, WCO stops and reports the failed subsystem, what remained unchanged, and the next safe action.
 
@@ -212,7 +220,9 @@ WCO preserves these invariants throughout the interactive and automation paths:
 - allowed/forbidden path and preimage enforcement;
 - network-disabled verification sandbox with no unrestricted fallback;
 - exact change-set binding for deterministic verification and the selected reviewer;
-- one selected reviewer per normal task, frozen to the run;
+- exactly one selected model/code reviewer per review round, frozen to the run;
+- mandatory independent Web final review before `READY_FOR_YOU`;
+- Web revision repair must re-run deterministic verification and the same frozen code reviewer before Web can approve a new head;
 - remote URL and Draft PR repo/base/head verification;
 - no direct protected-branch push, force push, auto-merge, Mark Ready or branch deletion;
 - credential redaction and durable receipts;
@@ -226,9 +236,9 @@ See [SECURITY.md](SECURITY.md) and [Protocols](docs/protocols.md) for the detail
 
 The packed CLI still exposes Task Bundle, Web implementation pack, verdict, run-ID and explicit state/config commands for deterministic automation and backward compatibility. They are not required for normal interactive use.
 
-The lower-level `dist/orchestration/autopilot-standalone-cli.js` remains available for operators who already have a prepared run; normal users use `/auto <goal>` inside `wco`.
+The lower-level `dist/orchestration/autopilot-standalone-cli.js` remains available for operators who already have a prepared run; normal users use `/auto <goal>` inside `wco`. It uses the same mandatory Web final-review gate before `READY_FOR_YOU`.
 
-Legacy Web-final-review/revision services remain available for existing low-level automation, but normal product execution terminates after the selected reviewer, exact publication, Draft PR and Result Bundle attestation.
+Low-level Web-final-review/revision services remain available for automation and compatibility, but they are also the same authority-preserving services used by the normal product flow. They cannot be bypassed to make a normal PAIR/AUTOPILOT run merge-ready from Result Bundle or model-review evidence alone.
 
 Run `wco --help` for that low-level surface. Operators building automation should read [Operations](docs/operations.md), [Architecture](docs/architecture.md), [Job modes](docs/job-modes.md), and [Protocols](docs/protocols.md) before using it.
 
