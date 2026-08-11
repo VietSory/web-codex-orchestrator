@@ -23,10 +23,10 @@ The durable driver composes existing WCO services rather than replacing them:
    - every correction is re-verified and independently re-reviewed;
    - only one exact change-set digest approved by verification, Terra, and Sol becomes publishable;
 2. reuse Phase 5A to publish the verified digest;
-3. reuse Phase 5B to open/attest an exact Draft PR;
-4. reuse Phase 6 to build and verify the Result Bundle;
+3. reuse Phase 5B to open/attest an exact Draft PR at the expected published head;
+4. reuse Phase 6 to build and verify a Result Bundle bound to that same published commit and Draft PR head;
 5. send that exact result to Web final review;
-6. if Web requests revision, reuse the existing Phase 8 same-PR revision service, including its own Terra fix → verify → Terra review → Sol review loop;
+6. if Web requests revision, reuse the existing Phase 8 same-PR revision service, including its own Terra fix → verify → Terra review → Sol review loop and sealed revision-authority assertions;
 7. send the revised Result Bundle back to Web;
 8. repeat until Web approves or an explicit human boundary is reached;
 9. stop at `READY_FOR_YOU` and ask the user to merge.
@@ -41,15 +41,19 @@ AUTOPILOT therefore reuses the already-existing Task Bundle execution pipeline t
 
 ## Durable state and recovery
 
-AUTOPILOT writes `autopilot.json` inside the canonical run directory. It records the run ID, current service stage, per-stage transient retry count, pending Web review job ID, Web review rounds, revision rounds, status, and terminal action.
+AUTOPILOT writes `autopilot.json` inside the canonical run directory. It records the run ID, a monotonic generation, current service stage, per-stage transient retry count, persisted `next_retry_at`, pending Web review job ID, Web review rounds, revision rounds, status, and terminal action.
 
-Each underlying WCO service also keeps its own durable receipt. A process restart therefore re-enters the same idempotent service stage instead of trusting browser/model conversation history. If the job was waiting for Web, the pending review job ID is reused rather than creating a duplicate review.
+The receipt is an authority file, not a cache. Reads are bounded and reject symbolic-link ancestry, final-file symlinks, path swaps, growth, and truncation. Writes use the existing orchestration run lock plus generation compare-and-swap semantics, so a stale concurrent driver cannot overwrite a newer durable stage.
+
+Each underlying WCO service also keeps its own durable receipt. A process restart therefore re-enters the same idempotent service stage instead of trusting browser/model conversation history. If the job was waiting for Web, the pending review job ID is reused rather than creating a duplicate review. If it was in transient backoff, the remaining persisted deadline is honored before retrying.
 
 Waiting is not progress. Web polling and transient retry/backoff do not consume completed-stage budget. Transient failures reuse WCO's existing retry classifier and deterministic exponential-backoff calculation; policy, replan, human-action, and exhausted-budget boundaries fail closed to `NEEDS_YOU`.
 
+The standalone AUTOPILOT entry point converts `SIGINT`/`SIGTERM` into an `AbortSignal`, allowing Phase 4/8 and the top-level driver to checkpoint a resumable `PAUSED` state instead of intentionally relying on a hard process kill.
+
 ## User boundaries
 
-`READY_FOR_YOU` means the exact Draft PR head has passed Web final review. WCO may ask the user to merge, but never merges it.
+`READY_FOR_YOU` means the exact Draft PR head has passed Web final review. WCO may ask the user to merge, but never merges it. A later AUTOPILOT invocation does **not** trust that cached READY state by itself: it replays the already-sealed verdict through Phase 7's idempotent terminal path, which performs a fresh read-only GitHub attestation. A moved, closed, merged, non-draft, wrong-base, or otherwise drifted PR therefore loses merge-readiness instead of inheriting stale approval.
 
 `NEEDS_YOU` is reserved for boundaries that should not be guessed through, including replan/contract conflicts, explicit human action, policy blocks, exhausted bounded execution resources, Web escalation, or non-retryable operational failures.
 
