@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import path from "node:path";
 import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
-import { readReviewMode } from "../agent/reviewer-mode-store.js";
+import { effectiveRunReviewMode } from "../agent/reviewer-mode-store.js";
 import { redact } from "../evidence/log-redaction.js";
 import { loadExecutionConfig } from "../execution/execution-config.js";
 import { executeRun } from "../execution/execution-service.js";
@@ -72,7 +72,7 @@ export interface AutopilotDependencies {
 async function executeProduction(options: { runId: string; stateDirectory: string; configPath: string; signal?: AbortSignal }): Promise<ExecutionReceipt> {
   const [config, reviewerSelection] = await Promise.all([
     loadExecutionConfig(options.configPath),
-    readReviewMode(options.stateDirectory),
+    effectiveRunReviewMode(options.stateDirectory, options.runId),
   ]);
   const runtime = await resolveCodexRuntime(config.runtime, options.stateDirectory);
   return await executeRun({
@@ -165,7 +165,7 @@ function semanticReceiptValid(receipt: AutopilotJobReceipt): boolean {
   if (receipt.pending_review_job_id !== null && receipt.stage !== "WAIT_WEB") return false;
   if (receipt.next_retry_at !== null && receipt.status !== "WAITING_RETRY" && receipt.status !== "PAUSED") return false;
   if (receipt.stage === "DONE" && receipt.status !== "READY_FOR_YOU") return false;
-  if (receipt.status === "READY_FOR_YOU") return receipt.stage === "DONE" && receipt.terminal_action === "ASK_USER_TO_MERGE" && receipt.pending_review_job_id === null && receipt.next_retry_at === null;
+  if (receipt.status === "READY_FOR_YOU") return receipt.stage === "DONE" && receipt.terminal_action === "ASK_USER_TO_MERGE" && receipt.pending_review_job_id === null && receipt.next_retry_at === null && receipt.web_review_rounds >= 1;
   if (receipt.terminal_action === "ASK_USER_TO_MERGE") return false;
   if (receipt.status === "NEEDS_YOU") return receipt.terminal_action === "ASK_USER_TO_INTERVENE" && receipt.next_retry_at === null && receipt.stage !== "DONE";
   if (receipt.terminal_action !== null) return false;
@@ -325,8 +325,6 @@ export async function driveAutopilotJob(options: {
   configPath: string;
   maxCycles?: number;
   pollIntervalMs?: number;
-  /** Legacy/advanced compatibility. Normal product execution omits this. */
-  webFinalReview?: boolean;
   signal?: AbortSignal;
   now?: () => Date;
   dependencies?: Partial<AutopilotDependencies>;
@@ -335,19 +333,13 @@ export async function driveAutopilotJob(options: {
   const now = options.now ?? (() => new Date());
   const maxCycles = Math.max(1, Math.min(options.maxCycles ?? 32, 128));
   const pollIntervalMs = Math.max(250, Math.min(options.pollIntervalMs ?? 1_000, 10_000));
-  const webFinalReview = options.webFinalReview === true;
   const existing = await readAutopilotReceipt(options.stateDirectory, options.runId);
   let receipt = existing ?? initialReceipt(options.runId, now);
   if (!existing) await persist(options.stateDirectory, receipt, now);
 
   if (receipt.status === "READY_FOR_YOU") {
-    if (webFinalReview && receipt.web_review_rounds > 0) {
-      const refreshed = await deps.revalidateReady({ runId: options.runId, stateDirectory: options.stateDirectory, configPath: options.configPath, ...(options.now ? { now: options.now } : {}) });
-      assertApprovedReview(options.runId, refreshed);
-    } else {
-      const refreshed = await deps.packageResult({ runId: options.runId, stateDirectory: options.stateDirectory, configPath: options.configPath, ...(options.now ? { now: options.now } : {}) });
-      assertResultReady(options.runId, refreshed);
-    }
+    const refreshed = await deps.revalidateReady({ runId: options.runId, stateDirectory: options.stateDirectory, configPath: options.configPath, ...(options.now ? { now: options.now } : {}) });
+    assertApprovedReview(options.runId, refreshed);
     return receipt;
   }
   if (receipt.status === "NEEDS_YOU") return receipt;
@@ -408,16 +400,10 @@ export async function driveAutopilotJob(options: {
       } catch (error) { if (await retryOrStop({ receipt, stateDirectory: options.stateDirectory, stage: "PACKAGE_RESULT", error, now, deps, ...(options.signal ? { signal: options.signal } : {}) })) continue; return receipt; }
       receipt.next_retry_at = null;
       receipt.stage_attempts.PACKAGE_RESULT = 0;
-      cycles += 1;
-      if (!webFinalReview) {
-        receipt.stage = "DONE";
-        receipt.status = "READY_FOR_YOU";
-        receipt.terminal_action = "ASK_USER_TO_MERGE";
-        receipt.reason = "The exact Draft PR head passed deterministic verification and the selected model review. Merge remains human-owned and the Result Bundle/Draft PR authority is freshly re-attested on later READY reads.";
-        await persist(options.stateDirectory, receipt, now);
-        return receipt;
-      }
       receipt.stage = "WAIT_WEB";
+      receipt.status = "RUNNING";
+      receipt.reason = null;
+      cycles += 1;
       await persist(options.stateDirectory, receipt, now);
       continue;
     }
@@ -428,7 +414,7 @@ export async function driveAutopilotJob(options: {
           const review = await deps.createFinalReview({ bridge: options.bridge, runId: options.runId, stateDirectory: options.stateDirectory });
           receipt.pending_review_job_id = review.job_id;
           receipt.status = "WAITING_WEB";
-          receipt.reason = "Waiting for legacy Web final review of the exact Result Bundle.";
+          receipt.reason = "Waiting for ChatGPT Web final review of the exact Result Bundle and Draft PR head.";
           await persist(options.stateDirectory, receipt, now);
         }
         const envelope = await options.bridge.waitForVerdict(receipt.pending_review_job_id, options.signal);
@@ -437,11 +423,11 @@ export async function driveAutopilotJob(options: {
         receipt.next_retry_at = null; receipt.pending_review_job_id = null; receipt.web_review_rounds += 1; receipt.stage_attempts.WAIT_WEB = 0; cycles += 1;
         if (adopted.receipt.state === "APPROVED") {
           assertApprovedReview(options.runId, adopted.receipt);
-          receipt.stage = "DONE"; receipt.status = "READY_FOR_YOU"; receipt.terminal_action = "ASK_USER_TO_MERGE"; receipt.reason = "The exact Draft PR head passed legacy Web final review. Merge remains human-owned and is freshly re-attested on every later READY read.";
+          receipt.stage = "DONE"; receipt.status = "READY_FOR_YOU"; receipt.terminal_action = "ASK_USER_TO_MERGE"; receipt.reason = "The exact Draft PR head passed the selected code review and independent ChatGPT Web final review. Merge remains human-owned and the Web approval is freshly re-attested on every later READY read.";
           await persist(options.stateDirectory, receipt, now); return receipt;
         }
         if (adopted.receipt.state === "REVISION_REQUESTED") { receipt.stage = "REVISE"; receipt.status = "RUNNING"; receipt.reason = null; await persist(options.stateDirectory, receipt, now); continue; }
-        receipt.status = "NEEDS_YOU"; receipt.terminal_action = "ASK_USER_TO_INTERVENE"; receipt.reason = adopted.receipt.state === "ESCALATED" ? "Legacy Web final review escalated a consequential decision." : `Legacy Web review stopped in ${adopted.receipt.state}.`;
+        receipt.status = "NEEDS_YOU"; receipt.terminal_action = "ASK_USER_TO_INTERVENE"; receipt.reason = adopted.receipt.state === "ESCALATED" ? "ChatGPT Web final review escalated a consequential decision." : `Web final review stopped in ${adopted.receipt.state}.`;
         await persist(options.stateDirectory, receipt, now); return receipt;
       } catch (error) { if (await retryOrStop({ receipt, stateDirectory: options.stateDirectory, stage: "WAIT_WEB", error, now, deps, ...(options.signal ? { signal: options.signal } : {}) })) continue; return receipt; }
     }
@@ -450,7 +436,7 @@ export async function driveAutopilotJob(options: {
       try {
         const authority = await deps.attestRevision({ runId: options.runId, stateDirectory: options.stateDirectory });
         const revised = await deps.revise({ runId: options.runId, revisionRound: authority.revisionRound, stateDirectory: options.stateDirectory, configPath: options.configPath, ...(options.signal ? { signal: options.signal } : {}), ...(options.now ? { now: options.now } : {}) });
-        if (revised.state !== "RESULT_READY" || !revised.result_bundle_sha256 || revised.remote_branch_sha !== revised.new_published_commit_sha) throw Object.assign(new Error("Phase 8 revision did not produce an exact reviewed Result Bundle."), { code: "AUTOPILOT_REVISION_INCOMPLETE" });
+        if (revised.state !== "RESULT_READY" || !revised.result_bundle_sha256 || revised.remote_branch_sha !== revised.new_published_commit_sha) throw Object.assign(new Error("Phase 8 revision did not produce an exact selected-reviewer-approved Result Bundle."), { code: "AUTOPILOT_REVISION_INCOMPLETE" });
         receipt.revision_rounds_completed += 1;
       } catch (error) { if (await retryOrStop({ receipt, stateDirectory: options.stateDirectory, stage: "REVISE", error, now, deps, ...(options.signal ? { signal: options.signal } : {}) })) continue; return receipt; }
       receipt.next_retry_at = null; receipt.stage = "WAIT_WEB"; receipt.stage_attempts.REVISE = 0; receipt.status = "RUNNING"; receipt.reason = null; cycles += 1; await persist(options.stateDirectory, receipt, now);
