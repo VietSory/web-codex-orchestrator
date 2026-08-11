@@ -12,6 +12,7 @@ import { redact } from "../evidence/log-redaction.js";
 const EXECUTION_RECEIPT_MAX_BYTES = 4 * 1024 * 1024;
 const EXECUTION_EVENT_MAX_BYTES = 256 * 1024;
 const EXECUTION_EVENT_TAIL_BYTES = EXECUTION_EVENT_MAX_BYTES * 2;
+const REVIEW_EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh"]);
 
 export interface ExecutionPaths {
   directory: string;
@@ -139,15 +140,17 @@ async function nextExecutionEventSequence(filePath: string): Promise<number> {
   }
 }
 
-export async function readExecutionReceipt(stateDirectory: string, taskId: string, archiveSha256: string): Promise<ExecutionReceipt | undefined> {
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(taskId) || !/^[0-9a-f]{64}$/.test(archiveSha256)) throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "Execution receipt identifiers are unsafe.");
-  const paths = executionPaths(stateDirectory, taskId, archiveSha256);
-  if (!await existingDirectoryChain(paths.directory)) return undefined;
-  const receipt = await readRegularJson<ExecutionReceipt>(paths.execution);
-  if (receipt === undefined) return undefined;
+function validateExecutionReceipt(receipt: ExecutionReceipt, taskId: string, archiveSha256: string): void {
   const digest = (value: unknown): boolean => value === null || typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
   const role = (value: unknown): value is { model: string; reasoning_effort: string; thread_id?: string; iterations?: number; rounds?: number; latest_thread_id?: string | null; thread_ids?: string[]; verdict?: string | null; reviewed_change_set_sha256?: string | null } => typeof value === "object" && value !== null && typeof (value as { model?: unknown }).model === "string" && typeof (value as { reasoning_effort?: unknown }).reasoning_effort === "string" && ((value as { thread_ids?: unknown }).thread_ids === undefined || Array.isArray((value as { thread_ids?: unknown }).thread_ids) && (value as { thread_ids: unknown[] }).thread_ids.every((thread) => typeof thread === "string" && thread.length > 0));
-  if (!receipt || receipt.execution_version !== "1.0" || receipt.run_id !== `${taskId}:${archiveSha256}` || !isExecutionState(receipt.state) || typeof receipt.base_commit !== "string" || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(receipt.base_commit) || typeof receipt.branch_name !== "string" || typeof receipt.worktree_path !== "string" || typeof receipt.accepted_bundle_path !== "string" || !role(receipt.implementer) || !role(receipt.internal_reviewer) || !role(receipt.final_reviewer) || !receipt.verification || !Array.isArray(receipt.verification.commands) || !Array.isArray(receipt.errors) || !receipt.usage || !digest(receipt.change_set_sha256) || !digest(receipt.repository_refs_sha256 ?? null) || !digest(receipt.verification.verified_change_set_sha256) || !digest(receipt.internal_reviewer.reviewed_change_set_sha256 ?? null) || !digest(receipt.final_reviewer.reviewed_change_set_sha256 ?? null)) throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "Execution receipt has an invalid schema.");
+  const selection = receipt.reviewer_selection;
+  const validSelection = selection === undefined || Boolean(
+    selection &&
+    (selection.kind === "sol" || selection.kind === "terra") &&
+    REVIEW_EFFORTS.has(selection.reasoning_effort) &&
+    ((selection.kind === "sol" && selection.model === "gpt-5.6-sol") || (selection.kind === "terra" && selection.model === "gpt-5.6-terra"))
+  );
+  if (!receipt || receipt.execution_version !== "1.0" || receipt.run_id !== `${taskId}:${archiveSha256}` || !isExecutionState(receipt.state) || typeof receipt.base_commit !== "string" || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(receipt.base_commit) || typeof receipt.branch_name !== "string" || typeof receipt.worktree_path !== "string" || typeof receipt.accepted_bundle_path !== "string" || !role(receipt.implementer) || !role(receipt.internal_reviewer) || !role(receipt.final_reviewer) || !receipt.verification || !Array.isArray(receipt.verification.commands) || !Array.isArray(receipt.errors) || !receipt.usage || !digest(receipt.change_set_sha256) || !digest(receipt.repository_refs_sha256 ?? null) || !digest(receipt.verification.verified_change_set_sha256) || !digest(receipt.internal_reviewer.reviewed_change_set_sha256 ?? null) || !digest(receipt.final_reviewer.reviewed_change_set_sha256 ?? null) || !validSelection) throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "Execution receipt has an invalid schema.");
   const validThread = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 512;
   const validVerdict = (value: unknown): boolean => value === null || value === "APPROVE" || value === "REVISE" || value === "REPLAN" || value === "ESCALATE";
   const validFailureEvidence = (value: unknown): boolean => {
@@ -162,11 +165,39 @@ export async function readExecutionReceipt(stateDirectory: string, taskId: strin
     });
   };
   if (!path.isAbsolute(receipt.worktree_path) || !path.isAbsolute(receipt.accepted_bundle_path) || !Number.isInteger(receipt.implementer.iterations) || receipt.implementer.iterations < 0 || !Number.isInteger(receipt.internal_reviewer.rounds) || receipt.internal_reviewer.rounds < 0 || !(receipt.internal_reviewer.latest_thread_id === null || validThread(receipt.internal_reviewer.latest_thread_id)) || !Number.isInteger(receipt.final_reviewer.rounds) || receipt.final_reviewer.rounds < 0 || !(receipt.final_reviewer.latest_thread_id === null || validThread(receipt.final_reviewer.latest_thread_id)) || !validThread(receipt.implementer.thread_id) && receipt.implementer.thread_id !== "" || !validVerdict(receipt.internal_reviewer.verdict) || !validVerdict(receipt.final_reviewer.verdict) || !Number.isInteger(receipt.verification.rounds) || receipt.verification.rounds < 0 || typeof receipt.verification.required_commands_passed !== "boolean" || ![receipt.usage.input_tokens, receipt.usage.cached_input_tokens, receipt.usage.output_tokens].every((value) => Number.isInteger(value) && value >= 0) || receipt.usage.total_turns !== undefined && (!Number.isInteger(receipt.usage.total_turns) || receipt.usage.total_turns < 0) || receipt.usage.started_at !== undefined && typeof receipt.usage.started_at !== "string" || !validFailureEvidence(receipt.pending_verification_failure)) throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "Execution receipt contains invalid counters or role state.");
+
+  if (selection?.kind === "sol" && (receipt.internal_reviewer.rounds !== 0 || receipt.internal_reviewer.verdict !== null || receipt.internal_reviewer.reviewed_change_set_sha256 !== null)) throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "Sol-selected execution contains unexpected Terra review authority.");
+  if (selection?.kind === "terra" && (receipt.final_reviewer.rounds !== 0 || receipt.final_reviewer.verdict !== null || receipt.final_reviewer.reviewed_change_set_sha256 !== null)) throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "Terra-selected execution contains unexpected Sol review authority.");
+  if (receipt.state === "READY_FOR_PUBLISH") {
+    const currentDigest = receipt.change_set_sha256;
+    if (!currentDigest || !receipt.verification.required_commands_passed || receipt.verification.verified_change_set_sha256 !== currentDigest) throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "READY execution lacks deterministic verification for the exact digest.");
+    if (selection?.kind === "sol") {
+      if (receipt.final_reviewer.verdict !== "APPROVE" || receipt.final_reviewer.reviewed_change_set_sha256 !== currentDigest || receipt.final_reviewer.rounds < 1 || !receipt.final_reviewer.latest_thread_id) throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "READY execution lacks selected Sol approval for the exact digest.");
+    } else if (selection?.kind === "terra") {
+      if (receipt.internal_reviewer.verdict !== "APPROVE" || receipt.internal_reviewer.reviewed_change_set_sha256 !== currentDigest || receipt.internal_reviewer.rounds < 1 || !receipt.internal_reviewer.latest_thread_id) throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "READY execution lacks selected Terra approval for the exact digest.");
+    } else if (receipt.internal_reviewer.verdict !== "APPROVE" || receipt.final_reviewer.verdict !== "APPROVE" || receipt.internal_reviewer.reviewed_change_set_sha256 !== currentDigest || receipt.final_reviewer.reviewed_change_set_sha256 !== currentDigest) {
+      throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "Legacy READY execution lacks Terra and Sol approval for the exact digest.");
+    }
+  }
+}
+
+export async function readExecutionReceipt(stateDirectory: string, taskId: string, archiveSha256: string): Promise<ExecutionReceipt | undefined> {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(taskId) || !/^[0-9a-f]{64}$/.test(archiveSha256)) throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "Execution receipt identifiers are unsafe.");
+  const paths = executionPaths(stateDirectory, taskId, archiveSha256);
+  if (!await existingDirectoryChain(paths.directory)) return undefined;
+  const receipt = await readRegularJson<ExecutionReceipt>(paths.execution);
+  if (receipt === undefined) return undefined;
+  validateExecutionReceipt(receipt, taskId, archiveSha256);
   return receipt;
 }
 
 export async function writeExecutionReceipt(stateDirectory: string, receipt: ExecutionReceipt): Promise<void> {
-  const paths = executionPaths(stateDirectory, receipt.run_id.split(":")[0] ?? receipt.run_id, receipt.run_id.split(":")[1] ?? "");
+  const separator = receipt.run_id.lastIndexOf(":");
+  if (separator <= 0) throw new ExecutionError("EXECUTION_RECEIPT_INCONSISTENT", "run_id must be task-id:archive-sha256.");
+  const taskId = receipt.run_id.slice(0, separator);
+  const archiveSha256 = receipt.run_id.slice(separator + 1);
+  validateExecutionReceipt(receipt, taskId, archiveSha256);
+  const paths = executionPaths(stateDirectory, taskId, archiveSha256);
   await ensureExecutionDirectory(paths);
   await atomicWriteJson(paths.execution, receipt);
 }
