@@ -27,7 +27,7 @@ test("V04-MODE-001 PAIR is the default and never silently enters AUTOPILOT", asy
   assert.equal(touchedAutopilot, false);
 });
 
-test("V04-AUTO-001 legacy AUTOPILOT Web revision compatibility remains explicit", async () => {
+test("V04-AUTO-001 AUTOPILOT requires selected code review plus Web final review and same-PR revision loop", async () => {
   const stateDirectory = await mkdtemp(path.join(os.tmpdir(), "wco-auto-"));
   const runId = `task-auto:${"a".repeat(64)}`;
   const calls: string[] = [];
@@ -57,7 +57,7 @@ test("V04-AUTO-001 legacy AUTOPILOT Web revision compatibility remains explicit"
     sleep: async () => undefined,
   };
   try {
-    const receipt = await driveAutopilotJob({ bridge, runId, stateDirectory, configPath: path.join(stateDirectory, "config.json"), dependencies, maxCycles: 16, webFinalReview: true });
+    const receipt = await driveAutopilotJob({ bridge, runId, stateDirectory, configPath: path.join(stateDirectory, "config.json"), dependencies, maxCycles: 16 });
     assert.equal(receipt.status, "READY_FOR_YOU");
     assert.equal(receipt.stage, "DONE");
     assert.equal(receipt.terminal_action, "ASK_USER_TO_MERGE");
