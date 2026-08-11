@@ -13,9 +13,9 @@ export async function createPendingFinalReview(options: { bridge: WebBridge; run
   if (!receipt || receipt.state !== "READY_FOR_WEB_REVIEW" || !receipt.archive_sha256) throw new WebBridgeError("WEB_FINAL_REVIEW_NOT_READY", "Result Bundle is not ready; no review job was created.");
   const reviewRound = receipt.result_bundle_version === "1.2" ? (receipt.revision_round ?? 1) + 1 : 1;
   const request = { run_id: options.runId, result_bundle_sha256: receipt.archive_sha256, published_commit_sha: receipt.published_commit_sha, pull_request_url: receipt.pull_request.url, review_round: reviewRound };
-  const identity = await options.bridge.createFinalReviewJob(request, `final-review-${contentDigest(request)}`);
+  const identity = await options.bridge.createFinalReviewJob(request, `final-review-${contentDigest({ purpose: "final_intent_review", request })}`);
   const verified = await loadAndVerifyResultBundle(options.stateDirectory, options.runId, reviewRound);
   const evidence = await readBoundedResultEvidence(verified.archivePath, verified.manifest);
-  await options.bridge.submitFinalReviewEvidence(identity.job_id, { binding: request, entries: evidence }, `final-evidence-${receipt.archive_sha256}`);
+  await options.bridge.submitFinalReviewEvidence(identity.job_id, { purpose: "final_intent_review", binding: request, entries: evidence }, `final-evidence-${receipt.archive_sha256}`);
   return identity;
 }
