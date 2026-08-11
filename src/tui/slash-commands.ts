@@ -1,6 +1,7 @@
 export const SLASH_COMMANDS = [
   ["/new", "Start a new task"],
   ["/auto", "Start an AUTOPILOT task: /auto <goal>"],
+  ["/mode", "Review model/effort: /mode <sol|terra> <effort>"],
   ["/status", "Current task and workflow progress"],
   ["/task", "View current goal/contract summary"],
   ["/run", "Start or continue the workflow"],
@@ -8,7 +9,7 @@ export const SLASH_COMMANDS = [
   ["/web connect", "Connect the managed WCO Senior Architect"],
   ["/web open", "Open the WCO Senior Architect GPT"],
   ["/web disconnect", "Remove the locally stored Web credential"],
-  ["/review", "Latest reviews, Result Bundle and Draft PR"],
+  ["/review", "Latest selected-model review, Result Bundle and Draft PR"],
   ["/pause", "Pause before the next safe transition"],
   ["/resume", "Clear an explicit pause and continue"],
   ["/history", "Previous WCO runs for this repository"],
