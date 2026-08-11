@@ -6,10 +6,22 @@ import { contentDigest, WebBridgeError, type BridgeJobIdentity } from "./contrac
 import type { WebBridge } from "./web-bridge.js";
 import { loadAndVerifyResultBundle } from "../web-review/result-bundle-review-reader.js";
 import { readBoundedResultEvidence } from "./result-evidence-reader.js";
-import { assertCodeReviewApprovedForCurrentResult, createPendingCodeReview, readWebCodeReviewReceipt } from "./code-review-service.js";
+import { assertCodeReviewApprovedForCurrentResult, createPendingCodeReview, readWebCodeReviewReceipt, type WebCodeReviewReceipt } from "./code-review-service.js";
 
 export type WebReviewPurpose = "independent_code_review" | "final_intent_review";
 export type PendingWebReview = BridgeJobIdentity & { purpose: WebReviewPurpose };
+
+async function codeReviewBindsCanonicalResult(stateDirectory: string, runId: string, review: WebCodeReviewReceipt): Promise<boolean> {
+  const split = runId.lastIndexOf(":");
+  const taskId = runId.slice(0, split), archiveSha = runId.slice(split + 1);
+  const result = await readResultBundleReceipt(resultBundlePaths(stateDirectory, taskId, archiveSha).receiptPath);
+  return Boolean(
+    result && result.state === "READY_FOR_WEB_REVIEW" && result.archive_sha256 &&
+    review.run_id === result.run_id && review.result_bundle_sha256 === result.archive_sha256 &&
+    review.published_commit_sha === result.published_commit_sha &&
+    review.pull_request_number === result.pull_request.number,
+  );
+}
 
 async function pairCodeReviewGate(options: { bridge: WebBridge; runId: string; stateDirectory: string }): Promise<BridgeJobIdentity | null> {
   const split = options.runId.lastIndexOf(":");
@@ -29,7 +41,15 @@ async function pairCodeReviewGate(options: { bridge: WebBridge; runId: string; s
       return await createPendingCodeReview(options);
     }
   }
-  if (review?.state === "REVISION_REQUESTED") throw new WebBridgeError("WEB_CODE_REVIEW_REVISION_REQUIRED", "Independent Web code review requested a bounded repair before final intent review can start.");
+  if (review?.state === "REVISION_REQUESTED") {
+    if (await codeReviewBindsCanonicalResult(options.stateDirectory, options.runId, review)) {
+      throw new WebBridgeError("WEB_CODE_REVIEW_REVISION_REQUIRED", "Independent Web code review requested a bounded repair before final intent review can start.");
+    }
+    // The old REVISE authority belongs to a previous exact Result generation.
+    // After Harness repair + same-PR republish, require a fresh independent
+    // code-review job instead of treating the old terminal state as current.
+    return await createPendingCodeReview(options);
+  }
   if (review?.state === "ESCALATED") throw new WebBridgeError("WEB_CODE_REVIEW_ESCALATED", "Independent Web code review escalated a consequential decision before final intent review.");
   return await createPendingCodeReview(options);
 }
