@@ -6,7 +6,7 @@ import { contentDigest, WebBridgeError, type BridgeJobIdentity } from "./contrac
 import type { WebBridge } from "./web-bridge.js";
 import { loadAndVerifyResultBundle } from "../web-review/result-bundle-review-reader.js";
 import { readBoundedResultEvidence } from "./result-evidence-reader.js";
-import { createPendingCodeReview, readWebCodeReviewReceipt } from "./code-review-service.js";
+import { assertCodeReviewApprovedForCurrentResult, createPendingCodeReview, readWebCodeReviewReceipt } from "./code-review-service.js";
 
 async function pairCodeReviewGate(options: { bridge: WebBridge; runId: string; stateDirectory: string }): Promise<BridgeJobIdentity | null> {
   const split = options.runId.lastIndexOf(":");
@@ -17,7 +17,13 @@ async function pairCodeReviewGate(options: { bridge: WebBridge; runId: string; s
   if (executor?.review_strategy !== "web") return null;
 
   const review = await readWebCodeReviewReceipt(options.stateDirectory, options.runId);
-  if (review?.state === "APPROVED") return null;
+  if (review?.state === "APPROVED") {
+    // Approval is useful only while it still binds the newest exact Result
+    // Bundle. A revision/republication must force a new independent code
+    // review rather than silently inheriting stale authority.
+    await assertCodeReviewApprovedForCurrentResult(options.stateDirectory, options.runId);
+    return null;
+  }
   if (review?.state === "REVISION_REQUESTED") throw new WebBridgeError("WEB_CODE_REVIEW_REVISION_REQUIRED", "Independent Web code review requested a bounded repair before final intent review can start.");
   if (review?.state === "ESCALATED") throw new WebBridgeError("WEB_CODE_REVIEW_ESCALATED", "Independent Web code review escalated a consequential decision before final intent review.");
   return await createPendingCodeReview(options);
