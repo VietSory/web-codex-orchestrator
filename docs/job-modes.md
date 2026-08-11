@@ -1,18 +1,66 @@
 # WCO job modes
 
-WCO has two orchestration boundaries. They preserve the same security and human-merge rules, but differ in who owns implementation after the Web architecture handoff.
+WCO exposes two normal modes with the same security boundary: **Web authors bounded implementation authority, Harness owns mutation, deterministic verification is mandatory, original ChatGPT Web performs final intent review, and merge/release remain human-only.**
 
-## Review pipeline — one code reviewer plus Web final review
+The modes differ at the code-review stage.
 
-Normal WCO tasks use **exactly one model/code reviewer** after deterministic verification, followed by an **independent ChatGPT Web final review** before `READY_FOR_YOU`.
+## PAIR — default, zero Codex requirement
 
-Default code reviewer:
+Plain goals and `/new <goal>` start PAIR.
 
 ```text
-Sol · high
+user goal
+→ original ChatGPT Web inspects/researches exact repository
+→ Web seals contract + exact bounded implementation authority
+→ Harness validates/applies exact operations
+→ deterministic verification in provider-independent sandbox
+→ independent Web code review
+   ├─ APPROVE
+   ├─ REVISE + bounded repair authority → Harness apply/re-verify
+   └─ consequential/policy boundary → NEEDS YOU
+→ original ChatGPT Web final intent review
+→ READY FOR YOU
+→ human review/merge
 ```
 
-The user can inspect or change the code-review preference for **new tasks** from the normal `wco` shell:
+PAIR does **not** select, initialize or charge a Sol/Terra reviewer. PAIR readiness must not require Codex CLI/runtime/auth. Deterministic verification uses the provider-independent sandbox and fails closed when its isolation guarantees are unavailable.
+
+Independent Web code review is separate from the original-Web final intent review. A code-review approval checks code-level correctness/security/regression/tests/scope/performance; the final review checks the exact published result against original user intent, architecture and acceptance evidence.
+
+A PAIR revision must remain Web-owned + Harness-applied. Legacy Codex Phase 8 is not a permitted fallback for PAIR.
+
+## AUTOPILOT — Harness-first with one adaptive model review pass
+
+Normal users start AUTOPILOT from the same shell:
+
+```text
+/auto <goal>
+```
+
+No Task Bundle, ZIP, run ID, state directory or internal Node entry point is exposed to the normal user.
+
+```text
+user /auto goal
+→ original ChatGPT Web inspects/researches exact repository
+→ Web seals contract + exact bounded implementation authority
+→ Harness validates/applies exact operations
+→ deterministic verification
+→ exactly ONE selected Sol/Terra reviewer (default Sol/high)
+   ├─ APPROVE
+   ├─ REVISE + bounded repair operations in the same review pass
+   │    → Harness validates preimage/path/postimage authority
+   │    → Harness applies
+   │    → deterministic verification
+   └─ consequential/policy/replan boundary → NEEDS YOU
+→ exact publication / Draft PR / Result Bundle
+→ original ChatGPT Web mandatory final intent review
+→ READY FOR YOU
+→ human review/merge
+```
+
+AUTOPILOT is not a Codex-implementer pipeline. The Web author supplies the initial bounded implementation pack; the selected model is reviewer/repair proposer only. It never receives direct worktree-write or shell mutation authority.
+
+The reviewer preference for new AUTOPILOT tasks is controlled from the normal shell:
 
 ```text
 /mode
@@ -21,114 +69,97 @@ The user can inspect or change the code-review preference for **new tasks** from
 /mode terra xhigh
 ```
 
-Supported code-review models are Sol and Terra. Supported reasoning efforts are `minimal`, `low`, `medium`, `high`, and `xhigh`.
+Supported reviewers are Sol and Terra. Supported reasoning efforts are `minimal`, `low`, `medium`, `high`, and `xhigh`. The selection is frozen per run so resume/recovery cannot silently inherit a newer global preference.
 
-The selected code reviewer is snapshotted when the task starts and frozen to the prepared run at contract seal. Changing the global `/mode` preference later cannot silently switch the reviewer of an in-progress or resumable run. `/mode` does not disable or replace ChatGPT Web final review.
+## Review pipeline
 
-WCO does not automatically stack Terra review and Sol review. If Sol is selected, only Sol performs the code-review stage. If Terra is selected, only Terra performs it. A code-review `REVISE` in AUTOPILOT returns the work to the implementer, then deterministic verification runs again and the **same selected code reviewer** reviews the new exact change-set.
-
-After code review approves, WCO publishes the exact reviewed head, creates/attests the Draft PR and Result Bundle, and sends that exact evidence to ChatGPT Web for final review. Web is the second review stage, but it has a different responsibility: verify end-to-end user intent, architecture/contract compliance, acceptance evidence, actual diff/result, and the exact Draft PR head.
-
-If Web requests a revision, Phase 8 performs bounded same-PR repair, deterministic verification, and the **same frozen code reviewer** again before a new Result Bundle is sent back to Web. Only Web `APPROVED` on a freshly attested exact Draft PR head can lead to `READY_FOR_YOU`.
-
-## PAIR — default job mode
-
-Plain text goals and `/new <goal>` start PAIR. PAIR keeps the existing Web implementation-pack closed-world postimage semantics unchanged and never silently turns a free-form task into autonomous execution.
-
-Normal PAIR flow:
+PAIR:
 
 ```text
-user goal
-→ Web inspects exact repository/base
-→ Web seals architecture + exact implementation authority
-→ WCO applies the exact authorized change
-→ deterministic verification
-→ selected code reviewer (default Sol/high)
-→ publish exact branch
-→ open Draft PR
-→ bind Result Bundle to exact published/Draft-PR head
-→ ChatGPT Web final review
-   ├─ REVISION_REQUESTED → sealed same-PR revision → verify → same selected reviewer → Web again
-   ├─ ESCALATED → NEEDS YOU
-   └─ APPROVED
-→ READY FOR YOU
-→ human reviews/merges
+deterministic verification
+→ independent Web code review
+→ original-Web final intent review
 ```
 
-A selected code-review rejection before Web revision authority exists does not grant an implementation model authority to rewrite the Web-authorized PAIR patch. WCO stops/escalates safely so the closed-world PAIR authority model remains intact. After Web seals a `REVISION_REQUESTED` verdict, Phase 8 has explicit bounded authority to repair only the sealed findings, then re-verifies and re-runs the same selected reviewer before returning to Web.
-
-## AUTOPILOT — explicit job ownership
-
-Normal users start AUTOPILOT from the same `wco` shell:
+AUTOPILOT:
 
 ```text
-/auto <goal>
+deterministic verification
+→ one selected Sol/Terra adaptive code-review pass
+→ original-Web final intent review
 ```
 
-No Task Bundle, ZIP, run ID, state directory, or internal Node entry point is exposed to the normal user.
+WCO does not stack Terra → Sol → Web. AUTOPILOT uses exactly one selected model reviewer per model-review pass. PAIR uses zero model-review turns.
 
-WCO creates a mode-tagged pending Web task. The Senior Architect inspects the exact repository and seals the architecture/acceptance contract. In AUTOPILOT it must stop after `contract_sealed`; it does not submit `implementation_sealed` or compete with Codex for implementation authority.
+## Bounded repair authority
 
-The local worker materializes and prepares the exact Task Bundle internally at contract seal and freezes the task's selected code reviewer. From the prepared run, the durable driver reuses the repair-capable execution pipeline.
+Reviewers do not mutate repositories directly.
 
-Normal AUTOPILOT flow:
+A bounded repair proposal is limited to exact `create_file`, `replace_file` or `delete_file` operations. Harness validates:
 
-```text
-user /auto goal
-→ Web inspects exact repository/base and seals the contract
-→ Terra/Codex implementer
-→ deterministic verification
-→ selected code reviewer (default Sol/high)
-   ├─ REVISE → Terra/Codex repair → verify again → same selected code reviewer
-   ├─ REPLAN / policy / consequential ambiguity → NEEDS YOU
-   └─ APPROVE
-→ exact publication
-→ open Draft PR
-→ exact Result Bundle / Draft-PR-head attestation
-→ ChatGPT Web final review
-   ├─ REVISION_REQUESTED → same-PR repair → verify → same selected code reviewer → updated Result Bundle → Web again
-   ├─ ESCALATED → NEEDS YOU
-   └─ APPROVED
-→ READY FOR YOU
-→ human reviews/merges
-```
+- allowed path scope;
+- exact current preimage;
+- canonical postimage bytes + SHA-256;
+- symlink/path containment rules;
+- durable repair identity/checkpoint;
+- exact final changed-path set;
+- deterministic verification of the repaired digest.
 
-This is intentionally a **two-stage review pipeline**: one selected model reviewer for code-level quality plus one independent Web final review for intent/architecture/end-to-end quality. It is not the redundant three-review chain Terra → Sol → Web.
+For AUTOPILOT, `REVISE` should include the bounded repair proposal in the same selected reviewer call so WCO avoids review → repair → re-review chatter when the repair itself can be verified deterministically.
 
-## Mode propagation and authority split
+For PAIR, independent Web `REVISE` must eventually carry equivalent bounded repair authority. Until that transport is fully wired, WCO fails closed rather than falling back to Codex and violating the zero-Codex guarantee.
 
-New authoring requests carry `orchestration_mode`; missing mode is PAIR only for backward compatibility. The relay rejects any supplied value other than `PAIR` or `AUTOPILOT`.
+## Final-review revision boundary
 
-- PAIR: Web can seal exact implementation authority.
-- AUTOPILOT: Web is architecture/specification authority only until contract seal; Codex/ExecutionService owns implementation and bounded repair afterward.
-- Selected model reviewer: independent read-only code review after deterministic verification; exactly one model reviewer per review round.
-- ChatGPT Web final reviewer: independent final decision over the exact Result Bundle and freshly attested Draft PR head.
-- User: final merge authority in both modes.
+The original Web final review is mandatory in both modes. It is bound to the exact Result Bundle and freshly attested Draft PR head.
+
+A final-review `REVISION_REQUESTED` must remain a bounded same-PR fast-forward revision. Repair ownership remains mode-specific:
+
+- PAIR: Web-proposed, Harness-applied, zero Codex fallback.
+- AUTOPILOT: selected-reviewer-proposed, Harness-applied.
+
+After repair, deterministic verification must bind the new exact digest before a new Result Bundle is reviewed again by the original Web.
+
+## Mode-aware doctor/readiness
+
+`wco doctor` defaults to PAIR readiness. `wco doctor --mode AUTOPILOT` adds Codex reviewer runtime/auth probes.
+
+PAIR readiness requires provider-independent verification isolation, Git/GitHub publication prerequisites and Web connectivity; it must not fail merely because Codex runtime/auth is absent.
+
+AUTOPILOT requires all common prerequisites plus the selected model review runtime/auth.
 
 ## Durable state and recovery
 
-`autopilot.json` records monotonic generation, stage, retry state/deadline, pending Web review job identity, Web-review/revision rounds, status and terminal action. Reads reject symlink/path-swap/growth/truncation attacks; writes use the run lock plus generation CAS. Restart re-enters idempotent service stages and honors remaining retry deadlines.
+Harness mutation/authority transitions are serialized and persisted before side effects. Independent reads, evidence collection and safe attestations may run concurrently where they cannot race authority changes.
 
-Reviewer choice is also frozen per run. Resume and Phase 8 revision must use the frozen model and reasoning effort; they must not inherit a newer global `/mode` preference.
+Recovery principles:
 
-The normal TUI turns Ctrl+C during AUTOPILOT into an abort request so the durable driver can checkpoint `PAUSED`. `/run` resumes the same prepared run without exposing its identity. If interruption happened while waiting for Web, WCO reuses the durable pending review job rather than creating a duplicate.
+- exact artifact and run identity are create-once/frozen;
+- ambiguous model calls are not replayed automatically;
+- bounded repair checkpoints are durable before mutation;
+- apply is resumable/idempotent against exact preimage/postimage classification;
+- deterministic verification binds the exact effective digest;
+- publication and Draft PR receipts bind exact Git heads;
+- stale Web review approval is rejected after Result Bundle/head movement;
+- READY is re-attested rather than trusted from a cached UI state.
 
-`READY_FOR_YOU` always requires at least one adopted Web final-review round. Every later READY read re-attests the Web approval against the current exact Draft PR head; Result Bundle attestation alone cannot substitute for Web approval.
+## Performance policy
 
-A successfully completed local UI session is marked `COMPLETED` so it does not block the next normal goal. This UI marker is not merge authority; durable verification, selected-reviewer, publication, Result Bundle and Web-review receipts remain authoritative.
+WCO optimizes latency/token cost by reducing model round trips rather than weakening verification:
 
-## Pending relay selection
-
-Pending/status relay surfaces return the newest non-expired task/review relevant to the authenticated principal. Mode input is validated fail-closed. Normal AUTOPILOT authoring becomes terminal at contract seal, so Web cannot submit implementation authority afterward. Final-review transport remains exact-bound to review ID, run ID and Result Bundle identity with single-terminal-verdict/idempotent-replay semantics.
+- PAIR: zero Codex model turns by design;
+- AUTOPILOT: one selected model review pass by default;
+- adaptive `REVISE` returns bounded repair operations in the same pass when possible;
+- deterministic context selection sends changed files + dependency hints rather than whole-repo context by default;
+- independent reads/research may run concurrently, while mutation/authority transitions remain serialized;
+- Harness verification/publish reuse exact durable receipts instead of repeating model work.
 
 ## Human-owned actions
 
-Neither mode automatically merges, marks ready, enables auto-merge, deploys, releases, force-pushes or performs destructive Git updates.
+Neither mode automatically merges, marks a PR ready, enables auto-merge, force-pushes, pushes protected branches directly, deploys, releases, publishes packages or deletes remote branches.
 
-## Advanced/headless integration
-
-Normal AUTOPILOT is `/auto <goal>`. The lower-level `dist/orchestration/autopilot-standalone-cli.js` remains available for operators who already have a prepared run and need deterministic automation/recovery. It uses the same mandatory Web final-review requirement before `READY_FOR_YOU`.
+`READY_FOR_YOU` means the exact Draft PR head passed WCO's required gates and is ready for human review/merge. It is not merge authority.
 
 ## Hosted-service boundary
 
-Local product flow, protocol, reference relay, managed client, GPT instructions and fail-closed metadata are repository-owned and testable. A stable managed relay/OAuth deployment plus hosted Senior Architect GPT configuration are external deployment operations and require separate real hosted-Web verification; synthetic CI is not proof of that external deployment.
+Local product flow, protocol, reference relay, managed client, GPT instructions and fail-closed metadata are repository-owned and testable. A stable managed relay/OAuth deployment, hosted Senior Architect GPT configuration and real provider/hosted-Web end-to-end acceptance remain external runtime gates; synthetic CI is not proof of those external systems.
