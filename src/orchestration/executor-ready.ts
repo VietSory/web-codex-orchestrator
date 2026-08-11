@@ -2,7 +2,7 @@ import { readExecutorReceipt } from "../executor/store.js";
 import { loadExecutorResumeSource } from "../executor/resume-source.js";
 import { assertExecutorTransactionBoundToPack, attestExecutorTransactionBackups } from "../executor/transaction-authority.js";
 import { attestPersistedExecutorGateEvidence } from "../executor/evidence-store.js";
-import { attestExecutorChangeSet, attestPublishedExecutorChangeSet, readExecutorWorktreeHead } from "../executor/change-set.js";
+import { attestExecutorChangeSet, attestPublishedExecutorChangeSet, effectiveExecutorChangedPaths, readExecutorWorktreeHead } from "../executor/change-set.js";
 import { executorPaths } from "../executor/paths.js";
 import { readGitPublishReceipt } from "../publish/publish-store.js";
 import path from "node:path";
@@ -10,21 +10,23 @@ import { OrchestrationError } from "./contracts.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
 function splitRunId(runId: string): { taskId: string; taskBundleSha256: string } { const split = runId.lastIndexOf(":"); if (split <= 0 || !SHA256.test(runId.slice(split + 1))) throw new OrchestrationError("ORCHESTRATION_RUN_ID_INVALID", "Invalid run_id for executor publication."); return { taskId: runId.slice(0, split), taskBundleSha256: runId.slice(split + 1) }; }
+function selectedReviewReady(receipt: NonNullable<Awaited<ReturnType<typeof readExecutorReceipt>>>, digest: string, kind: "terra" | "sol"): boolean {
+  const review = kind === "terra" ? receipt.terra_review : receipt.sol_review;
+  if (review.verdict === "APPROVE" && review.change_set_digest === digest) return true;
+  return Boolean(receipt.repair?.state === "VERIFIED" && receipt.repair.reviewer === kind && receipt.repair.final_change_set_digest === digest && review.verdict === "REVISE" && review.change_set_digest === receipt.repair.source_change_set_digest && review.evidence_sha256 === receipt.repair.source_review_evidence_sha256);
+}
 function assertReviewAuthority(receipt: NonNullable<Awaited<ReturnType<typeof readExecutorReceipt>>>, digest: string): void {
-  // Harness-first PAIR deliberately publishes only a Draft PR after exact
-  // deterministic verification. Independent Web code review is a later
-  // orchestration authority and must not be forged into a model-review slot.
   if (receipt.review_strategy === "web") {
-    if (receipt.reviewer_selection !== undefined || receipt.terra_review.verdict !== null || receipt.sol_review.verdict !== null) throw new OrchestrationError("ORCHESTRATION_EXECUTOR_AUTHORITY_DRIFT", "Web-review Harness receipt contains unexpected model-review authority.");
+    if (receipt.repair !== undefined || receipt.reviewer_selection !== undefined || receipt.terra_review.verdict !== null || receipt.sol_review.verdict !== null) throw new OrchestrationError("ORCHESTRATION_EXECUTOR_AUTHORITY_DRIFT", "Web-review Harness receipt contains unexpected model-review/repair authority.");
     return;
   }
   if (receipt.review_strategy === "model" && !receipt.reviewer_selection) throw new OrchestrationError("ORCHESTRATION_EXECUTOR_AUTHORITY_DRIFT", "Model-review Harness receipt lost its frozen reviewer authority.");
   if (receipt.reviewer_selection?.kind === "terra") {
-    if (receipt.terra_review.change_set_digest !== digest || receipt.terra_review.verdict !== "APPROVE") throw new OrchestrationError("ORCHESTRATION_EXECUTOR_AUTHORITY_DRIFT", "Selected Terra approval no longer binds the exact current change-set.");
+    if (!selectedReviewReady(receipt, digest, "terra")) throw new OrchestrationError("ORCHESTRATION_EXECUTOR_AUTHORITY_DRIFT", "Selected Terra authority no longer binds the exact current change-set or verified adaptive repair.");
     return;
   }
   if (receipt.reviewer_selection?.kind === "sol") {
-    if (receipt.sol_review.change_set_digest !== digest || receipt.sol_review.verdict !== "APPROVE") throw new OrchestrationError("ORCHESTRATION_EXECUTOR_AUTHORITY_DRIFT", "Selected Sol approval no longer binds the exact current change-set.");
+    if (!selectedReviewReady(receipt, digest, "sol")) throw new OrchestrationError("ORCHESTRATION_EXECUTOR_AUTHORITY_DRIFT", "Selected Sol authority no longer binds the exact current change-set or verified adaptive repair.");
     return;
   }
   if (receipt.terra_review.change_set_digest !== digest || receipt.sol_review.change_set_digest !== digest || receipt.terra_review.verdict !== "APPROVE" || receipt.sol_review.verdict !== "APPROVE") throw new OrchestrationError("ORCHESTRATION_EXECUTOR_AUTHORITY_DRIFT", "Legacy Terra/Sol approvals no longer bind the exact current change-set.");
@@ -38,10 +40,6 @@ export async function attestReadyExecutorSnapshot(options: { runId: string; arti
   let published = publish?.state === "COMMITTED" || publish?.state === "PUSHED" ? publish : null;
   if (publish?.state === "READY_FOR_COMMIT") {
     const head = await readExecutorWorktreeHead(receipt);
-    // Git may have durably created the exact approved commit immediately before
-    // a crash prevented the COMMITTED receipt update. Attest that candidate as
-    // strictly as a persisted commit; GitPublisher remains responsible for
-    // adopting it and persisting the recovery checkpoint before any push.
     if (head !== receipt.base_commit) published = { ...publish, state: "COMMITTED", commit_sha: head, committed_at: publish.updated_at };
   }
   const source = await loadExecutorResumeSource({ runId: options.runId, artifactSha256: options.artifactSha256, stateDirectory: options.stateDirectory, configPath: options.configPath, ...(published?.commit_sha ? { expectedWorktreeHead: published.commit_sha } : {}) });
@@ -53,5 +51,5 @@ export async function attestReadyExecutorSnapshot(options: { runId: string; arti
   const digest = published ? await attestPublishedExecutorChangeSet(receipt, published) : await attestExecutorChangeSet(receipt);
   if (digest !== receipt.change_set_digest || receipt.verification.change_set_digest !== digest || !receipt.verification.passed) throw new OrchestrationError("ORCHESTRATION_EXECUTOR_AUTHORITY_DRIFT", "READY executor verification no longer binds the exact current change-set.");
   assertReviewAuthority(receipt, digest);
-  return { receipt, source, executorDirectory: paths.directory, changeSetDigest: digest, changedPaths: receipt.operations.map((operation) => operation.path).sort() };
+  return { receipt, source, executorDirectory: paths.directory, changeSetDigest: digest, changedPaths: effectiveExecutorChangedPaths(receipt) };
 }
