@@ -146,6 +146,10 @@ export async function reviseRunForOrchestration(options: {
   now?: () => Date;
 }): Promise<RevisionReceipt> {
   let authPath: string | undefined;
+  const authority = await attestRevisionAuthorityForOrchestration({ runId: options.runId, stateDirectory: options.stateDirectory });
+  if (authority.revisionRound !== options.revisionRound) {
+    throw new OrchestrationError("ORCHESTRATION_REVISION_AUTHORITY_INVALID", "Requested revision round does not match the latest sealed Web revision authority.");
+  }
   try {
     const runContext = await resolveTrustedRunContext(options.runId, options.stateDirectory, options.configPath);
     if (!runContext.runReceipt.remote_url) throw new OrchestrationError("ORCHESTRATION_REVISION_HISTORY_INVALID", "Canonical run receipt has no trusted remote_url.");
@@ -160,7 +164,7 @@ export async function reviseRunForOrchestration(options: {
       auth,
       allowedRemoteUrl: runContext.runReceipt.remote_url,
     });
-    return await reviseRun({
+    const receipt = await reviseRun({
       runId: options.runId,
       revisionRound: options.revisionRound,
       stateDirectory: options.stateDirectory,
@@ -172,6 +176,8 @@ export async function reviseRunForOrchestration(options: {
       ...(options.signal ? { signal: options.signal } : {}),
       ...(options.now ? { now: options.now } : {}),
     });
+    assertRevisionResultForOrchestration(options.runId, receipt, authority);
+    return receipt;
   } finally {
     if (authPath) await fs.unlink(authPath).catch(() => undefined);
   }
