@@ -2,8 +2,9 @@ import { access, realpath } from "node:fs/promises";
 import { parseReviewerSelection, reviewerLabel, type ReviewerSelection } from "../agent/reviewer-selection.js";
 import { loadTrustedConfig } from "../config/config-loader.js";
 import type { TrustedConfig } from "../config/contracts.js";
-import { readExecutionReceipt } from "../execution/execution-store.js";
+import { readExecutorReceipt } from "../executor/store.js";
 import { driveAutopilotJob, readAutopilotReceipt } from "../orchestration/autopilot-job.js";
+import { readSelectedArtifact } from "../orchestration/artifact-binding.js";
 import { runControlCommand } from "../orchestration/control-cli.js";
 import type { JobMode } from "../orchestration/job-mode.js";
 import { readLifecycleSnapshot } from "../orchestration/snapshot-reader.js";
@@ -56,16 +57,22 @@ async function resultReceipt(runId: string, stateDirectory: string) {
 async function reviewSummary(runId: string, stateDirectory: string): Promise<string> {
   const identity = splitRunId(runId);
   if (!identity) return "Current run identity is invalid.";
+  const artifact = await readSelectedArtifact(stateDirectory, runId);
   const [execution, result, snapshot] = await Promise.all([
-    readExecutionReceipt(stateDirectory, identity.taskId, identity.archiveSha),
+    artifact ? readExecutorReceipt(stateDirectory, identity.taskId, identity.archiveSha, artifact.artifact_sha256) : Promise.resolve(null),
     resultReceipt(runId, stateDirectory),
     readLifecycleSnapshot(stateDirectory, runId),
   ]);
-  const selected: ReviewerSelection = execution?.reviewer_selection ?? await readReviewMode(stateDirectory);
-  const review = selected.kind === "terra" ? execution?.internal_reviewer : execution?.final_reviewer;
+  let codeReview = "pending";
+  if (execution?.review_strategy === "web") codeReview = "Web · pending/handled by review pipeline";
+  else if (execution?.reviewer_selection) {
+    const selected: ReviewerSelection = execution.reviewer_selection;
+    const review = selected.kind === "terra" ? execution.terra_review : execution.sol_review;
+    codeReview = `${reviewerLabel(selected)} · ${review.verdict ?? "pending"} · ${review.rounds} round(s)`;
+  }
   return [
-    `Code reviewer ${reviewerLabel(selected)} · ${review?.verdict ?? "pending"}${review ? ` · ${review.rounds} round(s)` : ""}`,
-    `Verification  ${execution?.verification.required_commands_passed ? "passed" : "pending"}`,
+    `Code review   ${codeReview}`,
+    `Verification  ${execution?.verification.passed ? "passed" : "pending"}`,
     `Result Bundle ${result ? "ready" : "pending"}`,
     `Web final     ${snapshot.web_review_state ?? "pending"}`,
     `Published     ${result?.published_commit_sha ? "exact commit verified" : "pending"}`,
@@ -78,12 +85,11 @@ function configSummary(config: TrustedConfig, repositoryId: string, reviewer: Re
     `Repository    ${repositoryId}`,
     `Web bridge    ${config.web_bridge?.mode ?? "manual_file"}`,
     `ChatGPT Web   ${config.web_bridge?.mode === "managed_actions" ? "managed" : config.web_bridge?.mode === "actions_relay" ? "advanced self-hosted" : "not connected"}`,
-    `Implementer   ${config.agents?.implementer.model ?? "default"} · ${config.agents?.implementer.reasoning_effort ?? "default"}`,
-    `Code reviewer ${reviewerLabel(reviewer)}`,
-    "Final review  ChatGPT Web · required",
+    `AUTOPILOT review ${reviewerLabel(reviewer)}`,
+    "Final review  original ChatGPT Web · required",
     "",
-    "Change code reviewer with `/mode <sol|terra> <minimal|low|medium|high|xhigh>`.",
-    "`/mode` never disables the independent ChatGPT Web final review.",
+    "Change AUTOPILOT reviewer with `/mode <sol|terra> <minimal|low|medium|high|xhigh>`.",
+    "PAIR does not use the selected model reviewer.",
     "Reconnect managed Web with `/config web` or `/web connect`.",
     "Advanced self-hosting is available only through `/web connect --self-hosted`.",
   ].join("\n");
@@ -167,21 +173,6 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     return latest;
   };
 
-  const waitForPreparedAutopilotContract = async (): Promise<LocalWorkerSession> => {
-    if (!latest) throw new Error("No active Web authoring session.");
-    if (!bridge) throw new Error("WCO Relay is not connected.");
-    if (latest.run_id && latest.sealed && ["PREPARED", "IMPLEMENTATION_REGISTERED", "COMPLETED"].includes(latest.state)) return latest;
-    const poll = Math.max(250, Math.min(config.web_bridge?.poll_interval_ms ?? 1_000, 10_000));
-    io.write("Waiting for ChatGPT Web to inspect the exact base and seal the AUTOPILOT contract…\n");
-    while (!latest.run_id || !latest.sealed) {
-      latest = await advanceLocalWorker({ bridge, session: latest, repositoryPath: repositoryConfig.path, stateDirectory: paths.state, configPath: paths.config, config, stopAfterPrepared: true });
-      if (latest.run_id && latest.sealed) break;
-      if (latest.state === "BLOCKED") throw new Error("Web authoring is blocked. Use /status for details.");
-      await sleep(poll);
-    }
-    return latest;
-  };
-
   const continuePairWorkflow = async (): Promise<string> => {
     if (!latest?.run_id || latest.state !== "IMPLEMENTATION_REGISTERED") return `Workflow is waiting at ${latest?.state ?? "NO_TASK"}.`;
     if (!bridge) throw new Error("WCO Relay is not connected.");
@@ -194,7 +185,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
       if (pairSessionCanComplete(snapshot)) {
         await completeLocalWorkerSession({ session: latest, stateDirectory: paths.state });
         const result = await resultReceipt(runId, paths.state);
-        return `PAIR · READY FOR YOU\nDraft PR      ${result?.pull_request?.url ?? "ready"}\nVerification  passed\nCode reviewer approved\nWeb final     approved\nAction        review and merge when ready`;
+        return `PAIR · READY FOR YOU\nDraft PR      ${result?.pull_request?.url ?? "ready"}\nVerification  passed\nCode review   approved\nWeb final     approved\nAction        review and merge when ready`;
       }
       if (snapshot.web_review_state === "ESCALATED") return "PAIR · NEEDS YOU\nChatGPT Web final review escalated a consequential decision. No merge action was taken.";
 
@@ -222,16 +213,16 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
   };
 
   const driveAutopilotForUser = async (): Promise<string> => {
-    if (!latest?.run_id) return "AUTOPILOT is waiting for Web to seal the task contract.";
+    if (!latest?.run_id || !latest.web_pack_path || latest.state !== "IMPLEMENTATION_REGISTERED") return "AUTOPILOT is waiting for Web implementation authority.";
     if (!bridge) throw new Error("WCO Relay is not connected.");
     const controller = new AbortController(); const interrupt = (): void => controller.abort(); process.once("SIGINT", interrupt);
     try {
       const interactiveBridge = withFinalReviewNotification(bridge, async () => {
-        io.write("AUTOPILOT is ready for independent ChatGPT Web final review.\n");
+        io.write("AUTOPILOT is ready for final review.\n");
         try { await openWebArchitect(); io.write("Waiting for ChatGPT Web final review…\n"); }
         catch { io.write("Final review remains pending. Open the configured Senior Architect GPT manually, or run `wco web open` in another terminal.\n"); }
       });
-      const receipt = await driveAutopilotJob({ bridge: interactiveBridge, runId: latest.run_id, stateDirectory: paths.state, configPath: paths.config, signal: controller.signal, ...(config.web_bridge?.poll_interval_ms !== undefined ? { pollIntervalMs: config.web_bridge.poll_interval_ms } : {}) });
+      const receipt = await driveAutopilotJob({ bridge: interactiveBridge, runId: latest.run_id, stateDirectory: paths.state, configPath: paths.config, webPackPath: latest.web_pack_path, signal: controller.signal, ...(config.web_bridge?.poll_interval_ms !== undefined ? { pollIntervalMs: config.web_bridge.poll_interval_ms } : {}) });
       if (receipt.status === "READY_FOR_YOU" && latest.state !== "COMPLETED") await completeLocalWorkerSession({ session: latest, stateDirectory: paths.state });
       const result = await resultReceipt(receipt.run_id, paths.state);
       return formatAutopilotOutcome(receipt, result?.pull_request?.url ?? null);
@@ -246,15 +237,11 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     const selectedReviewer = await readReviewMode(paths.state);
     latest = await startLocalAuthoring({ bridge, repository: { repository_id: repositoryId, base_branch: detected.base_branch, base_commit: detected.base_commit }, goal, stateDirectory: paths.state, replaceExplicit, mode });
     io.write("Task sent securely to WCO Web.\n");
-    io.write(`Code reviewer: ${reviewerLabel(selectedReviewer)}\nFinal reviewer: ChatGPT Web\n`);
-    if (mode === "AUTOPILOT") io.write("AUTOPILOT selected. Web will lock the architecture; Codex will own implementation and bounded repair.\n");
+    if (mode === "AUTOPILOT") io.write(`Reviewer: ${reviewerLabel(selectedReviewer)}\n`);
     io.write("Opening WCO Senior Architect...\n"); await openWebArchitect(); io.write("In ChatGPT Web, click “Start my pending WCO task”. No ZIP/download handoff is required.\n");
-    if (mode === "AUTOPILOT") {
-      await waitForPreparedAutopilotContract();
-      io.write("Web contract accepted. AUTOPILOT now owns implementation, verification, selected-model code review, Draft PR delivery, and the mandatory Web final-review loop.\n");
-      return await driveAutopilotForUser();
-    }
-    await waitForImplementation(); io.write("Web contract and implementation authority were accepted locally. Starting WCO execution and two-stage review…\n"); return await continuePairWorkflow();
+    await waitForImplementation();
+    io.write("Web implementation accepted. Starting verification and review…\n");
+    return mode === "AUTOPILOT" ? await driveAutopilotForUser() : await continuePairWorkflow();
   };
 
   const displayUserStatus = async (session: LocalWorkerSession | null): Promise<string> => {
@@ -294,11 +281,11 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
       if (command === "/auto") { if (!args) return { message: "Usage: /auto <goal>" }; return { message: await startAndDriveTask(args, true, "AUTOPILOT") }; }
       if (command === "/mode") {
         const current = await readReviewMode(paths.state);
-        if (!args) return { message: `Code review mode: ${reviewerLabel(current)}\nFinal review: ChatGPT Web · required\nUsage: /mode <sol|terra> <minimal|low|medium|high|xhigh>` };
-        if (latest && !["BLOCKED", "COMPLETED"].includes(latest.state)) return { message: `Code review mode is frozen for the active task (${reviewerLabel(current)}). Finish it before changing /mode.` };
+        if (!args) return { message: `AUTOPILOT reviewer: ${reviewerLabel(current)}\nFinal review: original ChatGPT Web · required\nUsage: /mode <sol|terra> <minimal|low|medium|high|xhigh>` };
+        if (latest && localWorkerJobMode(latest) === "AUTOPILOT" && !["BLOCKED", "COMPLETED"].includes(latest.state)) return { message: `AUTOPILOT reviewer is frozen for the active task (${reviewerLabel(current)}). Finish it before changing /mode.` };
         const values = args.split(/\s+/u).filter(Boolean);
         if (values.length !== 2) return { message: "Usage: /mode <sol|terra> <minimal|low|medium|high|xhigh>" };
-        try { const selected = parseReviewerSelection(values[0]!, values[1]!); await writeReviewMode(paths.state, selected); return { message: `Code review mode: ${reviewerLabel(selected)}. Applies to new tasks. ChatGPT Web final review remains required.` }; }
+        try { const selected = parseReviewerSelection(values[0]!, values[1]!); await writeReviewMode(paths.state, selected); return { message: `AUTOPILOT reviewer: ${reviewerLabel(selected)}. Applies to new AUTOPILOT tasks.` }; }
         catch (error) { return { message: error instanceof Error ? error.message : String(error) }; }
       }
       if (command === "/task") {
@@ -320,7 +307,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
         if (!latest) return { message: "Enter a task goal first." };
         if (localWorkerJobMode(latest) === "AUTOPILOT") {
           if (!await ensureWebConnected()) return { message: "Web Architect is not connected." };
-          if (!latest.run_id || !latest.sealed) { await openWebArchitect(); await waitForPreparedAutopilotContract(); }
+          if (latest.state !== "IMPLEMENTATION_REGISTERED") { await openWebArchitect(); await waitForImplementation(); }
           return { message: await driveAutopilotForUser() };
         }
         if (latest.state === "COMPLETED") return { message: "Current task is complete. Enter a new goal or use /new <goal>." };
