@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
+import { readExecutorReceipt } from "../executor/store.js";
 import { loadPhase4Config } from "../execution/execution-config.js";
 import { GitRunner } from "../git/git-runner.js";
 import { preparePublishGitSecurity } from "../publish/publish-auth.js";
@@ -11,6 +12,7 @@ import { reviseRun } from "../revision/revision-service.js";
 import type { RevisionReceipt } from "../revision/contracts.js";
 import { getWebReviewStatus } from "../web-review/web-review-service.js";
 import { resolveTrustedRunContext } from "../web-review/trusted-run-context.js";
+import { readSelectedArtifact } from "./artifact-binding.js";
 import { OrchestrationError } from "./contracts.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -111,6 +113,26 @@ export async function attestRevisionAuthorityForOrchestration(options: {
   };
 }
 
+async function assertLegacyRevisionDoesNotCrossPairBoundary(options: {
+  runId: string;
+  stateDirectory: string;
+}): Promise<void> {
+  const selected = await readSelectedArtifact(options.stateDirectory, options.runId);
+  if (!selected) throw new OrchestrationError("ORCHESTRATION_ARTIFACT_INVALID", "Revision requires the selected registered Web artifact.");
+  const split = options.runId.lastIndexOf(":");
+  const taskId = options.runId.slice(0, split);
+  const archiveSha = options.runId.slice(split + 1);
+  if (split < 1 || !SHA256.test(archiveSha)) throw new OrchestrationError("ORCHESTRATION_RUN_ID_INVALID", "Revision run identity is invalid.");
+  const executor = await readExecutorReceipt(options.stateDirectory, taskId, archiveSha, selected.artifact_sha256);
+  if (!executor) throw new OrchestrationError("ORCHESTRATION_EXECUTOR_NOT_READY", "Revision requires a durable Harness executor receipt.");
+  if (executor.review_strategy === "web") {
+    throw new OrchestrationError(
+      "ORCHESTRATION_PAIR_WEB_REVISION_REQUIRED",
+      "PAIR revision requires bounded Web repair authority applied by the Harness. Legacy Phase 8 Codex repair is intentionally disabled for PAIR so zero-Codex/token guarantees cannot be bypassed.",
+    );
+  }
+}
+
 async function prepareRuntimeDirectory(stateDirectory: string): Promise<string> {
   const runtime = path.resolve(stateDirectory, "revision-runtime");
   await fs.mkdir(runtime, { recursive: true, mode: 0o700 });
@@ -150,6 +172,9 @@ export async function reviseRunForOrchestration(options: {
   if (authority.revisionRound !== options.revisionRound) {
     throw new OrchestrationError("ORCHESTRATION_REVISION_AUTHORITY_INVALID", "Requested revision round does not match the latest sealed Web revision authority.");
   }
+  // Critical product boundary: PAIR is Web-author/Web-review/Web-final and must
+  // never instantiate a Codex runtime as a fallback revision implementer.
+  await assertLegacyRevisionDoesNotCrossPairBoundary({ runId: options.runId, stateDirectory: options.stateDirectory });
   try {
     const runContext = await resolveTrustedRunContext(options.runId, options.stateDirectory, options.configPath);
     if (!runContext.runReceipt.remote_url) throw new OrchestrationError("ORCHESTRATION_REVISION_HISTORY_INVALID", "Canonical run receipt has no trusted remote_url.");
