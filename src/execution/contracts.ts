@@ -99,6 +99,20 @@ export interface ReviewFinding {
   required_fix: string;
 }
 
+/**
+ * A reviewer may propose a single bounded repair set, but never receives direct
+ * worktree mutation authority. The Harness validates exact preimages and owns
+ * every write. Null postimage fields represent delete_file.
+ */
+export interface ReviewerRepairOperation {
+  op_id: string;
+  kind: "create_file" | "replace_file" | "delete_file";
+  path: string;
+  preimage_sha256: string | null;
+  postimage_base64: string | null;
+  postimage_sha256: string | null;
+}
+
 export interface AgentAssessment {
   status: "COMPATIBLE" | "REPLAN_REQUIRED" | "HUMAN_REQUIRED" | "BLOCKED";
   summary: string;
@@ -128,6 +142,8 @@ export interface ReviewResult {
   scope_violations: string[];
   unverified_acceptance: string[];
   human_action: HumanAction;
+  /** Empty for APPROVE/ESCALATE/REPLAN; bounded and non-empty for an adaptive REVISE. */
+  repair_operations?: ReviewerRepairOperation[];
 }
 
 export interface VerificationCommandResult {
