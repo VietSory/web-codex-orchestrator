@@ -43,7 +43,8 @@ export interface ExecutionContract {
     base_branch: string;
     branch_name: string;
     draft: true;
-    push_after: ["VERIFIER_PASS", "SOL_APPROVE"];
+    /** REVIEWER_APPROVE is the normal reviewer-neutral contract. SOL_APPROVE is accepted only for older bundles. */
+    push_after: ["VERIFIER_PASS", "REVIEWER_APPROVE"] | ["VERIFIER_PASS", "SOL_APPROVE"];
     auto_merge: false;
   };
   git_policy: {
