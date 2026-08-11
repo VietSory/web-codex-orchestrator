@@ -19,7 +19,7 @@
     "draft": true,
     "push_after": [
       "VERIFIER_PASS",
-      "SOL_APPROVE"
+      "REVIEWER_APPROVE"
     ],
     "auto_merge": false
   },
