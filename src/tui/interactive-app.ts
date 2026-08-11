@@ -25,6 +25,7 @@ import {
   type LocalWorkerSession,
 } from "../web-bridge/local-worker.js";
 import { createConfiguredWebBridge } from "../web-bridge/bridge-factory.js";
+import { readWebCodeReviewReceipt } from "../web-bridge/code-review-service.js";
 import { createPendingFinalReview } from "../web-bridge/final-review-service.js";
 import { materializeAndSubmitWebVerdict } from "../web-bridge/verdict-materializer.js";
 import { runWebCommand } from "../web-bridge/web-cli.js";
@@ -59,13 +60,14 @@ async function reviewSummary(runId: string, stateDirectory: string): Promise<str
   const identity = splitRunId(runId);
   if (!identity) return "Current run identity is invalid.";
   const artifact = await readSelectedArtifact(stateDirectory, runId);
-  const [execution, result, snapshot] = await Promise.all([
+  const [execution, result, snapshot, webCodeReview] = await Promise.all([
     artifact ? readExecutorReceipt(stateDirectory, identity.taskId, identity.archiveSha, artifact.artifact_sha256) : Promise.resolve(null),
     resultReceipt(runId, stateDirectory),
     readLifecycleSnapshot(stateDirectory, runId),
+    readWebCodeReviewReceipt(stateDirectory, runId),
   ]);
   let codeReview = "pending";
-  if (execution?.review_strategy === "web") codeReview = "Web · pending/handled by review pipeline";
+  if (execution?.review_strategy === "web") codeReview = `independent Web · ${webCodeReview?.state ?? "PENDING"}`;
   else if (execution?.reviewer_selection) {
     const selected: ReviewerSelection = execution.reviewer_selection;
     const review = selected.kind === "terra" ? execution.terra_review : execution.sol_review;
@@ -204,17 +206,18 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
 
       const review = await createPendingFinalReview({ bridge, runId, stateDirectory: paths.state });
       await openWebArchitect();
-      io.write(`Waiting for ChatGPT Web final review${round > 0 ? ` · round ${round + 1}` : ""}…\n`);
+      const reviewLabel = review.purpose === "independent_code_review" ? "independent ChatGPT Web code review" : "original ChatGPT Web final intent review";
+      io.write(`Waiting for ${reviewLabel}${round > 0 ? ` · round ${round + 1}` : ""}…\n`);
       const poll = Math.max(250, Math.min(config.web_bridge?.poll_interval_ms ?? 1_000, 10_000));
       let verdict = await bridge.waitForVerdict(review.job_id);
       while (!verdict) { await sleep(poll); verdict = await bridge.waitForVerdict(review.job_id); }
       const adopted = await materializeAndSubmitWebVerdict({ envelope: verdict, stateDirectory: paths.state, configPath: paths.config });
-      io.write(`Web final review: ${adopted.receipt.state}\n`);
+      io.write(`${reviewLabel}: ${adopted.receipt.state}\n`);
       code = await runControlCommand("continue", ["--run-id", runId, "--state-dir", paths.state, "--config", paths.config, "--max-transitions", "8"], { stdout: () => undefined, stderr: () => undefined });
       if (code !== 0) return `Workflow stopped safely with exit ${code}. Use /doctor, then retry /run.`;
     }
 
-    return "PAIR · NEEDS YOU\nThe Web final-review round budget was exhausted without a terminal approval. No merge action was taken.";
+    return "PAIR · NEEDS YOU\nThe Web review round budget was exhausted without a terminal approval. No merge action was taken.";
   };
 
   const driveAutopilotForUser = async (): Promise<string> => {
@@ -224,7 +227,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     try {
       const interactiveBridge = withFinalReviewNotification(bridge, async () => {
         io.write("AUTOPILOT is ready for final review.\n");
-        try { await openWebArchitect(); io.write("Waiting for ChatGPT Web final review…\n"); }
+        try { await openWebArchitect(); io.write("Waiting for original ChatGPT Web final intent review…\n"); }
         catch { io.write("Final review remains pending. Open the configured Senior Architect GPT manually, or run `wco web open` in another terminal.\n"); }
       });
       const receipt = await driveAutopilotJob({ bridge: interactiveBridge, runId: latest.run_id, stateDirectory: paths.state, configPath: paths.config, webPackPath: latest.web_pack_path, signal: controller.signal, ...(config.web_bridge?.poll_interval_ms !== undefined ? { pollIntervalMs: config.web_bridge.poll_interval_ms } : {}) });
@@ -298,7 +301,12 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
         const mode = localWorkerJobMode(latest); return { message: mode === "AUTOPILOT" ? `Goal: ${latest.goal}\nMode: AUTOPILOT\nContract: ${latest.sealed ? "sealed" : "open"}` : `Goal: ${latest.goal}\nContract: ${latest.sealed ? "sealed" : "open"}` };
       }
       if (command === "/web") { const webArgs = args ? args.split(/\s+/u).filter(Boolean) : ["status"]; const code = await runWebCommand(webArgs, webIo); await reloadBridge(); return { message: `Web command finished with exit ${code}.` }; }
-      if (command === "/doctor") { const lines: string[] = []; const code = await runControlCommand("doctor", ["--state-dir", paths.state, "--config", paths.config], { stdout: (value) => lines.push(value), stderr: (value) => lines.push(value) }); return { message: `${lines.join("\n")}\nDoctor exit: ${code}` }; }
+      if (command === "/doctor") {
+        const lines: string[] = [];
+        const doctorMode = latest ? localWorkerJobMode(latest) : "PAIR";
+        const code = await runControlCommand("doctor", ["--state-dir", paths.state, "--config", paths.config, "--mode", doctorMode], { stdout: (value) => lines.push(value), stderr: (value) => lines.push(value) });
+        return { message: `${lines.join("\n")}\nMode: ${doctorMode}\nDoctor exit: ${code}` };
+      }
       if (command === "/status") {
         if (!latest) return { message: "No active run." };
         const status = await displayUserStatus(latest); return { message: localWorkerJobMode(latest) === "AUTOPILOT" ? `Status: ${status}\nGoal: ${latest.goal}\nMode: AUTOPILOT\nContract: ${latest.sealed ? "sealed" : "open"}` : `Status: ${status}\nGoal: ${latest.goal}\nContract: ${latest.sealed ? "sealed" : "open"}` };
