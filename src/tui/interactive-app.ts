@@ -230,7 +230,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
         stateDirectory: paths.state,
         configPath: paths.config,
         signal: controller.signal,
-        pollIntervalMs: config.web_bridge?.poll_interval_ms,
+        ...(config.web_bridge?.poll_interval_ms !== undefined ? { pollIntervalMs: config.web_bridge.poll_interval_ms } : {}),
       });
       if (receipt.status === "READY_FOR_YOU" && latest.state !== "COMPLETED") {
         await completeLocalWorkerSession({ session: latest, stateDirectory: paths.state });
