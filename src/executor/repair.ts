@@ -85,6 +85,42 @@ export async function bindReviewerRepair(options: {
   return receipt;
 }
 
+/**
+ * Bind one independent Web code-review repair proposal to an already verified
+ * PAIR Harness result. The Web reviewer supplies bytes and exact preimages but
+ * never receives worktree write authority; every mutation remains in Harness.
+ */
+export async function bindWebReviewRepair(options: {
+  stateDirectory: string;
+  receipt: ExecutorReceipt;
+  sourceChangeSetDigest: string;
+  sourceReviewEvidenceSha256: string;
+  operations: ReviewerRepairOperation[];
+  now?: () => Date;
+}): Promise<ExecutorReceipt> {
+  const now = options.now ?? (() => new Date());
+  const receipt = options.receipt;
+  if (
+    receipt.review_strategy !== "web" || receipt.reviewer_selection !== undefined || receipt.repair ||
+    receipt.state !== "READY_FOR_PUBLISH" || receipt.change_set_digest !== options.sourceChangeSetDigest ||
+    !receipt.verification.passed || receipt.verification.change_set_digest !== options.sourceChangeSetDigest ||
+    receipt.terra_review.rounds !== 0 || receipt.sol_review.rounds !== 0 || receipt.terra_review.verdict !== null || receipt.sol_review.verdict !== null
+  ) throw new ExecutorError("EXECUTOR_REPAIR_INVALID", "Web repair cannot be bound to this PAIR Harness authority.");
+  if (!/^[a-f0-9]{64}$/.test(options.sourceReviewEvidenceSha256)) throw new ExecutorError("EXECUTOR_REPAIR_INVALID", "Web repair evidence digest is invalid.");
+  await assertProposalPreimages(receipt, options.operations);
+  receipt.repair = {
+    reviewer: "web",
+    source_change_set_digest: options.sourceChangeSetDigest,
+    source_review_evidence_sha256: options.sourceReviewEvidenceSha256,
+    operations: options.operations,
+    state: "PROPOSED",
+    final_change_set_digest: null,
+  };
+  receipt.updated_at = nowIso(now);
+  await writeExecutorReceipt(options.stateDirectory, receipt);
+  return receipt;
+}
+
 async function restoreOriginalPostimage(receipt: ExecutorReceipt, pack: WebImplementationPack, repair: ReviewerRepairOperation): Promise<void> {
   const source = originalOperation(pack, repair.path);
   const tx = transaction(receipt, repair.path);
@@ -143,7 +179,7 @@ export async function applyReviewerRepair(options: { stateDirectory: string; rec
     try { await rollbackRepairs(receipt, options.pack); }
     catch (rollbackError) { throw new ExecutorError("EXECUTOR_AMBIGUOUS_RECOVERY", `Adaptive repair failed and rollback could not restore Web-authorized postimages: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`); }
     repair.state = "PROPOSED";
-    receipt.state = repair.reviewer === "terra" ? "REVIEWING_TERRA" : "REVIEWING_SOL";
+    receipt.state = repair.reviewer === "web" ? "READY_FOR_PUBLISH" : repair.reviewer === "terra" ? "REVIEWING_TERRA" : "REVIEWING_SOL";
     receipt.updated_at = nowIso(now);
     await writeExecutorReceipt(options.stateDirectory, receipt);
     throw error;
