@@ -25,7 +25,12 @@ function splitRunId(runId: string): { taskId: string; taskBundleSha256: string }
  * resume from that exact published commit rather than pretending HEAD is still
  * the base. Never trust HEAD by observation alone: adopt it only when the
  * durable Phase 10 executor and PUSHED receipt bind the same run/base/branch,
- * exact verified change-set and remote commit.
+ * exact verified source change-set and remote commit.
+ *
+ * During a crash-resumable repair the executor's current change_set_digest may
+ * already represent the repaired (not-yet-published) bytes. The publication
+ * still legitimately binds repair.source_change_set_digest, so use that sealed
+ * source digest until a new publication replaces it.
  */
 async function exactPublishedResumeHead(options: {
   runId: string;
@@ -53,6 +58,7 @@ async function exactPublishedResumeHead(options: {
   );
   const publish = await readGitPublishReceipt(publishPath);
   if (!publish) return undefined;
+  const publishedSourceDigest = executor.repair?.source_change_set_digest ?? executor.change_set_digest;
   if (
     publish.state !== "PUSHED" ||
     publish.run_id !== options.runId ||
@@ -60,7 +66,7 @@ async function exactPublishedResumeHead(options: {
     publish.branch_name !== options.branchName ||
     publish.remote_name !== options.remoteName ||
     publish.allowed_remote_url !== options.remoteUrl ||
-    publish.change_set_sha256 !== executor.change_set_digest ||
+    publish.change_set_sha256 !== publishedSourceDigest ||
     publish.commit_sha === null ||
     publish.remote_branch_sha !== publish.commit_sha
   ) {
