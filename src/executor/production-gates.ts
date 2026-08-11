@@ -98,6 +98,7 @@ export async function createProductionExecutorGates(options: { runId: string; st
 
   const reviewer: ExecutorReviewerPort = {
     reviewer_kind: reviewMode.kind,
+    reviewer_profile: { model: reviewMode.model, reasoning_effort: reviewMode.reasoning_effort },
     budget_policy: {
       maximum_model_turns: Math.min(
         config.agents.limits.maximum_total_agent_turns,
