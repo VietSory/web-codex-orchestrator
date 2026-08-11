@@ -4,25 +4,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ExecutionReceipt } from "../src/execution/contracts.js";
-import type { DraftPullRequestReceipt } from "../src/pull-request/contracts.js";
-import type { GitPublishReceipt } from "../src/publish/contracts.js";
-import type { ResultBundleReceipt } from "../src/result-bundle/contracts.js";
-import type { RevisionReceipt } from "../src/revision/contracts.js";
 import { driveAutopilotJob, readAutopilotReceipt, type AutopilotDependencies } from "../src/orchestration/autopilot-job.js";
 import { driveJob } from "../src/orchestration/job-orchestrator.js";
 import { parseJobMode } from "../src/orchestration/job-mode.js";
 import type { WebBridge } from "../src/web-bridge/web-bridge.js";
-import type { WebReviewReceipt } from "../src/web-review/contracts.js";
-
-const READY_EXECUTION = { state: "READY_FOR_PUBLISH", errors: [] } as unknown as ExecutionReceipt;
-const PUSHED = { state: "PUSHED", commit_sha: "1".repeat(40), remote_branch_sha: "1".repeat(40) } as unknown as GitPublishReceipt;
-const OPEN_DRAFT = { state: "OPEN", observed_draft: true, observed_state: "open", pull_number: 31 } as unknown as DraftPullRequestReceipt;
-const READY_RESULT = { state: "READY_FOR_WEB_REVIEW", archive_sha256: "a".repeat(64) } as unknown as ResultBundleReceipt;
-const READY_REVISION = { state: "RESULT_READY", result_bundle_sha256: "b".repeat(64), new_published_commit_sha: "2".repeat(40), remote_branch_sha: "2".repeat(40) } as unknown as RevisionReceipt;
-
-function review(state: "APPROVED" | "REVISION_REQUESTED" | "ESCALATED"): WebReviewReceipt {
-  return { state } as unknown as WebReviewReceipt;
-}
+import { COMMIT_2, PUSHED, READY_EXECUTION, READY_REVISION, openDraft, readyResult, webReview } from "./v04-autopilot-fixtures.js";
 
 test("V04-MODE-001 PAIR is the default and never silently enters AUTOPILOT", async () => {
   assert.equal(parseJobMode(undefined), "PAIR");
@@ -68,12 +54,15 @@ test("V04-AUTO-001 AUTOPILOT reuses execution/publish/revision services through 
   const dependencies: Partial<AutopilotDependencies> = {
     execute: async () => { calls.push("execute"); return READY_EXECUTION; },
     publish: async () => { calls.push("publish"); return PUSHED; },
-    draft: async () => { calls.push("draft"); return OPEN_DRAFT; },
-    packageResult: async () => { calls.push("package"); return READY_RESULT; },
+    draft: async () => { calls.push("draft"); return openDraft(); },
+    packageResult: async () => { calls.push("package"); return readyResult(runId); },
     createFinalReview: async () => { calls.push("web-job"); return { job_id: `job-${++reviewJobs}` }; },
     materializeVerdict: async () => {
       calls.push("verdict");
-      return { verdict_path: `/tmp/verdict-${verdicts}.json`, receipt: verdicts === 1 ? review("REVISION_REQUESTED") : review("APPROVED") };
+      return {
+        verdict_path: `/tmp/verdict-${verdicts}.json`,
+        receipt: verdicts === 1 ? webReview("REVISION_REQUESTED", runId) : webReview("APPROVED", runId, COMMIT_2),
+      };
     },
     attestRevision: async () => { calls.push("attest-revision"); return { revisionRound: 1 }; },
     revise: async () => { calls.push("revise"); return READY_REVISION; },
@@ -104,6 +93,7 @@ test("V04-AUTO-001 AUTOPILOT reuses execution/publish/revision services through 
     const durable = await readAutopilotReceipt(stateDirectory, runId);
     assert.equal(durable?.status, "READY_FOR_YOU");
     assert.equal(durable?.stage, "DONE");
+    assert.ok((durable?.generation ?? 0) > 0);
   } finally {
     await rm(stateDirectory, { recursive: true, force: true });
   }
