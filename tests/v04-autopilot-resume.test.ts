@@ -3,19 +3,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { ExecutionReceipt } from "../src/execution/contracts.js";
-import type { DraftPullRequestReceipt } from "../src/pull-request/contracts.js";
-import type { GitPublishReceipt } from "../src/publish/contracts.js";
-import type { ResultBundleReceipt } from "../src/result-bundle/contracts.js";
 import { driveAutopilotJob, readAutopilotReceipt } from "../src/orchestration/autopilot-job.js";
 import type { WebBridge } from "../src/web-bridge/web-bridge.js";
-import type { WebReviewReceipt } from "../src/web-review/contracts.js";
-
-const READY_EXECUTION = { state: "READY_FOR_PUBLISH", errors: [] } as unknown as ExecutionReceipt;
-const PUSHED = { state: "PUSHED", commit_sha: "1".repeat(40), remote_branch_sha: "1".repeat(40) } as unknown as GitPublishReceipt;
-const OPEN_DRAFT = { state: "OPEN", observed_draft: true, observed_state: "open", pull_number: 31 } as unknown as DraftPullRequestReceipt;
-const READY_RESULT = { state: "READY_FOR_WEB_REVIEW", archive_sha256: "a".repeat(64) } as unknown as ResultBundleReceipt;
-const APPROVED = { state: "APPROVED" } as unknown as WebReviewReceipt;
+import { PUSHED, READY_EXECUTION, openDraft, readyResult, webReview } from "./v04-autopilot-fixtures.js";
 
 test("V04-AUTO-006 restart while waiting for Web reuses the durable review job", async () => {
   const stateDirectory = await mkdtemp(path.join(os.tmpdir(), "wco-auto-resume-"));
@@ -41,8 +31,8 @@ test("V04-AUTO-006 restart while waiting for Web reuses the durable review job",
       dependencies: {
         execute: async () => READY_EXECUTION,
         publish: async () => PUSHED,
-        draft: async () => OPEN_DRAFT,
-        packageResult: async () => READY_RESULT,
+        draft: async () => openDraft(),
+        packageResult: async () => readyResult(runId),
         createFinalReview: async () => ({ job_id: `review-job-${++reviewCreates}` }),
         sleep: async () => { firstController.abort(); },
       },
@@ -69,7 +59,7 @@ test("V04-AUTO-006 restart while waiting for Web reuses the durable review job",
       configPath: path.join(stateDirectory, "config.json"),
       dependencies: {
         createFinalReview: async () => { resumedCreateCalled = true; return { job_id: "must-not-create" }; },
-        materializeVerdict: async () => ({ verdict_path: "/tmp/approve.json", receipt: APPROVED }),
+        materializeVerdict: async () => ({ verdict_path: "/tmp/approve.json", receipt: webReview("APPROVED", runId) }),
       },
     });
 
@@ -83,33 +73,75 @@ test("V04-AUTO-006 restart while waiting for Web reuses the durable review job",
   }
 });
 
-test("V04-AUTO-007 an already completed durable job is idempotent", async () => {
+test("V04-AUTO-007 a completed durable job is idempotent only after fresh merge-readiness attestation", async () => {
   const stateDirectory = await mkdtemp(path.join(os.tmpdir(), "wco-auto-complete-"));
   const runId = `task-complete:${"4".repeat(64)}`;
   const bridge = { async waitForVerdict() { return { review_id: "approved" } as never; } } as unknown as WebBridge;
   const dependencies = {
     execute: async () => READY_EXECUTION,
     publish: async () => PUSHED,
-    draft: async () => OPEN_DRAFT,
-    packageResult: async () => READY_RESULT,
+    draft: async () => openDraft(),
+    packageResult: async () => readyResult(runId),
     createFinalReview: async () => ({ job_id: "review-job" }),
-    materializeVerdict: async () => ({ verdict_path: "/tmp/approve.json", receipt: APPROVED }),
+    materializeVerdict: async () => ({ verdict_path: "/tmp/approve.json", receipt: webReview("APPROVED", runId) }),
   };
 
   try {
     const first = await driveAutopilotJob({ bridge, runId, stateDirectory, configPath: path.join(stateDirectory, "config.json"), dependencies });
     assert.equal(first.status, "READY_FOR_YOU");
     let touched = false;
+    let revalidated = 0;
     const second = await driveAutopilotJob({
       bridge,
       runId,
       stateDirectory,
       configPath: path.join(stateDirectory, "config.json"),
-      dependencies: { execute: async () => { touched = true; return READY_EXECUTION; } },
+      dependencies: {
+        execute: async () => { touched = true; return READY_EXECUTION; },
+        revalidateReady: async () => { revalidated += 1; return webReview("APPROVED", runId); },
+      },
     });
     assert.equal(touched, false);
+    assert.equal(revalidated, 1);
     assert.equal(second.status, "READY_FOR_YOU");
     assert.equal(second.stage, "DONE");
+  } finally {
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test("V04-AUTO-009 stale READY authority never returns a merge prompt", async () => {
+  const stateDirectory = await mkdtemp(path.join(os.tmpdir(), "wco-auto-stale-ready-"));
+  const runId = `task-stale-ready:${"5".repeat(64)}`;
+  const bridge = { async waitForVerdict() { return { review_id: "approved" } as never; } } as unknown as WebBridge;
+  try {
+    await driveAutopilotJob({
+      bridge,
+      runId,
+      stateDirectory,
+      configPath: path.join(stateDirectory, "config.json"),
+      dependencies: {
+        execute: async () => READY_EXECUTION,
+        publish: async () => PUSHED,
+        draft: async () => openDraft(),
+        packageResult: async () => readyResult(runId),
+        createFinalReview: async () => ({ job_id: "review-job" }),
+        materializeVerdict: async () => ({ verdict_path: "/tmp/approve.json", receipt: webReview("APPROVED", runId) }),
+      },
+    });
+
+    await assert.rejects(
+      driveAutopilotJob({
+        bridge,
+        runId,
+        stateDirectory,
+        configPath: path.join(stateDirectory, "config.json"),
+        dependencies: {
+          revalidateReady: async () => { throw Object.assign(new Error("Draft PR head moved after Web approval"), { code: "WEB_REVIEW_REPOSITORY_DRIFT" }); },
+        },
+      }),
+      /head moved/,
+    );
   } finally {
     await rm(stateDirectory, { recursive: true, force: true });
   }
