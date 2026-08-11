@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { autopilotReceiptPath, driveAutopilotJob, readAutopilotReceipt } from "../src/orchestration/autopilot-job.js";
@@ -177,5 +177,19 @@ test("V04-AUDIT-005 incomplete Web APPROVE never becomes READY_FOR_YOU", async (
     assert.match(receipt.reason ?? "", /AUTOPILOT_WEB_APPROVAL_INCOMPLETE/);
   } finally {
     await rm(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test("V04-AUDIT-006 symlinked state ancestry is rejected before reading authority bytes", async () => {
+  if (process.platform === "win32") return;
+  const stateDirectory = await mkdtemp(path.join(os.tmpdir(), "wco-auto-symlink-state-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "wco-auto-symlink-outside-"));
+  const runId = `task-symlink:${"c".repeat(64)}`;
+  try {
+    await symlink(outside, path.join(stateDirectory, "runs"), "dir");
+    await assert.rejects(readAutopilotReceipt(stateDirectory, runId), /ancestor is not a real directory/);
+  } finally {
+    await rm(stateDirectory, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   }
 });
