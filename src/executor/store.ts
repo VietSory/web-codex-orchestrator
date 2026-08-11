@@ -47,34 +47,38 @@ function validateRepairHistory(receipt: ExecutorReceipt): void {
 function validateRepair(receipt: ExecutorReceipt, originalPaths: Set<string>): void {
   validateRepairHistory(receipt);
   const repair = receipt.repair;
-  if (!repair) {
-    if (["REVIEWING_WEB", "REPAIR_APPLYING", "REPAIR_APPLIED"].includes(receipt.state)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Repair executor state has no durable repair authority.");
-    return;
-  }
+  if (!repair) { if (["REVIEWING_WEB", "REPAIR_APPLYING", "REPAIR_APPLIED"].includes(receipt.state)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Repair executor state has no durable repair authority."); return; }
   if (!SHA256.test(repair.source_change_set_digest) || !SHA256.test(repair.source_review_evidence_sha256) || !["PROPOSED","APPLYING","APPLIED","VERIFIED"].includes(repair.state) || !validDigest(repair.final_change_set_digest)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor repair identity/state is invalid.");
-  if (repair.reviewer === "web") {
-    if (receipt.review_strategy !== "web" || receipt.reviewer_selection !== undefined) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Web repair is not bound to Web-review Harness authority.");
-  } else {
+  if (repair.reviewer === "web") { if (receipt.review_strategy !== "web" || receipt.reviewer_selection !== undefined) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Web repair is not bound to Web-review Harness authority."); }
+  else {
     if (receipt.review_strategy !== "model" || !receipt.reviewer_selection || repair.reviewer !== receipt.reviewer_selection.kind) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Model repair is not bound to selected reviewer authority.");
     const review = selectedReview(receipt);
     if (!review || review.verdict !== "REVISE" || review.change_set_digest !== repair.source_change_set_digest || review.evidence_sha256 !== repair.source_review_evidence_sha256) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor repair is not chained to the selected REVISE evidence.");
   }
   if (!Array.isArray(repair.operations) || repair.operations.length < 1 || repair.operations.length > MAX_REPAIR_OPERATIONS) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor repair operation count is invalid.");
-  const ids = new Set<string>(); const paths = new Set<string>(); let payloadBytes = 0;
+  const ids = new Set<string>(); const repairPaths = new Set<string>(); let payloadBytes = 0;
   for (const operation of repair.operations) {
-    if (!SAFE_ID.test(operation.op_id) || ids.has(operation.op_id) || !safeRelative(operation.path) || paths.has(operation.path) || !originalPaths.has(operation.path) || !["create_file","replace_file","delete_file"].includes(operation.kind) || !validDigest(operation.preimage_sha256) || !validDigest(operation.postimage_sha256) || !(operation.postimage_base64 === null || typeof operation.postimage_base64 === "string" && operation.postimage_base64.length <= 350_000)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor repair operation is invalid, duplicated, or widens path authority.");
+    if (!SAFE_ID.test(operation.op_id) || ids.has(operation.op_id) || !safeRelative(operation.path) || repairPaths.has(operation.path) || !originalPaths.has(operation.path) || !["create_file","replace_file","delete_file"].includes(operation.kind) || !validDigest(operation.preimage_sha256) || !validDigest(operation.postimage_sha256) || !(operation.postimage_base64 === null || typeof operation.postimage_base64 === "string" && operation.postimage_base64.length <= 350_000)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor repair operation is invalid, duplicated, or widens path authority.");
     if (operation.kind === "create_file" && operation.preimage_sha256 !== null || operation.kind !== "create_file" && operation.preimage_sha256 === null) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor repair preimage semantics are invalid.");
-    if (operation.kind === "delete_file") {
-      if (operation.postimage_base64 !== null || operation.postimage_sha256 !== null) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Delete repair carries an impossible postimage.");
-    } else {
+    if (operation.kind === "delete_file") { if (operation.postimage_base64 !== null || operation.postimage_sha256 !== null) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Delete repair carries an impossible postimage."); }
+    else {
       if (typeof operation.postimage_base64 !== "string" || typeof operation.postimage_sha256 !== "string") throw new ExecutorError("EXECUTOR_STATE_INVALID", "Create/replace repair lacks a postimage.");
       const bytes = Buffer.from(operation.postimage_base64, "base64");
       if (bytes.toString("base64") !== operation.postimage_base64 || crypto.createHash("sha256").update(bytes).digest("hex") !== operation.postimage_sha256) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor repair postimage encoding/digest is invalid.");
       payloadBytes += bytes.byteLength;
     }
-    ids.add(operation.op_id); paths.add(operation.path);
+    ids.add(operation.op_id); repairPaths.add(operation.path);
   }
   if (payloadBytes > MAX_REPAIR_PAYLOAD_BYTES) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor repair payload exceeds the durable byte budget.");
+  if (repair.preimage_backups !== undefined) {
+    if (!Array.isArray(repair.preimage_backups) || repair.preimage_backups.length > repair.operations.length) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor repair rollback backup set is invalid.");
+    const backupPaths = new Set<string>();
+    for (const backup of repair.preimage_backups) {
+      const operation = repair.operations.find((candidate) => candidate.path === backup.path);
+      if (!operation || operation.kind === "create_file" || backupPaths.has(backup.path) || backup.sha256 !== operation.preimage_sha256 || !SHA256.test(backup.sha256) || !safeRelative(backup.relative_path) || !backup.relative_path.startsWith("backups/repairs/") || !Number.isSafeInteger(backup.mode) || backup.mode < 0 || backup.mode > 0o777) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor repair rollback backup authority is invalid or duplicated.");
+      backupPaths.add(backup.path);
+    }
+  }
   const terminal = receipt.state === "ESCALATE_TO_WEB" || receipt.state === "FAILED";
   if (!terminal) {
     const proposedState = repair.reviewer === "web" ? "REVIEWING_WEB" : `REVIEWING_${repair.reviewer.toUpperCase()}`;
@@ -153,17 +157,7 @@ export async function readExecutorReceipt(stateDirectory: string, taskId: string
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor receipt must be an object.");
   const receipt = parsed as ExecutorReceipt; validateReceipt(receipt); return receipt;
 }
-export async function writeExecutorReceipt(stateDirectory: string, receipt: ExecutorReceipt): Promise<void> {
-  validateReceipt(receipt); const paths = executorPaths(stateDirectory, receipt.task_id, receipt.task_bundle_sha256, receipt.artifact_sha256); await prepareExecutorDirectory(stateDirectory, paths.directory); const bytes = canonicalJsonBuffer(receipt); if (bytes.byteLength > MAX_RECEIPT_BYTES) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor receipt exceeds byte cap."); await writeDurableExecutorStateFile(paths.receipt, bytes, MAX_RECEIPT_BYTES);
-}
+export async function writeExecutorReceipt(stateDirectory: string, receipt: ExecutorReceipt): Promise<void> { validateReceipt(receipt); const paths = executorPaths(stateDirectory, receipt.task_id, receipt.task_bundle_sha256, receipt.artifact_sha256); await prepareExecutorDirectory(stateDirectory, paths.directory); const bytes = canonicalJsonBuffer(receipt); if (bytes.byteLength > MAX_RECEIPT_BYTES) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor receipt exceeds byte cap."); await writeDurableExecutorStateFile(paths.receipt, bytes, MAX_RECEIPT_BYTES); }
 export interface ExecutorLock { nonce: string; path: string; }
-export async function acquireExecutorLock(stateDirectory: string, taskId: string, taskBundleSha256: string, artifactSha256: string): Promise<ExecutorLock> {
-  const paths = executorPaths(stateDirectory, taskId, taskBundleSha256, artifactSha256); await prepareExecutorDirectory(stateDirectory, paths.directory); const nonce = crypto.randomBytes(24).toString("hex"); const bytes = canonicalJsonBuffer({ pid: process.pid, nonce, created_at: new Date().toISOString() }); let handle: fs.FileHandle | null = null;
-  try { handle = await fs.open(paths.lock, "wx", 0o600); await handle.writeFile(bytes); await handle.sync(); } catch (error) { await handle?.close().catch(() => undefined); if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new ExecutorError("EXECUTOR_LOCKED", "Executor artifact is already locked; stale locks are never auto-stolen."); throw error; }
-  await handle.close(); return { nonce, path: paths.lock };
-}
-export async function releaseExecutorLock(lock: ExecutorLock): Promise<void> {
-  let bytes: Buffer; try { bytes = await readStableExecutorStateFile(lock.path, MAX_LOCK_BYTES); } catch { return; }
-  let parsed: unknown; try { parsed = JSON.parse(bytes.toString("utf8")); } catch { return; }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || (parsed as { nonce?: unknown }).nonce !== lock.nonce) return; await fs.unlink(lock.path).catch(() => undefined);
-}
+export async function acquireExecutorLock(stateDirectory: string, taskId: string, taskBundleSha256: string, artifactSha256: string): Promise<ExecutorLock> { const paths = executorPaths(stateDirectory, taskId, taskBundleSha256, artifactSha256); await prepareExecutorDirectory(stateDirectory, paths.directory); const nonce = crypto.randomBytes(24).toString("hex"); const bytes = canonicalJsonBuffer({ pid: process.pid, nonce, created_at: new Date().toISOString() }); let handle: fs.FileHandle | null = null; try { handle = await fs.open(paths.lock, "wx", 0o600); await handle.writeFile(bytes); await handle.sync(); } catch (error) { await handle?.close().catch(() => undefined); if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new ExecutorError("EXECUTOR_LOCKED", "Executor artifact is already locked; stale locks are never auto-stolen."); throw error; } await handle.close(); return { nonce, path: paths.lock }; }
+export async function releaseExecutorLock(lock: ExecutorLock): Promise<void> { let bytes: Buffer; try { bytes = await readStableExecutorStateFile(lock.path, MAX_LOCK_BYTES); } catch { return; } let parsed: unknown; try { parsed = JSON.parse(bytes.toString("utf8")); } catch { return; } if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || (parsed as { nonce?: unknown }).nonce !== lock.nonce) return; await fs.unlink(lock.path).catch(() => undefined); }
