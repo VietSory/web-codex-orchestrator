@@ -26,37 +26,36 @@ function splitRunId(runId: string): { taskId: string; taskBundleSha256: string }
   return { taskId: runId.slice(0, split), taskBundleSha256: runId.slice(split + 1) };
 }
 
-function sha256(bytes: Buffer): string {
-  return crypto.createHash("sha256").update(bytes).digest("hex");
+function sha256(bytes: Buffer): string { return crypto.createHash("sha256").update(bytes).digest("hex"); }
+function executorReceiptSha256(receipt: ExecutorReceipt): string { return sha256(canonicalJsonBuffer(receipt)); }
+
+function publicationBoundToExecutor(runId: string, executor: ExecutorReceipt | null, snapshot: GitPublishReceiptSnapshot | null): boolean {
+  const publish = snapshot?.receipt ?? null;
+  return Boolean(
+    executor && executor.run_id === runId && executor.state === "READY_FOR_PUBLISH" && executor.change_set_digest &&
+    publish && publish.run_id === runId && publish.state === "PUSHED" && publish.change_set_sha256 === executor.change_set_digest &&
+    publish.base_commit === executor.base_commit && publish.commit_sha && publish.remote_branch_sha === publish.commit_sha,
+  );
 }
 
-function executorReceiptSha256(receipt: ExecutorReceipt): string {
-  return sha256(canonicalJsonBuffer(receipt));
+function draftBoundToPublication(runId: string, publishSnapshot: GitPublishReceiptSnapshot | null, draftSnapshot: DraftPullRequestReceiptSnapshot | null): boolean {
+  const publish = publishSnapshot?.receipt ?? null, draft = draftSnapshot?.receipt ?? null;
+  return Boolean(
+    publish && publish.state === "PUSHED" && publish.commit_sha &&
+    draft && draft.run_id === runId && draft.state === "OPEN" && draft.pull_number &&
+    draft.expected_head_sha === publish.commit_sha && draft.git_publish_receipt_sha256 === canonicalGitPublishReceiptDigest(publish),
+  );
 }
 
 /**
- * Phase 13 result readiness is an exact selected-artifact binding, not merely a
- * run-level READY flag. A handoff produced for an older selected artifact,
- * exact Phase 5 receipt, publish head, or Draft PR must never make the planner
- * quiescent.
+ * Result readiness is an exact selected-artifact binding, not merely a run-level
+ * READY flag. Older publish/Draft/Result generations become stale immediately
+ * after a verified Harness repair changes the executor digest.
  */
-export function initialResultBoundToSelectedExecutor(
-  runId: string,
-  executor: ExecutorReceipt | null,
-  publishSnapshot: GitPublishReceiptSnapshot | null,
-  draftSnapshot: DraftPullRequestReceiptSnapshot | null,
-  result: ResultBundleReceipt | null,
-): boolean {
+export function initialResultBoundToSelectedExecutor(runId: string, executor: ExecutorReceipt | null, publishSnapshot: GitPublishReceiptSnapshot | null, draftSnapshot: DraftPullRequestReceiptSnapshot | null, result: ResultBundleReceipt | null): boolean {
   const publish = publishSnapshot?.receipt ?? null;
   const draft = draftSnapshot?.receipt ?? null;
-  if (
-    !executor || executor.run_id !== runId || executor.state !== "READY_FOR_PUBLISH" || executor.change_set_digest === null ||
-    !publishSnapshot || !publish || publish.run_id !== runId || publish.state !== "PUSHED" || publish.commit_sha === null || publish.remote_branch_sha !== publish.commit_sha ||
-    !draftSnapshot || !draft || draft.run_id !== runId || draft.state !== "OPEN" || draft.pull_number === null || draft.expected_head_sha !== publish.commit_sha ||
-    draft.git_publish_receipt_sha256 !== canonicalGitPublishReceiptDigest(publish) ||
-    !result || result.run_id !== runId || result.state !== "READY_FOR_WEB_REVIEW" || result.archive_sha256 === null
-  ) return false;
-
+  if (!publicationBoundToExecutor(runId, executor, publishSnapshot) || !draftBoundToPublication(runId, publishSnapshot, draftSnapshot) || !executor || !publishSnapshot || !publish || !draftSnapshot || !draft || !result || result.run_id !== runId || result.state !== "READY_FOR_WEB_REVIEW" || result.archive_sha256 === null) return false;
   return result.execution_receipt_sha256 === executorReceiptSha256(executor)
     && result.git_publish_receipt_sha256 === sha256(publishSnapshot.bytes)
     && result.draft_pr_receipt_sha256 === sha256(draftSnapshot.bytes)
@@ -109,15 +108,15 @@ export async function readLifecycleSnapshot(stateDirectory: string, runId: strin
   ]);
   const publish = publishSnapshot?.receipt ?? null;
   const draft = draftSnapshot?.receipt ?? null;
-  const webReviewState = review?.state === "APPROVED" || review?.state === "REVISION_REQUESTED" || review?.state === "ESCALATED"
-    ? review.state
-    : review ? "PENDING" : null;
+  const publishCurrent = publicationBoundToExecutor(runId, executor, publishSnapshot);
+  const draftCurrent = publishCurrent && draftBoundToPublication(runId, publishSnapshot, draftSnapshot);
+  const webReviewState = review?.state === "APPROVED" || review?.state === "REVISION_REQUESTED" || review?.state === "ESCALATED" ? review.state : review ? "PENDING" : null;
   const relevantRevision = revisionReceiptBoundToWebReview(runId, review, revision) ? revision : null;
   return {
     registered_artifact_sha256: selected.artifact_sha256,
     executor_state: executor?.state ?? null,
-    publish_state: publish?.state ?? null,
-    draft_pr_state: draft?.state ?? null,
+    publish_state: publishCurrent ? publish?.state ?? null : null,
+    draft_pr_state: draftCurrent ? draft?.state ?? null : null,
     result_bundle_ready: initialResultBoundToSelectedExecutor(runId, executor, publishSnapshot, draftSnapshot, result),
     web_review_state: webReviewState,
     revision_state: relevantRevision?.state ?? null,
