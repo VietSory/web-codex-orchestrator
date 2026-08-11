@@ -19,10 +19,14 @@ async function pairCodeReviewGate(options: { bridge: WebBridge; runId: string; s
   const review = await readWebCodeReviewReceipt(options.stateDirectory, options.runId);
   if (review?.state === "APPROVED") {
     // Approval is useful only while it still binds the newest exact Result
-    // Bundle. A revision/republication must force a new independent code
-    // review rather than silently inheriting stale authority.
-    await assertCodeReviewApprovedForCurrentResult(options.stateDirectory, options.runId);
-    return null;
+    // Bundle. A revision/republication forces a new independent code review.
+    try {
+      await assertCodeReviewApprovedForCurrentResult(options.stateDirectory, options.runId);
+      return null;
+    } catch (error) {
+      if (!(error instanceof WebBridgeError) || error.code !== "WEB_CODE_REVIEW_STALE") throw error;
+      return await createPendingCodeReview(options);
+    }
   }
   if (review?.state === "REVISION_REQUESTED") throw new WebBridgeError("WEB_CODE_REVIEW_REVISION_REQUIRED", "Independent Web code review requested a bounded repair before final intent review can start.");
   if (review?.state === "ESCALATED") throw new WebBridgeError("WEB_CODE_REVIEW_ESCALATED", "Independent Web code review escalated a consequential decision before final intent review.");
