@@ -57,16 +57,24 @@ async function existingDirectory(value: string): Promise<string | null> {
 async function readonlyRuntimeDirectories(writableRoot: string): Promise<string[]> {
   const candidates = new Set<string>(["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"]);
   for (const entry of (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)) candidates.add(path.resolve(entry));
-  candidates.add(path.dirname(process.execPath));
+  const nodeBin = path.dirname(process.execPath);
+  candidates.add(nodeBin);
+  candidates.add(path.dirname(nodeBin));
 
-  const resolved: string[] = [];
+  const discovered: string[] = [];
   for (const candidate of candidates) {
     const directory = await existingDirectory(candidate);
     if (!directory || directory === writableRoot || isContained(writableRoot, directory)) continue;
+    discovered.push(directory);
+  }
+  discovered.sort((left, right) => left.length - right.length || left.localeCompare(right));
+
+  const resolved: string[] = [];
+  for (const directory of discovered) {
     if (resolved.some((parent) => directory === parent || isContained(parent, directory))) continue;
     resolved.push(directory);
   }
-  return resolved.sort((left, right) => left.length - right.length || left.localeCompare(right));
+  return resolved;
 }
 
 function boundedEnvironment(environment: Record<string, string>): Array<[string, string]> {
@@ -137,7 +145,7 @@ export class BubblewrapVerificationSandbox implements VerificationSandbox {
     if (process.platform !== "linux") throw new ExecutionError("VERIFIER_SANDBOX_UNAVAILABLE", "Bubblewrap verification is supported only on Linux/WSL.");
     const result = await this.spawnBounded({ executable: BWRAP, args: ["--version"], environment: { PATH: process.env.PATH ?? "" }, timeoutMs: SMOKE_TIMEOUT_MS, stdoutMaxBytes: 16_384, stderrMaxBytes: 16_384, shell: false });
     if (result.spawnError || result.timedOut || result.exitCode !== 0) {
-      throw new ExecutionError("VERIFIER_SANDBOX_UNAVAILABLE", "Bubblewrap is unavailable. Install bwrap or use AUTOPILOT with its configured sandbox; WCO will not run PAIR validation without filesystem/network isolation.");
+      throw new ExecutionError("VERIFIER_SANDBOX_UNAVAILABLE", "Bubblewrap is unavailable. Install bwrap; WCO will not run deterministic verification without filesystem/network isolation.");
     }
     await access("/proc");
   }
