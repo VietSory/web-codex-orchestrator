@@ -154,7 +154,7 @@ export class BubblewrapVerificationSandbox implements VerificationSandbox {
     const result = await this.spawnBounded({
       executable: BWRAP,
       args: await sandboxArgs(executable, args, options),
-      cwd: options.writable_root,
+      ...(options.writable_root ? { cwd: options.writable_root } : {}),
       environment: { PATH: process.env.PATH ?? "" },
       shell: false,
       timeoutMs: options.timeoutMs,
