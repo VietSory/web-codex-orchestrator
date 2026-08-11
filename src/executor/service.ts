@@ -70,7 +70,11 @@ function selectedReviewReady(receipt: ExecutorReceipt, digest: string, kind: "te
 function assertReadyEvidence(receipt: ExecutorReceipt): void {
   const digest = receipt.change_set_digest;
   if (!digest || !receipt.verification.passed || receipt.verification.change_set_digest !== digest) throw new ExecutorError("EXECUTOR_STATE_INVALID", "READY executor is missing deterministic verification for the exact digest.");
-  if (receipt.review_strategy === "web") { if (receipt.repair !== undefined || receipt.reviewer_selection !== undefined || receipt.terra_review.verdict !== null || receipt.sol_review.verdict !== null) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Web-review Harness receipt contains unexpected model-review/repair authority."); return; }
+  if (receipt.review_strategy === "web") {
+    if (receipt.reviewer_selection !== undefined || receipt.terra_review.verdict !== null || receipt.sol_review.verdict !== null) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Web-review Harness receipt contains unexpected model-review authority.");
+    if (receipt.repair && (receipt.repair.reviewer !== "web" || receipt.repair.state !== "VERIFIED" || receipt.repair.final_change_set_digest !== digest)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "READY Web-review Harness receipt contains an unverified or stale bounded repair.");
+    return;
+  }
   if (receipt.review_strategy === "model" && !receipt.reviewer_selection) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Model-review Harness receipt is missing selected reviewer authority.");
   if (receipt.reviewer_selection?.kind === "terra") { if (!selectedReviewReady(receipt, digest, "terra")) throw new ExecutorError("EXECUTOR_STATE_INVALID", "READY executor is missing selected Terra approval or verified adaptive repair authority."); return; }
   if (receipt.reviewer_selection?.kind === "sol") { if (!selectedReviewReady(receipt, digest, "sol")) throw new ExecutorError("EXECUTOR_STATE_INVALID", "READY executor is missing selected Sol approval or verified adaptive repair authority."); return; }
@@ -89,7 +93,7 @@ async function completeAdaptiveRepair(options: { receipt: ExecutorReceipt; state
     const result = await options.verifier.verify(request); await reattestDigest(receipt, finalDigest);
     const evidence = boundedEvidence(result.evidence); await persistExecutorEvidence({ stateDirectory: options.stateDirectory, receipt, name: `verification-${receipt.verification.rounds + 1}`, bytes: evidence.bytes, expectedSha256: evidence.sha256 });
     receipt.verification.rounds += 1; receipt.verification.passed = result.passed; receipt.verification.change_set_digest = finalDigest; receipt.verification.evidence_sha256 = evidence.sha256; receipt.updated_at = timestamp(options.now); await writeExecutorReceipt(options.stateDirectory, receipt);
-    if (!result.passed) return await failToWeb(receipt, options.stateDirectory, "EXECUTOR_VERIFICATION_FAILED", "Deterministic verification rejected the selected reviewer's bounded adaptive repair.", options.now);
+    if (!result.passed) return await failToWeb(receipt, options.stateDirectory, "EXECUTOR_VERIFICATION_FAILED", "Deterministic verification rejected the bounded adaptive repair.", options.now);
     receipt.repair.state = "VERIFIED"; receipt.updated_at = timestamp(options.now); await writeExecutorReceipt(options.stateDirectory, receipt);
   }
   if (receipt.repair?.state !== "VERIFIED" || receipt.repair.final_change_set_digest === null) throw new ExecutorError("EXECUTOR_REPAIR_INVALID", "Adaptive repair did not reach a verified final digest.");
@@ -121,7 +125,10 @@ export async function executeRegisteredWebPack(options: { runId: string; artifac
       if (!persisted) { receipt.reviewer_selection = { kind: selectedKind, model: selectedProfile.model, reasoning_effort: selectedProfile.reasoning_effort }; receipt.updated_at = timestamp(now); await writeExecutorReceipt(options.stateDirectory, receipt); }
     } else if (receipt.reviewer_selection) throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", "A selected-review executor cannot resume without its reviewer port.");
 
-    if (strategy === "model" && receipt.repair) return await completeAdaptiveRepair({ receipt, stateDirectory: options.stateDirectory, verifier: options.verifier, pack: source.pack, acceptedBundlePath: source.trusted.runReceipt.accepted_bundle_path, ...(options.signal ? { signal: options.signal } : {}), now });
+    if ((strategy === "model" || strategy === "web") && receipt.repair) {
+      if (strategy === "web" && receipt.repair.reviewer !== "web" || strategy === "model" && receipt.repair.reviewer === "web") throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", "Bounded repair authority does not match the frozen Harness review strategy.");
+      return await completeAdaptiveRepair({ receipt, stateDirectory: options.stateDirectory, verifier: options.verifier, pack: source.pack, acceptedBundlePath: source.trusted.runReceipt.accepted_bundle_path, ...(options.signal ? { signal: options.signal } : {}), now });
+    }
     if (["PREPARED", "APPLYING"].includes(receipt.state)) receipt = await applyExecutorTransaction({ stateDirectory: options.stateDirectory, receipt, pack: source.pack, now });
     if (!["APPLIED", "VERIFYING", "REVIEWING_TERRA", "REVIEWING_SOL"].includes(receipt.state)) throw new ExecutorError("EXECUTOR_STATE_INVALID", `Unexpected executor state '${receipt.state}'.`);
     const digest = await reattestDigest(receipt, receipt.change_set_digest); receipt.change_set_digest = digest; receipt.updated_at = timestamp(now); await writeExecutorReceipt(options.stateDirectory, receipt);
