@@ -325,7 +325,7 @@ export async function driveAutopilotJob(options: {
   configPath: string;
   maxCycles?: number;
   pollIntervalMs?: number;
-  /** Legacy/advanced compatibility. Normal `wco /auto` sets this false. */
+  /** Legacy/advanced compatibility. Normal product execution omits this. */
   webFinalReview?: boolean;
   signal?: AbortSignal;
   now?: () => Date;
@@ -335,7 +335,7 @@ export async function driveAutopilotJob(options: {
   const now = options.now ?? (() => new Date());
   const maxCycles = Math.max(1, Math.min(options.maxCycles ?? 32, 128));
   const pollIntervalMs = Math.max(250, Math.min(options.pollIntervalMs ?? 1_000, 10_000));
-  const webFinalReview = options.webFinalReview !== false;
+  const webFinalReview = options.webFinalReview === true;
   const existing = await readAutopilotReceipt(options.stateDirectory, options.runId);
   let receipt = existing ?? initialReceipt(options.runId, now);
   if (!existing) await persist(options.stateDirectory, receipt, now);
