@@ -91,7 +91,7 @@ export function revisionResultReadyForWebReview(runId: string, review: WebReview
     && revision.next_review_round === revision.revision_round + 1;
 }
 
-function webReviewBoundToCurrentResult(review: WebReviewReceipt | null, result: ResultBundleReceipt | null): boolean {
+export function webReviewBoundToCurrentResult(review: WebReviewReceipt | null, result: ResultBundleReceipt | null): boolean {
   return Boolean(
     review && result && result.state === "READY_FOR_WEB_REVIEW" && result.archive_sha256 &&
     review.run_id === result.run_id && review.result_bundle_sha256 === result.archive_sha256 &&
