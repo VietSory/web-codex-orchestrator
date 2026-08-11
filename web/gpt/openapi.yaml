@@ -141,6 +141,31 @@ paths:
                       id: { type: string }
                       severity: { enum: [blocking, non_blocking] }
                       description: { type: string, maxLength: 8192 }
+                repair_operations:
+                  type: array
+                  minItems: 1
+                  maxItems: 64
+                  description: Optional only for REVISE. Exact bounded repair proposal; local Harness remains sole mutation authority and revalidates every preimage/postimage.
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [op_id, kind, path, preimage_sha256, postimage_base64, postimage_sha256]
+                    properties:
+                      op_id: { type: string, maxLength: 128 }
+                      kind: { enum: [create_file, replace_file, delete_file] }
+                      path: { type: string, maxLength: 4096 }
+                      preimage_sha256:
+                        oneOf:
+                          - type: 'null'
+                          - { type: string, pattern: '^[a-f0-9]{64}$' }
+                      postimage_base64:
+                        oneOf:
+                          - type: 'null'
+                          - { type: string, maxLength: 12000000 }
+                      postimage_sha256:
+                        oneOf:
+                          - type: 'null'
+                          - { type: string, pattern: '^[a-f0-9]{64}$' }
       responses:
         '201': { description: Verdict transported for local canonical validation, content: { application/json: { schema: { type: object } } } }
   /v1/final-reviews/{reviewId}/evidence:
