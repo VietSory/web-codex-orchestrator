@@ -104,6 +104,13 @@ export interface AgentLimits {
 
 export interface AgentConfig {
   implementer: AgentProfile;
+  /**
+   * Normal product reviewer. When present, WCO runs exactly one reviewer for
+   * each verified change-set. The legacy internal/final profiles remain
+   * readable for backward-compatible low-level automation created before the
+   * single-review product mode.
+   */
+  reviewer?: AgentProfile;
   internal_reviewer: AgentProfile;
   final_reviewer: AgentProfile;
   limits: AgentLimits;
