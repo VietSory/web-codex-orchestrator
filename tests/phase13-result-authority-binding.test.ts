@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { canonicalJsonBuffer } from "../src/result-bundle/canonical-json.js";
 import { canonicalGitPublishReceiptDigest } from "../src/publish/receipt-digest.js";
-import { initialResultBoundToSelectedExecutor } from "../src/orchestration/snapshot-reader.js";
+import { initialResultBoundToSelectedExecutor, webReviewBoundToCurrentResult } from "../src/orchestration/snapshot-reader.js";
 
 const RUN_ID = `TASK-P13-BIND:${"a".repeat(64)}`;
 const DIGEST = "d".repeat(64);
@@ -91,4 +91,14 @@ test("P13-BIND-007 Draft PR bound to a different publish receipt cannot make the
   const { executor, publishSnapshot, draftSnapshot, result } = authorities();
   const staleDraft = { ...draftSnapshot, receipt: { ...draftSnapshot.receipt, git_publish_receipt_sha256: "0".repeat(64) } };
   assert.equal(initialResultBoundToSelectedExecutor(RUN_ID, executor, publishSnapshot, staleDraft, result), false);
+});
+
+test("P13-BIND-008 Web decision binds only the exact current Result generation", () => {
+  const { result } = authorities();
+  const review = { run_id: RUN_ID, result_bundle_sha256: result.archive_sha256, published_commit_sha: COMMIT, pull_request_number: 42 } as any;
+  assert.equal(webReviewBoundToCurrentResult(review, result), true);
+  assert.equal(webReviewBoundToCurrentResult(review, { ...result, archive_sha256: "0".repeat(64) }), false);
+  assert.equal(webReviewBoundToCurrentResult(review, { ...result, published_commit_sha: "4".repeat(40) }), false);
+  assert.equal(webReviewBoundToCurrentResult(review, { ...result, pull_request: { ...result.pull_request, number: 43 } }), false);
+  assert.equal(webReviewBoundToCurrentResult(review, { ...result, state: "FAILED" }), false);
 });
