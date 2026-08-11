@@ -32,11 +32,7 @@ export interface ExecutorTransactionOperation {
   applied: boolean;
 }
 
-export interface ExecutorDiagnostic {
-  code: string;
-  message: string;
-  at: string;
-}
+export interface ExecutorDiagnostic { code: string; message: string; at: string; }
 
 export interface ExecutorReviewReceipt {
   rounds: number;
@@ -55,11 +51,24 @@ export interface ExecutorRepairReceipt {
   final_change_set_digest: string | null;
 }
 
-export interface ExecutorUsage {
-  model_turns: number;
-  input_tokens: number;
-  output_tokens: number;
+/**
+ * Compact immutable evidence for a completed repair generation. Full postimage
+ * payloads are intentionally not retained here after VERIFIED: recovery no
+ * longer needs them and retaining them would let the durable receipt grow with
+ * every review round. The operation-set digest binds the exact bounded proposal.
+ */
+export interface ExecutorRepairHistoryEntry {
+  generation: number;
+  reviewer: ExecutorRepairAuthority;
+  source_change_set_digest: string;
+  source_review_evidence_sha256: string;
+  operations_sha256: string;
+  operation_count: number;
+  final_change_set_digest: string;
+  verified_at: string;
 }
+
+export interface ExecutorUsage { model_turns: number; input_tokens: number; output_tokens: number; }
 
 export interface ExecutorReceipt {
   executor_version: "1.0";
@@ -77,31 +86,15 @@ export interface ExecutorReceipt {
   registration_manifest_sha256: string;
   operations: ExecutorTransactionOperation[];
   change_set_digest: string | null;
-  /**
-   * Normal Harness-first product runs persist their review boundary explicitly.
-   * - web: deterministic verification is followed by independent Web code review;
-   *   an exact Web REVISE verdict may bind one bounded repair proposal.
-   * - model: exactly one frozen Sol/Terra reviewer is required before publish.
-   * Undefined preserves historical low-level executor receipts.
-   */
   review_strategy?: ExecutorReviewStrategy;
-  /** Present only when review_strategy=model (or legacy selected-review receipts). */
-  reviewer_selection?: {
-    kind: "terra" | "sol";
-    model: string;
-    reasoning_effort: ReasoningEffort;
-  };
-  /** A single durable bounded repair proposal; only the Harness owns mutation. */
+  reviewer_selection?: { kind: "terra" | "sol"; model: string; reasoning_effort: ReasoningEffort; };
+  /** Current resumable bounded repair generation. */
   repair?: ExecutorRepairReceipt;
-  verification: {
-    rounds: number;
-    passed: boolean;
-    change_set_digest: string | null;
-    evidence_sha256: string | null;
-  };
+  /** Completed generations, compacted only after exact deterministic verification. */
+  repair_history?: ExecutorRepairHistoryEntry[];
+  verification: { rounds: number; passed: boolean; change_set_digest: string | null; evidence_sha256: string | null; };
   terra_review: ExecutorReviewReceipt;
   sol_review: ExecutorReviewReceipt;
-  /** Present for receipts produced after end-to-end usage accounting was introduced. */
   usage?: ExecutorUsage;
   errors: ExecutorDiagnostic[];
   created_at: string;
