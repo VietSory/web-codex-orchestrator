@@ -70,8 +70,12 @@ async function readReviewUsage(options: {
   round: number;
   evidenceSha256: string | null;
 }): Promise<{ input_tokens: number; cached_input_tokens: number; output_tokens: number }> {
+  // Inactive reviewer slots are expected for selected-model runs and for
+  // Harness-first PAIR (Web owns code review). A half-present identity remains
+  // invalid so evidence cannot silently disappear or appear after the fact.
+  if (options.round === 0 && options.evidenceSha256 === null) return { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0 };
   if (options.evidenceSha256 === null || options.round < 1) {
-    throw new OrchestrationError("ORCHESTRATION_RESULT_AUTHORITY_DRIFT", `${options.reviewer} approval lacks immutable evidence identity.`);
+    throw new OrchestrationError("ORCHESTRATION_RESULT_AUTHORITY_DRIFT", `${options.reviewer} review usage has inconsistent round/evidence identity.`);
   }
   const evidencePath = path.join(
     options.executorDirectory,
@@ -175,6 +179,8 @@ export async function packageResultForRun(options: {
       iterations: 0,
       thread_id: "",
     },
+    review_strategy: executor.review_strategy ?? "legacy",
+    reviewer_selection: executor.reviewer_selection ?? null,
     internal_reviewer: {
       model: config.agents.internal_reviewer.model,
       reasoning_effort: config.agents.internal_reviewer.reasoning_effort,
