@@ -14,7 +14,26 @@ paths:
     get:
       operationId: getPendingTask
       responses:
-        '200': { description: Pending authoring task, content: { application/json: { schema: { type: object } } } }
+        '200':
+          description: Newest active pending authoring task for the authenticated principal
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job]
+                properties:
+                  job:
+                    oneOf:
+                      - type: 'null'
+                      - type: object
+                        required: [identity, request]
+                        properties:
+                          identity: { type: object }
+                          request:
+                            type: object
+                            properties:
+                              orchestration_mode: { enum: [PAIR, AUTOPILOT] }
+                            additionalProperties: true
   /v1/jobs/{jobId}/events:
     get:
       operationId: pollJobEvents
@@ -89,7 +108,7 @@ paths:
     get:
       operationId: getPendingReview
       responses:
-        '200': { description: Pending exact final-review binding, content: { application/json: { schema: { type: object } } } }
+        '200': { description: Newest active pending exact final-review binding, content: { application/json: { schema: { type: object } } } }
   /v1/final-reviews/{reviewId}/verdict:
     post:
       operationId: submitWebVerdict
