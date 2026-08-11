@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DEFAULT_REVIEWER, parseReviewerSelection } from "../src/agent/reviewer-selection.js";
-import { readReviewMode, writeReviewMode } from "../src/agent/reviewer-mode-store.js";
+import { effectiveRunReviewMode, freezeRunReviewMode, readReviewMode, writeReviewMode } from "../src/agent/reviewer-mode-store.js";
 import { driveAutopilotJob } from "../src/orchestration/autopilot-job.js";
 import type { WebBridge } from "../src/web-bridge/web-bridge.js";
 import { PUSHED, READY_EXECUTION, openDraft, readyResult } from "./v04-autopilot-fixtures.js";
@@ -18,6 +18,23 @@ test("V04-MODE-002 reviewer mode defaults to Sol/high and persists an explicit T
     assert.deepEqual(await readReviewMode(stateDirectory), terra);
     assert.throws(() => parseReviewerSelection("both", "high"), /model must be sol or terra/);
     assert.throws(() => parseReviewerSelection("sol", "ultra"), /effort must be/);
+  } finally {
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test("V04-MODE-003 a run keeps its frozen reviewer after the global /mode preference changes", async () => {
+  const stateDirectory = await mkdtemp(path.join(os.tmpdir(), "wco-review-mode-freeze-"));
+  const runId = `task-review-mode:${"c".repeat(64)}`;
+  try {
+    const sol = parseReviewerSelection("sol", "high");
+    const terra = parseReviewerSelection("terra", "xhigh");
+    await writeReviewMode(stateDirectory, sol);
+    await freezeRunReviewMode(stateDirectory, runId, sol);
+    await writeReviewMode(stateDirectory, terra);
+    assert.deepEqual(await readReviewMode(stateDirectory), terra);
+    assert.deepEqual(await effectiveRunReviewMode(stateDirectory, runId), sol);
+    await assert.rejects(freezeRunReviewMode(stateDirectory, runId, terra), /REVIEW_MODE_RUN_DRIFT/);
   } finally {
     await rm(stateDirectory, { recursive: true, force: true });
   }
