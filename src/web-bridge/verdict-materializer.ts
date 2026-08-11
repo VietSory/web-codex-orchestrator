@@ -7,12 +7,24 @@ import { resultBundlePaths } from "../result-bundle/result-bundle-paths.js";
 import { submitWebVerdict } from "../web-review/web-review-service.js";
 import type { WebReviewReceipt } from "../web-review/contracts.js";
 import { resolveTrustedRunContext } from "../web-review/trusted-run-context.js";
+import { adoptCodeReviewVerdict, readWebCodeReviewReceipt } from "./code-review-service.js";
 import { WebBridgeError, parseWebVerdictEnvelope, type WebVerdictEnvelope } from "./contracts.js";
 
 function runIdentity(runId: string): { taskId: string; archiveSha: string } { const split = runId.lastIndexOf(":"); const value = { taskId: runId.slice(0, split), archiveSha: runId.slice(split + 1) }; if (split < 1 || !/^[a-f0-9]{64}$/.test(value.archiveSha)) throw new WebBridgeError("WEB_VERDICT_BINDING_INVALID", "Run identity is invalid."); return value; }
 export async function materializeAndSubmitWebVerdict(options: { envelope: WebVerdictEnvelope | unknown; stateDirectory: string; configPath: string; githubClient?: GitHubAttestationClient; now?: () => Date }): Promise<{ verdict_path: string; receipt: WebReviewReceipt }> {
   const envelope = parseWebVerdictEnvelope(options.envelope);
   const identity = runIdentity(envelope.run_id);
+
+  // PAIR has an explicit independent Web code-review authority before the
+  // original-Web final intent review. Route a verdict by its durable job id so
+  // code-review approval can never be mistaken for final merge authority.
+  const codeReview = await readWebCodeReviewReceipt(options.stateDirectory, envelope.run_id);
+  if (codeReview?.review_job_id === envelope.review_id) {
+    const adopted = await adoptCodeReviewVerdict({ envelope, stateDirectory: options.stateDirectory, ...(options.now ? { now: options.now } : {}) });
+    const codeReviewPath = path.join(options.stateDirectory, "bridge", "code-reviews", identity.taskId, identity.archiveSha, "receipt.json");
+    return { verdict_path: codeReviewPath, receipt: adopted as unknown as WebReviewReceipt };
+  }
+
   const receiptPath = resultBundlePaths(options.stateDirectory, identity.taskId, identity.archiveSha).receiptPath;
   const bundle = await readResultBundleReceipt(receiptPath);
   if (!bundle || bundle.state !== "READY_FOR_WEB_REVIEW" || !bundle.archive_sha256 || !bundle.manifest_sha256 || !bundle.reviewed_entry_set_sha256 || !bundle.spec_set_sha256) throw new WebBridgeError("WEB_VERDICT_RESULT_NOT_READY", "Canonical Result Bundle is not ready for Web review.");
