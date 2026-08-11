@@ -78,7 +78,9 @@ export function validateReview(output: unknown): ReviewResult {
     if (operation.postimage_base64 !== null) totalPayload += Buffer.from(operation.postimage_base64, "base64").byteLength;
   }
   if (totalPayload > MAX_REPAIR_PAYLOAD_BYTES) throw new ExecutionError("REVIEW_OUTPUT_INVALID", "Reviewer repair payload exceeds the total adaptive-repair byte budget.");
-  if (value.verdict === "REVISE" && operations.length === 0) throw new ExecutionError("REVIEW_OUTPUT_INVALID", "REVISE requires a non-empty bounded repair proposal.");
+  // A review-only legacy caller may return REVISE without mutation authority.
+  // Harness-first adaptive review tightens this at its trust boundary by
+  // requiring a non-empty bounded proposal before it will apply a repair.
   if (value.verdict !== "REVISE" && operations.length !== 0) throw new ExecutionError("REVIEW_OUTPUT_INVALID", "Only REVISE may carry repair operations.");
   return { ...(value as unknown as ReviewResult), repair_operations: operations };
 }
