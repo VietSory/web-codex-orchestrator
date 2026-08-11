@@ -13,6 +13,7 @@ test("V04-UX-009 terminal relay history does not consume the active-job quota or
     for (let index = 0; index < 8; index += 1) {
       const job = await store.create("authoring", "user", { owner: "user", repository, user_intent: `task-${index}`, ttl_seconds: 600, orchestration_mode: "AUTOPILOT" }, `task-${index}`, 600);
       await store.append(job.job_id, "user", "contract_sealed", { envelope: { index } }, `seal-${index}`);
+      await store.append(job.job_id, "user", "implementation_sealed", { submission: { index } }, `implementation-${index}`);
     }
     assert.equal((await store.list("user")).length, 8);
   } finally {
