@@ -1,10 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createPhase9Fixture, buildPhase9Pack } from "./helpers/phase9-fixture.js";
 import { registerWebImplementationPack } from "../src/web-authority/authority-service.js";
 import { executeRegisteredWebPack } from "../src/executor/service.js";
+import { bindWebReviewRepair } from "../src/executor/repair.js";
+import { readExecutorReceipt } from "../src/executor/store.js";
 import type { ExecutorReviewerPort, ExecutorVerifierPort } from "../src/executor/gates.js";
 
 function passingVerifier(): ExecutorVerifierPort {
@@ -140,4 +143,72 @@ test("P10-SVC-006 Terra-selected PAIR executes exactly one Terra review", async 
   assert.equal(receipt.sol_review.rounds, 0);
   assert.equal(receipt.sol_review.verdict, null);
   assert.deepEqual(receipt.usage, { model_turns: 1, input_tokens: 120, output_tokens: 30 });
+});
+
+test("P10-SVC-007 Web review strategy needs no model reviewer", async (t) => {
+  const { fixture, registration } = await setup(t);
+  const receipt = await executeRegisteredWebPack({
+    runId: fixture.runId,
+    artifactSha256: registration.artifact_sha256,
+    stateDirectory: fixture.state,
+    configPath: fixture.config,
+    verifier: passingVerifier(),
+    reviewStrategy: "web",
+  });
+  assert.equal(receipt.state, "READY_FOR_PUBLISH");
+  assert.equal(receipt.review_strategy, "web");
+  assert.equal(receipt.reviewer_selection, undefined);
+  assert.equal(receipt.usage, undefined);
+  assert.equal(receipt.terra_review.rounds, 0);
+  assert.equal(receipt.sol_review.rounds, 0);
+});
+
+test("P10-SVC-008 Web repair is durable, non-publishable while pending, and verifier-only on resume", async (t) => {
+  const { fixture, registration } = await setup(t);
+  const initial = await executeRegisteredWebPack({
+    runId: fixture.runId,
+    artifactSha256: registration.artifact_sha256,
+    stateDirectory: fixture.state,
+    configPath: fixture.config,
+    verifier: passingVerifier(),
+    reviewStrategy: "web",
+  });
+  const sourceDigest = initial.change_set_digest!;
+  const current = Buffer.from("after\n");
+  const repaired = Buffer.from("fixed\n");
+  await bindWebReviewRepair({
+    stateDirectory: fixture.state,
+    receipt: initial,
+    sourceChangeSetDigest: sourceDigest,
+    sourceReviewEvidenceSha256: crypto.createHash("sha256").update("web-review-revise").digest("hex"),
+    operations: [{
+      op_id: "web-fix-1",
+      kind: "replace_file",
+      path: "app.txt",
+      preimage_sha256: crypto.createHash("sha256").update(current).digest("hex"),
+      postimage_base64: repaired.toString("base64"),
+      postimage_sha256: crypto.createHash("sha256").update(repaired).digest("hex"),
+    }],
+  });
+  const pending = await readExecutorReceipt(fixture.state, initial.task_id, initial.task_bundle_sha256, initial.artifact_sha256);
+  assert.equal(pending?.state, "REVIEWING_WEB");
+  assert.equal(pending?.repair?.state, "PROPOSED");
+  assert.equal(pending?.verification.passed, true);
+
+  const resumed = await executeRegisteredWebPack({
+    runId: fixture.runId,
+    artifactSha256: registration.artifact_sha256,
+    stateDirectory: fixture.state,
+    configPath: fixture.config,
+    verifier: passingVerifier(),
+    reviewStrategy: "web",
+  });
+  assert.equal(resumed.state, "READY_FOR_PUBLISH");
+  assert.equal(resumed.repair?.reviewer, "web");
+  assert.equal(resumed.repair?.state, "VERIFIED");
+  assert.equal(resumed.repair?.final_change_set_digest, resumed.change_set_digest);
+  assert.equal(resumed.verification.passed, true);
+  assert.equal(resumed.verification.rounds, 2);
+  assert.equal(resumed.usage, undefined);
+  assert.equal(await fs.readFile(path.join(fixture.repo, "app.txt"), "utf8"), "fixed\n");
 });
