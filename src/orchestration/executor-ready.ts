@@ -10,7 +10,15 @@ import { OrchestrationError } from "./contracts.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
 function splitRunId(runId: string): { taskId: string; taskBundleSha256: string } { const split = runId.lastIndexOf(":"); if (split <= 0 || !SHA256.test(runId.slice(split + 1))) throw new OrchestrationError("ORCHESTRATION_RUN_ID_INVALID", "Invalid run_id for executor publication."); return { taskId: runId.slice(0, split), taskBundleSha256: runId.slice(split + 1) }; }
-function assertReviewerApproval(receipt: NonNullable<Awaited<ReturnType<typeof readExecutorReceipt>>>, digest: string): void {
+function assertReviewAuthority(receipt: NonNullable<Awaited<ReturnType<typeof readExecutorReceipt>>>, digest: string): void {
+  // Harness-first PAIR deliberately publishes only a Draft PR after exact
+  // deterministic verification. Independent Web code review is a later
+  // orchestration authority and must not be forged into a model-review slot.
+  if (receipt.review_strategy === "web") {
+    if (receipt.reviewer_selection !== undefined || receipt.terra_review.verdict !== null || receipt.sol_review.verdict !== null) throw new OrchestrationError("ORCHESTRATION_EXECUTOR_AUTHORITY_DRIFT", "Web-review Harness receipt contains unexpected model-review authority.");
+    return;
+  }
+  if (receipt.review_strategy === "model" && !receipt.reviewer_selection) throw new OrchestrationError("ORCHESTRATION_EXECUTOR_AUTHORITY_DRIFT", "Model-review Harness receipt lost its frozen reviewer authority.");
   if (receipt.reviewer_selection?.kind === "terra") {
     if (receipt.terra_review.change_set_digest !== digest || receipt.terra_review.verdict !== "APPROVE") throw new OrchestrationError("ORCHESTRATION_EXECUTOR_AUTHORITY_DRIFT", "Selected Terra approval no longer binds the exact current change-set.");
     return;
@@ -44,6 +52,6 @@ export async function attestReadyExecutorSnapshot(options: { runId: string; arti
   if (published && (published.run_id !== options.runId || published.base_commit !== receipt.base_commit || published.branch_name !== source.trusted.runReceipt.branch_name || published.remote_name !== source.trusted.runReceipt.remote || published.allowed_remote_url !== source.trusted.runReceipt.remote_url || published.change_set_sha256 !== receipt.change_set_digest || published.commit_sha === null || (published.state === "PUSHED" && published.remote_branch_sha !== published.commit_sha))) throw new OrchestrationError("ORCHESTRATION_EXECUTOR_AUTHORITY_DRIFT", "Published receipt no longer binds the exact READY executor authority.");
   const digest = published ? await attestPublishedExecutorChangeSet(receipt, published) : await attestExecutorChangeSet(receipt);
   if (digest !== receipt.change_set_digest || receipt.verification.change_set_digest !== digest || !receipt.verification.passed) throw new OrchestrationError("ORCHESTRATION_EXECUTOR_AUTHORITY_DRIFT", "READY executor verification no longer binds the exact current change-set.");
-  assertReviewerApproval(receipt, digest);
+  assertReviewAuthority(receipt, digest);
   return { receipt, source, executorDirectory: paths.directory, changeSetDigest: digest, changedPaths: receipt.operations.map((operation) => operation.path).sort() };
 }
