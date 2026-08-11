@@ -24,44 +24,20 @@ test("V04-UX-008 final-review relay is single-terminal while preserving exact re
     const request = {
       run_id: `task:${"a".repeat(64)}`,
       result_bundle_sha256: "b".repeat(64),
-      published_commit_sha: "c".repeat(64),
+      published_commit_sha: "c".repeat(40),
       pull_request_url: "https://github.com/example/repo/pull/42",
       review_round: 1,
     };
     const review = await bridge.createFinalReviewJob(request, "review-create");
-    const verdict = {
-      protocol_version: WEB_BRIDGE_PROTOCOL_VERSION,
-      review_id: review.job_id,
-      run_id: request.run_id,
-      result_bundle_sha256: request.result_bundle_sha256,
-      verdict: "APPROVE",
-      summary: "approved",
-      findings: [],
-    };
-    const submit = async (key: string, body: unknown = verdict) => await fetch(`${relayUrl}/v1/final-reviews/${review.job_id}/verdict`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "Idempotency-Key": key },
-      body: JSON.stringify(body),
-    });
-
+    const verdict = { protocol_version: WEB_BRIDGE_PROTOCOL_VERSION, review_id: review.job_id, run_id: request.run_id, result_bundle_sha256: request.result_bundle_sha256, verdict: "APPROVE", summary: "approved", findings: [] };
+    const submit = async (key: string, body: unknown = verdict) => await fetch(`${relayUrl}/v1/final-reviews/${review.job_id}/verdict`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "Idempotency-Key": key }, body: JSON.stringify(body) });
     assert.equal((await submit("verdict-one")).status, 201);
     assert.equal((await submit("verdict-one")).status, 201);
     assert.equal((await store.events(review.job_id, "user", 0)).filter((event) => event.type === "web_verdict").length, 1);
-    const conflictingTerminal = await submit("verdict-two");
-    assert.equal(conflictingTerminal.status, 400);
-    assert.match(await conflictingTerminal.text(), /terminal verdict/);
+    const conflictingTerminal = await submit("verdict-two"); assert.equal(conflictingTerminal.status, 400); assert.match(await conflictingTerminal.text(), /terminal verdict/);
     assert.equal((await bridge.getConnectionStatus()).pending_final_review, undefined);
-
     const second = await bridge.createFinalReviewJob({ ...request, review_round: 2 }, "review-create-two");
-    const wrongBinding = await fetch(`${relayUrl}/v1/final-reviews/${second.job_id}/verdict`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "Idempotency-Key": "wrong-binding" },
-      body: JSON.stringify({ ...verdict, review_id: second.job_id }),
-    });
-    assert.equal(wrongBinding.status, 400);
-    assert.match(await wrongBinding.text(), /binding/);
-  } finally {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    await rm(root, { recursive: true, force: true });
-  }
+    const wrongBinding = await fetch(`${relayUrl}/v1/final-reviews/${second.job_id}/verdict`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "Idempotency-Key": "wrong-binding" }, body: JSON.stringify({ ...verdict, review_id: second.job_id }) });
+    assert.equal(wrongBinding.status, 400); assert.match(await wrongBinding.text(), /binding/);
+  } finally { await new Promise<void>((resolve) => server.close(() => resolve())); await rm(root, { recursive: true, force: true }); }
 });
