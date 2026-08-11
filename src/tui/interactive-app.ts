@@ -7,6 +7,7 @@ import { driveAutopilotJob, readAutopilotReceipt } from "../orchestration/autopi
 import { readSelectedArtifact } from "../orchestration/artifact-binding.js";
 import { runControlCommand } from "../orchestration/control-cli.js";
 import type { JobMode } from "../orchestration/job-mode.js";
+import { drivePairHarnessToCodeReview } from "../orchestration/pair-harness.js";
 import { readLifecycleSnapshot } from "../orchestration/snapshot-reader.js";
 import { readResultBundleReceipt } from "../result-bundle/result-bundle-store.js";
 import { resultBundlePaths } from "../result-bundle/result-bundle-paths.js";
@@ -174,11 +175,15 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
   };
 
   const continuePairWorkflow = async (): Promise<string> => {
-    if (!latest?.run_id || latest.state !== "IMPLEMENTATION_REGISTERED") return `Workflow is waiting at ${latest?.state ?? "NO_TASK"}.`;
+    if (!latest?.run_id || !latest.web_pack_path || latest.state !== "IMPLEMENTATION_REGISTERED") return `Workflow is waiting at ${latest?.state ?? "NO_TASK"}.`;
     if (!bridge) throw new Error("WCO Relay is not connected.");
     const runId = latest.run_id;
-    let code = await runControlCommand("continue", initialWorkflowContinueArguments(latest, paths.state, paths.config), { stdout: () => undefined, stderr: () => undefined });
-    if (code !== 0) return `Workflow stopped safely with exit ${code}. Use /doctor, then retry /run.`;
+    try {
+      await drivePairHarnessToCodeReview({ runId, webPackPath: latest.web_pack_path, stateDirectory: paths.state, configPath: paths.config });
+    } catch (error) {
+      return `PAIR Harness stopped safely: ${error instanceof Error ? error.message : String(error)}\nNo model reviewer or merge action was started.`;
+    }
+    let code = 0;
 
     for (let round = 0; round < MAX_WEB_REVIEW_ROUNDS; round += 1) {
       let snapshot = await readLifecycleSnapshot(paths.state, runId);
