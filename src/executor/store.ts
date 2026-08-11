@@ -15,6 +15,8 @@ const MAX_INPUT_TOKENS = 20_000_000;
 const MAX_OUTPUT_TOKENS = 4_000_000;
 const SHA256 = /^[a-f0-9]{64}$/;
 const GIT_SHA = /^[a-f0-9]{40}$/;
+const SAFE_MODEL = /^[A-Za-z0-9._:-]{1,128}$/;
+const EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh"]);
 const STATES = new Set<ExecutorState>(["VALIDATING","PREPARED","APPLYING","APPLIED","VERIFYING","REVIEWING_TERRA","REVIEWING_SOL","READY_FOR_PUBLISH","ESCALATE_TO_WEB","FAILED"]);
 
 function validDigest(value: string | null): boolean { return value === null || SHA256.test(value); }
@@ -25,8 +27,24 @@ function validateGateConsistency(receipt: ExecutorReceipt): void {
   if (receipt.terra_review.verdict !== null && (receipt.terra_review.rounds < 1 || receipt.terra_review.change_set_digest === null || receipt.terra_review.evidence_sha256 === null)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Persisted Terra verdict lacks immutable evidence identity.");
   if (receipt.sol_review.verdict !== null && (receipt.sol_review.rounds < 1 || receipt.sol_review.change_set_digest === null || receipt.sol_review.evidence_sha256 === null)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Persisted Sol verdict lacks immutable evidence identity.");
   if (receipt.terra_review.verdict === "APPROVE" && (!receipt.verification.passed || digest === null || receipt.verification.change_set_digest !== digest || receipt.terra_review.change_set_digest !== digest)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Terra approval is not chained to an approved verification of the exact current digest.");
-  if (receipt.sol_review.verdict === "APPROVE" && (receipt.terra_review.verdict !== "APPROVE" || digest === null || receipt.sol_review.change_set_digest !== digest || receipt.terra_review.change_set_digest !== digest)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Sol approval is not chained to Terra approval of the exact current digest.");
-  if (receipt.state === "READY_FOR_PUBLISH" && (digest === null || !receipt.verification.passed || receipt.terra_review.verdict !== "APPROVE" || receipt.sol_review.verdict !== "APPROVE" || receipt.verification.change_set_digest !== digest || receipt.terra_review.change_set_digest !== digest || receipt.sol_review.change_set_digest !== digest)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "READY_FOR_PUBLISH lacks a complete exact-digest verification/Terra/Sol approval chain.");
+  if (receipt.sol_review.verdict === "APPROVE") {
+    const baseValid = receipt.verification.passed && digest !== null && receipt.verification.change_set_digest === digest && receipt.sol_review.change_set_digest === digest;
+    if (!baseValid) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Sol approval is not chained to approved verification of the exact current digest.");
+    if (!receipt.reviewer_selection && (receipt.terra_review.verdict !== "APPROVE" || receipt.terra_review.change_set_digest !== digest)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Legacy Sol approval is not chained to Terra approval of the exact current digest.");
+    if (receipt.reviewer_selection?.kind === "terra") throw new ExecutorError("EXECUTOR_STATE_INVALID", "A Terra-selected executor cannot persist Sol approval authority.");
+  }
+  if (receipt.reviewer_selection?.kind === "sol" && receipt.terra_review.verdict !== null) throw new ExecutorError("EXECUTOR_STATE_INVALID", "A Sol-selected executor cannot persist an additional Terra review verdict.");
+  if (receipt.reviewer_selection?.kind === "terra" && receipt.sol_review.verdict !== null) throw new ExecutorError("EXECUTOR_STATE_INVALID", "A Terra-selected executor cannot persist an additional Sol review verdict.");
+  if (receipt.state === "READY_FOR_PUBLISH") {
+    if (digest === null || !receipt.verification.passed || receipt.verification.change_set_digest !== digest) throw new ExecutorError("EXECUTOR_STATE_INVALID", "READY_FOR_PUBLISH lacks exact-digest deterministic verification.");
+    if (receipt.reviewer_selection?.kind === "terra") {
+      if (receipt.terra_review.verdict !== "APPROVE" || receipt.terra_review.change_set_digest !== digest) throw new ExecutorError("EXECUTOR_STATE_INVALID", "READY_FOR_PUBLISH lacks selected Terra approval for the exact digest.");
+    } else if (receipt.reviewer_selection?.kind === "sol") {
+      if (receipt.sol_review.verdict !== "APPROVE" || receipt.sol_review.change_set_digest !== digest) throw new ExecutorError("EXECUTOR_STATE_INVALID", "READY_FOR_PUBLISH lacks selected Sol approval for the exact digest.");
+    } else if (receipt.terra_review.verdict !== "APPROVE" || receipt.sol_review.verdict !== "APPROVE" || receipt.terra_review.change_set_digest !== digest || receipt.sol_review.change_set_digest !== digest) {
+      throw new ExecutorError("EXECUTOR_STATE_INVALID", "Legacy READY_FOR_PUBLISH lacks a complete exact-digest verification/Terra/Sol approval chain.");
+    }
+  }
 }
 
 function validateReceipt(receipt: ExecutorReceipt): void {
@@ -35,6 +53,11 @@ function validateReceipt(receipt: ExecutorReceipt): void {
   if (!validDigest(receipt.change_set_digest) || !validDigest(receipt.verification.change_set_digest) || !validDigest(receipt.verification.evidence_sha256) || !validDigest(receipt.terra_review.change_set_digest) || !validDigest(receipt.terra_review.evidence_sha256) || !validDigest(receipt.sol_review.change_set_digest) || !validDigest(receipt.sol_review.evidence_sha256)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor receipt contains an invalid digest.");
   if (!Number.isSafeInteger(receipt.verification.rounds) || receipt.verification.rounds < 0 || receipt.verification.rounds > 32 || !Number.isSafeInteger(receipt.terra_review.rounds) || receipt.terra_review.rounds < 0 || receipt.terra_review.rounds > 32 || !Number.isSafeInteger(receipt.sol_review.rounds) || receipt.sol_review.rounds < 0 || receipt.sol_review.rounds > 32) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor gate round counters are invalid.");
   if (![null,"APPROVE","REVISE","ESCALATE"].includes(receipt.terra_review.verdict) || ![null,"APPROVE","REVISE","ESCALATE"].includes(receipt.sol_review.verdict)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor review verdict is invalid.");
+  if (receipt.reviewer_selection !== undefined) {
+    const selected = receipt.reviewer_selection;
+    if (!selected || !["terra", "sol"].includes(selected.kind) || !SAFE_MODEL.test(selected.model) || !EFFORTS.has(selected.reasoning_effort)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor reviewer selection is invalid.");
+    if (selected.kind === "terra" && selected.model !== "gpt-5.6-terra" || selected.kind === "sol" && selected.model !== "gpt-5.6-sol") throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor reviewer model does not match its selected reviewer kind.");
+  }
   if (receipt.usage !== undefined) {
     if (!receipt.usage || typeof receipt.usage !== "object" || !Number.isSafeInteger(receipt.usage.model_turns) || receipt.usage.model_turns < 0 || receipt.usage.model_turns > MAX_MODEL_TURNS || !Number.isSafeInteger(receipt.usage.input_tokens) || receipt.usage.input_tokens < 0 || receipt.usage.input_tokens > MAX_INPUT_TOKENS || !Number.isSafeInteger(receipt.usage.output_tokens) || receipt.usage.output_tokens < 0 || receipt.usage.output_tokens > MAX_OUTPUT_TOKENS) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor usage counters are invalid or exceed trusted hard ceilings.");
     // model_turns are reservations, not merely completed verdict rounds. A turn
