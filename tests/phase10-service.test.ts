@@ -21,6 +21,23 @@ function passingReviewer(): ExecutorReviewerPort {
     };
   } };
 }
+function selectedReviewer(kind: "sol" | "terra", calls: Array<"sol" | "terra">): ExecutorReviewerPort {
+  return {
+    reviewer_kind: kind,
+    reviewer_profile: {
+      model: kind === "sol" ? "gpt-5.6-sol" : "gpt-5.6-terra",
+      reasoning_effort: "high",
+    },
+    async review(request) {
+      calls.push(request.reviewer);
+      return {
+        verdict: "APPROVE",
+        usage: { model_turns: 1, input_tokens: kind === "sol" ? 80 : 120, output_tokens: kind === "sol" ? 20 : 30 },
+        evidence: { reviewer: request.reviewer, digest: request.change_set_digest, verdict: "APPROVE" },
+      };
+    },
+  };
+}
 
 async function setup(t: test.TestContext) {
   const fixture = await createPhase9Fixture();
@@ -30,13 +47,14 @@ async function setup(t: test.TestContext) {
   return { fixture, registration };
 }
 
-test("P10-SVC-001 exact registered pack reaches READY_FOR_PUBLISH through verifier + Terra + Sol", async (t) => {
+test("P10-SVC-001 legacy low-level caller can still exercise Terra + Sol compatibility", async (t) => {
   const { fixture, registration } = await setup(t);
   const receipt = await executeRegisteredWebPack({ runId: fixture.runId, artifactSha256: registration.artifact_sha256, stateDirectory: fixture.state, configPath: fixture.config, verifier: passingVerifier(), reviewer: passingReviewer() });
   assert.equal(receipt.state, "READY_FOR_PUBLISH");
   assert.equal(receipt.verification.passed, true);
   assert.equal(receipt.terra_review.verdict, "APPROVE");
   assert.equal(receipt.sol_review.verdict, "APPROVE");
+  assert.equal(receipt.reviewer_selection, undefined);
   assert.deepEqual(receipt.usage, { model_turns: 2, input_tokens: 200, output_tokens: 50 });
   assert.equal(await fs.readFile(path.join(fixture.repo, "app.txt"), "utf8"), "after\n");
 });
@@ -80,4 +98,46 @@ test("P10-SVC-004 registered-file mutation during Sol review invalidates approva
   const receipt = await executeRegisteredWebPack({ runId: fixture.runId, artifactSha256: registration.artifact_sha256, stateDirectory: fixture.state, configPath: fixture.config, verifier: passingVerifier(), reviewer });
   assert.equal(receipt.state, "ESCALATE_TO_WEB");
   assert.ok(receipt.errors.some((error) => error.code === "EXECUTOR_POSTIMAGE_MISMATCH" || error.code === "EXECUTOR_UNREGISTERED_CHANGE"));
+});
+
+test("P10-SVC-005 Sol-selected PAIR executes exactly one Sol review", async (t) => {
+  const { fixture, registration } = await setup(t);
+  const calls: Array<"sol" | "terra"> = [];
+  const receipt = await executeRegisteredWebPack({
+    runId: fixture.runId,
+    artifactSha256: registration.artifact_sha256,
+    stateDirectory: fixture.state,
+    configPath: fixture.config,
+    verifier: passingVerifier(),
+    reviewer: selectedReviewer("sol", calls),
+  });
+  assert.equal(receipt.state, "READY_FOR_PUBLISH");
+  assert.deepEqual(calls, ["sol"]);
+  assert.deepEqual(receipt.reviewer_selection, { kind: "sol", model: "gpt-5.6-sol", reasoning_effort: "high" });
+  assert.equal(receipt.terra_review.rounds, 0);
+  assert.equal(receipt.terra_review.verdict, null);
+  assert.equal(receipt.sol_review.rounds, 1);
+  assert.equal(receipt.sol_review.verdict, "APPROVE");
+  assert.deepEqual(receipt.usage, { model_turns: 1, input_tokens: 80, output_tokens: 20 });
+});
+
+test("P10-SVC-006 Terra-selected PAIR executes exactly one Terra review", async (t) => {
+  const { fixture, registration } = await setup(t);
+  const calls: Array<"sol" | "terra"> = [];
+  const receipt = await executeRegisteredWebPack({
+    runId: fixture.runId,
+    artifactSha256: registration.artifact_sha256,
+    stateDirectory: fixture.state,
+    configPath: fixture.config,
+    verifier: passingVerifier(),
+    reviewer: selectedReviewer("terra", calls),
+  });
+  assert.equal(receipt.state, "READY_FOR_PUBLISH");
+  assert.deepEqual(calls, ["terra"]);
+  assert.deepEqual(receipt.reviewer_selection, { kind: "terra", model: "gpt-5.6-terra", reasoning_effort: "high" });
+  assert.equal(receipt.terra_review.rounds, 1);
+  assert.equal(receipt.terra_review.verdict, "APPROVE");
+  assert.equal(receipt.sol_review.rounds, 0);
+  assert.equal(receipt.sol_review.verdict, null);
+  assert.deepEqual(receipt.usage, { model_turns: 1, input_tokens: 120, output_tokens: 30 });
 });
