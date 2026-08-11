@@ -95,7 +95,7 @@ test("V04-AUDIT-003 mismatched Draft PR head blocks before Result Bundle packagi
   } finally { await rm(stateDirectory, { recursive: true, force: true }); }
 });
 
-test("V04-AUDIT-004 mismatched Result Bundle head blocks before READY_FOR_YOU", async () => {
+test("V04-AUDIT-004 mismatched Result Bundle head blocks before Web final review", async () => {
   const stateDirectory = await mkdtemp(path.join(os.tmpdir(), "wco-auto-result-drift-"));
   const runId = `task-result-drift:${"a".repeat(64)}`;
   let webJob = false;
@@ -113,7 +113,7 @@ test("V04-AUDIT-004 mismatched Result Bundle head blocks before READY_FOR_YOU", 
   } finally { await rm(stateDirectory, { recursive: true, force: true }); }
 });
 
-test("V04-AUDIT-005 incomplete legacy Web APPROVE never becomes READY_FOR_YOU", async () => {
+test("V04-AUDIT-005 incomplete mandatory Web APPROVE never becomes READY_FOR_YOU", async () => {
   const stateDirectory = await mkdtemp(path.join(os.tmpdir(), "wco-auto-approval-drift-"));
   const runId = `task-approval-drift:${"b".repeat(64)}`;
   try {
@@ -124,7 +124,6 @@ test("V04-AUDIT-005 incomplete legacy Web APPROVE never becomes READY_FOR_YOU", 
       runId,
       stateDirectory,
       configPath: path.join(stateDirectory, "config.json"),
-      webFinalReview: true,
       dependencies: { ...happyDependencies(runId), materializeVerdict: async () => ({ verdict_path: "/tmp/incomplete.json", receipt: incomplete }) },
     });
     assert.equal(receipt.status, "NEEDS_YOU");
