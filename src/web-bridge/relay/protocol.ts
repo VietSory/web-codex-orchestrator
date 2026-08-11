@@ -32,8 +32,10 @@ export function isRelayJobPending(record: RelayJobRecord, nowMs = Date.now()): b
   if (record.kind === "final_review") return !record.events.some((event) => event.type === "web_verdict");
   const mode = (record.request as AuthoringJobRequest).orchestration_mode ?? "PAIR";
   if (mode !== "PAIR" && mode !== "AUTOPILOT") return false;
-  const terminalEvent = mode === "AUTOPILOT" ? "contract_sealed" : "implementation_sealed";
-  return !record.events.some((event) => event.type === terminalEvent);
+  // Harness-first PAIR and AUTOPILOT both require the original Web author to
+  // finish by sealing exact implementation authority. A contract alone is not
+  // executable authority and must never make the relay drop the pending job.
+  return !record.events.some((event) => event.type === "implementation_sealed");
 }
 
 export function toAuthoringEvent(event: RelayStoredEvent): AuthoringEvent | null {
