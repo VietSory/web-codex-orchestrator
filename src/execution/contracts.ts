@@ -204,6 +204,8 @@ export interface ExecutionReceipt {
   accepted_bundle_path: string;
   repository_refs_sha256?: string | null;
   implementer: { model: string; reasoning_effort: ReasoningEffort; thread_id: string; iterations: number };
+  /** Present for normal product runs after /mode selection is snapshotted. */
+  reviewer_selection?: { kind: "terra" | "sol"; model: string; reasoning_effort: ReasoningEffort };
   internal_reviewer: { model: string; reasoning_effort: ReasoningEffort; rounds: number; latest_thread_id: string | null; thread_ids?: string[]; verdict: ReviewVerdict | null; reviewed_change_set_sha256: string | null };
   final_reviewer: { model: string; reasoning_effort: ReasoningEffort; rounds: number; latest_thread_id: string | null; thread_ids?: string[]; verdict: ReviewVerdict | null; reviewed_change_set_sha256: string | null };
   verification: { rounds: number; required_commands_passed: boolean; verified_change_set_sha256: string | null; commands: VerificationCommandResult[] };
