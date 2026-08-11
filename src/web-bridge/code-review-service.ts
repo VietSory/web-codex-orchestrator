@@ -104,10 +104,7 @@ export async function createPendingCodeReview(options: { bridge: WebBridge; runI
     readWebCodeReviewReceipt(options.stateDirectory, options.runId),
     newestExactResult(options.stateDirectory, options.runId),
   ]);
-  if (existing?.state === "PENDING") {
-    if (!sameResult(existing, newest)) throw new WebBridgeError("WEB_CODE_REVIEW_STALE", "A pending code review cannot be silently retargeted after the exact Result Bundle changed.");
-    return { protocol_version: "wco-web-bridge-v1", job_id: existing.review_job_id, owner: "local", created_at: existing.created_at, expires_at: new Date(Date.parse(existing.created_at) + 86_400_000).toISOString(), content_sha256: contentDigest({ replay: existing.review_job_id, result: existing.result_bundle_sha256 }) };
-  }
+  if (existing?.state === "PENDING" && !sameResult(existing, newest)) throw new WebBridgeError("WEB_CODE_REVIEW_STALE", "A pending code review cannot be silently retargeted after the exact Result Bundle changed.");
   if (existing?.state === "APPROVED" && sameResult(existing, newest)) throw new WebBridgeError("WEB_CODE_REVIEW_ALREADY_APPROVED", "The current exact result already has an approved independent Web code review.");
 
   const request = {
@@ -118,11 +115,12 @@ export async function createPendingCodeReview(options: { bridge: WebBridge; runI
     review_round: newest.reviewRound,
   };
   const identity = await options.bridge.createFinalReviewJob(request, `code-review-${contentDigest({ purpose: "independent_code_review", request })}`);
+  if (existing?.state === "PENDING" && identity.job_id !== existing.review_job_id) throw new WebBridgeError("WEB_CODE_REVIEW_REPLAY_CONFLICT", "Relay idempotency returned a different code-review job identity.");
   const evidence = await readBoundedResultEvidence(newest.archivePath, newest.manifest);
   await options.bridge.submitFinalReviewEvidence(identity.job_id, { purpose: "independent_code_review", binding: request, entries: evidence }, `code-evidence-${newest.receipt.archive_sha256}`);
 
   const now = (options.now?.() ?? new Date()).toISOString();
-  const receipt: WebCodeReviewReceipt = {
+  const receipt: WebCodeReviewReceipt = existing?.state === "PENDING" ? existing : {
     schema_version: "1.0",
     kind: "wco-web-code-review",
     run_id: options.runId,
