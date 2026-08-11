@@ -15,6 +15,7 @@ const MAX_INPUT_TOKENS = 20_000_000;
 const MAX_OUTPUT_TOKENS = 4_000_000;
 const MAX_REPAIR_OPERATIONS = 16;
 const MAX_REPAIR_PAYLOAD_BYTES = 256 * 1024;
+const MAX_REPAIR_GENERATIONS = 4;
 const SHA256 = /^[a-f0-9]{64}$/;
 const GIT_SHA = /^[a-f0-9]{40}$/;
 const SAFE_MODEL = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -26,7 +27,25 @@ function validDigest(value: string | null): boolean { return value === null || S
 function safeRelative(value: string): boolean { return value.length > 0 && value.length <= 4096 && !value.includes("\u0000") && !value.includes("\\") && !path.posix.isAbsolute(value) && !path.win32.isAbsolute(value) && !/^[A-Za-z]:/.test(value) && !value.split("/").includes(".."); }
 function selectedReview(receipt: ExecutorReceipt) { return receipt.reviewer_selection?.kind === "terra" ? receipt.terra_review : receipt.reviewer_selection?.kind === "sol" ? receipt.sol_review : null; }
 
+function validateRepairHistory(receipt: ExecutorReceipt): void {
+  const history = receipt.repair_history;
+  if (history === undefined) return;
+  if (!Array.isArray(history) || history.length > MAX_REPAIR_GENERATIONS) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor repair history exceeds its bounded generation budget.");
+  if (history.length > 0 && receipt.review_strategy !== "web") throw new ExecutorError("EXECUTOR_STATE_INVALID", "Repair history is currently valid only for Web-review Harness generations.");
+  const evidence = new Set<string>();
+  for (let index = 0; index < history.length; index += 1) {
+    const entry = history[index]!;
+    if (entry.generation !== index + 1 || entry.reviewer !== "web" || !SHA256.test(entry.source_change_set_digest) || !SHA256.test(entry.source_review_evidence_sha256) || !SHA256.test(entry.operations_sha256) || !SHA256.test(entry.final_change_set_digest) || !Number.isSafeInteger(entry.operation_count) || entry.operation_count < 1 || entry.operation_count > MAX_REPAIR_OPERATIONS || !Number.isFinite(Date.parse(entry.verified_at)) || evidence.has(entry.source_review_evidence_sha256)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor repair history contains invalid, duplicate, or out-of-order evidence.");
+    if (index > 0 && history[index - 1]!.final_change_set_digest !== entry.source_change_set_digest) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor repair history digest chain is broken.");
+    evidence.add(entry.source_review_evidence_sha256);
+  }
+  const latest = history.at(-1);
+  if (latest && receipt.repair && receipt.repair.source_change_set_digest !== latest.final_change_set_digest) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Current repair does not continue the immutable history digest chain.");
+  if (latest && !receipt.repair && receipt.change_set_digest !== latest.final_change_set_digest) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor current digest no longer matches the last completed repair generation.");
+}
+
 function validateRepair(receipt: ExecutorReceipt, originalPaths: Set<string>): void {
+  validateRepairHistory(receipt);
   const repair = receipt.repair;
   if (!repair) {
     if (["REVIEWING_WEB", "REPAIR_APPLYING", "REPAIR_APPLIED"].includes(receipt.state)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Repair executor state has no durable repair authority.");
