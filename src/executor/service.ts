@@ -53,10 +53,11 @@ function assertMeasuredUsageWithinBudget(receipt: ExecutorReceipt, reviewer: Exe
 }
 function assertNoAmbiguousReviewResume(receipt: ExecutorReceipt, reviewer: ExecutorReviewerPort): void {
   if (!reviewer.budget_policy) return;
-  if (receipt.state === "REVIEWING_TERRA" && receipt.terra_review.verdict === null) {
+  const kind = receipt.reviewer_selection?.kind ?? reviewer.reviewer_kind;
+  if ((kind === undefined || kind === "terra") && receipt.state === "REVIEWING_TERRA" && receipt.terra_review.verdict === null) {
     throw new ExecutorError("EXECUTOR_AMBIGUOUS_RECOVERY", "A Terra review turn may have started before interruption but no durable verdict exists; WCO will not replay an ambiguous model call.");
   }
-  if (receipt.state === "REVIEWING_SOL" && receipt.sol_review.verdict === null) {
+  if ((kind === undefined || kind === "sol") && receipt.state === "REVIEWING_SOL" && receipt.sol_review.verdict === null) {
     throw new ExecutorError("EXECUTOR_AMBIGUOUS_RECOVERY", "A Sol review turn may have started before interruption but no durable verdict exists; WCO will not replay an ambiguous model call.");
   }
 }
@@ -95,6 +96,21 @@ async function failTerminal(receipt: ExecutorReceipt, stateDirectory: string, co
   await writeExecutorReceipt(stateDirectory, receipt);
   return receipt;
 }
+function assertReadyEvidence(receipt: ExecutorReceipt): void {
+  const digest = receipt.change_set_digest;
+  if (!digest || !receipt.verification.passed || receipt.verification.change_set_digest !== digest) throw new ExecutorError("EXECUTOR_STATE_INVALID", "READY executor is missing deterministic verification for the exact digest.");
+  if (receipt.reviewer_selection?.kind === "terra") {
+    if (receipt.terra_review.verdict !== "APPROVE" || receipt.terra_review.change_set_digest !== digest) throw new ExecutorError("EXECUTOR_STATE_INVALID", "READY executor is missing selected Terra approval for the exact digest.");
+    return;
+  }
+  if (receipt.reviewer_selection?.kind === "sol") {
+    if (receipt.sol_review.verdict !== "APPROVE" || receipt.sol_review.change_set_digest !== digest) throw new ExecutorError("EXECUTOR_STATE_INVALID", "READY executor is missing selected Sol approval for the exact digest.");
+    return;
+  }
+  if (receipt.terra_review.verdict !== "APPROVE" || receipt.terra_review.change_set_digest !== digest || receipt.sol_review.verdict !== "APPROVE" || receipt.sol_review.change_set_digest !== digest) {
+    throw new ExecutorError("EXECUTOR_STATE_INVALID", "Legacy READY executor is missing Terra and Sol approvals for the exact digest.");
+  }
+}
 
 export async function executeRegisteredWebPack(options: {
   runId: string;
@@ -121,13 +137,31 @@ export async function executeRegisteredWebPack(options: {
       assertExecutorTransactionBoundToPack(receipt, source.pack);
       await attestExecutorTransactionBackups(options.stateDirectory, receipt);
       await attestPersistedExecutorGateEvidence(options.stateDirectory, receipt);
-      if (receipt.state === "READY_FOR_PUBLISH") { await reattestDigest(receipt, receipt.change_set_digest); return receipt; }
+      if (receipt.state === "READY_FOR_PUBLISH") { assertReadyEvidence(receipt); await reattestDigest(receipt, receipt.change_set_digest); return receipt; }
       assertNoAmbiguousReviewResume(receipt, options.reviewer);
       await attestExecutorResumeChangedPaths(receipt);
     }
     if (!receipt) {
       receipt = await prepareExecutorTransaction({ stateDirectory: options.stateDirectory, runId: options.runId, taskId: identity.taskId, taskBundleSha256: identity.taskBundleSha256, artifactSha256: options.artifactSha256, pack: source.pack, repositoryId: source.trusted.runReceipt.repository_id, baseBranch: source.trusted.runReceipt.base_branch, baseCommit: source.trusted.runReceipt.base_commit, baseTreeSha: source.registration.repository.tree_sha, worktreePath: source.trusted.runReceipt.worktree_path, registrationManifestSha256: source.registration.manifest_sha256, now });
     }
+
+    const selectedKind = options.reviewer.reviewer_kind;
+    const selectedProfile = options.reviewer.reviewer_profile;
+    if ((selectedKind === undefined) !== (selectedProfile === undefined)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Selected reviewer kind/profile must be supplied together.");
+    if (selectedKind && selectedProfile) {
+      const persisted = receipt.reviewer_selection;
+      if (persisted && (persisted.kind !== selectedKind || persisted.model !== selectedProfile.model || persisted.reasoning_effort !== selectedProfile.reasoning_effort)) {
+        throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", "Selected reviewer changed after this executor run started.");
+      }
+      if (!persisted) {
+        receipt.reviewer_selection = { kind: selectedKind, model: selectedProfile.model, reasoning_effort: selectedProfile.reasoning_effort };
+        receipt.updated_at = timestamp(now);
+        await writeExecutorReceipt(options.stateDirectory, receipt);
+      }
+    } else if (receipt.reviewer_selection) {
+      throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", "A single-review executor cannot resume through an unselected legacy reviewer port.");
+    }
+
     if (["PREPARED", "APPLYING"].includes(receipt.state)) receipt = await applyExecutorTransaction({ stateDirectory: options.stateDirectory, receipt, pack: source.pack, now });
     if (!["APPLIED", "VERIFYING", "REVIEWING_TERRA", "REVIEWING_SOL"].includes(receipt.state)) throw new ExecutorError("EXECUTOR_STATE_INVALID", `Unexpected executor state '${receipt.state}'.`);
 
@@ -149,7 +183,10 @@ export async function executeRegisteredWebPack(options: {
       receipt.updated_at = timestamp(now); await writeExecutorReceipt(options.stateDirectory, receipt);
     }
 
-    if (receipt.terra_review.verdict !== "APPROVE" || receipt.terra_review.change_set_digest !== digest) {
+    const runTerra = selectedKind === undefined || selectedKind === "terra";
+    const runSol = selectedKind === undefined || selectedKind === "sol";
+
+    if (runTerra && (receipt.terra_review.verdict !== "APPROVE" || receipt.terra_review.change_set_digest !== digest)) {
       receipt.state = "REVIEWING_TERRA"; receipt.updated_at = timestamp(now); await writeExecutorReceipt(options.stateDirectory, receipt);
       await reserveReviewTurn(receipt, options.reviewer, options.stateDirectory, now);
       const result = await options.reviewer.review({ ...baseRequest, reviewer: "terra", prior_evidence_sha256: receipt.verification.evidence_sha256 ? [receipt.verification.evidence_sha256] : [], context_selection: contextSelection });
@@ -160,13 +197,15 @@ export async function executeRegisteredWebPack(options: {
       const evidence = boundedEvidence(result.evidence);
       await persistExecutorEvidence({ stateDirectory: options.stateDirectory, receipt, name: `terra-${receipt.terra_review.rounds + 1}`, bytes: evidence.bytes, expectedSha256: evidence.sha256 });
       receipt.terra_review.rounds += 1; receipt.terra_review.verdict = result.verdict; receipt.terra_review.change_set_digest = digest; receipt.terra_review.evidence_sha256 = evidence.sha256;
-      if (result.verdict !== "APPROVE") return await failToWeb(receipt, options.stateDirectory, "EXECUTOR_REVIEW_REJECTED", `Terra review returned ${result.verdict}; Phase 10 does not redesign the Web pack.`, now);
+      if (result.verdict !== "APPROVE") return await failToWeb(receipt, options.stateDirectory, "EXECUTOR_REVIEW_REJECTED", `Terra review returned ${result.verdict}; PAIR keeps Web implementation authority closed-world.`, now);
       receipt.updated_at = timestamp(now); await writeExecutorReceipt(options.stateDirectory, receipt);
     }
 
-    if (receipt.sol_review.verdict !== "APPROVE" || receipt.sol_review.change_set_digest !== digest) {
+    if (runSol && (receipt.sol_review.verdict !== "APPROVE" || receipt.sol_review.change_set_digest !== digest)) {
       receipt.state = "REVIEWING_SOL"; receipt.updated_at = timestamp(now); await writeExecutorReceipt(options.stateDirectory, receipt);
-      const prior = [receipt.verification.evidence_sha256, receipt.terra_review.evidence_sha256].filter((value): value is string => Boolean(value));
+      const prior = selectedKind === undefined
+        ? [receipt.verification.evidence_sha256, receipt.terra_review.evidence_sha256].filter((value): value is string => Boolean(value))
+        : [receipt.verification.evidence_sha256].filter((value): value is string => Boolean(value));
       await reserveReviewTurn(receipt, options.reviewer, options.stateDirectory, now);
       const result = await options.reviewer.review({ ...baseRequest, reviewer: "sol", prior_evidence_sha256: prior, context_selection: contextSelection });
       await reattestDigest(receipt, digest);
@@ -176,10 +215,11 @@ export async function executeRegisteredWebPack(options: {
       const evidence = boundedEvidence(result.evidence);
       await persistExecutorEvidence({ stateDirectory: options.stateDirectory, receipt, name: `sol-${receipt.sol_review.rounds + 1}`, bytes: evidence.bytes, expectedSha256: evidence.sha256 });
       receipt.sol_review.rounds += 1; receipt.sol_review.verdict = result.verdict; receipt.sol_review.change_set_digest = digest; receipt.sol_review.evidence_sha256 = evidence.sha256;
-      if (result.verdict !== "APPROVE") return await failToWeb(receipt, options.stateDirectory, "EXECUTOR_REVIEW_REJECTED", `Sol review returned ${result.verdict}; Phase 10 does not redesign the Web pack.`, now);
+      if (result.verdict !== "APPROVE") return await failToWeb(receipt, options.stateDirectory, "EXECUTOR_REVIEW_REJECTED", `Sol review returned ${result.verdict}; PAIR keeps Web implementation authority closed-world.`, now);
       receipt.updated_at = timestamp(now); await writeExecutorReceipt(options.stateDirectory, receipt);
     }
 
+    assertReadyEvidence(receipt);
     await reattestDigest(receipt, digest);
     receipt.state = "READY_FOR_PUBLISH"; receipt.updated_at = timestamp(now); await writeExecutorReceipt(options.stateDirectory, receipt);
     return receipt;
