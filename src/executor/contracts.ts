@@ -13,6 +13,7 @@ export type ExecutorState =
   | "FAILED";
 
 export type ExecutorOperationKind = "create_file" | "replace_file" | "delete_file";
+export type ExecutorReviewStrategy = "web" | "model";
 
 export interface ExecutorTransactionOperation {
   op_id: string;
@@ -61,7 +62,15 @@ export interface ExecutorReceipt {
   registration_manifest_sha256: string;
   operations: ExecutorTransactionOperation[];
   change_set_digest: string | null;
-  /** Present for normal product runs that selected one review model via /mode. */
+  /**
+   * Normal Harness-first product runs persist their review boundary explicitly.
+   * - web: deterministic verification is enough to publish an exact Draft PR;
+   *   independent Web code review remains a later orchestration authority.
+   * - model: exactly one frozen Sol/Terra reviewer is required before publish.
+   * Undefined preserves historical low-level executor receipts.
+   */
+  review_strategy?: ExecutorReviewStrategy;
+  /** Present only when review_strategy=model (or legacy selected-review receipts). */
   reviewer_selection?: {
     kind: "terra" | "sol";
     model: string;
