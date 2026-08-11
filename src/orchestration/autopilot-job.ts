@@ -1,27 +1,19 @@
 import crypto from "node:crypto";
 import path from "node:path";
-import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
-import { effectiveRunReviewMode } from "../agent/reviewer-mode-store.js";
 import { redact } from "../evidence/log-redaction.js";
-import { loadExecutionConfig } from "../execution/execution-config.js";
-import { executeRun } from "../execution/execution-service.js";
-import type { ExecutionReceipt } from "../execution/contracts.js";
-import { createDraftPullRequestForRun } from "../pull-request/phase5b-service.js";
+import type { ExecutorReceipt } from "../executor/contracts.js";
 import type { DraftPullRequestReceipt } from "../pull-request/contracts.js";
-import { publishPhase4Run } from "../publish/phase4-publish-service.js";
 import type { GitPublishReceipt } from "../publish/contracts.js";
 import type { ResultBundleReceipt } from "../result-bundle/contracts.js";
 import type { RevisionReceipt } from "../revision/contracts.js";
 import { atomicWriteJson, runDirectory } from "../run/run-store.js";
-import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
-import { CodexVerificationSandbox } from "../verifier/codex-sandbox.js";
 import { createPendingFinalReview } from "../web-bridge/final-review-service.js";
 import { materializeAndSubmitWebVerdict } from "../web-bridge/verdict-materializer.js";
 import type { WebBridge } from "../web-bridge/web-bridge.js";
 import type { WebReviewReceipt } from "../web-review/contracts.js";
 import { revalidateAutopilotReadyForMerge } from "./autopilot-ready-attestation.js";
 import { readStableAutopilotBytes } from "./autopilot-state.js";
-import { packagePhase4ResultForRun } from "./phase4-result.js";
+import { draftAutopilotHarness, executeAutopilotHarness, packageAutopilotHarness, publishAutopilotHarness } from "./harness-autopilot.js";
 import { attestRevisionAuthorityForOrchestration, reviseRunForOrchestration } from "./revise.js";
 import { computeRetryDelay, retryableFailureCode } from "./retry-policy.js";
 import { withRunLock } from "./run-lock.js";
@@ -56,8 +48,10 @@ export interface AutopilotJobReceipt {
   updated_at: string;
 }
 
+export type AutopilotExecutionOutcome = Pick<ExecutorReceipt, "state" | "errors"> | { state: string; errors?: Array<{ code: string; message: string }> };
+
 export interface AutopilotDependencies {
-  execute(options: { runId: string; stateDirectory: string; configPath: string; signal?: AbortSignal }): Promise<ExecutionReceipt>;
+  execute(options: { runId: string; stateDirectory: string; configPath: string; webPackPath?: string; signal?: AbortSignal }): Promise<AutopilotExecutionOutcome>;
   publish(options: { runId: string; stateDirectory: string; configPath: string; now?: () => Date }): Promise<GitPublishReceipt>;
   draft(options: { runId: string; stateDirectory: string; configPath: string; now?: () => Date }): Promise<DraftPullRequestReceipt>;
   packageResult(options: { runId: string; stateDirectory: string; configPath: string; now?: () => Date }): Promise<ResultBundleReceipt>;
@@ -69,29 +63,11 @@ export interface AutopilotDependencies {
   sleep(milliseconds: number, signal?: AbortSignal): Promise<void>;
 }
 
-async function executeProduction(options: { runId: string; stateDirectory: string; configPath: string; signal?: AbortSignal }): Promise<ExecutionReceipt> {
-  const [config, reviewerSelection] = await Promise.all([
-    loadExecutionConfig(options.configPath),
-    effectiveRunReviewMode(options.stateDirectory, options.runId),
-  ]);
-  const runtime = await resolveCodexRuntime(config.runtime, options.stateDirectory);
-  return await executeRun({
-    runId: options.runId,
-    stateDirectory: options.stateDirectory,
-    configPath: options.configPath,
-    config,
-    reviewerSelection,
-    agentClient: new CodexSdkAgentClient(runtime),
-    sandbox: new CodexVerificationSandbox(runtime),
-    ...(options.signal ? { signal: options.signal } : {}),
-  });
-}
-
 const productionDependencies: AutopilotDependencies = {
-  execute: executeProduction,
-  publish: publishPhase4Run,
-  draft: createDraftPullRequestForRun,
-  packageResult: packagePhase4ResultForRun,
+  execute: executeAutopilotHarness,
+  publish: publishAutopilotHarness,
+  draft: draftAutopilotHarness,
+  packageResult: packageAutopilotHarness,
   createFinalReview: createPendingFinalReview,
   materializeVerdict: materializeAndSubmitWebVerdict,
   revalidateReady: revalidateAutopilotReadyForMerge,
@@ -235,13 +211,13 @@ function retryIdentity(runId: string, stage: AutopilotStage): string { return cr
 
 function assertDraftReady(draft: DraftPullRequestReceipt): void {
   if (draft.state !== "OPEN" || draft.observed_draft !== true || draft.observed_state !== "open" || draft.pull_number === null || !draft.pull_url || !draft.observed_head_sha || draft.observed_head_sha !== draft.expected_head_sha || draft.observed_base_branch !== draft.base_branch) {
-    throw Object.assign(new Error("Phase 5B did not attest an exact open Draft PR at the expected published head."), { code: "AUTOPILOT_DRAFT_PR_INCOMPLETE" });
+    throw Object.assign(new Error("Draft PR service did not attest an exact open Draft PR at the expected published head."), { code: "AUTOPILOT_DRAFT_PR_INCOMPLETE" });
   }
 }
 
 function assertResultReady(runId: string, result: ResultBundleReceipt): void {
   if (result.state !== "READY_FOR_WEB_REVIEW" || result.run_id !== runId || !result.archive_sha256 || !result.manifest_sha256 || !result.reviewed_entry_set_sha256 || !result.spec_set_sha256 || result.published_commit_sha !== result.remote_branch_sha || result.pull_request.state !== "open" || result.pull_request.draft !== true || result.pull_request.head_sha !== result.published_commit_sha || result.pull_request.number < 1) {
-    throw Object.assign(new Error("Phase 6 Result Bundle is not an exact verified Draft-PR-bound handoff."), { code: "AUTOPILOT_RESULT_INCOMPLETE" });
+    throw Object.assign(new Error("Result Bundle is not an exact verified Draft-PR-bound handoff."), { code: "AUTOPILOT_RESULT_INCOMPLETE" });
   }
 }
 
@@ -311,11 +287,11 @@ async function honorPersistedRetryDeadline(options: { receipt: AutopilotJobRecei
   return true;
 }
 
-function executionBoundary(execution: ExecutionReceipt): { status: AutopilotJobStatus; reason: string } | null {
+function executionBoundary(execution: AutopilotExecutionOutcome): { status: AutopilotJobStatus; reason: string } | null {
   if (execution.state === "READY_FOR_PUBLISH") return null;
-  if (execution.state === "INTERRUPTED") return { status: "PAUSED", reason: "Execution was interrupted and is resumable from the Phase 4 receipt." };
-  const latest = execution.errors.at(-1);
-  return { status: "NEEDS_YOU", reason: latest ? `${latest.code}: ${redact(latest.message).slice(0, 8_192)}` : `Execution stopped in ${execution.state}.` };
+  if (execution.state === "INTERRUPTED") return { status: "PAUSED", reason: "Execution was interrupted and is resumable from the durable Harness receipt." };
+  const latest = execution.errors?.at(-1);
+  return { status: "NEEDS_YOU", reason: latest ? `${latest.code}: ${redact(latest.message).slice(0, 8_192)}` : `Harness execution stopped in ${execution.state}.` };
 }
 
 export async function driveAutopilotJob(options: {
@@ -323,6 +299,7 @@ export async function driveAutopilotJob(options: {
   runId: string;
   stateDirectory: string;
   configPath: string;
+  webPackPath?: string;
   maxCycles?: number;
   pollIntervalMs?: number;
   signal?: AbortSignal;
@@ -364,8 +341,8 @@ export async function driveAutopilotJob(options: {
     }
 
     if (receipt.stage === "EXECUTE") {
-      let execution: ExecutionReceipt;
-      try { execution = await deps.execute({ runId: options.runId, stateDirectory: options.stateDirectory, configPath: options.configPath, ...(options.signal ? { signal: options.signal } : {}) }); }
+      let execution: AutopilotExecutionOutcome;
+      try { execution = await deps.execute({ runId: options.runId, stateDirectory: options.stateDirectory, configPath: options.configPath, ...(options.webPackPath ? { webPackPath: options.webPackPath } : {}), ...(options.signal ? { signal: options.signal } : {}) }); }
       catch (error) { if (await retryOrStop({ receipt, stateDirectory: options.stateDirectory, stage: "EXECUTE", error, now, deps, ...(options.signal ? { signal: options.signal } : {}) })) continue; return receipt; }
       const boundary = executionBoundary(execution);
       if (boundary) {
@@ -382,7 +359,7 @@ export async function driveAutopilotJob(options: {
     if (receipt.stage === "PUBLISH") {
       try {
         const published = await deps.publish({ runId: options.runId, stateDirectory: options.stateDirectory, configPath: options.configPath, ...(options.now ? { now: options.now } : {}) });
-        if (published.state !== "PUSHED" || !published.commit_sha || published.remote_branch_sha !== published.commit_sha) throw Object.assign(new Error("Phase 5A did not reach exact PUSHED state."), { code: "AUTOPILOT_PUBLISH_INCOMPLETE" });
+        if (published.state !== "PUSHED" || !published.commit_sha || published.remote_branch_sha !== published.commit_sha) throw Object.assign(new Error("Harness publication did not reach exact PUSHED state."), { code: "AUTOPILOT_PUBLISH_INCOMPLETE" });
       } catch (error) { if (await retryOrStop({ receipt, stateDirectory: options.stateDirectory, stage: "PUBLISH", error, now, deps, ...(options.signal ? { signal: options.signal } : {}) })) continue; return receipt; }
       receipt.next_retry_at = null; receipt.stage = "DRAFT_PR"; receipt.stage_attempts.PUBLISH = 0; cycles += 1; await persist(options.stateDirectory, receipt, now); continue;
     }
@@ -414,7 +391,7 @@ export async function driveAutopilotJob(options: {
           const review = await deps.createFinalReview({ bridge: options.bridge, runId: options.runId, stateDirectory: options.stateDirectory });
           receipt.pending_review_job_id = review.job_id;
           receipt.status = "WAITING_WEB";
-          receipt.reason = "Waiting for ChatGPT Web final review of the exact Result Bundle and Draft PR head.";
+          receipt.reason = "Waiting for the original ChatGPT Web authority to final-review the exact Result Bundle and Draft PR head.";
           await persist(options.stateDirectory, receipt, now);
         }
         const envelope = await options.bridge.waitForVerdict(receipt.pending_review_job_id, options.signal);
@@ -423,11 +400,11 @@ export async function driveAutopilotJob(options: {
         receipt.next_retry_at = null; receipt.pending_review_job_id = null; receipt.web_review_rounds += 1; receipt.stage_attempts.WAIT_WEB = 0; cycles += 1;
         if (adopted.receipt.state === "APPROVED") {
           assertApprovedReview(options.runId, adopted.receipt);
-          receipt.stage = "DONE"; receipt.status = "READY_FOR_YOU"; receipt.terminal_action = "ASK_USER_TO_MERGE"; receipt.reason = "The exact Draft PR head passed the selected code review and independent ChatGPT Web final review. Merge remains human-owned and the Web approval is freshly re-attested on every later READY read.";
+          receipt.stage = "DONE"; receipt.status = "READY_FOR_YOU"; receipt.terminal_action = "ASK_USER_TO_MERGE"; receipt.reason = "The exact Draft PR head passed deterministic verification, the selected model review and the original Web final review. Merge remains human-owned and Web approval is freshly re-attested on every later READY read.";
           await persist(options.stateDirectory, receipt, now); return receipt;
         }
         if (adopted.receipt.state === "REVISION_REQUESTED") { receipt.stage = "REVISE"; receipt.status = "RUNNING"; receipt.reason = null; await persist(options.stateDirectory, receipt, now); continue; }
-        receipt.status = "NEEDS_YOU"; receipt.terminal_action = "ASK_USER_TO_INTERVENE"; receipt.reason = adopted.receipt.state === "ESCALATED" ? "ChatGPT Web final review escalated a consequential decision." : `Web final review stopped in ${adopted.receipt.state}.`;
+        receipt.status = "NEEDS_YOU"; receipt.terminal_action = "ASK_USER_TO_INTERVENE"; receipt.reason = adopted.receipt.state === "ESCALATED" ? "The original Web final review escalated a consequential decision." : `Web final review stopped in ${adopted.receipt.state}.`;
         await persist(options.stateDirectory, receipt, now); return receipt;
       } catch (error) { if (await retryOrStop({ receipt, stateDirectory: options.stateDirectory, stage: "WAIT_WEB", error, now, deps, ...(options.signal ? { signal: options.signal } : {}) })) continue; return receipt; }
     }
@@ -436,7 +413,7 @@ export async function driveAutopilotJob(options: {
       try {
         const authority = await deps.attestRevision({ runId: options.runId, stateDirectory: options.stateDirectory });
         const revised = await deps.revise({ runId: options.runId, revisionRound: authority.revisionRound, stateDirectory: options.stateDirectory, configPath: options.configPath, ...(options.signal ? { signal: options.signal } : {}), ...(options.now ? { now: options.now } : {}) });
-        if (revised.state !== "RESULT_READY" || !revised.result_bundle_sha256 || revised.remote_branch_sha !== revised.new_published_commit_sha) throw Object.assign(new Error("Phase 8 revision did not produce an exact selected-reviewer-approved Result Bundle."), { code: "AUTOPILOT_REVISION_INCOMPLETE" });
+        if (revised.state !== "RESULT_READY" || !revised.result_bundle_sha256 || revised.remote_branch_sha !== revised.new_published_commit_sha) throw Object.assign(new Error("Revision did not produce an exact reviewed Result Bundle."), { code: "AUTOPILOT_REVISION_INCOMPLETE" });
         receipt.revision_rounds_completed += 1;
       } catch (error) { if (await retryOrStop({ receipt, stateDirectory: options.stateDirectory, stage: "REVISE", error, now, deps, ...(options.signal ? { signal: options.signal } : {}) })) continue; return receipt; }
       receipt.next_retry_at = null; receipt.stage = "WAIT_WEB"; receipt.stage_attempts.REVISE = 0; receipt.status = "RUNNING"; receipt.reason = null; cycles += 1; await persist(options.stateDirectory, receipt, now);
