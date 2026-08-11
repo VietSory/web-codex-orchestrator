@@ -45,6 +45,20 @@ export interface WebImplementationSubmission {
   sources: WebSourceReceipt[];
 }
 
+/**
+ * A Web reviewer can propose one bounded exact repair set, but never receives
+ * direct mutation authority. The Harness re-validates exact preimages, paths,
+ * postimage digests and owns every write. Older verdicts may omit this field.
+ */
+export interface WebRepairOperation {
+  op_id: string;
+  kind: "create_file" | "replace_file" | "delete_file";
+  path: string;
+  preimage_sha256: string | null;
+  postimage_base64: string | null;
+  postimage_sha256: string | null;
+}
+
 export interface WebVerdictEnvelope {
   protocol_version: typeof WEB_BRIDGE_PROTOCOL_VERSION;
   review_id: string;
@@ -53,6 +67,7 @@ export interface WebVerdictEnvelope {
   verdict: "APPROVE" | "REVISE" | "BLOCK";
   summary: string;
   findings: Array<{ id: string; severity: "blocking" | "non_blocking"; description: string }>;
+  repair_operations?: WebRepairOperation[];
 }
 
 export interface BridgeJobIdentity {
@@ -88,6 +103,7 @@ function strings(value: unknown, label: string, maxItems = 256): string[] { if (
 function exactKeys(item: unknown, keys: readonly string[], label: string): Record<string, unknown> { const value = record(item, label); closed(value, keys, label); for (const key of keys) if (!(key in value)) throw new WebBridgeError("WEB_BRIDGE_SCHEMA_INVALID", `${label}.${key} is required.`); return value; }
 function identifier(value: unknown, label: string): string { const result = text(value, label, 128); if (!ID.test(result)) throw new WebBridgeError("WEB_BRIDGE_SCHEMA_INVALID", `${label} is invalid.`); return result; }
 function sha(value: unknown, label: string): string { const result = text(value, label, 64); if (!SHA.test(result)) throw new WebBridgeError("WEB_BRIDGE_SCHEMA_INVALID", `${label} must be lowercase SHA-256.`); return result; }
+function nullableSha(value: unknown, label: string): string | null { return value === null ? null : sha(value, label); }
 function bool(value: unknown, label: string): boolean { if (typeof value !== "boolean") throw new WebBridgeError("WEB_BRIDGE_SCHEMA_INVALID", `${label} must be boolean.`); return value; }
 
 function repository(value: unknown): RepositoryBinding {
@@ -134,12 +150,44 @@ export function parseWebImplementationSubmission(input: unknown): WebImplementat
   return { protocol_version: WEB_BRIDGE_PROTOCOL_VERSION, job_id: identifier(r.job_id, "job_id"), run_id: text(r.run_id, "run_id", 256), contract_only, summary: text(r.summary, "summary"), operations, project_map, sources: sources(r.sources) };
 }
 
+function parseRepairOperations(value: unknown): WebRepairOperation[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 64) throw new WebBridgeError("WEB_BRIDGE_SCHEMA_INVALID", "repair_operations must contain 1..64 bounded operations.");
+  const seenIds = new Set<string>(), seenPaths = new Set<string>();
+  return value.map((item, index) => {
+    const r = exactKeys(item, ["op_id", "kind", "path", "preimage_sha256", "postimage_base64", "postimage_sha256"], `repair_operations[${index}]`);
+    const op_id = identifier(r.op_id, `repair_operations[${index}].op_id`);
+    const path = text(r.path, `repair_operations[${index}].path`, 4096);
+    const kind = r.kind;
+    if (!["create_file", "replace_file", "delete_file"].includes(String(kind))) throw new WebBridgeError("WEB_BRIDGE_SCHEMA_INVALID", `repair_operations[${index}].kind is invalid.`);
+    if (seenIds.has(op_id) || seenPaths.has(path)) throw new WebBridgeError("WEB_BRIDGE_SCHEMA_INVALID", "repair_operations contains a duplicate operation id or path.");
+    seenIds.add(op_id); seenPaths.add(path);
+    const preimage_sha256 = nullableSha(r.preimage_sha256, `repair_operations[${index}].preimage_sha256`);
+    const postimage_sha256 = nullableSha(r.postimage_sha256, `repair_operations[${index}].postimage_sha256`);
+    let postimage_base64: string | null = null;
+    if (r.postimage_base64 !== null) {
+      postimage_base64 = text(r.postimage_base64, `repair_operations[${index}].postimage_base64`, 12_000_000);
+      const bytes = Buffer.from(postimage_base64, "base64");
+      if (bytes.toString("base64") !== postimage_base64 || postimage_sha256 === null || crypto.createHash("sha256").update(bytes).digest("hex") !== postimage_sha256) throw new WebBridgeError("WEB_BRIDGE_PAYLOAD_INVALID", "Repair postimage encoding or digest is invalid.");
+    }
+    if (kind === "create_file" && (preimage_sha256 !== null || postimage_base64 === null || postimage_sha256 === null)) throw new WebBridgeError("WEB_BRIDGE_SCHEMA_INVALID", "create_file repair must have null preimage and an exact postimage.");
+    if (kind === "replace_file" && (preimage_sha256 === null || postimage_base64 === null || postimage_sha256 === null)) throw new WebBridgeError("WEB_BRIDGE_SCHEMA_INVALID", "replace_file repair must bind exact preimage and postimage.");
+    if (kind === "delete_file" && (preimage_sha256 === null || postimage_base64 !== null || postimage_sha256 !== null)) throw new WebBridgeError("WEB_BRIDGE_SCHEMA_INVALID", "delete_file repair must bind an exact preimage and null postimage.");
+    return { op_id, kind: kind as WebRepairOperation["kind"], path, preimage_sha256, postimage_base64, postimage_sha256 };
+  });
+}
+
 export function parseWebVerdictEnvelope(input: unknown): WebVerdictEnvelope {
-  const r = exactKeys(input, ["protocol_version", "review_id", "run_id", "result_bundle_sha256", "verdict", "summary", "findings"], "Web verdict envelope");
+  const required = ["protocol_version", "review_id", "run_id", "result_bundle_sha256", "verdict", "summary", "findings"] as const;
+  const r = record(input, "Web verdict envelope");
+  closed(r, [...required, "repair_operations"], "Web verdict envelope");
+  for (const key of required) if (!(key in r)) throw new WebBridgeError("WEB_BRIDGE_SCHEMA_INVALID", `Web verdict envelope.${key} is required.`);
   if (r.protocol_version !== WEB_BRIDGE_PROTOCOL_VERSION) throw new WebBridgeError("WEB_BRIDGE_PROTOCOL_UNSUPPORTED", "Unsupported Web bridge protocol version.");
   if (!["APPROVE", "REVISE", "BLOCK"].includes(String(r.verdict)) || !Array.isArray(r.findings) || r.findings.length > 256) throw new WebBridgeError("WEB_BRIDGE_SCHEMA_INVALID", "Verdict or findings are invalid.");
   const findings = r.findings.map((item, index) => { const value = exactKeys(item, ["id", "severity", "description"], `findings[${index}]`); if (value.severity !== "blocking" && value.severity !== "non_blocking") throw new WebBridgeError("WEB_BRIDGE_SCHEMA_INVALID", "Finding severity is invalid."); return { id: identifier(value.id, "finding.id"), severity: value.severity as "blocking" | "non_blocking", description: text(value.description, "finding.description", 8192) }; });
-  return { protocol_version: WEB_BRIDGE_PROTOCOL_VERSION, review_id: identifier(r.review_id, "review_id"), run_id: text(r.run_id, "run_id", 256), result_bundle_sha256: sha(r.result_bundle_sha256, "result_bundle_sha256"), verdict: r.verdict as WebVerdictEnvelope["verdict"], summary: text(r.summary, "summary"), findings };
+  const verdict = r.verdict as WebVerdictEnvelope["verdict"];
+  const repair_operations = r.repair_operations === undefined ? undefined : parseRepairOperations(r.repair_operations);
+  if (repair_operations && verdict !== "REVISE") throw new WebBridgeError("WEB_BRIDGE_SCHEMA_INVALID", "Only REVISE may carry repair_operations.");
+  return { protocol_version: WEB_BRIDGE_PROTOCOL_VERSION, review_id: identifier(r.review_id, "review_id"), run_id: text(r.run_id, "run_id", 256), result_bundle_sha256: sha(r.result_bundle_sha256, "result_bundle_sha256"), verdict, summary: text(r.summary, "summary"), findings, ...(repair_operations ? { repair_operations } : {}) };
 }
 
 export function contentDigest(value: unknown): string { return crypto.createHash("sha256").update(canonicalJsonBuffer(value)).digest("hex"); }
