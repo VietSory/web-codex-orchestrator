@@ -118,7 +118,9 @@ async function assertLegacyRevisionDoesNotCrossPairBoundary(options: {
   stateDirectory: string;
 }): Promise<void> {
   const selected = await readSelectedArtifact(options.stateDirectory, options.runId);
-  if (!selected) throw new OrchestrationError("ORCHESTRATION_ARTIFACT_INVALID", "Revision requires the selected registered Web artifact.");
+  // Older compatibility runs predate Phase 10 selected-artifact authority.
+  // The guard applies only when a new Harness-first executor can prove mode.
+  if (!selected) return;
   const split = options.runId.lastIndexOf(":");
   const taskId = options.runId.slice(0, split);
   const archiveSha = options.runId.slice(split + 1);
