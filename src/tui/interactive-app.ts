@@ -5,6 +5,7 @@ import { readExecutionReceipt } from "../execution/execution-store.js";
 import { driveAutopilotJob, readAutopilotReceipt } from "../orchestration/autopilot-job.js";
 import { runControlCommand } from "../orchestration/control-cli.js";
 import type { JobMode } from "../orchestration/job-mode.js";
+import { readLifecycleSnapshot } from "../orchestration/snapshot-reader.js";
 import { readResultBundleReceipt } from "../result-bundle/result-bundle-store.js";
 import { resultBundlePaths } from "../result-bundle/result-bundle-paths.js";
 import { resolveWcoPaths } from "../setup/default-paths.js";
@@ -30,6 +31,7 @@ import { ManagedWebOnboardingClient } from "../web-bridge/managed-onboarding.js"
 import { resolveManagedWebService } from "../web-bridge/managed-service.js";
 import { formatAutopilotOutcome, formatAutopilotStatus } from "./autopilot-presenter.js";
 import { withFinalReviewNotification } from "./autopilot-web-bridge.js";
+import { pairSessionCanComplete } from "./pair-completion.js";
 import { commandPalette } from "./slash-commands.js";
 import { deriveUserStage } from "./stages.js";
 import { runInteractiveSession, terminalIo, type InteractiveIo } from "./session.js";
@@ -188,7 +190,6 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     if (!latest?.run_id || latest.state !== "IMPLEMENTATION_REGISTERED") return `Workflow is waiting at ${latest?.state ?? "NO_TASK"}.`;
     if (!bridge) throw new Error("WCO Relay is not connected.");
     let code = await runControlCommand("continue", initialWorkflowContinueArguments(latest, paths.state, paths.config), { stdout: () => undefined, stderr: () => undefined });
-    let approved = false;
     try {
       const review = await createPendingFinalReview({ bridge, runId: latest.run_id, stateDirectory: paths.state });
       await openWebArchitect();
@@ -197,13 +198,15 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
       let verdict = await bridge.waitForVerdict(review.job_id);
       while (!verdict) { await sleep(poll); verdict = await bridge.waitForVerdict(review.job_id); }
       const adopted = await materializeAndSubmitWebVerdict({ envelope: verdict, stateDirectory: paths.state, configPath: paths.config });
-      approved = adopted.receipt.state === "APPROVED";
       io.write(`Web final review: ${adopted.receipt.state}\n`);
       code = await runControlCommand("continue", ["--run-id", latest.run_id, "--state-dir", paths.state, "--config", paths.config, "--max-transitions", "8"], { stdout: () => undefined, stderr: () => undefined });
     } catch (error) {
       if (!(error instanceof Error) || !error.message.includes("not ready")) throw error;
     }
-    if (code === 0 && approved && latest) await completeLocalWorkerSession({ session: latest, stateDirectory: paths.state });
+    if (code === 0 && latest) {
+      const snapshot = await readLifecycleSnapshot(paths.state, latest.run_id);
+      if (pairSessionCanComplete(snapshot)) await completeLocalWorkerSession({ session: latest, stateDirectory: paths.state });
+    }
     return code === 0 ? "Workflow advanced safely. Use /status for progress or /review for verified review and Draft PR evidence." : `Workflow stopped safely with exit ${code}. Use /doctor, then retry /run.`;
   };
 
@@ -280,11 +283,8 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     if (!session) return "READY";
     if (localWorkerJobMode(session) !== "AUTOPILOT") return deriveUserStage(session);
     if (!session.run_id) return `AUTOPILOT · ${deriveUserStage(session) === "READY" ? "WEB_RESEARCH" : deriveUserStage(session)}`;
-    try {
-      return formatAutopilotStatus(await readAutopilotReceipt(paths.state, session.run_id));
-    } catch {
-      return "AUTOPILOT · NEEDS_YOU";
-    }
+    try { return formatAutopilotStatus(await readAutopilotReceipt(paths.state, session.run_id)); }
+    catch { return "AUTOPILOT · NEEDS_YOU"; }
   };
 
   if (firstRun && config.web_bridge?.mode === "managed_actions") {
