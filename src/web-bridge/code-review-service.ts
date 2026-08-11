@@ -1,8 +1,7 @@
-import crypto from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { atomicWriteJson } from "../run/run-store.js";
-import { loadAndVerifyResultBundle } from "../web-review/result-bundle-review-reader.js";
+import { loadAndVerifyResultBundle, type LoadedResultBundle } from "../web-review/result-bundle-review-reader.js";
 import { contentDigest, parseWebVerdictEnvelope, WebBridgeError, type BridgeJobIdentity, type WebVerdictEnvelope } from "./contracts.js";
 import { readBoundedResultEvidence } from "./result-evidence-reader.js";
 import type { WebBridge } from "./web-bridge.js";
@@ -78,60 +77,65 @@ export async function readWebCodeReviewReceipt(stateDirectory: string, runId: st
   }
 }
 
-async function currentResult(stateDirectory: string, runId: string, reviewRound: number) {
+async function exactResult(stateDirectory: string, runId: string, reviewRound: number): Promise<LoadedResultBundle> {
   const bundle = await loadAndVerifyResultBundle(stateDirectory, runId, reviewRound);
   if (!bundle.receipt.archive_sha256 || !bundle.receipt.published_commit_sha || bundle.receipt.pull_request.number < 1) throw new WebBridgeError("WEB_CODE_REVIEW_RESULT_INVALID", "Exact Result Bundle lacks required code-review bindings.");
   return bundle;
 }
 
-function currentReviewRound(receipt: { result_bundle_version: string; revision_round?: number | null }): number {
-  return receipt.result_bundle_version === "1.2" ? (receipt.revision_round ?? 1) + 1 : 1;
+async function newestExactResult(stateDirectory: string, runId: string): Promise<LoadedResultBundle> {
+  let lastError: unknown;
+  for (let round = 4; round >= 1; round -= 1) {
+    try { return await exactResult(stateDirectory, runId, round); }
+    catch (error) { lastError = error; }
+  }
+  throw new WebBridgeError("WEB_CODE_REVIEW_RESULT_INVALID", `No exact Result Bundle is available for code review${lastError instanceof Error ? `: ${lastError.message}` : "."}`);
+}
+
+function sameResult(receipt: WebCodeReviewReceipt, bundle: LoadedResultBundle): boolean {
+  return receipt.review_round === bundle.reviewRound
+    && receipt.result_bundle_sha256 === bundle.receipt.archive_sha256
+    && receipt.published_commit_sha === bundle.receipt.published_commit_sha
+    && receipt.pull_request_number === bundle.receipt.pull_request.number;
 }
 
 export async function createPendingCodeReview(options: { bridge: WebBridge; runId: string; stateDirectory: string; now?: () => Date }): Promise<BridgeJobIdentity> {
-  const existing = await readWebCodeReviewReceipt(options.stateDirectory, options.runId);
+  const [existing, newest] = await Promise.all([
+    readWebCodeReviewReceipt(options.stateDirectory, options.runId),
+    newestExactResult(options.stateDirectory, options.runId),
+  ]);
   if (existing?.state === "PENDING") {
-    const bundle = await currentResult(options.stateDirectory, options.runId, existing.review_round);
-    if (bundle.receipt.archive_sha256 !== existing.result_bundle_sha256 || bundle.receipt.published_commit_sha !== existing.published_commit_sha || bundle.receipt.pull_request.number !== existing.pull_request_number) throw new WebBridgeError("WEB_CODE_REVIEW_STALE", "Pending code review no longer binds the current exact Result Bundle.");
+    if (!sameResult(existing, newest)) throw new WebBridgeError("WEB_CODE_REVIEW_STALE", "A pending code review cannot be silently retargeted after the exact Result Bundle changed.");
+    return { protocol_version: "wco-web-bridge-v1", job_id: existing.review_job_id, owner: "local", created_at: existing.created_at, expires_at: new Date(Date.parse(existing.created_at) + 86_400_000).toISOString(), content_sha256: contentDigest({ replay: existing.review_job_id, result: existing.result_bundle_sha256 }) };
   }
-  if (existing?.state === "APPROVED") throw new WebBridgeError("WEB_CODE_REVIEW_ALREADY_APPROVED", "The current exact result already has an approved independent Web code review.");
+  if (existing?.state === "APPROVED" && sameResult(existing, newest)) throw new WebBridgeError("WEB_CODE_REVIEW_ALREADY_APPROVED", "The current exact result already has an approved independent Web code review.");
 
-  const seedBundle = existing
-    ? await currentResult(options.stateDirectory, options.runId, existing.review_round)
-    : await currentResult(options.stateDirectory, options.runId, 1).catch(async () => {
-        for (let round = 4; round >= 2; round -= 1) {
-          try { return await currentResult(options.stateDirectory, options.runId, round); } catch { /* keep scanning newest valid revision */ }
-        }
-        throw new WebBridgeError("WEB_CODE_REVIEW_RESULT_INVALID", "No exact Result Bundle is available for code review.");
-      });
-  const reviewRound = currentReviewRound(seedBundle.receipt);
-  const bundle = reviewRound === seedBundle.reviewRound ? seedBundle : await currentResult(options.stateDirectory, options.runId, reviewRound);
   const request = {
     run_id: options.runId,
-    result_bundle_sha256: bundle.receipt.archive_sha256!,
-    published_commit_sha: bundle.receipt.published_commit_sha,
-    pull_request_url: bundle.receipt.pull_request.url,
-    review_round: reviewRound,
+    result_bundle_sha256: newest.receipt.archive_sha256!,
+    published_commit_sha: newest.receipt.published_commit_sha,
+    pull_request_url: newest.receipt.pull_request.url,
+    review_round: newest.reviewRound,
   };
   const identity = await options.bridge.createFinalReviewJob(request, `code-review-${contentDigest({ purpose: "independent_code_review", request })}`);
-  const evidence = await readBoundedResultEvidence(bundle.archivePath, bundle.manifest);
-  await options.bridge.submitFinalReviewEvidence(identity.job_id, { purpose: "independent_code_review", binding: request, entries: evidence }, `code-evidence-${bundle.receipt.archive_sha256}`);
+  const evidence = await readBoundedResultEvidence(newest.archivePath, newest.manifest);
+  await options.bridge.submitFinalReviewEvidence(identity.job_id, { purpose: "independent_code_review", binding: request, entries: evidence }, `code-evidence-${newest.receipt.archive_sha256}`);
 
   const now = (options.now?.() ?? new Date()).toISOString();
   const receipt: WebCodeReviewReceipt = {
     schema_version: "1.0",
     kind: "wco-web-code-review",
     run_id: options.runId,
-    review_round: reviewRound,
+    review_round: newest.reviewRound,
     review_job_id: identity.job_id,
-    result_bundle_sha256: bundle.receipt.archive_sha256!,
-    published_commit_sha: bundle.receipt.published_commit_sha,
-    pull_request_number: bundle.receipt.pull_request.number,
+    result_bundle_sha256: newest.receipt.archive_sha256!,
+    published_commit_sha: newest.receipt.published_commit_sha,
+    pull_request_number: newest.receipt.pull_request.number,
     state: "PENDING",
     verdict_sha256: null,
     summary: null,
     findings: [],
-    created_at: existing?.created_at ?? now,
+    created_at: now,
     updated_at: now,
   };
   await mkdir(path.dirname(receiptPath(options.stateDirectory, options.runId)), { recursive: true, mode: 0o700 });
@@ -149,8 +153,8 @@ export async function adoptCodeReviewVerdict(options: { envelope: WebVerdictEnve
     throw new WebBridgeError("WEB_CODE_REVIEW_ALREADY_SEALED", "Independent Web code review is already sealed with a different verdict.");
   }
   if (envelope.review_id !== receipt.review_job_id || envelope.result_bundle_sha256 !== receipt.result_bundle_sha256) throw new WebBridgeError("WEB_CODE_REVIEW_BINDING_MISMATCH", "Web code-review verdict does not bind the pending review job and exact Result Bundle.");
-  const bundle = await currentResult(options.stateDirectory, envelope.run_id, receipt.review_round);
-  if (bundle.receipt.archive_sha256 !== receipt.result_bundle_sha256 || bundle.receipt.published_commit_sha !== receipt.published_commit_sha || bundle.receipt.pull_request.number !== receipt.pull_request_number) throw new WebBridgeError("WEB_CODE_REVIEW_STALE", "Web code-review verdict is stale relative to the exact current Result Bundle.");
+  const newest = await newestExactResult(options.stateDirectory, envelope.run_id);
+  if (!sameResult(receipt, newest)) throw new WebBridgeError("WEB_CODE_REVIEW_STALE", "Web code-review verdict is stale relative to the newest exact Result Bundle.");
 
   const blocking = envelope.findings.filter((finding) => finding.severity === "blocking");
   if (envelope.verdict === "APPROVE" && blocking.length > 0) throw new WebBridgeError("WEB_CODE_REVIEW_POLICY_INVALID", "APPROVE cannot contain blocking code-review findings.");
@@ -170,9 +174,11 @@ export async function adoptCodeReviewVerdict(options: { envelope: WebVerdictEnve
 }
 
 export async function assertCodeReviewApprovedForCurrentResult(stateDirectory: string, runId: string): Promise<WebCodeReviewReceipt> {
-  const receipt = await readWebCodeReviewReceipt(stateDirectory, runId);
+  const [receipt, newest] = await Promise.all([
+    readWebCodeReviewReceipt(stateDirectory, runId),
+    newestExactResult(stateDirectory, runId),
+  ]);
   if (!receipt || receipt.state !== "APPROVED") throw new WebBridgeError("WEB_CODE_REVIEW_REQUIRED", "Independent Web code review has not approved the exact result.");
-  const bundle = await currentResult(stateDirectory, runId, receipt.review_round);
-  if (bundle.receipt.archive_sha256 !== receipt.result_bundle_sha256 || bundle.receipt.published_commit_sha !== receipt.published_commit_sha || bundle.receipt.pull_request.number !== receipt.pull_request_number) throw new WebBridgeError("WEB_CODE_REVIEW_STALE", "Approved Web code review no longer binds the exact current Result Bundle.");
+  if (!sameResult(receipt, newest)) throw new WebBridgeError("WEB_CODE_REVIEW_STALE", "Approved Web code review no longer binds the newest exact Result Bundle.");
   return receipt;
 }
