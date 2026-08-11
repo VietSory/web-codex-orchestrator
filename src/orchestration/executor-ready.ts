@@ -10,6 +10,17 @@ import { OrchestrationError } from "./contracts.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
 function splitRunId(runId: string): { taskId: string; taskBundleSha256: string } { const split = runId.lastIndexOf(":"); if (split <= 0 || !SHA256.test(runId.slice(split + 1))) throw new OrchestrationError("ORCHESTRATION_RUN_ID_INVALID", "Invalid run_id for executor publication."); return { taskId: runId.slice(0, split), taskBundleSha256: runId.slice(split + 1) }; }
+function assertReviewerApproval(receipt: NonNullable<Awaited<ReturnType<typeof readExecutorReceipt>>>, digest: string): void {
+  if (receipt.reviewer_selection?.kind === "terra") {
+    if (receipt.terra_review.change_set_digest !== digest || receipt.terra_review.verdict !== "APPROVE") throw new OrchestrationError("ORCHESTRATION_EXECUTOR_AUTHORITY_DRIFT", "Selected Terra approval no longer binds the exact current change-set.");
+    return;
+  }
+  if (receipt.reviewer_selection?.kind === "sol") {
+    if (receipt.sol_review.change_set_digest !== digest || receipt.sol_review.verdict !== "APPROVE") throw new OrchestrationError("ORCHESTRATION_EXECUTOR_AUTHORITY_DRIFT", "Selected Sol approval no longer binds the exact current change-set.");
+    return;
+  }
+  if (receipt.terra_review.change_set_digest !== digest || receipt.sol_review.change_set_digest !== digest || receipt.terra_review.verdict !== "APPROVE" || receipt.sol_review.verdict !== "APPROVE") throw new OrchestrationError("ORCHESTRATION_EXECUTOR_AUTHORITY_DRIFT", "Legacy Terra/Sol approvals no longer bind the exact current change-set.");
+}
 export async function attestReadyExecutorSnapshot(options: { runId: string; artifactSha256: string; stateDirectory: string; configPath: string }) {
   const id = splitRunId(options.runId);
   const paths = executorPaths(options.stateDirectory, id.taskId, id.taskBundleSha256, options.artifactSha256);
@@ -32,6 +43,7 @@ export async function attestReadyExecutorSnapshot(options: { runId: string; arti
   await attestPersistedExecutorGateEvidence(options.stateDirectory, receipt);
   if (published && (published.run_id !== options.runId || published.base_commit !== receipt.base_commit || published.branch_name !== source.trusted.runReceipt.branch_name || published.remote_name !== source.trusted.runReceipt.remote || published.allowed_remote_url !== source.trusted.runReceipt.remote_url || published.change_set_sha256 !== receipt.change_set_digest || published.commit_sha === null || (published.state === "PUSHED" && published.remote_branch_sha !== published.commit_sha))) throw new OrchestrationError("ORCHESTRATION_EXECUTOR_AUTHORITY_DRIFT", "Published receipt no longer binds the exact READY executor authority.");
   const digest = published ? await attestPublishedExecutorChangeSet(receipt, published) : await attestExecutorChangeSet(receipt);
-  if (digest !== receipt.change_set_digest || receipt.verification.change_set_digest !== digest || receipt.terra_review.change_set_digest !== digest || receipt.sol_review.change_set_digest !== digest || !receipt.verification.passed || receipt.terra_review.verdict !== "APPROVE" || receipt.sol_review.verdict !== "APPROVE") throw new OrchestrationError("ORCHESTRATION_EXECUTOR_AUTHORITY_DRIFT", "READY executor approvals no longer bind the exact current change-set.");
+  if (digest !== receipt.change_set_digest || receipt.verification.change_set_digest !== digest || !receipt.verification.passed) throw new OrchestrationError("ORCHESTRATION_EXECUTOR_AUTHORITY_DRIFT", "READY executor verification no longer binds the exact current change-set.");
+  assertReviewerApproval(receipt, digest);
   return { receipt, source, executorDirectory: paths.directory, changeSetDigest: digest, changedPaths: receipt.operations.map((operation) => operation.path).sort() };
 }
