@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import type { ReviewerRepairOperation } from "../execution/contracts.js";
 import type { WebImplementationPack, WebImplementationOperation } from "../web-authority/contracts.js";
 import { ExecutorError, type ExecutorReceipt, type ExecutorTransactionOperation } from "./contracts.js";
@@ -9,7 +10,11 @@ function nowIso(now: () => Date): string { return now().toISOString(); }
 function payload(operation: ReviewerRepairOperation): Buffer | null {
   if (operation.kind === "delete_file") return null;
   if (operation.postimage_base64 === null || operation.postimage_sha256 === null) throw new ExecutorError("EXECUTOR_REPAIR_INVALID", `Repair '${operation.op_id}' lacks postimage authority.`);
-  return Buffer.from(operation.postimage_base64, "base64");
+  const bytes = Buffer.from(operation.postimage_base64, "base64");
+  if (bytes.toString("base64") !== operation.postimage_base64 || crypto.createHash("sha256").update(bytes).digest("hex") !== operation.postimage_sha256) {
+    throw new ExecutorError("EXECUTOR_REPAIR_INVALID", `Repair '${operation.op_id}' postimage encoding/digest is invalid.`);
+  }
+  return bytes;
 }
 
 function originalOperation(pack: WebImplementationPack, path: string): WebImplementationOperation {
@@ -116,6 +121,8 @@ export async function bindWebReviewRepair(options: {
     state: "PROPOSED",
     final_change_set_digest: null,
   };
+  // A bound Web repair is not publishable until Harness applies and verifies it.
+  receipt.state = "REVIEWING_WEB";
   receipt.updated_at = nowIso(now);
   await writeExecutorReceipt(options.stateDirectory, receipt);
   return receipt;
@@ -177,9 +184,9 @@ export async function applyReviewerRepair(options: { stateDirectory: string; rec
     }
   } catch (error) {
     try { await rollbackRepairs(receipt, options.pack); }
-    catch (rollbackError) { throw new ExecutorError("EXECUTOR_AMBIGUOUS_RECOVERY", `Adaptive repair failed and rollback could not restore Web-authorized postimages: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`); }
+    catch (rollbackError) { throw new ExecutorError("EXECUTOR_AMBIGUOUS_RECOVERY", `Adaptive repair failed and rollback could not restore Web-authorized postimages: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}.`); }
     repair.state = "PROPOSED";
-    receipt.state = repair.reviewer === "web" ? "READY_FOR_PUBLISH" : repair.reviewer === "terra" ? "REVIEWING_TERRA" : "REVIEWING_SOL";
+    receipt.state = repair.reviewer === "web" ? "REVIEWING_WEB" : repair.reviewer === "terra" ? "REVIEWING_TERRA" : "REVIEWING_SOL";
     receipt.updated_at = nowIso(now);
     await writeExecutorReceipt(options.stateDirectory, receipt);
     throw error;
