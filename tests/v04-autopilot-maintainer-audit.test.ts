@@ -46,9 +46,7 @@ test("V04-AUDIT-001 semantic-forged READY receipt is rejected fail-closed", asyn
       updated_at: "2030-01-01T00:00:01.000Z",
     })}\n`, { mode: 0o600 });
     await assert.rejects(readAutopilotReceipt(stateDirectory, runId), /semantic state invariants/);
-  } finally {
-    await rm(stateDirectory, { recursive: true, force: true });
-  }
+  } finally { await rm(stateDirectory, { recursive: true, force: true }); }
 });
 
 test("V04-AUDIT-002 stale concurrent driver cannot roll durable state backward", async () => {
@@ -58,44 +56,25 @@ test("V04-AUDIT-002 stale concurrent driver cannot roll durable state backward",
   let firstStarted!: () => void;
   const started = new Promise<void>((resolve) => { firstStarted = resolve; });
   const blocked = new Promise<void>((resolve) => { releaseFirst = resolve; });
-
   try {
     const first = driveAutopilotJob({
       bridge: approvedBridge(),
       runId,
       stateDirectory,
       configPath: path.join(stateDirectory, "config.json"),
-      dependencies: {
-        execute: async () => {
-          firstStarted();
-          await blocked;
-          return READY_EXECUTION;
-        },
-      },
+      dependencies: { execute: async () => { firstStarted(); await blocked; return READY_EXECUTION; } },
     });
     await started;
-
-    const winner = await driveAutopilotJob({
-      bridge: approvedBridge(),
-      runId,
-      stateDirectory,
-      configPath: path.join(stateDirectory, "config.json"),
-      dependencies: happyDependencies(runId),
-    });
+    const winner = await driveAutopilotJob({ bridge: approvedBridge(), runId, stateDirectory, configPath: path.join(stateDirectory, "config.json"), dependencies: happyDependencies(runId) });
     assert.equal(winner.status, "READY_FOR_YOU");
     const winningGeneration = winner.generation;
-
     releaseFirst();
     await assert.rejects(first, /AUTOPILOT_CONCURRENT_DRIVER/);
-
     const durable = await readAutopilotReceipt(stateDirectory, runId);
     assert.equal(durable?.status, "READY_FOR_YOU");
     assert.equal(durable?.stage, "DONE");
     assert.equal(durable?.generation, winningGeneration);
-  } finally {
-    releaseFirst?.();
-    await rm(stateDirectory, { recursive: true, force: true });
-  }
+  } finally { releaseFirst?.(); await rm(stateDirectory, { recursive: true, force: true }); }
 });
 
 test("V04-AUDIT-003 mismatched Draft PR head blocks before Result Bundle packaging", async () => {
@@ -106,27 +85,17 @@ test("V04-AUDIT-003 mismatched Draft PR head blocks before Result Bundle packagi
     const wrong = openDraft();
     wrong.observed_head_sha = "9".repeat(40);
     const receipt = await driveAutopilotJob({
-      bridge: approvedBridge(),
-      runId,
-      stateDirectory,
-      configPath: path.join(stateDirectory, "config.json"),
-      dependencies: {
-        execute: async () => READY_EXECUTION,
-        publish: async () => PUSHED,
-        draft: async () => wrong,
-        packageResult: async () => { packaged = true; return readyResult(runId); },
-      },
+      bridge: approvedBridge(), runId, stateDirectory, configPath: path.join(stateDirectory, "config.json"),
+      dependencies: { execute: async () => READY_EXECUTION, publish: async () => PUSHED, draft: async () => wrong, packageResult: async () => { packaged = true; return readyResult(runId); } },
     });
     assert.equal(packaged, false);
     assert.equal(receipt.status, "NEEDS_YOU");
     assert.equal(receipt.stage, "DRAFT_PR");
     assert.match(receipt.reason ?? "", /AUTOPILOT_DRAFT_PR_INCOMPLETE/);
-  } finally {
-    await rm(stateDirectory, { recursive: true, force: true });
-  }
+  } finally { await rm(stateDirectory, { recursive: true, force: true }); }
 });
 
-test("V04-AUDIT-004 mismatched Result Bundle head blocks before Web review", async () => {
+test("V04-AUDIT-004 mismatched Result Bundle head blocks before READY_FOR_YOU", async () => {
   const stateDirectory = await mkdtemp(path.join(os.tmpdir(), "wco-auto-result-drift-"));
   const runId = `task-result-drift:${"a".repeat(64)}`;
   let webJob = false;
@@ -134,28 +103,17 @@ test("V04-AUDIT-004 mismatched Result Bundle head blocks before Web review", asy
     const wrong = readyResult(runId);
     wrong.pull_request.head_sha = "9".repeat(40);
     const receipt = await driveAutopilotJob({
-      bridge: approvedBridge(),
-      runId,
-      stateDirectory,
-      configPath: path.join(stateDirectory, "config.json"),
-      dependencies: {
-        execute: async () => READY_EXECUTION,
-        publish: async () => PUSHED,
-        draft: async () => openDraft(),
-        packageResult: async () => wrong,
-        createFinalReview: async () => { webJob = true; return { job_id: "must-not-create" }; },
-      },
+      bridge: approvedBridge(), runId, stateDirectory, configPath: path.join(stateDirectory, "config.json"),
+      dependencies: { execute: async () => READY_EXECUTION, publish: async () => PUSHED, draft: async () => openDraft(), packageResult: async () => wrong, createFinalReview: async () => { webJob = true; return { job_id: "must-not-create" }; } },
     });
     assert.equal(webJob, false);
     assert.equal(receipt.status, "NEEDS_YOU");
     assert.equal(receipt.stage, "PACKAGE_RESULT");
     assert.match(receipt.reason ?? "", /AUTOPILOT_RESULT_INCOMPLETE/);
-  } finally {
-    await rm(stateDirectory, { recursive: true, force: true });
-  }
+  } finally { await rm(stateDirectory, { recursive: true, force: true }); }
 });
 
-test("V04-AUDIT-005 incomplete Web APPROVE never becomes READY_FOR_YOU", async () => {
+test("V04-AUDIT-005 incomplete legacy Web APPROVE never becomes READY_FOR_YOU", async () => {
   const stateDirectory = await mkdtemp(path.join(os.tmpdir(), "wco-auto-approval-drift-"));
   const runId = `task-approval-drift:${"b".repeat(64)}`;
   try {
@@ -166,18 +124,14 @@ test("V04-AUDIT-005 incomplete Web APPROVE never becomes READY_FOR_YOU", async (
       runId,
       stateDirectory,
       configPath: path.join(stateDirectory, "config.json"),
-      dependencies: {
-        ...happyDependencies(runId),
-        materializeVerdict: async () => ({ verdict_path: "/tmp/incomplete.json", receipt: incomplete }),
-      },
+      webFinalReview: true,
+      dependencies: { ...happyDependencies(runId), materializeVerdict: async () => ({ verdict_path: "/tmp/incomplete.json", receipt: incomplete }) },
     });
     assert.equal(receipt.status, "NEEDS_YOU");
     assert.equal(receipt.stage, "WAIT_WEB");
     assert.equal(receipt.terminal_action, "ASK_USER_TO_INTERVENE");
     assert.match(receipt.reason ?? "", /AUTOPILOT_WEB_APPROVAL_INCOMPLETE/);
-  } finally {
-    await rm(stateDirectory, { recursive: true, force: true });
-  }
+  } finally { await rm(stateDirectory, { recursive: true, force: true }); }
 });
 
 test("V04-AUDIT-006 symlinked state ancestry is rejected before reading authority bytes", async () => {
