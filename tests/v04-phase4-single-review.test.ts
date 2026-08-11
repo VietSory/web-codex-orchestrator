@@ -32,6 +32,10 @@ function approvedReview(request: AgentTurnRequest): unknown {
   };
 }
 
+function reviewCalls(client: FakeAgentClient): AgentTurnRequest[] {
+  return client.calls.filter((request) => request.role === "internal_reviewer" || request.role === "final_reviewer");
+}
+
 for (const selected of [
   { kind: "sol" as const, model: "gpt-5.6-sol", reasoning_effort: "high" as const },
   { kind: "terra" as const, model: "gpt-5.6-terra", reasoning_effort: "medium" as const },
@@ -55,10 +59,11 @@ for (const selected of [
 
       assert.equal(receipt.state, "READY_FOR_PUBLISH");
       assert.deepEqual(receipt.reviewer_selection, selected);
-      const reviewCalls = client.calls.filter((request) => request.role === "reviewer");
-      assert.equal(reviewCalls.length, 1);
-      assert.equal(reviewCalls[0]?.model, selected.model);
-      assert.equal(reviewCalls[0]?.reasoning_effort, selected.reasoning_effort);
+      const calls = reviewCalls(client);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0]?.role, selected.kind === "sol" ? "final_reviewer" : "internal_reviewer");
+      assert.equal(calls[0]?.model, selected.model);
+      assert.equal(calls[0]?.reasoning_effort, selected.reasoning_effort);
       if (selected.kind === "sol") {
         assert.equal(receipt.final_reviewer.verdict, "APPROVE");
         assert.equal(receipt.final_reviewer.rounds, 1);
@@ -110,9 +115,10 @@ test("V04-P4-REVIEW-REVISE selected Sol REVISE returns to implementer, re-verifi
     assert.equal(receipt.final_reviewer.verdict, "APPROVE");
     assert.equal(receipt.internal_reviewer.rounds, 0);
     assert.equal(receipt.internal_reviewer.verdict, null);
-    const reviewCalls = client.calls.filter((request) => request.role === "reviewer");
-    assert.equal(reviewCalls.length, 2);
-    assert.ok(reviewCalls.every((request) => request.model === "gpt-5.6-sol"));
+    const calls = reviewCalls(client);
+    assert.equal(calls.length, 2);
+    assert.ok(calls.every((request) => request.role === "final_reviewer"));
+    assert.ok(calls.every((request) => request.model === "gpt-5.6-sol"));
   } finally {
     await fixture.cleanup();
   }
