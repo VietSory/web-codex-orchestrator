@@ -1,5 +1,6 @@
 import path from "node:path";
 import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
+import { effectiveRunReviewMode } from "../agent/reviewer-mode-store.js";
 import { reviewWithSol } from "../agent/sol-reviewer.js";
 import { reviewWithTerra } from "../agent/terra-reviewer.js";
 import { loadPhase4Config } from "../execution/execution-config.js";
@@ -8,7 +9,6 @@ import { CodexVerificationSandbox } from "../verifier/codex-sandbox.js";
 import { verifyDeterministically } from "../verifier/verifier.js";
 import { readBoundedStableAuthorityFile } from "../web-authority/task-spec-authority.js";
 import { resolveTrustedRunContext } from "../web-review/trusted-run-context.js";
-import { readReviewMode } from "../tui/review-mode-store.js";
 import { ExecutorError, type ExecutorUsage } from "./contracts.js";
 import type { ExecutorReviewerPort, ExecutorReviewRequest, ExecutorVerifierPort, ExecutorVerificationRequest } from "./gates.js";
 
@@ -81,7 +81,7 @@ export async function createProductionExecutorGates(options: { runId: string; st
   const [config, trusted, reviewMode] = await Promise.all([
     loadPhase4Config(options.configPath),
     resolveTrustedRunContext(options.runId, options.stateDirectory, options.configPath),
-    readReviewMode(options.stateDirectory),
+    effectiveRunReviewMode(options.stateDirectory, options.runId),
   ]);
   const runtime = await resolveCodexRuntime(config.runtime, options.stateDirectory);
   const agentClient = new CodexSdkAgentClient(runtime);
