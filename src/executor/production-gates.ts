@@ -5,7 +5,7 @@ import { reviewWithSol } from "../agent/sol-reviewer.js";
 import { reviewWithTerra } from "../agent/terra-reviewer.js";
 import { loadPhase4Config } from "../execution/execution-config.js";
 import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
-import { CodexVerificationSandbox } from "../verifier/codex-sandbox.js";
+import { BubblewrapVerificationSandbox } from "../verifier/bubblewrap-sandbox.js";
 import { verifyDeterministically } from "../verifier/verifier.js";
 import { readBoundedStableAuthorityFile } from "../web-authority/task-spec-authority.js";
 import { resolveTrustedRunContext } from "../web-review/trusted-run-context.js";
@@ -80,17 +80,17 @@ function mappedVerdict(verdict: string): "APPROVE" | "REVISE" | "ESCALATE" {
 }
 
 /**
- * Deterministic Harness verification is deliberately independent from model
- * authentication. PAIR can use this path with zero provider/model calls.
- * The bundled runtime is used only as the network-disabled local sandbox.
+ * Deterministic Harness verification is provider-independent. PAIR uses this
+ * path with no Codex model, CLI, runtime or authentication requirement.
+ * Bubblewrap supplies a network-disabled mount/user/pid sandbox and fails
+ * closed when the host cannot provide that isolation.
  */
 export async function createProductionVerifier(options: ProductionGateOptions): Promise<ExecutorVerifierPort> {
   const [config, trusted] = await Promise.all([
     loadPhase4Config(options.configPath),
     resolveTrustedRunContext(options.runId, options.stateDirectory, options.configPath),
   ]);
-  const runtime = await resolveCodexRuntime(config.runtime, options.stateDirectory);
-  const sandbox = new CodexVerificationSandbox(runtime);
+  const sandbox = new BubblewrapVerificationSandbox();
   const validation = await loadValidationDocument(trusted.runReceipt.accepted_bundle_path);
   await sandbox.checkAvailability();
   return {
