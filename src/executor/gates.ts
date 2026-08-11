@@ -42,6 +42,11 @@ export interface ExecutorReviewBudgetPolicy {
 }
 
 export interface ExecutorReviewerPort {
+  /**
+   * Normal user flow selects exactly one reviewer. Undefined preserves the
+   * historical Terra -> Sol low-level automation contract for compatibility.
+   */
+  reviewer_kind?: "terra" | "sol";
   /** Optional trusted policy. When present, the executor durably reserves one
    * turn in its own receipt before each review call. */
   budget_policy?: ExecutorReviewBudgetPolicy;
