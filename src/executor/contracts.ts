@@ -1,3 +1,5 @@
+import type { ReasoningEffort } from "../config/contracts.js";
+
 export type ExecutorState =
   | "VALIDATING"
   | "PREPARED"
@@ -59,6 +61,12 @@ export interface ExecutorReceipt {
   registration_manifest_sha256: string;
   operations: ExecutorTransactionOperation[];
   change_set_digest: string | null;
+  /** Present for normal product runs that selected one review model via /mode. */
+  reviewer_selection?: {
+    kind: "terra" | "sol";
+    model: string;
+    reasoning_effort: ReasoningEffort;
+  };
   verification: {
     rounds: number;
     passed: boolean;
