@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { createPhase9Fixture, buildPhase9Pack } from "./helpers/phase9-fixture.js";
 import { registerWebImplementationPack } from "../src/web-authority/authority-service.js";
 import { executeRegisteredWebPack } from "../src/executor/service.js";
@@ -22,13 +23,7 @@ test("PAIR Harness preserves immutable evidence across sequential Web repair gen
   const initial = Buffer.from("after\n");
   const first = Buffer.from("web-fix-one\n");
   const firstEvidence = sha("web-review-generation-one");
-  await bindWebReviewRepair({
-    stateDirectory: fixture.state,
-    receipt,
-    sourceChangeSetDigest: receipt.change_set_digest!,
-    sourceReviewEvidenceSha256: firstEvidence,
-    operations: [{ op_id: "web-fix-1", kind: "replace_file", path: "app.txt", preimage_sha256: sha(initial), postimage_base64: first.toString("base64"), postimage_sha256: sha(first) }],
-  });
+  await bindWebReviewRepair({ stateDirectory: fixture.state, receipt, sourceChangeSetDigest: receipt.change_set_digest!, sourceReviewEvidenceSha256: firstEvidence, operations: [{ op_id: "web-fix-1", kind: "replace_file", path: "app.txt", preimage_sha256: sha(initial), postimage_base64: first.toString("base64"), postimage_sha256: sha(first) }] });
   receipt = await executeRegisteredWebPack({ runId: fixture.runId, artifactSha256: registration.artifact_sha256, stateDirectory: fixture.state, configPath: fixture.config, verifier, reviewStrategy: "web" });
   assert.equal(receipt.state, "READY_FOR_PUBLISH");
   assert.equal(receipt.repair?.state, "VERIFIED");
@@ -36,13 +31,7 @@ test("PAIR Harness preserves immutable evidence across sequential Web repair gen
 
   const second = Buffer.from("web-fix-two\n");
   const secondEvidence = sha("web-review-generation-two");
-  await bindWebReviewRepair({
-    stateDirectory: fixture.state,
-    receipt,
-    sourceChangeSetDigest: firstFinalDigest,
-    sourceReviewEvidenceSha256: secondEvidence,
-    operations: [{ op_id: "web-fix-2", kind: "replace_file", path: "app.txt", preimage_sha256: sha(first), postimage_base64: second.toString("base64"), postimage_sha256: sha(second) }],
-  });
+  await bindWebReviewRepair({ stateDirectory: fixture.state, receipt, sourceChangeSetDigest: firstFinalDigest, sourceReviewEvidenceSha256: secondEvidence, operations: [{ op_id: "web-fix-2", kind: "replace_file", path: "app.txt", preimage_sha256: sha(first), postimage_base64: second.toString("base64"), postimage_sha256: sha(second) }] });
   assert.equal(receipt.repair_history?.length, 1);
   assert.equal(receipt.repair_history?.[0]?.generation, 1);
   assert.equal(receipt.repair_history?.[0]?.source_review_evidence_sha256, firstEvidence);
@@ -56,5 +45,5 @@ test("PAIR Harness preserves immutable evidence across sequential Web repair gen
   assert.equal(receipt.verification.passed, true);
   assert.equal(receipt.verification.change_set_digest, receipt.change_set_digest);
   assert.notEqual(receipt.change_set_digest, firstFinalDigest);
-  assert.equal(await fs.readFile(fixture.worktreeFile, "utf8"), second.toString("utf8"));
+  assert.equal(await fs.readFile(path.join(fixture.repo, "app.txt"), "utf8"), second.toString("utf8"));
 });
