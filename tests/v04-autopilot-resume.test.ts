@@ -7,7 +7,7 @@ import { driveAutopilotJob, readAutopilotReceipt } from "../src/orchestration/au
 import type { WebBridge } from "../src/web-bridge/web-bridge.js";
 import { PUSHED, READY_EXECUTION, openDraft, readyResult, webReview } from "./v04-autopilot-fixtures.js";
 
-test("V04-AUTO-006 legacy restart while waiting for Web reuses the durable review job", async () => {
+test("V04-AUTO-006 restart while waiting for mandatory Web final review reuses the durable review job", async () => {
   const stateDirectory = await mkdtemp(path.join(os.tmpdir(), "wco-auto-resume-"));
   const runId = `task-resume:${"3".repeat(64)}`;
   const firstController = new AbortController();
@@ -20,7 +20,6 @@ test("V04-AUTO-006 legacy restart while waiting for Web reuses the durable revie
       runId,
       stateDirectory,
       configPath: path.join(stateDirectory, "config.json"),
-      webFinalReview: true,
       signal: firstController.signal,
       dependencies: {
         execute: async () => READY_EXECUTION,
@@ -45,7 +44,6 @@ test("V04-AUTO-006 legacy restart while waiting for Web reuses the durable revie
       runId,
       stateDirectory,
       configPath: path.join(stateDirectory, "config.json"),
-      webFinalReview: true,
       dependencies: {
         createFinalReview: async () => { resumedCreateCalled = true; return { job_id: "must-not-create" }; },
         materializeVerdict: async () => ({ verdict_path: "/tmp/approve.json", receipt: webReview("APPROVED", runId) }),
@@ -59,7 +57,7 @@ test("V04-AUTO-006 legacy restart while waiting for Web reuses the durable revie
   } finally { await rm(stateDirectory, { recursive: true, force: true }); }
 });
 
-test("V04-AUTO-007 legacy completed Web-reviewed job re-attests before returning merge readiness", async () => {
+test("V04-AUTO-007 completed Web-reviewed job re-attests before returning merge readiness", async () => {
   const stateDirectory = await mkdtemp(path.join(os.tmpdir(), "wco-auto-complete-"));
   const runId = `task-complete:${"4".repeat(64)}`;
   const bridge = { async waitForVerdict() { return { review_id: "approved" } as never; } } as unknown as WebBridge;
@@ -72,7 +70,7 @@ test("V04-AUTO-007 legacy completed Web-reviewed job re-attests before returning
     materializeVerdict: async () => ({ verdict_path: "/tmp/approve.json", receipt: webReview("APPROVED", runId) }),
   };
   try {
-    const first = await driveAutopilotJob({ bridge, runId, stateDirectory, configPath: path.join(stateDirectory, "config.json"), dependencies, webFinalReview: true });
+    const first = await driveAutopilotJob({ bridge, runId, stateDirectory, configPath: path.join(stateDirectory, "config.json"), dependencies });
     assert.equal(first.status, "READY_FOR_YOU");
     let touched = false;
     let revalidated = 0;
@@ -81,7 +79,6 @@ test("V04-AUTO-007 legacy completed Web-reviewed job re-attests before returning
       runId,
       stateDirectory,
       configPath: path.join(stateDirectory, "config.json"),
-      webFinalReview: true,
       dependencies: {
         execute: async () => { touched = true; return READY_EXECUTION; },
         revalidateReady: async () => { revalidated += 1; return webReview("APPROVED", runId); },
@@ -94,7 +91,7 @@ test("V04-AUTO-007 legacy completed Web-reviewed job re-attests before returning
   } finally { await rm(stateDirectory, { recursive: true, force: true }); }
 });
 
-test("V04-AUTO-009 stale legacy Web READY authority never returns a merge prompt", async () => {
+test("V04-AUTO-009 stale Web READY authority never returns a merge prompt", async () => {
   const stateDirectory = await mkdtemp(path.join(os.tmpdir(), "wco-auto-stale-ready-"));
   const runId = `task-stale-ready:${"5".repeat(64)}`;
   const bridge = { async waitForVerdict() { return { review_id: "approved" } as never; } } as unknown as WebBridge;
@@ -104,7 +101,6 @@ test("V04-AUTO-009 stale legacy Web READY authority never returns a merge prompt
       runId,
       stateDirectory,
       configPath: path.join(stateDirectory, "config.json"),
-      webFinalReview: true,
       dependencies: {
         execute: async () => READY_EXECUTION,
         publish: async () => PUSHED,
@@ -120,7 +116,6 @@ test("V04-AUTO-009 stale legacy Web READY authority never returns a merge prompt
         runId,
         stateDirectory,
         configPath: path.join(stateDirectory, "config.json"),
-        webFinalReview: true,
         dependencies: { revalidateReady: async () => { throw Object.assign(new Error("Draft PR head moved after Web approval"), { code: "WEB_REVIEW_REPOSITORY_DRIFT" }); } },
       }),
       /head moved/,
