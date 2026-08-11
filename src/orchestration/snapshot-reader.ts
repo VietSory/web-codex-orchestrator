@@ -91,6 +91,15 @@ export function revisionResultReadyForWebReview(runId: string, review: WebReview
     && revision.next_review_round === revision.revision_round + 1;
 }
 
+function webReviewBoundToCurrentResult(review: WebReviewReceipt | null, result: ResultBundleReceipt | null): boolean {
+  return Boolean(
+    review && result && result.state === "READY_FOR_WEB_REVIEW" && result.archive_sha256 &&
+    review.run_id === result.run_id && review.result_bundle_sha256 === result.archive_sha256 &&
+    review.published_commit_sha === result.published_commit_sha &&
+    review.pull_request_number === result.pull_request.number,
+  );
+}
+
 export async function readLifecycleSnapshot(stateDirectory: string, runId: string): Promise<LifecycleSnapshot> {
   const selected = await readSelectedArtifact(stateDirectory, runId);
   if (!selected) return { registered_artifact_sha256: null, executor_state: null, publish_state: null, draft_pr_state: null, result_bundle_ready: false, web_review_state: null, revision_state: null, revision_result_ready: false };
@@ -110,14 +119,18 @@ export async function readLifecycleSnapshot(stateDirectory: string, runId: strin
   const draft = draftSnapshot?.receipt ?? null;
   const publishCurrent = publicationBoundToExecutor(runId, executor, publishSnapshot);
   const draftCurrent = publishCurrent && draftBoundToPublication(runId, publishSnapshot, draftSnapshot);
-  const webReviewState = review?.state === "APPROVED" || review?.state === "REVISION_REQUESTED" || review?.state === "ESCALATED" ? review.state : review ? "PENDING" : null;
+  const initialResultCurrent = initialResultBoundToSelectedExecutor(runId, executor, publishSnapshot, draftSnapshot, result);
   const relevantRevision = revisionReceiptBoundToWebReview(runId, review, revision) ? revision : null;
+  const reviewCurrent = webReviewBoundToCurrentResult(review, result) || relevantRevision !== null;
+  const webReviewState = reviewCurrent
+    ? review?.state === "APPROVED" || review?.state === "REVISION_REQUESTED" || review?.state === "ESCALATED" ? review.state : review ? "PENDING" : null
+    : null;
   return {
     registered_artifact_sha256: selected.artifact_sha256,
     executor_state: executor?.state ?? null,
     publish_state: publishCurrent ? publish?.state ?? null : null,
     draft_pr_state: draftCurrent ? draft?.state ?? null : null,
-    result_bundle_ready: initialResultBoundToSelectedExecutor(runId, executor, publishSnapshot, draftSnapshot, result),
+    result_bundle_ready: initialResultCurrent,
     web_review_state: webReviewState,
     revision_state: relevantRevision?.state ?? null,
     revision_result_ready: revisionResultReadyForWebReview(runId, review, revision),
