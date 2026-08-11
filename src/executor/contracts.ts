@@ -17,6 +17,7 @@ export type ExecutorState =
 
 export type ExecutorOperationKind = "create_file" | "replace_file" | "delete_file";
 export type ExecutorReviewStrategy = "web" | "model";
+export type ExecutorRepairAuthority = "web" | "terra" | "sol";
 
 export interface ExecutorTransactionOperation {
   op_id: string;
@@ -44,7 +45,8 @@ export interface ExecutorReviewReceipt {
 }
 
 export interface ExecutorRepairReceipt {
-  reviewer: "terra" | "sol";
+  /** The authority that proposed the bounded repair; it never receives write authority. */
+  reviewer: ExecutorRepairAuthority;
   source_change_set_digest: string;
   source_review_evidence_sha256: string;
   operations: ReviewerRepairOperation[];
@@ -76,8 +78,8 @@ export interface ExecutorReceipt {
   change_set_digest: string | null;
   /**
    * Normal Harness-first product runs persist their review boundary explicitly.
-   * - web: deterministic verification is enough to publish an exact Draft PR;
-   *   independent Web code review remains a later orchestration authority.
+   * - web: deterministic verification is followed by independent Web code review;
+   *   an exact Web REVISE verdict may bind one bounded repair proposal.
    * - model: exactly one frozen Sol/Terra reviewer is required before publish.
    * Undefined preserves historical low-level executor receipts.
    */
@@ -88,7 +90,7 @@ export interface ExecutorReceipt {
     model: string;
     reasoning_effort: ReasoningEffort;
   };
-  /** A single durable adaptive repair proposal, never direct model write authority. */
+  /** A single durable bounded repair proposal; only the Harness owns mutation. */
   repair?: ExecutorRepairReceipt;
   verification: {
     rounds: number;
