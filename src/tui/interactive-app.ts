@@ -192,7 +192,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     for (let round = 0; round < MAX_WEB_REVIEW_ROUNDS; round += 1) {
       let snapshot = await readLifecycleSnapshot(paths.state, runId);
       if (pairSessionCanComplete(snapshot)) {
-        if (latest.state !== "COMPLETED") await completeLocalWorkerSession({ session: latest, stateDirectory: paths.state });
+        await completeLocalWorkerSession({ session: latest, stateDirectory: paths.state });
         const result = await resultReceipt(runId, paths.state);
         return `PAIR · READY FOR YOU\nDraft PR      ${result?.pull_request?.url ?? "ready"}\nVerification  passed\nCode reviewer approved\nWeb final     approved\nAction        review and merge when ready`;
       }
