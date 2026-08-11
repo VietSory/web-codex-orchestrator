@@ -16,6 +16,8 @@ const MAX_REVIEW_PROMPT_BYTES = 64 * 1024;
 const MAX_COMMAND_TAIL_CHARS = 4096;
 const MAX_VALIDATION_BYTES = 8 * 1024 * 1024;
 
+type ProductionGateOptions = { runId: string; stateDirectory: string; configPath: string };
+
 function tail(value: string | undefined): string {
   if (!value) return "";
   return value.length <= MAX_COMMAND_TAIL_CHARS ? value : value.slice(value.length - MAX_COMMAND_TAIL_CHARS);
@@ -55,8 +57,8 @@ export function reviewPrompt(request: ExecutorReviewRequest, options: { smart_co
         "No priority context hints are supplied for this review. Start with the changed files and expand reads only when necessary to verify a concrete dependency or finding.",
       ];
   const body = [
-    "Review the exact Phase 10 result in read-only mode.",
-    "The Web implementation pack is already the architecture/implementation authority; do not redesign or modify files.",
+    "Review the exact Harness result in read-only mode.",
+    "The Web implementation pack is already the architecture/implementation authority; do not redesign or directly modify files.",
     `Accepted Task Bundle directory (trusted local read-only authority): ${quotedPath(request.accepted_bundle_path)}`,
     `Required reviewed_change_set_sha256: ${request.change_set_digest}`,
     `Registered artifact SHA-256: ${request.artifact_sha256}`,
@@ -68,7 +70,7 @@ export function reviewPrompt(request: ExecutorReviewRequest, options: { smart_co
     "Focus on correctness, security, regressions, tests, scope and performance.",
     "If a blocking correction is needed return REVISE; if authority/requirements are insufficient return ESCALATE. Never edit the worktree.",
   ].join("\n");
-  if (Buffer.byteLength(body, "utf8") > MAX_REVIEW_PROMPT_BYTES) throw new ExecutorError("EXECUTOR_OPERATIONAL_ERROR", `Phase 10 review prompt exceeds ${MAX_REVIEW_PROMPT_BYTES} bytes.`);
+  if (Buffer.byteLength(body, "utf8") > MAX_REVIEW_PROMPT_BYTES) throw new ExecutorError("EXECUTOR_OPERATIONAL_ERROR", `Harness review prompt exceeds ${MAX_REVIEW_PROMPT_BYTES} bytes.`);
   return body;
 }
 function mappedVerdict(verdict: string): "APPROVE" | "REVISE" | "ESCALATE" {
@@ -77,26 +79,38 @@ function mappedVerdict(verdict: string): "APPROVE" | "REVISE" | "ESCALATE" {
   return "ESCALATE";
 }
 
-export async function createProductionExecutorGates(options: { runId: string; stateDirectory: string; configPath: string }): Promise<{ verifier: ExecutorVerifierPort; reviewer: ExecutorReviewerPort }> {
-  const [config, trusted, reviewMode] = await Promise.all([
+/**
+ * Deterministic Harness verification is deliberately independent from model
+ * authentication. PAIR can use this path with zero provider/model calls.
+ * The bundled runtime is used only as the network-disabled local sandbox.
+ */
+export async function createProductionVerifier(options: ProductionGateOptions): Promise<ExecutorVerifierPort> {
+  const [config, trusted] = await Promise.all([
     loadPhase4Config(options.configPath),
     resolveTrustedRunContext(options.runId, options.stateDirectory, options.configPath),
+  ]);
+  const runtime = await resolveCodexRuntime(config.runtime, options.stateDirectory);
+  const sandbox = new CodexVerificationSandbox(runtime);
+  const validation = await loadValidationDocument(trusted.runReceipt.accepted_bundle_path);
+  await sandbox.checkAvailability();
+  return {
+    async verify(request: ExecutorVerificationRequest) {
+      const result = await verifyDeterministically({ worktreePath: request.worktree_path, baseCommit: trusted.runReceipt.base_commit, branchName: trusted.runReceipt.branch_name, validation, policy: config.verification, sandbox, ...(request.signal ? { signal: request.signal } : {}) });
+      return { passed: result.required_commands_passed, evidence: { kind: "harness-deterministic-verification", change_set_digest: request.change_set_digest, required_commands_passed: result.required_commands_passed, commands: result.commands.map((command) => ({ command_id: command.command_id, required: command.required, status: command.status, exit_code: command.exit_code, timed_out: command.timed_out, duration_ms: command.duration_ms, stdout_truncated: command.stdout_truncated, stderr_truncated: command.stderr_truncated, stdout_tail: tail(command.stdout), stderr_tail: tail(command.stderr) })) } };
+    },
+  };
+}
+
+/** Create the single selected model reviewer only when the mode requires it. */
+export async function createProductionModelReviewer(options: ProductionGateOptions): Promise<ExecutorReviewerPort> {
+  const [config, reviewMode] = await Promise.all([
+    loadPhase4Config(options.configPath),
     effectiveRunReviewMode(options.stateDirectory, options.runId),
   ]);
   const runtime = await resolveCodexRuntime(config.runtime, options.stateDirectory);
   const agentClient = new CodexSdkAgentClient(runtime);
-  const sandbox = new CodexVerificationSandbox(runtime);
-  await Promise.all([agentClient.checkAvailability(), sandbox.checkAvailability()]);
-  const validation = await loadValidationDocument(trusted.runReceipt.accepted_bundle_path);
-
-  const verifier: ExecutorVerifierPort = {
-    async verify(request: ExecutorVerificationRequest) {
-      const result = await verifyDeterministically({ worktreePath: request.worktree_path, baseCommit: trusted.runReceipt.base_commit, branchName: trusted.runReceipt.branch_name, validation, policy: config.verification, sandbox, ...(request.signal ? { signal: request.signal } : {}) });
-      return { passed: result.required_commands_passed, evidence: { kind: "phase10-deterministic-verification", change_set_digest: request.change_set_digest, required_commands_passed: result.required_commands_passed, commands: result.commands.map((command) => ({ command_id: command.command_id, required: command.required, status: command.status, exit_code: command.exit_code, timed_out: command.timed_out, duration_ms: command.duration_ms, stdout_truncated: command.stdout_truncated, stderr_truncated: command.stderr_truncated, stdout_tail: tail(command.stdout), stderr_tail: tail(command.stderr) })) } };
-    },
-  };
-
-  const reviewer: ExecutorReviewerPort = {
+  await agentClient.checkAvailability();
+  return {
     reviewer_kind: reviewMode.kind,
     reviewer_profile: { model: reviewMode.model, reasoning_effort: reviewMode.reasoning_effort },
     budget_policy: {
@@ -120,7 +134,7 @@ export async function createProductionExecutorGates(options: { runId: string; st
         verdict: digestMatches ? mappedVerdict(result.review.verdict) : "ESCALATE",
         usage,
         evidence: {
-          kind: `phase10-${reviewMode.kind}-review`,
+          kind: `harness-${reviewMode.kind}-review`,
           reviewer: reviewMode.kind,
           model: reviewMode.model,
           reasoning_effort: reviewMode.reasoning_effort,
@@ -144,5 +158,13 @@ export async function createProductionExecutorGates(options: { runId: string; st
       };
     },
   };
+}
+
+/** Backward-compatible combined gate factory for low-level legacy callers. */
+export async function createProductionExecutorGates(options: ProductionGateOptions): Promise<{ verifier: ExecutorVerifierPort; reviewer: ExecutorReviewerPort }> {
+  const [verifier, reviewer] = await Promise.all([
+    createProductionVerifier(options),
+    createProductionModelReviewer(options),
+  ]);
   return { verifier, reviewer };
 }
