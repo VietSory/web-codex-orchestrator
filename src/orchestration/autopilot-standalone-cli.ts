@@ -69,6 +69,15 @@ async function main(): Promise<number> {
   try { parsed = parseArgs(process.argv.slice(2)); }
   catch (error) { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n${usage()}\n`); return 2; }
 
+  const controller = new AbortController();
+  let interrupted = false;
+  const interrupt = (): void => {
+    interrupted = true;
+    controller.abort();
+  };
+  process.once("SIGINT", interrupt);
+  process.once("SIGTERM", interrupt);
+
   try {
     const config = await loadTrustedConfig(parsed.configPath);
     const paths = resolveWcoPaths({ configPath: parsed.configPath, stateDirectory: parsed.stateDirectory });
@@ -78,14 +87,19 @@ async function main(): Promise<number> {
       runId: parsed.runId,
       stateDirectory: parsed.stateDirectory,
       configPath: parsed.configPath,
+      signal: controller.signal,
       ...(parsed.maxCycles !== undefined ? { maxCycles: parsed.maxCycles } : {}),
     });
     process.stdout.write(parsed.json ? `${JSON.stringify(receipt)}\n` : `${human(receipt)}\n`);
+    if (interrupted || receipt.status === "PAUSED") return 130;
     return receipt.status === "READY_FOR_YOU" ? 0 : receipt.status === "NEEDS_YOU" ? 1 : 0;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(parsed.json ? `${JSON.stringify({ status: "failed", message })}\n` : `${message}\n`);
-    return 3;
+    return interrupted ? 130 : 3;
+  } finally {
+    process.removeListener("SIGINT", interrupt);
+    process.removeListener("SIGTERM", interrupt);
   }
 }
 
