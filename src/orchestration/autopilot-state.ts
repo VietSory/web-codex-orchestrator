@@ -1,5 +1,6 @@
 import { constants as fsConstants, type Stats } from "node:fs";
 import fs from "node:fs/promises";
+import path from "node:path";
 
 export const MAX_AUTOPILOT_RECEIPT_BYTES = 256 * 1024;
 
@@ -7,12 +8,37 @@ function sameFile(left: Stats, right: Stats): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
+async function assertSafeAncestorChain(filePath: string): Promise<boolean> {
+  const resolved = path.resolve(filePath);
+  const archiveDirectory = path.dirname(resolved);
+  const taskDirectory = path.dirname(archiveDirectory);
+  const runsDirectory = path.dirname(taskDirectory);
+  const stateRoot = path.dirname(runsDirectory);
+  if (path.basename(runsDirectory) !== "runs") {
+    throw new Error("AUTOPILOT_RECEIPT_UNSAFE: durable receipt is outside the canonical state/runs hierarchy.");
+  }
+  for (const directory of [stateRoot, runsDirectory, taskDirectory, archiveDirectory]) {
+    let info: Stats;
+    try { info = await fs.lstat(directory); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      throw new Error("AUTOPILOT_RECEIPT_UNSAFE: durable receipt ancestor is not a real directory.");
+    }
+  }
+  return true;
+}
+
 /**
  * Read a bounded authority file through a stable descriptor. This mirrors the
- * hardened orchestration-ledger pattern: no symlink following, no path swap,
- * and no growth/truncation while bytes are being consumed.
+ * hardened orchestration-ledger pattern: every ancestor is a real directory,
+ * the final file is never followed through a symlink, path identity is stable,
+ * and the file cannot grow or truncate while bytes are being consumed.
  */
 export async function readStableAutopilotBytes(filePath: string): Promise<Buffer | null> {
+  if (!await assertSafeAncestorChain(filePath)) return null;
   let pathStat: Stats;
   try {
     pathStat = await fs.lstat(filePath);
@@ -55,6 +81,7 @@ export async function readStableAutopilotBytes(filePath: string): Promise<Buffer
     ) {
       throw new Error("AUTOPILOT_RECEIPT_UNSAFE: durable receipt changed while reading.");
     }
+    await assertSafeAncestorChain(filePath);
     return bytes;
   } finally {
     await handle.close();
