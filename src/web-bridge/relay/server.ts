@@ -2,22 +2,17 @@ import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { WebBridgeError, parseWebContractEnvelope, parseWebImplementationSubmission, parseWebVerdictEnvelope } from "../contracts.js";
 import { RelayFileStore } from "./file-store.js";
 import { PersonalBearerAuthenticator } from "./auth.js";
-import { toAuthoringEvent } from "./protocol.js";
+import { isRelayJobPending, toAuthoringEvent, type RelayJobRecord } from "./protocol.js";
 
 const MAX_REQUEST_BYTES = 8_388_608;
 async function jsonBody(request: IncomingMessage): Promise<unknown> { const chunks: Buffer[] = []; let bytes = 0; for await (const raw of request) { const chunk = Buffer.from(raw); bytes += chunk.length; if (bytes > MAX_REQUEST_BYTES) throw new WebBridgeError("RELAY_REQUEST_LIMIT", "Relay request exceeded its byte bound."); chunks.push(chunk); } try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new WebBridgeError("RELAY_REQUEST_INVALID", "Relay request is not valid JSON."); } }
 function send(response: ServerResponse, status: number, value: unknown): void { const body = Buffer.from(JSON.stringify(value)); response.writeHead(status, { "Content-Type": "application/json", "Content-Length": body.length, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" }); response.end(body); }
 function idempotency(request: IncomingMessage): string { const value = request.headers["idempotency-key"]; if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value)) throw new WebBridgeError("RELAY_IDEMPOTENCY_REQUIRED", "A valid Idempotency-Key is required."); return value; }
-function latestActiveJob<T extends { kind: string; identity: { expires_at: string } }>(jobs: T[], kind: T["kind"]): T | undefined {
-  const now = Date.now();
-  return jobs.filter((job) => job.kind === kind && Number.isFinite(Date.parse(job.identity.expires_at)) && Date.parse(job.identity.expires_at) > now).at(-1);
-}
+function latestPendingJob(jobs: RelayJobRecord[], kind: RelayJobRecord["kind"]): RelayJobRecord | undefined { return jobs.filter((job) => job.kind === kind && isRelayJobPending(job)).at(-1); }
 function normalizeAuthoringRequest(supplied: unknown, owner: string): any {
   if (!supplied || typeof supplied !== "object" || Array.isArray(supplied)) throw new WebBridgeError("RELAY_REQUEST_INVALID", "Authoring request must be an object.");
   const body = { ...(supplied as Record<string, unknown>), owner };
-  if (body.orchestration_mode !== undefined && body.orchestration_mode !== "PAIR" && body.orchestration_mode !== "AUTOPILOT") {
-    throw new WebBridgeError("RELAY_REQUEST_INVALID", "orchestration_mode must be PAIR or AUTOPILOT when supplied.");
-  }
+  if (body.orchestration_mode !== undefined && body.orchestration_mode !== "PAIR" && body.orchestration_mode !== "AUTOPILOT") throw new WebBridgeError("RELAY_REQUEST_INVALID", "orchestration_mode must be PAIR or AUTOPILOT when supplied.");
   return body;
 }
 
@@ -27,14 +22,28 @@ export function createRelayServer(options: { store: RelayFileStore; authenticato
       const principal = options.authenticator.authenticate(request.headers.authorization);
       const url = new URL(request.url ?? "/", "http://relay.invalid");
       const method = request.method ?? "GET";
-      if (method === "GET" && url.pathname === "/v1/status") { const jobs = await options.store.list(principal.owner); send(response, 200, { configured: true, connected: true, account: principal.owner, pending_author_job: latestActiveJob(jobs, "authoring")?.identity.job_id, pending_final_review: latestActiveJob(jobs, "final_review")?.identity.job_id }); return; }
+      if (method === "GET" && url.pathname === "/v1/status") { const jobs = await options.store.list(principal.owner); send(response, 200, { configured: true, connected: true, account: principal.owner, pending_author_job: latestPendingJob(jobs, "authoring")?.identity.job_id, pending_final_review: latestPendingJob(jobs, "final_review")?.identity.job_id }); return; }
       if (method === "POST" && url.pathname === "/v1/authoring/jobs") { const body = normalizeAuthoringRequest(await jsonBody(request), principal.owner); const identity = await options.store.create("authoring", principal.owner, body, idempotency(request), body.ttl_seconds); send(response, 201, identity); return; }
       if (method === "POST" && url.pathname === "/v1/final-reviews") { const body = await jsonBody(request) as any; const identity = await options.store.create("final_review", principal.owner, body, idempotency(request), 86_400); send(response, 201, identity); return; }
-      if (method === "GET" && url.pathname === "/v1/authoring/pending") { const record = latestActiveJob(await options.store.list(principal.owner), "authoring"); send(response, 200, { job: record ? { identity: record.identity, request: record.request } : null }); return; }
-      if (method === "GET" && url.pathname === "/v1/final-reviews/pending") { const record = latestActiveJob(await options.store.list(principal.owner), "final_review"); send(response, 200, { review: record ? { identity: record.identity, request: record.request } : null }); return; }
+      if (method === "GET" && url.pathname === "/v1/authoring/pending") { const record = latestPendingJob(await options.store.list(principal.owner), "authoring"); send(response, 200, { job: record ? { identity: record.identity, request: record.request } : null }); return; }
+      if (method === "GET" && url.pathname === "/v1/final-reviews/pending") { const record = latestPendingJob(await options.store.list(principal.owner), "final_review"); send(response, 200, { review: record ? { identity: record.identity, request: record.request } : null }); return; }
       const eventMatch = url.pathname.match(/^\/v1\/jobs\/([^/]+)\/events$/);
       if (method === "GET" && eventMatch) { const after = Number(url.searchParams.get("after") ?? 0); if (!Number.isSafeInteger(after) || after < 0) throw new WebBridgeError("RELAY_REQUEST_INVALID", "Event sequence is invalid."); const event = (await options.store.events(decodeURIComponent(eventMatch[1]!), principal.owner, after)).find((item) => ["repository_command_result", "user_clarification"].includes(item.type)) ?? null; send(response, 200, { event }); return; }
-      if (method === "POST" && eventMatch) { const body = await jsonBody(request) as { type?: unknown; payload?: unknown }; if (typeof body.type !== "string" || !["repository_command", "contract_sealed", "implementation_sealed"].includes(body.type)) throw new WebBridgeError("RELAY_EVENT_INVALID", "Authoring event type is invalid."); let payload = body.payload; if (body.type === "contract_sealed") payload = { envelope: parseWebContractEnvelope((body.payload as any)?.envelope ?? body.payload) }; if (body.type === "implementation_sealed") payload = { submission: parseWebImplementationSubmission((body.payload as any)?.submission ?? body.payload) }; if (body.type === "repository_command") { const value = body.payload as any; if (!value || typeof value.request_id !== "string" || !value.command || typeof value.command.operation !== "string") throw new WebBridgeError("RELAY_EVENT_INVALID", "Repository command is invalid."); payload = { request_id: value.request_id, command: value.command }; } const event = await options.store.append(decodeURIComponent(eventMatch[1]!), principal.owner, body.type, payload, idempotency(request)); send(response, 201, event); return; }
+      if (method === "POST" && eventMatch) {
+        const jobId = decodeURIComponent(eventMatch[1]!);
+        const key = idempotency(request);
+        const body = await jsonBody(request) as { type?: unknown; payload?: unknown };
+        if (typeof body.type !== "string" || !["repository_command", "contract_sealed", "implementation_sealed"].includes(body.type)) throw new WebBridgeError("RELAY_EVENT_INVALID", "Authoring event type is invalid.");
+        const record = await options.store.get(jobId, principal.owner);
+        const exactReplay = `event:${key}` in record.idempotency;
+        if (!isRelayJobPending(record) && !exactReplay) throw new WebBridgeError("RELAY_JOB_COMPLETE", "The authoring job is already complete; no additional Web authoring events are accepted.");
+        if ((record.request as any)?.orchestration_mode === "AUTOPILOT" && body.type === "implementation_sealed") throw new WebBridgeError("RELAY_AUTOPILOT_AUTHORITY_VIOLATION", "AUTOPILOT authoring ends at contract_sealed; Web implementation authority is not accepted.");
+        let payload = body.payload;
+        if (body.type === "contract_sealed") payload = { envelope: parseWebContractEnvelope((body.payload as any)?.envelope ?? body.payload) };
+        if (body.type === "implementation_sealed") payload = { submission: parseWebImplementationSubmission((body.payload as any)?.submission ?? body.payload) };
+        if (body.type === "repository_command") { const value = body.payload as any; if (!value || typeof value.request_id !== "string" || !value.command || typeof value.command.operation !== "string") throw new WebBridgeError("RELAY_EVENT_INVALID", "Repository command is invalid."); payload = { request_id: value.request_id, command: value.command }; }
+        const event = await options.store.append(jobId, principal.owner, body.type, payload, key); send(response, 201, event); return;
+      }
       const localEventMatch = url.pathname.match(/^\/v1\/jobs\/([^/]+)\/local-events$/);
       if (method === "GET" && localEventMatch) { const after = Number(url.searchParams.get("after") ?? 0); if (!Number.isSafeInteger(after) || after < 0) throw new WebBridgeError("RELAY_REQUEST_INVALID", "Event sequence is invalid."); const event = (await options.store.events(decodeURIComponent(localEventMatch[1]!), principal.owner, after)).map(toAuthoringEvent).find(Boolean) ?? null; send(response, 200, { event }); return; }
       const resultMatch = url.pathname.match(/^\/v1\/jobs\/([^/]+)\/repository-results$/);

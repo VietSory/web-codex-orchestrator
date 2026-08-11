@@ -13,4 +13,15 @@ export interface RelayJobRecord {
 }
 export interface RelayLimits { maximum_record_bytes: number; maximum_events_per_job: number; maximum_active_jobs_per_owner: number; maximum_ttl_seconds: number; }
 export const DEFAULT_RELAY_LIMITS: RelayLimits = { maximum_record_bytes: 8_388_608, maximum_events_per_job: 1_000, maximum_active_jobs_per_owner: 32, maximum_ttl_seconds: 604_800 };
+
+export function isRelayJobPending(record: RelayJobRecord, nowMs = Date.now()): boolean {
+  const expiresAt = Date.parse(record.identity.expires_at);
+  if (!Number.isFinite(expiresAt) || expiresAt <= nowMs) return false;
+  if (record.kind === "final_review") return !record.events.some((event) => event.type === "web_verdict");
+  const mode = (record.request as AuthoringJobRequest).orchestration_mode ?? "PAIR";
+  if (mode !== "PAIR" && mode !== "AUTOPILOT") return false;
+  const terminalEvent = mode === "AUTOPILOT" ? "contract_sealed" : "implementation_sealed";
+  return !record.events.some((event) => event.type === terminalEvent);
+}
+
 export function toAuthoringEvent(event: RelayStoredEvent): AuthoringEvent | null { if (!["repository_command", "contract_sealed", "implementation_sealed"].includes(event.type)) return null; return { sequence: event.sequence, type: event.type, ...(event.payload as object) } as AuthoringEvent; }
