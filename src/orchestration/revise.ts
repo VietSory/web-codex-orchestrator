@@ -142,6 +142,7 @@ export async function reviseRunForOrchestration(options: {
   revisionRound: number;
   stateDirectory: string;
   configPath: string;
+  signal?: AbortSignal;
   now?: () => Date;
 }): Promise<RevisionReceipt> {
   let authPath: string | undefined;
@@ -168,6 +169,7 @@ export async function reviseRunForOrchestration(options: {
       sandbox: new CodexVerificationSandbox(runtime),
       gitRunner: runner,
       secrets: collectSecrets(config),
+      ...(options.signal ? { signal: options.signal } : {}),
       ...(options.now ? { now: options.now } : {}),
     });
   } finally {
