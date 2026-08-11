@@ -1,7 +1,8 @@
 import { createProductionVerifier } from "../executor/production-gates.js";
 import { executeRegisteredWebPack } from "../executor/service.js";
 import type { ExecutorReviewerPort } from "../executor/gates.js";
-import { readLifecycleSnapshot, type LifecycleSnapshot } from "./snapshot-reader.js";
+import type { LifecycleSnapshot } from "./planner.js";
+import { readLifecycleSnapshot } from "./snapshot-reader.js";
 import { runNextTransition, type ContinueResult, type OrchestrationDependencies } from "./transition-runner.js";
 
 const unreachableReviewer: ExecutorReviewerPort = {
