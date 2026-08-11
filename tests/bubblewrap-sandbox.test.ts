@@ -75,6 +75,8 @@ test("Bubblewrap verifier clears environment, unshares namespaces and binds only
     assert.ok(indexOfSequence(args, ["--setenv", "HOME", "/tmp/wco-home"]) >= 0);
     assert.ok(indexOfSequence(args, ["--setenv", "CI", "1"]) >= 0);
     assert.ok(indexOfSequence(args, ["--", "node", "--version"]) >= 0);
+    assert.equal(args.includes("/etc"), false);
+    assert.equal(args.some((value) => value.includes(".local")), false);
 
     const writableBinds: string[] = [];
     for (let index = 0; index < args.length - 2; index += 1) if (args[index] === "--bind") writableBinds.push(args[index + 1]!);
@@ -84,7 +86,7 @@ test("Bubblewrap verifier clears environment, unshares namespaces and binds only
   }
 });
 
-test("Bubblewrap verifier rejects network, credential exposure and cwd escape before spawning", { skip: process.platform !== "linux" }, async () => {
+test("Bubblewrap verifier rejects network, credentials, cwd escape and sandbox-owned environment overrides before spawning", { skip: process.platform !== "linux" }, async () => {
   const state = await fixture();
   try {
     let calls = 0;
@@ -104,6 +106,12 @@ test("Bubblewrap verifier rejects network, credential exposure and cwd escape be
       () => sandbox.run("node", [], { ...base, cwd: os.tmpdir(), network_access: false, credential_directories: [] }),
       (error: unknown) => error instanceof ExecutionError && error.code === "VERIFIER_SANDBOX_UNAVAILABLE",
     );
+    for (const key of ["PATH", "HOME", "TMPDIR"]) {
+      await assert.rejects(
+        () => sandbox.run("node", [], { ...base, env: { [key]: "/attacker-controlled" }, network_access: false, credential_directories: [] }),
+        (error: unknown) => error instanceof ExecutionError && error.code === "VERIFIER_SANDBOX_UNAVAILABLE",
+      );
+    }
     assert.equal(calls, 0);
   } finally {
     await state.cleanup();
