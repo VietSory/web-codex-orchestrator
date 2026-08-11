@@ -1,4 +1,5 @@
-import { access, lstat, realpath } from "node:fs/promises";
+import { access, lstat, mkdtemp, realpath, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { ExecutionError } from "../execution/errors.js";
 import { defaultSpawnBounded, type SpawnBounded } from "../runtime/spawn-bounded.js";
@@ -148,11 +149,34 @@ export class BubblewrapVerificationSandbox implements VerificationSandbox {
 
   async checkAvailability(): Promise<void> {
     if (process.platform !== "linux") throw new ExecutionError("VERIFIER_SANDBOX_UNAVAILABLE", "Bubblewrap verification is supported only on Linux/WSL.");
-    const result = await this.spawnBounded({ executable: BWRAP, args: ["--version"], environment: { PATH: process.env.PATH ?? "" }, timeoutMs: SMOKE_TIMEOUT_MS, stdoutMaxBytes: 16_384, stderrMaxBytes: 16_384, shell: false });
-    if (result.spawnError || result.timedOut || result.exitCode !== 0) {
+    const version = await this.spawnBounded({ executable: BWRAP, args: ["--version"], environment: { PATH: process.env.PATH ?? "" }, timeoutMs: SMOKE_TIMEOUT_MS, stdoutMaxBytes: 16_384, stderrMaxBytes: 16_384, shell: false });
+    if (version.spawnError || version.timedOut || version.cancelled || version.exitCode !== 0) {
       throw new ExecutionError("VERIFIER_SANDBOX_UNAVAILABLE", "Bubblewrap is unavailable. Install bwrap; WCO will not run deterministic verification without filesystem/network isolation.");
     }
-    await access("/proc");
+
+    let smokeRoot: string | null = null;
+    try {
+      const raw = await mkdtemp(path.join(os.tmpdir(), "wco-bwrap-smoke-"));
+      smokeRoot = await realpath(raw);
+      const result = await this.run("node", ["-e", "process.exit(0)"], {
+        cwd: smokeRoot,
+        env: { WCO_SANDBOX_SMOKE: "1" },
+        timeoutMs: SMOKE_TIMEOUT_MS,
+        maximumOutputBytes: 16_384,
+        network_access: false,
+        writable_root: smokeRoot,
+        credential_directories: [],
+      });
+      if (result.timed_out || result.cancelled || result.exitCode !== 0) {
+        throw new ExecutionError("VERIFIER_SANDBOX_UNAVAILABLE", "Bubblewrap exists but cannot establish the required isolated namespace on this host.");
+      }
+      await access("/proc");
+    } catch (error) {
+      if (error instanceof ExecutionError && error.code === "VERIFIER_SANDBOX_UNAVAILABLE") throw error;
+      throw new ExecutionError("VERIFIER_SANDBOX_UNAVAILABLE", `Bubblewrap isolation smoke test failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      if (smokeRoot) await rm(smokeRoot, { recursive: true, force: true }).catch(() => undefined);
+    }
   }
 
   async run(executable: string, args: readonly string[], options: CommandRunOptions): Promise<SandboxRunResult> {
