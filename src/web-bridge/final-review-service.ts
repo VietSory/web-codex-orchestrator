@@ -8,6 +8,9 @@ import { loadAndVerifyResultBundle } from "../web-review/result-bundle-review-re
 import { readBoundedResultEvidence } from "./result-evidence-reader.js";
 import { assertCodeReviewApprovedForCurrentResult, createPendingCodeReview, readWebCodeReviewReceipt } from "./code-review-service.js";
 
+export type WebReviewPurpose = "independent_code_review" | "final_intent_review";
+export type PendingWebReview = BridgeJobIdentity & { purpose: WebReviewPurpose };
+
 async function pairCodeReviewGate(options: { bridge: WebBridge; runId: string; stateDirectory: string }): Promise<BridgeJobIdentity | null> {
   const split = options.runId.lastIndexOf(":");
   const taskId = options.runId.slice(0, split), archiveSha = options.runId.slice(split + 1);
@@ -18,8 +21,6 @@ async function pairCodeReviewGate(options: { bridge: WebBridge; runId: string; s
 
   const review = await readWebCodeReviewReceipt(options.stateDirectory, options.runId);
   if (review?.state === "APPROVED") {
-    // Approval is useful only while it still binds the newest exact Result
-    // Bundle. A revision/republication forces a new independent code review.
     try {
       await assertCodeReviewApprovedForCurrentResult(options.stateDirectory, options.runId);
       return null;
@@ -33,13 +34,18 @@ async function pairCodeReviewGate(options: { bridge: WebBridge; runId: string; s
   return await createPendingCodeReview(options);
 }
 
-export async function createPendingFinalReview(options: { bridge: WebBridge; runId: string; stateDirectory: string }): Promise<BridgeJobIdentity> {
+/**
+ * Create the next Web review required by policy and return its explicit role.
+ * Callers must never infer that every pending review is the original-Web final
+ * review: PAIR may first require an independent code-review job.
+ */
+export async function createPendingFinalReview(options: { bridge: WebBridge; runId: string; stateDirectory: string }): Promise<PendingWebReview> {
   const split = options.runId.lastIndexOf(":");
   const taskId = options.runId.slice(0, split), archiveSha = options.runId.slice(split + 1);
   if (split < 1 || !/^[a-f0-9]{64}$/.test(archiveSha)) throw new WebBridgeError("WEB_FINAL_REVIEW_RUN_INVALID", "Run identity is invalid.");
 
   const codeReviewJob = await pairCodeReviewGate(options);
-  if (codeReviewJob) return codeReviewJob;
+  if (codeReviewJob) return { ...codeReviewJob, purpose: "independent_code_review" };
 
   const receipt = await readResultBundleReceipt(resultBundlePaths(options.stateDirectory, taskId, archiveSha).receiptPath);
   if (!receipt || receipt.state !== "READY_FOR_WEB_REVIEW" || !receipt.archive_sha256) throw new WebBridgeError("WEB_FINAL_REVIEW_NOT_READY", "Result Bundle is not ready; no review job was created.");
@@ -49,5 +55,5 @@ export async function createPendingFinalReview(options: { bridge: WebBridge; run
   const verified = await loadAndVerifyResultBundle(options.stateDirectory, options.runId, reviewRound);
   const evidence = await readBoundedResultEvidence(verified.archivePath, verified.manifest);
   await options.bridge.submitFinalReviewEvidence(identity.job_id, { purpose: "final_intent_review", binding: request, entries: evidence }, `final-evidence-${receipt.archive_sha256}`);
-  return identity;
+  return { ...identity, purpose: "final_intent_review" };
 }
