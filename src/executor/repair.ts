@@ -73,7 +73,7 @@ function archiveVerifiedWebRepair(receipt: ExecutorReceipt, now: () => Date): vo
   const repair = receipt.repair;
   if (!repair || repair.reviewer !== "web" || repair.state !== "VERIFIED" || !repair.final_change_set_digest || repair.final_change_set_digest !== receipt.change_set_digest || !receipt.verification.passed || receipt.verification.change_set_digest !== repair.final_change_set_digest) throw new ExecutorError("EXECUTOR_REPAIR_INVALID", "Only the exact deterministically verified Web repair generation may be archived.");
   const history = receipt.repair_history ?? [];
-  if (history.length >= MAX_REPAIR_GENERATIONS) throw new ExecutorError("EXECUTOR_REPAIR_INVALID", `Web repair generation budget ${MAX_REPAIR_GENERATIONS} is exhausted.`);
+  if (history.length >= MAX_REPAIR_GENERATIONS - 1) throw new ExecutorError("EXECUTOR_REPAIR_INVALID", `Web repair total generation budget ${MAX_REPAIR_GENERATIONS} is exhausted.`);
   const previous = history.at(-1);
   if (previous && previous.final_change_set_digest !== repair.source_change_set_digest) throw new ExecutorError("EXECUTOR_REPAIR_INVALID", "Web repair history digest chain is broken.");
   history.push({ generation: history.length + 1, reviewer: "web", source_change_set_digest: repair.source_change_set_digest, source_review_evidence_sha256: repair.source_review_evidence_sha256, operations_sha256: operationsDigest(repair.operations), operation_count: repair.operations.length, final_change_set_digest: repair.final_change_set_digest, verified_at: nowIso(now) });
@@ -83,8 +83,12 @@ function archiveVerifiedWebRepair(receipt: ExecutorReceipt, now: () => Date): vo
 export async function bindWebReviewRepair(options: { stateDirectory: string; receipt: ExecutorReceipt; sourceChangeSetDigest: string; sourceReviewEvidenceSha256: string; operations: ReviewerRepairOperation[]; now?: () => Date; }): Promise<ExecutorReceipt> {
   const now = options.now ?? (() => new Date()); const receipt = options.receipt;
   if (receipt.repair) {
-    const same = receipt.repair.reviewer === "web" && receipt.repair.source_change_set_digest === options.sourceChangeSetDigest && receipt.repair.source_review_evidence_sha256 === options.sourceReviewEvidenceSha256 && operationsDigest(receipt.repair.operations) === operationsDigest(options.operations);
-    if (same) return receipt;
+    const sameEvidence = receipt.repair.reviewer === "web" && receipt.repair.source_review_evidence_sha256 === options.sourceReviewEvidenceSha256;
+    if (sameEvidence) {
+      const exactReplay = receipt.repair.source_change_set_digest === options.sourceChangeSetDigest && operationsDigest(receipt.repair.operations) === operationsDigest(options.operations);
+      if (exactReplay) return receipt;
+      throw new ExecutorError("EXECUTOR_REPAIR_INVALID", "The same Web repair evidence digest cannot authorize different source or operations.");
+    }
     archiveVerifiedWebRepair(receipt, now);
   }
   const previous = receipt.repair_history?.at(-1);
@@ -108,8 +112,7 @@ async function readGenerationBackup(stateDirectory: string, receipt: ExecutorRec
   const backup = receipt.repair?.preimage_backups?.find((candidate) => candidate.path === operation.path);
   if (!backup) return null;
   const base = executorPaths(stateDirectory, receipt.task_id, receipt.task_bundle_sha256, receipt.artifact_sha256).directory;
-  const expectedPrefix = "backups/repairs/";
-  if (!backup.relative_path.startsWith(expectedPrefix) || backup.relative_path.includes("..")) throw new ExecutorError("EXECUTOR_REPAIR_INVALID", `Repair backup path is not canonical for '${operation.path}'.`);
+  if (!backup.relative_path.startsWith("backups/repairs/") || backup.relative_path.includes("..")) throw new ExecutorError("EXECUTOR_REPAIR_INVALID", `Repair backup path is not canonical for '${operation.path}'.`);
   const bytes = await readStableExecutorStateFile(path.join(base, ...backup.relative_path.split("/")), MAX_REPAIR_BACKUP_BYTES);
   if (crypto.createHash("sha256").update(bytes).digest("hex") !== backup.sha256 || backup.sha256 !== operation.preimage_sha256) throw new ExecutorError("EXECUTOR_REPAIR_INVALID", `Repair generation backup digest mismatch for '${operation.path}'.`);
   return { bytes, mode: backup.mode };
@@ -122,10 +125,8 @@ async function rollbackRepairs(stateDirectory: string, receipt: ExecutorReceipt,
     if (classification !== "postimage") continue;
     if (operation.kind === "create_file") { await deleteExactWorktreeFile(receipt.worktree_path, operation.path); continue; }
     const backup = await readGenerationBackup(stateDirectory, receipt, operation);
-    if (backup) {
-      const current = await readStableWorktreeFile(receipt.worktree_path, operation.path);
-      await writeExactWorktreeFile(receipt.worktree_path, operation.path, backup.bytes, backup.mode, !current);
-    } else await restoreOriginalPostimage(receipt, pack, operation);
+    if (backup) { const current = await readStableWorktreeFile(receipt.worktree_path, operation.path); await writeExactWorktreeFile(receipt.worktree_path, operation.path, backup.bytes, backup.mode, !current); }
+    else await restoreOriginalPostimage(receipt, pack, operation);
     if (await classifyRepair(receipt, operation) !== "preimage") throw new ExecutorError("EXECUTOR_AMBIGUOUS_RECOVERY", `Repair rollback failed to restore exact generation preimage at '${operation.path}'.`);
   }
 }
