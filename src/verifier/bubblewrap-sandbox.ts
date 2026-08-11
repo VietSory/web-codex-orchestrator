@@ -7,6 +7,7 @@ import type { CommandRunOptions, SandboxRunResult, VerificationSandbox } from ".
 const BWRAP = "bwrap";
 const SMOKE_TIMEOUT_MS = 5_000;
 const MAX_ENVIRONMENT_KEYS = 128;
+const SYSTEM_PATHS = ["/usr/local/bin", "/usr/bin", "/bin"] as const;
 
 function assertExecutablePolicy(executable: string): void {
   if (!/^[A-Za-z0-9._+-]+$/.test(executable) || executable.includes("/") || executable.includes("\\") || /\s/.test(executable)) {
@@ -54,13 +55,16 @@ async function existingDirectory(value: string): Promise<string | null> {
   }
 }
 
-async function readonlyRuntimeDirectories(writableRoot: string): Promise<string[]> {
-  const candidates = new Set<string>(["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"]);
-  for (const entry of (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)) candidates.add(path.resolve(entry));
-  const nodeBin = path.dirname(process.execPath);
-  candidates.add(nodeBin);
-  candidates.add(path.dirname(nodeBin));
+function nodeRuntimeRoot(): string {
+  return path.dirname(path.dirname(path.resolve(process.execPath)));
+}
 
+function sandboxPath(): string {
+  return [path.join(nodeRuntimeRoot(), "bin"), ...SYSTEM_PATHS].join(":");
+}
+
+async function readonlyRuntimeDirectories(writableRoot: string): Promise<string[]> {
+  const candidates = new Set<string>(["/usr", "/bin", "/sbin", "/lib", "/lib64", nodeRuntimeRoot()]);
   const discovered: string[] = [];
   for (const candidate of candidates) {
     const directory = await existingDirectory(candidate);
@@ -81,13 +85,14 @@ function boundedEnvironment(environment: Record<string, string>): Array<[string,
   const entries = Object.entries(environment);
   if (entries.length > MAX_ENVIRONMENT_KEYS) throw new ExecutionError("VERIFIER_SANDBOX_UNAVAILABLE", "Validation environment exceeds the sandbox key cap.");
   const merged = new Map<string, string>([
-    ["PATH", process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin"],
+    ["PATH", sandboxPath()],
     ["HOME", "/tmp/wco-home"],
     ["TMPDIR", "/tmp"],
   ]);
   for (const [key, value] of entries) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new ExecutionError("VERIFIER_SANDBOX_UNAVAILABLE", `Validation environment key '${key}' is invalid.`);
     assertNulFree(value, `Validation environment '${key}'`);
+    if (key === "PATH" || key === "HOME" || key === "TMPDIR") throw new ExecutionError("VERIFIER_SANDBOX_UNAVAILABLE", `Validation environment may not override sandbox-owned key '${key}'.`);
     merged.set(key, value);
   }
   return [...merged.entries()].sort(([left], [right]) => left.localeCompare(right));
