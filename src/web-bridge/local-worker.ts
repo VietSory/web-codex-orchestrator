@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { DEFAULT_REVIEWER, type ReviewerSelection } from "../agent/reviewer-selection.js";
-import { freezeRunReviewMode } from "../agent/reviewer-mode-store.js";
+import { freezeRunReviewMode, readReviewMode } from "../agent/reviewer-mode-store.js";
 import type { TrustedConfig } from "../config/contracts.js";
 import type { JobMode } from "../orchestration/job-mode.js";
 import { atomicWriteJson } from "../run/run-store.js";
@@ -76,7 +76,7 @@ export async function startLocalAuthoring(options: {
 
   const now = options.now?.() ?? new Date();
   const mode = options.mode ?? "PAIR";
-  const reviewerSelection = options.reviewerSelection ?? { ...DEFAULT_REVIEWER };
+  const reviewerSelection = options.reviewerSelection ?? await readReviewMode(options.stateDirectory);
   const session: LocalWorkerSession = {
     schema_version: "1.0",
     session_id: crypto.randomUUID(),
