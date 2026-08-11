@@ -5,7 +5,7 @@ import { loadPhase4Config } from "../execution/execution-config.js";
 import { GitRunner } from "../git/git-runner.js";
 import { preparePublishGitSecurity } from "../publish/publish-auth.js";
 import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
-import { CodexVerificationSandbox } from "../verifier/codex-sandbox.js";
+import { BubblewrapVerificationSandbox } from "../verifier/bubblewrap-sandbox.js";
 import { loadSealedRevisionSource } from "../revision/revision-source.js";
 import { reviseRun } from "../revision/revision-service.js";
 import type { RevisionReceipt } from "../revision/contracts.js";
@@ -170,7 +170,7 @@ export async function reviseRunForOrchestration(options: {
       stateDirectory: options.stateDirectory,
       configPath: options.configPath,
       agentClient: new CodexSdkAgentClient(runtime),
-      sandbox: new CodexVerificationSandbox(runtime),
+      sandbox: new BubblewrapVerificationSandbox(),
       gitRunner: runner,
       secrets: collectSecrets(config),
       ...(options.signal ? { signal: options.signal } : {}),
