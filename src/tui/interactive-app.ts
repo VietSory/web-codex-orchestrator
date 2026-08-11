@@ -223,7 +223,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
         catch { io.write("Final review remains pending. Open the configured Senior Architect GPT manually, or run `wco web open` in another terminal.\n"); }
       });
       const receipt = await driveAutopilotJob({ bridge: interactiveBridge, runId: latest.run_id, stateDirectory: paths.state, configPath: paths.config, webPackPath: latest.web_pack_path, signal: controller.signal, ...(config.web_bridge?.poll_interval_ms !== undefined ? { pollIntervalMs: config.web_bridge.poll_interval_ms } : {}) });
-      if (receipt.status === "READY_FOR_YOU" && latest.state !== "COMPLETED") await completeLocalWorkerSession({ session: latest, stateDirectory: paths.state });
+      if (receipt.status === "READY_FOR_YOU") await completeLocalWorkerSession({ session: latest, stateDirectory: paths.state });
       const result = await resultReceipt(receipt.run_id, paths.state);
       return formatAutopilotOutcome(receipt, result?.pull_request?.url ?? null);
     } catch (error) {
