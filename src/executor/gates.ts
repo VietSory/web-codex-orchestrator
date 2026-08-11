@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import type { ReasoningEffort } from "../config/contracts.js";
 import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
 import { ExecutorError, type ExecutorUsage } from "./contracts.js";
 import type { SmartContextSelection } from "./smart-context.js";
@@ -47,6 +48,7 @@ export interface ExecutorReviewerPort {
    * historical Terra -> Sol low-level automation contract for compatibility.
    */
   reviewer_kind?: "terra" | "sol";
+  reviewer_profile?: { model: string; reasoning_effort: ReasoningEffort };
   /** Optional trusted policy. When present, the executor durably reserves one
    * turn in its own receipt before each review call. */
   budget_policy?: ExecutorReviewBudgetPolicy;
