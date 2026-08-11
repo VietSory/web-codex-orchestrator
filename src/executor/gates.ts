@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import type { ReasoningEffort } from "../config/contracts.js";
+import type { ReviewerRepairOperation } from "../execution/contracts.js";
 import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
 import { ExecutorError, type ExecutorUsage } from "./contracts.js";
 import type { SmartContextSelection } from "./smart-context.js";
@@ -33,6 +34,8 @@ export interface ExecutorReviewResult {
   verdict: "APPROVE" | "REVISE" | "ESCALATE";
   evidence: unknown;
   usage?: ExecutorUsage;
+  /** Proposal only. Harness remains the sole worktree mutation authority. */
+  repair_operations?: ReviewerRepairOperation[];
 }
 
 export interface ExecutorReviewBudgetPolicy {
