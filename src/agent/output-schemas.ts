@@ -7,6 +7,23 @@ const boundedStringArray = (maxItems: number, maxLength: number): JsonSchema => 
   items: boundedString(maxLength),
 });
 
+const nullableSha256: JsonSchema = { anyOf: [{ type: "null" }, { type: "string", pattern: "^[0-9a-f]{64}$", minLength: 64, maxLength: 64 }] };
+const nullablePayload: JsonSchema = { anyOf: [{ type: "null" }, boundedString(350_000)] };
+
+const reviewerRepairOperation: JsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    op_id: boundedString(128),
+    kind: { type: "string", enum: ["create_file", "replace_file", "delete_file"] },
+    path: boundedString(512),
+    preimage_sha256: nullableSha256,
+    postimage_base64: nullablePayload,
+    postimage_sha256: nullableSha256,
+  },
+  required: ["op_id", "kind", "path", "preimage_sha256", "postimage_base64", "postimage_sha256"],
+};
+
 const humanAction: JsonSchema = {
   anyOf: [
     { type: "null" },
@@ -121,6 +138,7 @@ export const REVIEW_OUTPUT_SCHEMA: JsonSchema = {
     scope_violations: boundedStringArray(256, 4_096),
     unverified_acceptance: boundedStringArray(256, 4_096),
     human_action: humanAction,
+    repair_operations: { type: "array", maxItems: 16, items: reviewerRepairOperation },
   },
-  required: ["verdict", "reviewed_change_set_sha256", "summary", "acceptance_results", "blocking_findings", "non_blocking_findings", "scope_violations", "unverified_acceptance", "human_action"],
+  required: ["verdict", "reviewed_change_set_sha256", "summary", "acceptance_results", "blocking_findings", "non_blocking_findings", "scope_violations", "unverified_acceptance", "human_action", "repair_operations"],
 };
