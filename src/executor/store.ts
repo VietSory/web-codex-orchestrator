@@ -56,10 +56,13 @@ function validateRepair(receipt: ExecutorReceipt, originalPaths: Set<string>): v
     ids.add(operation.op_id); paths.add(operation.path);
   }
   if (payloadBytes > MAX_REPAIR_PAYLOAD_BYTES) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor repair payload exceeds the durable byte budget.");
-  const proposedState = repair.reviewer === "web" ? "REVIEWING_WEB" : `REVIEWING_${repair.reviewer.toUpperCase()}`;
-  if (repair.state === "PROPOSED" && receipt.state !== proposedState) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Proposed repair is not at its review checkpoint.");
-  if (repair.state === "APPLYING" && receipt.state !== "REPAIR_APPLYING") throw new ExecutorError("EXECUTOR_STATE_INVALID", "Applying repair has inconsistent executor state.");
-  if (repair.state === "APPLIED" && receipt.state !== "REPAIR_APPLIED" && receipt.state !== "VERIFYING") throw new ExecutorError("EXECUTOR_STATE_INVALID", "Applied repair has inconsistent executor state.");
+  const terminal = receipt.state === "ESCALATE_TO_WEB" || receipt.state === "FAILED";
+  if (!terminal) {
+    const proposedState = repair.reviewer === "web" ? "REVIEWING_WEB" : `REVIEWING_${repair.reviewer.toUpperCase()}`;
+    if (repair.state === "PROPOSED" && receipt.state !== proposedState) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Proposed repair is not at its review checkpoint.");
+    if (repair.state === "APPLYING" && receipt.state !== "REPAIR_APPLYING") throw new ExecutorError("EXECUTOR_STATE_INVALID", "Applying repair has inconsistent executor state.");
+    if (repair.state === "APPLIED" && receipt.state !== "REPAIR_APPLIED" && receipt.state !== "VERIFYING") throw new ExecutorError("EXECUTOR_STATE_INVALID", "Applied repair has inconsistent executor state.");
+  }
   if (repair.state === "VERIFIED" && (repair.final_change_set_digest === null || receipt.change_set_digest !== repair.final_change_set_digest || !receipt.verification.passed || receipt.verification.change_set_digest !== repair.final_change_set_digest)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Verified repair is not chained to deterministic verification of the final digest.");
 }
 
