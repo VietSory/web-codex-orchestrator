@@ -30,27 +30,21 @@ async function attestBaseHead(receipt: ExecutorReceipt): Promise<void> { const h
 export async function readExecutorWorktreeHead(receipt: ExecutorReceipt): Promise<string> { return (await git(receipt.worktree_path, ["rev-parse", "HEAD"], 1024)).trim(); }
 async function currentChangedPaths(receipt: ExecutorReceipt): Promise<string[]> { await attestBaseHead(receipt); return parseStatusPaths(await git(receipt.worktree_path, ["-c", "status.renames=false", "status", "--porcelain=v1", "-z", "--untracked-files=all"])); }
 function originalMode(operation: ExecutorTransactionOperation): number | null { if (operation.postimage_sha256 === null) return null; return operation.kind === "create_file" ? 0o644 : operation.original_mode; }
-
+function repairIsFinal(receipt: ExecutorReceipt): boolean { return Boolean(receipt.repair && ["APPLIED", "VERIFIED"].includes(receipt.repair.state)); }
 function effectiveFinal(receipt: ExecutorReceipt, operation: ExecutorTransactionOperation): { sha256: string | null; mode: number | null } {
-  const repairActive = receipt.repair && ["APPLIED", "VERIFIED"].includes(receipt.repair.state);
-  const repair = repairActive ? receipt.repair!.operations.find((candidate) => candidate.path === operation.path) : undefined;
+  const repair = repairIsFinal(receipt) ? receipt.repair!.operations.find((candidate) => candidate.path === operation.path) : undefined;
   if (!repair) return { sha256: operation.postimage_sha256, mode: originalMode(operation) };
   if (repair.kind === "delete_file") return { sha256: null, mode: null };
   if (repair.kind === "create_file") return { sha256: repair.postimage_sha256, mode: operation.original_mode ?? 0o644 };
   return { sha256: repair.postimage_sha256, mode: originalMode(operation) ?? operation.original_mode ?? 0o644 };
 }
-
 function differsFromBase(operation: ExecutorTransactionOperation, final: { sha256: string | null; mode: number | null }): boolean {
   if (operation.preimage_sha256 === null) return final.sha256 !== null;
   if (final.sha256 === null) return true;
   return final.sha256 !== operation.preimage_sha256 || final.mode !== operation.original_mode;
 }
-
-export function effectiveExecutorChangedPaths(receipt: ExecutorReceipt): string[] {
-  return receipt.operations.filter((operation) => differsFromBase(operation, effectiveFinal(receipt, operation))).map((operation) => operation.path).sort();
-}
+export function effectiveExecutorChangedPaths(receipt: ExecutorReceipt): string[] { return receipt.operations.filter((operation) => differsFromBase(operation, effectiveFinal(receipt, operation))).map((operation) => operation.path).sort(); }
 function equalPaths(left: string[], right: string[]): boolean { return left.length === right.length && left.every((value, index) => value === right[index]); }
-
 async function postimageDigest(receipt: ExecutorReceipt): Promise<string> {
   const postimages: Array<{ path: string; sha256: string | null; mode: number | null }> = [];
   for (const operation of receipt.operations) {
@@ -64,9 +58,9 @@ async function postimageDigest(receipt: ExecutorReceipt): Promise<string> {
     }
   }
   postimages.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
-  return crypto.createHash("sha256").update(canonicalJsonBuffer({ version: "1.2", run_id: receipt.run_id, artifact_sha256: receipt.artifact_sha256, base_commit: receipt.base_commit, postimages })).digest("hex");
+  const version = repairIsFinal(receipt) ? "1.2" : "1.1";
+  return crypto.createHash("sha256").update(canonicalJsonBuffer({ version, run_id: receipt.run_id, artifact_sha256: receipt.artifact_sha256, base_commit: receipt.base_commit, postimages })).digest("hex");
 }
-
 export async function attestExecutorResumeChangedPaths(receipt: ExecutorReceipt): Promise<void> {
   const actual = await currentChangedPaths(receipt); const allowed = new Set(receipt.operations.map((operation) => operation.path)); const unexpected = actual.filter((filePath) => !allowed.has(filePath));
   if (unexpected.length > 0) throw new ExecutorError("EXECUTOR_UNREGISTERED_CHANGE", `Crash-resume worktree contains unregistered changes: [${unexpected.join(", ")}].`);
