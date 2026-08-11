@@ -37,7 +37,7 @@ test("V04-UX-008 final-review relay is single-terminal while preserving exact re
     const conflictingTerminal = await submit("verdict-two"); assert.equal(conflictingTerminal.status, 400); assert.match(await conflictingTerminal.text(), /terminal verdict/);
     assert.equal((await bridge.getConnectionStatus()).pending_final_review, undefined);
     const second = await bridge.createFinalReviewJob({ ...request, review_round: 2 }, "review-create-two");
-    const wrongBinding = await fetch(`${relayUrl}/v1/final-reviews/${second.job_id}/verdict`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "Idempotency-Key": "wrong-binding" }, body: JSON.stringify({ ...verdict, review_id: second.job_id }) });
+    const wrongBinding = await fetch(`${relayUrl}/v1/final-reviews/${second.job_id}/verdict`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "Idempotency-Key": "wrong-binding" }, body: JSON.stringify({ ...verdict, review_id: second.job_id, result_bundle_sha256: "d".repeat(64) }) });
     assert.equal(wrongBinding.status, 400); assert.match(await wrongBinding.text(), /binding/);
   } finally { await new Promise<void>((resolve) => server.close(() => resolve())); await rm(root, { recursive: true, force: true }); }
 });
