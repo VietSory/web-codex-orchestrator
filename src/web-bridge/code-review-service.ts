@@ -1,4 +1,5 @@
-import { mkdir, readFile } from "node:fs/promises";
+import { constants as fsConstants, type Stats } from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { atomicWriteJson } from "../run/run-store.js";
 import { loadAndVerifyResultBundle, type LoadedResultBundle } from "../web-review/result-bundle-review-reader.js";
@@ -36,9 +37,99 @@ function splitRunId(runId: string): { taskId: string; archiveSha: string } {
   return { taskId, archiveSha };
 }
 
-function receiptPath(stateDirectory: string, runId: string): string {
+function reviewDirectory(stateDirectory: string, runId: string): string {
   const id = splitRunId(runId);
-  return path.join(path.resolve(stateDirectory), "bridge", "code-reviews", id.taskId, id.archiveSha, "receipt.json");
+  return path.join(path.resolve(stateDirectory), "bridge", "code-reviews", id.taskId, id.archiveSha);
+}
+
+function receiptPath(stateDirectory: string, runId: string): string {
+  return path.join(reviewDirectory(stateDirectory, runId), "receipt.json");
+}
+
+function sameFile(left: Stats, right: Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+async function assertStateRoot(stateDirectory: string): Promise<string> {
+  const root = path.resolve(stateDirectory);
+  let info: Stats;
+  try { info = await fs.lstat(root); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new WebBridgeError("WEB_CODE_REVIEW_STATE_INVALID", "WCO state directory does not exist.");
+    throw error;
+  }
+  if (!info.isDirectory() || info.isSymbolicLink() || await fs.realpath(root) !== root) throw new WebBridgeError("WEB_CODE_REVIEW_STATE_INVALID", "WCO state directory is not a canonical real directory.");
+  return root;
+}
+
+async function ensureReviewDirectory(stateDirectory: string, runId: string): Promise<string> {
+  const root = await assertStateRoot(stateDirectory);
+  const target = reviewDirectory(root, runId);
+  const relative = path.relative(root, target);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new WebBridgeError("WEB_CODE_REVIEW_STATE_INVALID", "Code-review state path escapes the WCO state directory.");
+  let current = root;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    let info: Stats;
+    try { info = await fs.lstat(current); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      try { await fs.mkdir(current, { mode: 0o700 }); }
+      catch (mkdirError) { if ((mkdirError as NodeJS.ErrnoException).code !== "EEXIST") throw mkdirError; }
+      info = await fs.lstat(current);
+    }
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new WebBridgeError("WEB_CODE_REVIEW_STATE_INVALID", "Code-review state ancestry contains a symlink or non-directory.");
+  }
+  if (await fs.realpath(target) !== target) throw new WebBridgeError("WEB_CODE_REVIEW_STATE_INVALID", "Code-review state directory is not canonical.");
+  return target;
+}
+
+async function existingReviewDirectory(stateDirectory: string, runId: string): Promise<string | null> {
+  const root = await assertStateRoot(stateDirectory);
+  const target = reviewDirectory(root, runId);
+  const relative = path.relative(root, target);
+  let current = root;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    let info: Stats;
+    try { info = await fs.lstat(current); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new WebBridgeError("WEB_CODE_REVIEW_STATE_INVALID", "Code-review state ancestry contains a symlink or non-directory.");
+  }
+  if (await fs.realpath(target) !== target) throw new WebBridgeError("WEB_CODE_REVIEW_STATE_INVALID", "Code-review state directory is not canonical.");
+  return target;
+}
+
+async function readStableReceipt(stateDirectory: string, runId: string): Promise<Buffer | null> {
+  const directory = await existingReviewDirectory(stateDirectory, runId);
+  if (!directory) return null;
+  const target = path.join(directory, "receipt.json");
+  let pathInfo: Stats;
+  try { pathInfo = await fs.lstat(target); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+  if (!pathInfo.isFile() || pathInfo.isSymbolicLink() || pathInfo.size > MAX_RECEIPT_BYTES) throw new WebBridgeError("WEB_CODE_REVIEW_STATE_INVALID", "Code-review receipt is unsafe or exceeds its byte cap.");
+  const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+  const handle = await fs.open(target, fsConstants.O_RDONLY | noFollow).catch((error) => {
+    throw new WebBridgeError("WEB_CODE_REVIEW_STATE_INVALID", `Code-review receipt cannot be opened safely: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  try {
+    const before = await handle.stat();
+    if (!before.isFile() || !sameFile(before, pathInfo) || before.size !== pathInfo.size || before.size > MAX_RECEIPT_BYTES) throw new WebBridgeError("WEB_CODE_REVIEW_STATE_INVALID", "Code-review receipt changed before stable open.");
+    const bytes = Buffer.alloc(before.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
+      if (bytesRead === 0) throw new WebBridgeError("WEB_CODE_REVIEW_STATE_INVALID", "Code-review receipt truncated while reading.");
+      offset += bytesRead;
+    }
+    if ((await handle.read(Buffer.alloc(1), 0, 1, offset)).bytesRead !== 0) throw new WebBridgeError("WEB_CODE_REVIEW_STATE_INVALID", "Code-review receipt grew while reading.");
+    const [afterHandle, afterPath] = await Promise.all([handle.stat(), fs.lstat(target)]);
+    if (!afterPath.isFile() || afterPath.isSymbolicLink() || !sameFile(before, afterHandle) || !sameFile(before, afterPath) || afterHandle.size !== before.size || afterPath.size !== before.size) throw new WebBridgeError("WEB_CODE_REVIEW_STATE_INVALID", "Code-review receipt changed while reading.");
+    if (await fs.realpath(directory) !== directory) throw new WebBridgeError("WEB_CODE_REVIEW_STATE_INVALID", "Code-review state ancestry changed while reading.");
+    return bytes;
+  } finally {
+    await handle.close();
+  }
 }
 
 function validateReceipt(value: unknown, runId: string): WebCodeReviewReceipt {
@@ -65,13 +156,11 @@ function validateReceipt(value: unknown, runId: string): WebCodeReviewReceipt {
 }
 
 export async function readWebCodeReviewReceipt(stateDirectory: string, runId: string): Promise<WebCodeReviewReceipt | null> {
-  const target = receiptPath(stateDirectory, runId);
   try {
-    const bytes = await readFile(target);
-    if (bytes.byteLength > MAX_RECEIPT_BYTES) throw new WebBridgeError("WEB_CODE_REVIEW_STATE_INVALID", "Code-review receipt exceeds byte cap.");
+    const bytes = await readStableReceipt(stateDirectory, runId);
+    if (!bytes) return null;
     return validateReceipt(JSON.parse(bytes.toString("utf8")) as unknown, runId);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     if (error instanceof WebBridgeError) throw error;
     throw new WebBridgeError("WEB_CODE_REVIEW_STATE_INVALID", `Code-review receipt could not be read: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -136,7 +225,7 @@ export async function createPendingCodeReview(options: { bridge: WebBridge; runI
     created_at: now,
     updated_at: now,
   };
-  await mkdir(path.dirname(receiptPath(options.stateDirectory, options.runId)), { recursive: true, mode: 0o700 });
+  await ensureReviewDirectory(options.stateDirectory, options.runId);
   await atomicWriteJson(receiptPath(options.stateDirectory, options.runId), receipt);
   return identity;
 }
@@ -167,6 +256,7 @@ export async function adoptCodeReviewVerdict(options: { envelope: WebVerdictEnve
     updated_at: (options.now?.() ?? new Date()).toISOString(),
   };
   validateReceipt(terminal, envelope.run_id);
+  await ensureReviewDirectory(options.stateDirectory, envelope.run_id);
   await atomicWriteJson(receiptPath(options.stateDirectory, envelope.run_id), terminal);
   return terminal;
 }
