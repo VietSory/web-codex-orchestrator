@@ -8,6 +8,7 @@ import { CodexVerificationSandbox } from "../verifier/codex-sandbox.js";
 import { verifyDeterministically } from "../verifier/verifier.js";
 import { readBoundedStableAuthorityFile } from "../web-authority/task-spec-authority.js";
 import { resolveTrustedRunContext } from "../web-review/trusted-run-context.js";
+import { readReviewMode } from "../tui/review-mode-store.js";
 import { ExecutorError, type ExecutorUsage } from "./contracts.js";
 import type { ExecutorReviewerPort, ExecutorReviewRequest, ExecutorVerifierPort, ExecutorVerificationRequest } from "./gates.js";
 
@@ -77,7 +78,11 @@ function mappedVerdict(verdict: string): "APPROVE" | "REVISE" | "ESCALATE" {
 }
 
 export async function createProductionExecutorGates(options: { runId: string; stateDirectory: string; configPath: string }): Promise<{ verifier: ExecutorVerifierPort; reviewer: ExecutorReviewerPort }> {
-  const [config, trusted] = await Promise.all([loadPhase4Config(options.configPath), resolveTrustedRunContext(options.runId, options.stateDirectory, options.configPath)]);
+  const [config, trusted, reviewMode] = await Promise.all([
+    loadPhase4Config(options.configPath),
+    resolveTrustedRunContext(options.runId, options.stateDirectory, options.configPath),
+    readReviewMode(options.stateDirectory),
+  ]);
   const runtime = await resolveCodexRuntime(config.runtime, options.stateDirectory);
   const agentClient = new CodexSdkAgentClient(runtime);
   const sandbox = new CodexVerificationSandbox(runtime);
@@ -92,26 +97,32 @@ export async function createProductionExecutorGates(options: { runId: string; st
   };
 
   const reviewer: ExecutorReviewerPort = {
+    reviewer_kind: reviewMode.kind,
     budget_policy: {
-      maximum_model_turns: Math.min(config.agents.limits.maximum_total_agent_turns, config.agents.limits.maximum_internal_review_rounds + config.agents.limits.maximum_sol_review_rounds),
+      maximum_model_turns: Math.min(
+        config.agents.limits.maximum_total_agent_turns,
+        reviewMode.kind === "terra" ? config.agents.limits.maximum_internal_review_rounds : config.agents.limits.maximum_sol_review_rounds,
+      ),
       maximum_elapsed_ms: config.agents.limits.maximum_total_seconds * 1000,
       maximum_input_tokens: config.agents.limits.maximum_total_input_tokens,
       maximum_output_tokens: config.agents.limits.maximum_total_output_tokens,
     },
     async review(request: ExecutorReviewRequest) {
+      if (request.reviewer !== reviewMode.kind) throw new ExecutorError("EXECUTOR_STATE_INVALID", `Selected reviewer is ${reviewMode.kind}; refusing an unexpected ${request.reviewer} review turn.`);
       const prompt = reviewPrompt(request);
-      const profile = request.reviewer === "terra" ? config.agents.internal_reviewer : config.agents.final_reviewer;
-      const result = request.reviewer === "terra"
-        ? await reviewWithTerra(agentClient, { model: profile.model, reasoning_effort: profile.reasoning_effort, prompt, threadId: undefined, workspacePath: request.worktree_path, acceptedBundlePath: request.accepted_bundle_path, ...(request.signal ? { signal: request.signal } : {}) })
-        : await reviewWithSol(agentClient, { model: profile.model, reasoning_effort: profile.reasoning_effort, prompt, threadId: undefined, workspacePath: request.worktree_path, acceptedBundlePath: request.accepted_bundle_path, ...(request.signal ? { signal: request.signal } : {}) });
+      const result = reviewMode.kind === "terra"
+        ? await reviewWithTerra(agentClient, { model: reviewMode.model, reasoning_effort: reviewMode.reasoning_effort, prompt, threadId: undefined, workspacePath: request.worktree_path, acceptedBundlePath: request.accepted_bundle_path, ...(request.signal ? { signal: request.signal } : {}) })
+        : await reviewWithSol(agentClient, { model: reviewMode.model, reasoning_effort: reviewMode.reasoning_effort, prompt, threadId: undefined, workspacePath: request.worktree_path, acceptedBundlePath: request.accepted_bundle_path, ...(request.signal ? { signal: request.signal } : {}) });
       const usage = reviewUsage(result.response.usage);
       const digestMatches = result.review.reviewed_change_set_sha256 === request.change_set_digest;
       return {
         verdict: digestMatches ? mappedVerdict(result.review.verdict) : "ESCALATE",
         usage,
         evidence: {
-          kind: `phase10-${request.reviewer}-review`,
-          reviewer: request.reviewer,
+          kind: `phase10-${reviewMode.kind}-review`,
+          reviewer: reviewMode.kind,
+          model: reviewMode.model,
+          reasoning_effort: reviewMode.reasoning_effort,
           change_set_digest: request.change_set_digest,
           reviewed_change_set_sha256: result.review.reviewed_change_set_sha256,
           authority_binding_valid: digestMatches,
