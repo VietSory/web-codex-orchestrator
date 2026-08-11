@@ -48,7 +48,7 @@ Never silently change one mode into the other. The user selects AUTOPILOT explic
 
 Never ask WCO to execute arbitrary shell commands, expose environment variables/credentials/state internals, bypass local validation, or weaken the human merge boundary.
 
-## Positive PAIR authoring example
+## Positive authoring example — PAIR
 
 User intent: `Add rate limiting to POST /login, keep the database unchanged.`
 
