@@ -7,6 +7,7 @@ export type ExecutorState =
   | "APPLYING"
   | "APPLIED"
   | "VERIFYING"
+  | "REVIEWING_WEB"
   | "REVIEWING_TERRA"
   | "REVIEWING_SOL"
   | "REPAIR_APPLYING"
