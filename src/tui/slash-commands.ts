@@ -1,5 +1,5 @@
 export const SLASH_COMMANDS = [
-  ["/new", "Start a new PAIR task"],
+  ["/new", "Start a new task"],
   ["/auto", "Start an AUTOPILOT task: /auto <goal>"],
   ["/status", "Current task and workflow progress"],
   ["/task", "View current goal/contract summary"],
