@@ -27,9 +27,13 @@ export async function retireStaleResultGeneration(options: {
   const taskId = options.runId.slice(0, split), archiveSha = options.runId.slice(split + 1);
   if (split < 1 || !/^[a-f0-9]{64}$/.test(archiveSha)) throw new OrchestrationError("ORCHESTRATION_RESULT_AUTHORITY_DRIFT", "Invalid run identity while rotating Result Bundle generation.");
   const paths = resultBundlePaths(path.resolve(options.stateDirectory), taskId, archiveSha);
-  let first: Buffer;
-  try { first = (await readStableFile(paths.receiptPath, MAX_RECEIPT_BYTES)).bytes; }
+
+  let receiptInfo;
+  try { receiptInfo = await fs.lstat(paths.receiptPath); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+  if (!receiptInfo.isFile() || receiptInfo.isSymbolicLink() || receiptInfo.size > MAX_RECEIPT_BYTES) throw new OrchestrationError("ORCHESTRATION_RESULT_AUTHORITY_DRIFT", "Existing Result Bundle receipt is unsafe or oversized.");
+  const first = (await readStableFile(paths.receiptPath, MAX_RECEIPT_BYTES)).bytes;
+
   let parsed: Record<string, unknown>;
   try { parsed = JSON.parse(first.toString("utf8")) as Record<string, unknown>; }
   catch { throw new OrchestrationError("ORCHESTRATION_RESULT_AUTHORITY_DRIFT", "Existing Result Bundle receipt is not valid JSON."); }
