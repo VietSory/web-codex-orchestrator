@@ -1,6 +1,8 @@
 import crypto from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { DEFAULT_REVIEWER, type ReviewerSelection } from "../agent/reviewer-selection.js";
+import { freezeRunReviewMode } from "../agent/reviewer-mode-store.js";
 import type { TrustedConfig } from "../config/contracts.js";
 import type { JobMode } from "../orchestration/job-mode.js";
 import { atomicWriteJson } from "../run/run-store.js";
@@ -18,6 +20,7 @@ export interface LocalWorkerSession {
   repository: RepositoryBinding;
   goal: string;
   job_mode?: JobMode;
+  reviewer_selection?: ReviewerSelection;
   job_id: string | null;
   last_event_sequence: number;
   sealed: boolean;
@@ -59,6 +62,7 @@ export async function startLocalAuthoring(options: {
   now?: () => Date;
   replaceExplicit?: boolean;
   mode?: JobMode;
+  reviewerSelection?: ReviewerSelection;
 }): Promise<LocalWorkerSession> {
   const existing = await readLocalWorkerSession(options.stateDirectory, options.repository.repository_id);
   if (existing && existing.state !== "BLOCKED" && existing.state !== "COMPLETED" && !options.replaceExplicit) {
@@ -72,12 +76,14 @@ export async function startLocalAuthoring(options: {
 
   const now = options.now?.() ?? new Date();
   const mode = options.mode ?? "PAIR";
+  const reviewerSelection = options.reviewerSelection ?? { ...DEFAULT_REVIEWER };
   const session: LocalWorkerSession = {
     schema_version: "1.0",
     session_id: crypto.randomUUID(),
     repository: options.repository,
     goal: options.goal,
     job_mode: mode,
+    reviewer_selection: reviewerSelection,
     job_id: null,
     last_event_sequence: 0,
     sealed: false,
@@ -146,6 +152,7 @@ export async function advanceLocalWorker(options: {
       session.contract = event.envelope;
       session.task_archive_path = materialized.archive_path;
       session.run_id = prepared.run_id;
+      session.reviewer_selection = await freezeRunReviewMode(options.stateDirectory, prepared.run_id, session.reviewer_selection ?? DEFAULT_REVIEWER);
       session.state = "PREPARED";
     } else {
       if (!session.contract || !session.run_id) throw new WebBridgeError("WEB_IMPLEMENTATION_OUT_OF_ORDER", "Web implementation arrived before canonical contract preparation.");
