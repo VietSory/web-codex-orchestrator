@@ -1,3 +1,5 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { NativeOpenAiCredential } from "./native-openai-credential.js";
 import { startNativeTunnel } from "./native-tunnel-runtime.js";
 
@@ -9,6 +11,10 @@ export const OPENAI_NATIVE_SETUP_URLS = {
   chatgpt_apps: "https://chatgpt.com/#settings/Connectors",
   chatgpt_admin: "https://chatgpt.com/admin",
 } as const;
+
+export function nativeWorkspaceAgentInstructionsPath(): string {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/gpt/WCO-SENIOR-ARCHITECT.md");
+}
 
 export async function probeNativeOpenAiSetup(options: {
   cacheDirectory: string;
