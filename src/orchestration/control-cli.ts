@@ -146,30 +146,34 @@ function fail(io: ControlCliIo, error: unknown, json: boolean): number {
 function processFailureSummary(result: SpawnBoundedResult, fallback: string): string {
   const stderr = result.stderr.trim(); if (stderr) return stderr; if (result.spawnError instanceof Error) return result.spawnError.message; if (result.spawnError !== undefined) return String(result.spawnError); if (result.timedOut) return `${fallback} (timed out)`; return fallback;
 }
+function lazyPromise<T>(factory: () => Promise<T>): () => Promise<T> {
+  let promise: Promise<T> | undefined;
+  return () => promise ??= factory();
+}
 
 export function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
-  const configPromise = loadTrustedConfig(args.configPath!);
+  const loadConfig = lazyPromise(() => loadTrustedConfig(args.configPath!));
   const webPaths = resolveWcoPaths({ configPath: args.configPath!, stateDirectory: args.stateDirectory });
-  const managedServicePromise = configPromise.then(async (config) => {
+  const loadManagedService = lazyPromise(() => loadConfig().then(async (config) => {
     if (config.web_bridge?.mode !== "managed_actions") throw new Error("managed Web mode is not configured");
     const metadata = resolveManagedWebService();
     const client = new ManagedWebOnboardingClient({ metadata, credentialsDirectory: webPaths.credentials });
     const service = await client.probeServiceStatus();
     return { config, client, service };
-  });
-  const webConnectionPromise = managedServicePromise.then(async ({ config, client, service }) => {
+  }));
+  const loadWebConnection = lazyPromise(() => loadManagedService().then(async ({ config, client, service }) => {
     await client.accessToken();
     const connection = await createConfiguredWebBridge(config, webPaths.bridge).getConnectionStatus();
     return { service, connection };
-  });
+  }));
   const webFailure = (label: string, error: unknown) => ({ severity: "WARN" as const, summary: `${label} FAIL - ${error instanceof Error ? error.message : String(error)}` });
 
   const probes: DoctorProbe[] = [
     { id: "node", async run() { return { severity: Number(process.versions.node.split(".")[0]) >= 22 ? "OK" as const : "FAIL" as const, summary: `Node ${process.versions.node}` }; } },
     { id: "state", async run() { await fs.mkdir(args.stateDirectory, { recursive: true, mode: 0o700 }); await fs.access(args.stateDirectory, fs.constants.R_OK | fs.constants.W_OK); return { severity: "OK" as const, summary: "state directory readable/writable" }; } },
-    { id: "config", async run() { const config = await configPromise; return { severity: "OK" as const, summary: `trusted config valid (${Object.keys(config.repositories).length} registered repos)` }; } },
+    { id: "config", async run() { const config = await loadConfig(); return { severity: "OK" as const, summary: `trusted config valid (${Object.keys(config.repositories).length} registered repos)` }; } },
     { id: "credentials", async run() {
-      const config = await configPromise;
+      const config = await loadConfig();
       const requiredKeys: string[] = [];
       if (config.publish?.authentication.mode === "https_token") requiredKeys.push(config.publish.authentication.token_environment_key);
       if (config.github_pull_request?.authentication.mode === "https_token") requiredKeys.push(config.github_pull_request.authentication.token_environment_key);
@@ -185,24 +189,24 @@ export function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
       return { severity: "OK" as const, summary: result.stdout.trim() };
     } },
     { id: "verification-sandbox", async run() { await new BubblewrapVerificationSandbox().checkAvailability(); return { severity: "OK" as const, summary: "Bubblewrap verification sandbox available with isolated filesystem/network namespaces" }; } },
-    { id: "wco-relay-service", async run() { try { await managedServicePromise; return { severity: "OK" as const, summary: "PASS - managed service reachable and compatible" }; } catch (error) { return webFailure("WCO Relay service", error); } } },
-    { id: "wco-device-account", async run() { try { const { client } = await managedServicePromise; await client.accessToken(); return { severity: "OK" as const, summary: "PASS - scoped device/account credential valid" }; } catch (error) { return webFailure("WCO device/account", error); } } },
-    { id: "chatgpt-web", async run() { try { const value = await webConnectionPromise; return value.service.chatgpt_oauth_configured && value.connection.connected ? { severity: "OK" as const, summary: "linked" } : { severity: "WARN" as const, summary: "not-linked" }; } catch { return { severity: "WARN" as const, summary: "not-linked" }; } } },
-    { id: "senior-architect-gpt", async run() { try { const value = await managedServicePromise; return value.service.senior_architect_gpt_configured ? { severity: "OK" as const, summary: "configured" } : { severity: "WARN" as const, summary: "not configured" }; } catch { return { severity: "WARN" as const, summary: "not configured" }; } } },
+    { id: "wco-relay-service", async run() { try { await loadManagedService(); return { severity: "OK" as const, summary: "PASS - managed service reachable and compatible" }; } catch (error) { return webFailure("WCO Relay service", error); } } },
+    { id: "wco-device-account", async run() { try { const { client } = await loadManagedService(); await client.accessToken(); return { severity: "OK" as const, summary: "PASS - scoped device/account credential valid" }; } catch (error) { return webFailure("WCO device/account", error); } } },
+    { id: "chatgpt-web", async run() { try { const value = await loadWebConnection(); return value.service.chatgpt_oauth_configured && value.connection.connected ? { severity: "OK" as const, summary: "linked" } : { severity: "WARN" as const, summary: "not-linked" }; } catch { return { severity: "WARN" as const, summary: "not-linked" }; } } },
+    { id: "senior-architect-gpt", async run() { try { const value = await loadManagedService(); return value.service.senior_architect_gpt_configured ? { severity: "OK" as const, summary: "configured" } : { severity: "WARN" as const, summary: "not configured" }; } catch { return { severity: "WARN" as const, summary: "not configured" }; } } },
   ];
 
   if (args.doctorMode === "AUTOPILOT") {
-    const runtimePromise = configPromise.then((config) => resolveCodexRuntime(config.runtime, args.stateDirectory));
+    const loadRuntime = lazyPromise(() => loadConfig().then((config) => resolveCodexRuntime(config.runtime, args.stateDirectory)));
     probes.splice(6, 0,
       { id: "codex-runtime", async run() {
-        const runtime = await runtimePromise;
+        const runtime = await loadRuntime();
         const result = await spawnBounded({ executable: runtime.executable, args: codexCliArgs(runtime, ["--version"]), cwd: path.dirname(runtime.launcher_path), environment: minimalCodexEnvironment(runtime), timeoutMs: 4_000, stdoutMaxBytes: 16_384, stderrMaxBytes: 16_384, shell: false });
         if (result.exitCode !== 0 || result.timedOut || result.spawnError) return { severity: "FAIL" as const, summary: processFailureSummary(result, "pinned Codex runtime unavailable") };
         const version = assertCompatibleCodexCliVersion(`${result.stdout}\n${result.stderr}`);
         return { severity: "OK" as const, summary: `pinned Codex ${version}` };
       } },
       { id: "codex-auth", async run() {
-        const runtime = await runtimePromise;
+        const runtime = await loadRuntime();
         const result = await spawnBounded({ executable: runtime.executable, args: codexCliArgs(runtime, ["login", "status"]), cwd: path.dirname(runtime.launcher_path), environment: minimalCodexEnvironment(runtime), timeoutMs: 4_000, stdoutMaxBytes: 16_384, stderrMaxBytes: 16_384, shell: false });
         if (result.exitCode !== 0 || result.timedOut || result.spawnError) return { severity: "FAIL" as const, summary: "Codex authentication unavailable; authenticate the pinned CLI before AUTOPILOT model review" };
         return { severity: "OK" as const, summary: "Codex authentication available for AUTOPILOT review" };
