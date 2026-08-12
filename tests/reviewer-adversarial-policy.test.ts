@@ -46,7 +46,7 @@ function assertSeniorPolicy(prompt: string): void {
   assert.match(prompt, /every changed file and every diff hunk/i);
   assert.match(prompt, /concurrency, races, retries, replay and idempotency/i);
   assert.match(prompt, /crash\/restart recovery and stale state/i);
-  assert.match(prompt, /green test suite.*not.*correctness evidence/i);
+  assert.match(prompt, /Do not trust implementation claims.*green test suite as correctness evidence/i);
   assert.match(prompt, /APPROVE only after the complete diff has been inspected/i);
   assert.match(prompt, /repair_operations in the same response/i);
   assert.match(prompt, /If the complete diff cannot be inspected.*do not APPROVE/i);
