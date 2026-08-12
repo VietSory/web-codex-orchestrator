@@ -71,7 +71,7 @@ test("native MCP advertises deterministic modern discovery and narrow semantic t
 });
 
 test("Workspace Agent trigger uses official beta run receipt and stable idempotency headers", async () => {
-  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  const requests: Array<{ url: string; init: RequestInit | undefined }> = [];
   const fakeFetch: typeof fetch = async (input, init) => {
     requests.push({ url: String(input), init });
     return new Response(JSON.stringify({ conversation_url: "https://chatgpt.com/c/wco", agent_trigger_run_id: "apirun_test123" }), { status: 202, headers: { "content-type": "application/json" } });
