@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
@@ -148,10 +147,6 @@ function collectSecrets(config: Awaited<ReturnType<typeof loadPhase4Config>>): s
   return [...keys].map((key) => process.env[key]).filter((value): value is string => typeof value === "string" && value.length >= 8);
 }
 
-function sha256Text(value: string): string {
-  return crypto.createHash("sha256").update(value, "utf8").digest("hex");
-}
-
 async function tryHarnessWebRevision(options: {
   runId: string;
   revisionRound: number;
@@ -196,6 +191,21 @@ async function tryHarnessWebRevision(options: {
     return existing;
   }
 
+  // Attest the exact previous-head -> repaired dirty-worktree delta before any
+  // commit. calculateChangeSet intentionally refuses committed HEAD drift, so
+  // doing this after publication would make the normal repair path impossible.
+  const delta = await calculateChangeSet({
+    worktreePath: executor.worktree_path,
+    baseCommit: options.authority.publishedCommitSha,
+    branchName: source.previousResultBundle.receipt.pull_request.head_branch,
+    runner: options.runner,
+    allowedGeneratedPaths: options.config.verification.allowed_generated_paths,
+  });
+  if (delta.entries.length === 0) throw new OrchestrationError("ORCHESTRATION_WEB_REVISION_EMPTY", "Harness Web revision produced no previous-head to repaired-worktree change-set.");
+  if (!delta.refs_sha256 || !SHA256.test(delta.refs_sha256)) throw new OrchestrationError("ORCHESTRATION_WEB_REVISION_REFS_INVALID", "Harness Web revision could not attest the pre-publication Git refs snapshot.");
+  const revisionPaths = delta.entries.map((entry) => entry.path).sort();
+  const approvedSnapshot = await calculateApprovedRevisionSnapshot({ runner: options.runner, worktreePath: executor.worktree_path, approvedPaths: revisionPaths });
+
   const published = await publishReadyExecutorSnapshot({
     runId: options.runId,
     artifactSha256: selected.artifact_sha256,
@@ -217,16 +227,6 @@ async function tryHarnessWebRevision(options: {
     throw new OrchestrationError("ORCHESTRATION_WEB_REVISION_PR_INVALID", "Harness Web revision did not re-attest the same Draft PR at the repaired head.");
   }
 
-  const delta = await calculateChangeSet({
-    worktreePath: executor.worktree_path,
-    baseCommit: options.authority.publishedCommitSha,
-    branchName: executor.base_branch,
-    runner: options.runner,
-    allowedGeneratedPaths: options.config.verification.allowed_generated_paths,
-  });
-  if (delta.entries.length === 0) throw new OrchestrationError("ORCHESTRATION_WEB_REVISION_EMPTY", "Harness Web revision produced no previous-head to new-head change-set.");
-  const revisionPaths = delta.entries.map((entry) => entry.path).sort();
-  const approvedSnapshot = await calculateApprovedRevisionSnapshot({ runner: options.runner, worktreePath: executor.worktree_path, approvedPaths: revisionPaths });
   const nowIso = (options.now ? options.now() : new Date()).toISOString();
   const noReview = { model: "not-called-harness-web-repair", reasoning_effort: "minimal" as const, rounds: 0, thread_ids: [] as string[], verdict: null, reviewed_change_set_sha256: null };
   const receipt: RevisionReceipt = {
@@ -246,7 +246,7 @@ async function tryHarnessWebRevision(options: {
     branch_name: source.previousResultBundle.receipt.pull_request.head_branch,
     base_branch: source.previousResultBundle.receipt.pull_request.base_branch,
     worktree_path: executor.worktree_path,
-    initial_refs_sha256: sha256Text(`${options.runId}\0${source.request.previous_pr_head_sha}\0${published.commit_sha}`),
+    initial_refs_sha256: delta.refs_sha256,
     implementer: { model: "web-bounded-repair", reasoning_effort: "minimal", thread_id: null, iterations: 0 },
     verification: { rounds: executor.verification.rounds, required_commands_passed: true, verified_change_set_sha256: executor.change_set_digest, commands: [] },
     terra_review: { ...noReview },
