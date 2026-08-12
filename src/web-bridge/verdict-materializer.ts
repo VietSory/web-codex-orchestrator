@@ -4,9 +4,7 @@ import type { GitHubAttestationClient } from "../result-bundle/github-attestatio
 import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
 import { readResultBundleReceipt } from "../result-bundle/result-bundle-store.js";
 import { resultBundlePaths } from "../result-bundle/result-bundle-paths.js";
-import { applyPairWebRepair } from "../orchestration/web-code-review-repair.js";
-import { readSelectedArtifact } from "../orchestration/artifact-binding.js";
-import { readExecutorReceipt } from "../executor/store.js";
+import { applyHarnessWebRepair } from "../orchestration/web-code-review-repair.js";
 import { submitWebVerdict } from "../web-review/web-review-service.js";
 import type { WebReviewReceipt } from "../web-review/contracts.js";
 import { resolveTrustedRunContext } from "../web-review/trusted-run-context.js";
@@ -14,13 +12,6 @@ import { adoptCodeReviewVerdict, readWebCodeReviewReceipt } from "./code-review-
 import { WebBridgeError, parseWebVerdictEnvelope, type WebVerdictEnvelope } from "./contracts.js";
 
 function runIdentity(runId: string): { taskId: string; archiveSha: string } { const split = runId.lastIndexOf(":"); const value = { taskId: runId.slice(0, split), archiveSha: runId.slice(split + 1) }; if (split < 1 || !/^[a-f0-9]{64}$/.test(value.archiveSha)) throw new WebBridgeError("WEB_VERDICT_BINDING_INVALID", "Run identity is invalid."); return value; }
-
-async function isPairWebStrategy(stateDirectory: string, runId: string, identity: { taskId: string; archiveSha: string }): Promise<boolean> {
-  const selected = await readSelectedArtifact(stateDirectory, runId);
-  if (!selected) return false;
-  const executor = await readExecutorReceipt(stateDirectory, identity.taskId, identity.archiveSha, selected.artifact_sha256);
-  return executor?.review_strategy === "web" && executor.reviewer_selection === undefined;
-}
 
 export async function materializeAndSubmitWebVerdict(options: { envelope: WebVerdictEnvelope | unknown; stateDirectory: string; configPath: string; githubClient?: GitHubAttestationClient; now?: () => Date }): Promise<{ verdict_path: string; receipt: WebReviewReceipt }> {
   const envelope = parseWebVerdictEnvelope(options.envelope);
@@ -31,7 +22,7 @@ export async function materializeAndSubmitWebVerdict(options: { envelope: WebVer
   const codeReview = await readWebCodeReviewReceipt(options.stateDirectory, envelope.run_id);
   if (codeReview?.review_job_id === envelope.review_id) {
     const adopted = await adoptCodeReviewVerdict({ envelope, stateDirectory: options.stateDirectory, ...(options.now ? { now: options.now } : {}) });
-    if (adopted.state === "REVISION_REQUESTED" && envelope.repair_operations?.length) await applyPairWebRepair({ envelope, stateDirectory: options.stateDirectory, configPath: options.configPath, ...(options.now ? { now: options.now } : {}) });
+    if (adopted.state === "REVISION_REQUESTED" && envelope.repair_operations?.length) await applyHarnessWebRepair({ envelope, stateDirectory: options.stateDirectory, configPath: options.configPath, ...(options.now ? { now: options.now } : {}) });
     const codeReviewPath = path.join(options.stateDirectory, "bridge", "code-reviews", identity.taskId, identity.archiveSha, "receipt.json");
     return { verdict_path: codeReviewPath, receipt: adopted as unknown as WebReviewReceipt };
   }
@@ -72,14 +63,13 @@ export async function materializeAndSubmitWebVerdict(options: { envelope: WebVer
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; await writeFile(verdictPath, bytes, { flag: "wx", mode: 0o600 }); }
   const receipt = await submitWebVerdict({ runId: envelope.run_id, stateDirectory: options.stateDirectory, configPath: options.configPath, verdictPath, ...(options.githubClient ? { githubClient: options.githubClient } : {}), ...(options.now ? { now: options.now } : {}) });
 
-  // Original Web-A final review is allowed to propose direct bounded repair only
-  // for PAIR, where Web is the repair authority by architecture. The verdict is
-  // durably sealed first. Harness then applies/re-verifies; publication/result
-  // generation become stale automatically and the planner rotates them before
-  // any later review. AUTOPILOT deliberately does not enter this branch: its
-  // selected Sol/Terra reviewer remains the repair proposer.
-  if (receipt.state === "REVISION_REQUESTED" && envelope.repair_operations?.length && await isPairWebStrategy(options.stateDirectory, envelope.run_id, identity)) {
-    await applyPairWebRepair({ envelope, stateDirectory: options.stateDirectory, configPath: options.configPath, ...(options.now ? { now: options.now } : {}) });
+  // Original Web-A final review may propose one bounded repair generation in
+  // either PAIR or AUTOPILOT. The terminal Web verdict is sealed first; Harness
+  // then applies exact operations and deterministically re-verifies. AUTOPILOT
+  // resumes this path without re-instantiating or re-calling the frozen model
+  // reviewer, so the selected Sol/Terra pass remains exactly one authority pass.
+  if (receipt.state === "REVISION_REQUESTED" && envelope.repair_operations?.length) {
+    await applyHarnessWebRepair({ envelope, stateDirectory: options.stateDirectory, configPath: options.configPath, ...(options.now ? { now: options.now } : {}) });
   }
   return { verdict_path: verdictPath, receipt };
 }
