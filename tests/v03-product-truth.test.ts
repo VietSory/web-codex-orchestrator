@@ -14,28 +14,27 @@ test("release-candidate version stays synchronized across package and installed 
   assert.match(firstRun, new RegExp(`version: "${packageJson.version!.replaceAll(".", "\\.")}"`));
 });
 
-test("public documentation presents the packed Latest release and normal daily workflow truthfully", async () => {
+test("public documentation freezes the three-step npm/Web-native daily workflow", async () => {
   const readme = await repositoryText("README.md");
   const operations = await repositoryText("docs/operations.md");
+  const packageJson = JSON.parse(await repositoryText("package.json")) as { private?: boolean; publishConfig?: { access?: string } };
 
-  const latestStart = readme.indexOf("## Install the Latest release");
-  const latestEnd = readme.indexOf("## Daily use");
-  assert.ok(latestStart >= 0 && latestEnd > latestStart);
-  const latestSection = readme.slice(latestStart, latestEnd);
-  assert.match(latestSection, /gh release view --repo VietSory\/web-codex-orchestrator --json tagName/);
-  assert.match(latestSection, /release_version="\$\{release_tag#v\}"/);
-  assert.match(latestSection, /gh release download "\$release_tag"/);
-  assert.match(latestSection, /sha256sum -c "\$\{release_asset\}\.sha256"/);
-  assert.match(latestSection, /npm install --global "\.\/\$\{release_asset\}"/);
-  assert.match(latestSection, /test "\$\(wco --version\)" = "\$release_version"/);
-  assert.doesNotMatch(latestSection, /(?:\bv|web-codex-orchestrator-)\d+\.\d+\.\d+/);
-  assert.doesNotMatch(readme, /Latest public release[^\n]*v\d+\.\d+\.\d+/i);
+  assert.equal(packageJson.private, undefined);
+  assert.equal(packageJson.publishConfig?.access, "public");
+  assert.match(readme, /npm install -g web-codex-orchestrator/);
   assert.match(readme, /cd \/path\/to\/project\n+wco/);
-  assert.match(readme, /\/web connect/);
+  assert.match(readme, /\/web connect\s+one-time official OpenAI\/ChatGPT Web-native setup/i);
+  assert.match(readme, /web_native_mcp/);
+  assert.match(readme, /OPENAI_CAPABILITY_BLOCKED/);
+  assert.match(readme, /does \*\*not\*\* configure Cloudflare, ngrok, a VPS/i);
+  assert.match(readme, /publishing remains a human release action/i);
+  assert.doesNotMatch(readme, /Install the Latest release[\s\S]{0,1000}gh release download/i);
+
   assert.match(operations, /## Normal interactive workflow/);
   assert.match(operations, /## Multiple repositories/);
-  assert.doesNotMatch(readme, /stable public package has not been released/i);
-  assert.doesNotMatch(operations, /does not currently create/i);
+  assert.match(operations, /web_native_mcp/);
+  assert.match(operations, /OPENAI_CAPABILITY_BLOCKED/);
+  assert.doesNotMatch(operations, /Personal is recommended|setup --personal.*recommended/i);
 });
 
 test("CI permanently executes the packed daily-user journey gate", async () => {
