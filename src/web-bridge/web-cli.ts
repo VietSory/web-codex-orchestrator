@@ -14,7 +14,7 @@ import { resolveManagedWebService } from "./managed-service.js";
 import { readManagedDeviceCredential } from "./managed-credential.js";
 import { generatePersonalRelaySecret, materializePersonalActionAssets } from "./personal-setup.js";
 import { readRelayToken, relayCredentialPath, writeRelayToken } from "./relay-credential.js";
-import { nativeOpenAiCredentialPath, readNativeOpenAiCredential, removeNativeOpenAiCredential, writeNativeOpenAiCredential, type NativeOpenAiCredential } from "./native-openai-credential.js";
+import { readNativeOpenAiCredential, removeNativeOpenAiCredential, writeNativeOpenAiCredential, type NativeOpenAiCredential } from "./native-openai-credential.js";
 import { runNativeMcpServer } from "./native-mcp-server.js";
 import { OPENAI_NATIVE_SETUP_URLS, probeNativeOpenAiSetup } from "./native-web-setup.js";
 
@@ -37,6 +37,11 @@ interface BrowserProcess {
 }
 
 type BrowserSpawner = (command: string, args: string[]) => BrowserProcess;
+type InteractiveQuestions = {
+  question: ((prompt: string) => Promise<string>) | undefined;
+  secret: ((prompt: string) => Promise<string>) | undefined;
+  close(): void;
+};
 
 export async function openBrowser(urlValue: string, spawnBrowser: BrowserSpawner = (command, args) => spawn(command, args, { detached: true, stdio: "ignore", shell: false }) as BrowserProcess): Promise<boolean> {
   const url = new URL(urlValue);
@@ -75,19 +80,20 @@ function webRecoveryCommand(error: unknown, operation: string): string {
   return `wco web ${operation}`;
 }
 
-function interactiveQuestions(io: WebCommandIo): { question?: (prompt: string) => Promise<string>; secret?: (prompt: string) => Promise<string>; close(): void } {
+function interactiveQuestions(io: WebCommandIo): InteractiveQuestions {
   let owned: ReturnType<typeof readline.createInterface> | undefined;
   const question = io.question ?? (process.stdin.isTTY && process.stdout.isTTY ? (() => {
     owned = readline.createInterface({ input: process.stdin, output: process.stdout });
     return async (prompt: string) => await owned!.question(prompt);
   })() : undefined);
   const secret = io.secret ?? (question ? async (prompt: string) => {
-    owned?.close(); owned = undefined;
+    owned?.close();
+    owned = undefined;
     const hidden = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
     try { return await questionWithoutEcho(hidden, prompt, (value) => process.stdout.write(value)); }
     finally { hidden.close(); }
   } : undefined);
-  return { question, secret, close: () => owned?.close() };
+  return { question, secret, close: () => { owned?.close(); } };
 }
 
 async function promptSelfHostedConnection(io: WebCommandIo, config: TrustedConfig): Promise<{ relayUrl: string; gptUrl: string; token: string } | null> {
@@ -123,7 +129,7 @@ async function promptNativeConnection(io: WebCommandIo, openUrl: (url: string) =
   if (!question || !secret) { io.error("OpenAI Web-native setup is interactive. Run it in a TTY.\n"); return null; }
   try {
     io.write("WCO Web-native setup uses official OpenAI/ChatGPT surfaces only. No Cloudflare, domain, VPS, public localhost, or external OAuth service is required.\n");
-    io.write("This capability currently requires an OpenAI workspace that can use Secure MCP Tunnel, full MCP tools, and Workspace Agent API triggers. If your workspace does not expose those controls, WCO will report OPENAI_CAPABILITY_BLOCKED instead of substituting third-party hosting.\n\n");
+    io.write("This capability requires an OpenAI workspace that exposes Secure MCP Tunnel, full MCP tools, and Workspace Agent API triggers. If those official controls are unavailable, WCO reports OPENAI_CAPABILITY_BLOCKED instead of substituting third-party hosting.\n\n");
 
     await openUrl(OPENAI_NATIVE_SETUP_URLS.tunnels);
     const tunnelId = (await question("OpenAI Platform tunnel ID (tunnel_...): ")).trim();
