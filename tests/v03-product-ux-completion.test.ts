@@ -36,7 +36,7 @@ test("relay credential persists only under WCO credentials and can be removed", 
   await assert.rejects(readRelayToken(credentials, {}), /not configured|AUTH_UNAVAILABLE/i);
 });
 
-test("one-time Web connect verifies relay before persisting actions_relay config", async () => {
+test("one-time advanced relay connect verifies relay before persisting actions_relay config", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-v03-connect-"));
   const repo = path.join(root, "repo"), configPath = path.join(root, "home", "config.json"), credentials = path.join(root, "home", "credentials"), relayRoot = path.join(root, "relay");
   await mkdir(repo, { recursive: true });
@@ -98,15 +98,21 @@ test("managed Web status directs a missing device credential to reconnect instea
   }
 });
 
-test("Web CLI preserves stable structured error codes for unsafe relay input", async () => {
+test("advanced self-hosted Web CLI preserves stable structured error codes for unsafe relay input", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-v03-web-error-code-"));
   const old = process.env.WCO_HOME;
   process.env.WCO_HOME = root;
   try {
     await writeTrustedConfigAtomic(path.join(root, "config.json"), minimalConfig(path.join(root, "repo")));
-    const answers = ["http://example.com/relay", "https://chatgpt.com/g/test", "x".repeat(40)];
+    const answers = ["http://example.com/relay", "https://chatgpt.com/g/test"];
+    const relayToken = "x".repeat(40);
     const stderr: string[] = [];
-    const code = await runWebCommand(["connect", "--self-hosted"], { write: () => undefined, error: (value) => stderr.push(value), question: async () => answers.shift()! });
+    const code = await runWebCommand(["connect", "--self-hosted"], {
+      write: () => undefined,
+      error: (value) => stderr.push(value),
+      question: async () => answers.shift()!,
+      secret: async () => relayToken,
+    });
     assert.equal(code, 1);
     assert.match(stderr.join(""), /^WEB_RELAY_URL_UNSAFE:/);
     assert.doesNotMatch(stderr.join(""), /x{16,}/);
