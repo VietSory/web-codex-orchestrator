@@ -78,6 +78,26 @@ test("disconnected manual bridge status never claims the relay is connected", as
   }
 });
 
+test("managed Web status directs a missing device credential to reconnect instead of retrying status", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-v03-managed-reconnect-hint-"));
+  const old = process.env.WCO_HOME;
+  process.env.WCO_HOME = root;
+  try {
+    await writeTrustedConfigAtomic(path.join(root, "config.json"), {
+      ...minimalConfig(path.join(root, "repo")),
+      web_bridge: { mode: "managed_actions", poll_interval_ms: 1_000, job_ttl_seconds: 86_400 },
+    });
+    const stderr: string[] = [];
+    const code = await runWebCommand(["status"], { write: () => undefined, error: (value) => stderr.push(value) });
+    assert.equal(code, 1);
+    assert.match(stderr.join(""), /^WEB_MANAGED_RECONNECT_REQUIRED:/);
+    assert.match(stderr.join(""), /Next: wco web connect/);
+    assert.doesNotMatch(stderr.join(""), /Try: wco web status/);
+  } finally {
+    if (old === undefined) delete process.env.WCO_HOME; else process.env.WCO_HOME = old;
+  }
+});
+
 test("Web CLI preserves stable structured error codes for unsafe relay input", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-v03-web-error-code-"));
   const old = process.env.WCO_HOME;

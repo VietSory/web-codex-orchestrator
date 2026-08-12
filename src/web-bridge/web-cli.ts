@@ -60,6 +60,13 @@ function formatWebError(error: unknown): string {
   return code && !message.startsWith(`${code}:`) ? `${code}: ${message}` : message;
 }
 
+function webRecoveryCommand(error: unknown, operation: string): string {
+  const code = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : "";
+  if (code === "WEB_MANAGED_RECONNECT_REQUIRED") return "wco web connect";
+  if (code === "CONFIG_NOT_FOUND") return "wco setup";
+  return `wco web ${operation}`;
+}
+
 async function promptSelfHostedConnection(io: WebCommandIo, config: TrustedConfig): Promise<{ relayUrl: string; gptUrl: string; token: string } | null> {
   let owned: ReturnType<typeof readline.createInterface> | undefined;
   let secret = io.secret;
@@ -168,7 +175,7 @@ export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = d
     io.write(`Senior Architect GPT  configured\nWCO Relay              ${status.connected ? "connected" : "offline"}\nChatGPT Web             ${status.connected ? "linked" : "not linked"}\nPending author task    ${status.pending_author_job ? "yes" : "none"}\nPending final review   ${status.pending_final_review ? "yes" : "none"}\n`);
     return status.connected ? 0 : 1;
   } catch (error) {
-    io.error(`${formatWebError(error)}\nNo repository files or workflow authority were changed. Try: wco web status\n`);
+    io.error(`${formatWebError(error)}\nNo repository files or workflow authority were changed. Next: ${webRecoveryCommand(error, operation)}\n`);
     return 1;
   }
 }
