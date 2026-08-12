@@ -1,6 +1,8 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
+import { calculateChangeSet } from "../execution/change-set.js";
 import { readExecutorReceipt } from "../executor/store.js";
 import { loadPhase4Config } from "../execution/execution-config.js";
 import { GitRunner } from "../git/git-runner.js";
@@ -10,9 +12,16 @@ import { BubblewrapVerificationSandbox } from "../verifier/bubblewrap-sandbox.js
 import { loadSealedRevisionSource } from "../revision/revision-source.js";
 import { reviseRun } from "../revision/revision-service.js";
 import type { RevisionReceipt } from "../revision/contracts.js";
+import { resolveRevisionRoundPaths, prepareRevisionRoundPaths } from "../revision/revision-paths.js";
+import { readRevisionReceipt, writeCanonicalRevisionArtifact, writeRevisionReceipt } from "../revision/revision-store.js";
+import { attestRevisionPullRequest } from "../revision/revision-github-attestation.js";
+import { calculateApprovedRevisionSnapshot } from "../revision/revision-git.js";
+import { packageRevisionResultBundle } from "../revision/revision-result-bundle.js";
 import { getWebReviewStatus } from "../web-review/web-review-service.js";
 import { resolveTrustedRunContext } from "../web-review/trusted-run-context.js";
 import { readSelectedArtifact } from "./artifact-binding.js";
+import { openDraftPullRequestForExecutorSnapshot } from "./draft-pr.js";
+import { publishReadyExecutorSnapshot } from "./p10-publish.js";
 import { OrchestrationError } from "./contracts.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -113,28 +122,6 @@ export async function attestRevisionAuthorityForOrchestration(options: {
   };
 }
 
-async function assertLegacyRevisionDoesNotCrossPairBoundary(options: {
-  runId: string;
-  stateDirectory: string;
-}): Promise<void> {
-  const selected = await readSelectedArtifact(options.stateDirectory, options.runId);
-  // Older compatibility runs predate Phase 10 selected-artifact authority.
-  // The guard applies only when a new Harness-first executor can prove mode.
-  if (!selected) return;
-  const split = options.runId.lastIndexOf(":");
-  const taskId = options.runId.slice(0, split);
-  const archiveSha = options.runId.slice(split + 1);
-  if (split < 1 || !SHA256.test(archiveSha)) throw new OrchestrationError("ORCHESTRATION_RUN_ID_INVALID", "Revision run identity is invalid.");
-  const executor = await readExecutorReceipt(options.stateDirectory, taskId, archiveSha, selected.artifact_sha256);
-  if (!executor) throw new OrchestrationError("ORCHESTRATION_EXECUTOR_NOT_READY", "Revision requires a durable Harness executor receipt.");
-  if (executor.review_strategy === "web") {
-    throw new OrchestrationError(
-      "ORCHESTRATION_PAIR_WEB_REVISION_REQUIRED",
-      "PAIR revision requires bounded Web repair authority applied by the Harness. Legacy Phase 8 Codex repair is intentionally disabled for PAIR so zero-Codex/token guarantees cannot be bypassed.",
-    );
-  }
-}
-
 async function prepareRuntimeDirectory(stateDirectory: string): Promise<string> {
   const runtime = path.resolve(stateDirectory, "revision-runtime");
   await fs.mkdir(runtime, { recursive: true, mode: 0o700 });
@@ -161,6 +148,176 @@ function collectSecrets(config: Awaited<ReturnType<typeof loadPhase4Config>>): s
   return [...keys].map((key) => process.env[key]).filter((value): value is string => typeof value === "string" && value.length >= 8);
 }
 
+function sha256Text(value: string): string {
+  return crypto.createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+async function tryHarnessWebRevision(options: {
+  runId: string;
+  revisionRound: number;
+  stateDirectory: string;
+  configPath: string;
+  authority: RevisionOrchestrationAuthority;
+  config: Awaited<ReturnType<typeof loadPhase4Config>>;
+  runner: GitRunner;
+  now?: () => Date;
+}): Promise<RevisionReceipt | null> {
+  const selected = await readSelectedArtifact(options.stateDirectory, options.runId);
+  if (!selected) return null;
+  const split = options.runId.lastIndexOf(":");
+  const taskId = options.runId.slice(0, split);
+  const archiveSha = options.runId.slice(split + 1);
+  if (split < 1 || !SHA256.test(archiveSha)) throw new OrchestrationError("ORCHESTRATION_RUN_ID_INVALID", "Revision run identity is invalid.");
+  const executor = await readExecutorReceipt(options.stateDirectory, taskId, archiveSha, selected.artifact_sha256);
+  if (!executor) throw new OrchestrationError("ORCHESTRATION_EXECUTOR_NOT_READY", "Harness-first revision requires a durable executor receipt.");
+  if (executor.review_strategy === undefined) return null;
+
+  const repair = executor.repair;
+  if (!repair || repair.reviewer !== "web" || repair.state !== "VERIFIED" || !repair.final_change_set_digest) {
+    throw new OrchestrationError("ORCHESTRATION_WEB_REVISION_REPAIR_REQUIRED", "Harness-first final REVISION_REQUESTED requires bounded Web repair operations that were applied and deterministically verified before publication.");
+  }
+  if (executor.state !== "READY_FOR_PUBLISH" || !executor.change_set_digest || executor.change_set_digest !== repair.final_change_set_digest || !executor.verification.passed || executor.verification.change_set_digest !== executor.change_set_digest) {
+    throw new OrchestrationError("ORCHESTRATION_WEB_REVISION_REPAIR_INVALID", "Harness Web repair is not bound to the exact deterministic verification checkpoint.");
+  }
+
+  const source = await loadSealedRevisionSource(options.stateDirectory, options.runId, options.revisionRound);
+  if (repair.source_change_set_digest !== source.previousResultBundle.receipt.change_set_sha256) {
+    throw new OrchestrationError("ORCHESTRATION_WEB_REVISION_REPAIR_STALE", "The verified Web repair does not originate from the exact Result generation reviewed by Web-A.");
+  }
+
+  const paths = resolveRevisionRoundPaths(options.stateDirectory, options.runId, options.revisionRound);
+  await prepareRevisionRoundPaths(options.stateDirectory, paths);
+  const existing = await readRevisionReceipt(options.stateDirectory, paths.receiptPath);
+  if (existing?.state === "RESULT_READY") {
+    assertRevisionResultForOrchestration(options.runId, existing, options.authority);
+    if (existing.usage.total_turns !== 0 || existing.usage.input_tokens !== 0 || existing.usage.output_tokens !== 0) {
+      throw new OrchestrationError("ORCHESTRATION_WEB_REVISION_MODEL_AUTHORITY", "Harness Web revision recovery found unexpected model usage.");
+    }
+    return existing;
+  }
+
+  const published = await publishReadyExecutorSnapshot({
+    runId: options.runId,
+    artifactSha256: selected.artifact_sha256,
+    stateDirectory: options.stateDirectory,
+    configPath: options.configPath,
+    ...(options.now ? { now: options.now } : {}),
+  });
+  if (published.state !== "PUSHED" || !published.commit_sha || published.remote_branch_sha !== published.commit_sha || published.commit_sha === options.authority.publishedCommitSha) {
+    throw new OrchestrationError("ORCHESTRATION_WEB_REVISION_PUBLISH_INVALID", "Harness Web revision must fast-forward to a new exact PUSHED commit.");
+  }
+  const draft = await openDraftPullRequestForExecutorSnapshot({
+    runId: options.runId,
+    artifactSha256: selected.artifact_sha256,
+    stateDirectory: options.stateDirectory,
+    configPath: options.configPath,
+    ...(options.now ? { now: options.now } : {}),
+  });
+  if (draft.state !== "OPEN" || draft.pull_number !== options.authority.pullRequestNumber || draft.observed_head_sha !== published.commit_sha || draft.observed_draft !== true) {
+    throw new OrchestrationError("ORCHESTRATION_WEB_REVISION_PR_INVALID", "Harness Web revision did not re-attest the same Draft PR at the repaired head.");
+  }
+
+  const delta = await calculateChangeSet({
+    worktreePath: executor.worktree_path,
+    baseCommit: options.authority.publishedCommitSha,
+    branchName: executor.base_branch,
+    runner: options.runner,
+    allowedGeneratedPaths: options.config.verification.allowed_generated_paths,
+  });
+  if (delta.entries.length === 0) throw new OrchestrationError("ORCHESTRATION_WEB_REVISION_EMPTY", "Harness Web revision produced no previous-head to new-head change-set.");
+  const revisionPaths = delta.entries.map((entry) => entry.path).sort();
+  const approvedSnapshot = await calculateApprovedRevisionSnapshot({ runner: options.runner, worktreePath: executor.worktree_path, approvedPaths: revisionPaths });
+  const nowIso = (options.now ? options.now() : new Date()).toISOString();
+  const noReview = { model: "not-called-harness-web-repair", reasoning_effort: "minimal" as const, rounds: 0, thread_ids: [] as string[], verdict: null, reviewed_change_set_sha256: null };
+  const receipt: RevisionReceipt = {
+    phase_version: "1.0",
+    run_id: options.runId,
+    revision_round: options.revisionRound,
+    state: "PUSHED",
+    resume_state: null,
+    spec_set_sha256: source.request.spec_set_sha256,
+    revision_request_sha256: source.requestSha256,
+    previous_result_bundle_sha256: source.request.previous_result_bundle_sha256,
+    previous_result_receipt_sha256: source.previousResultBundle.phase6ReceiptSha256,
+    previous_verdict_sha256: source.request.previous_verdict_sha256,
+    previous_published_commit_sha: source.request.previous_published_commit_sha,
+    previous_pr_head_sha: source.request.previous_pr_head_sha,
+    pull_request_number: source.request.pull_request_number,
+    branch_name: source.previousResultBundle.receipt.pull_request.head_branch,
+    base_branch: source.previousResultBundle.receipt.pull_request.base_branch,
+    worktree_path: executor.worktree_path,
+    initial_refs_sha256: sha256Text(`${options.runId}\0${source.request.previous_pr_head_sha}\0${published.commit_sha}`),
+    implementer: { model: "web-bounded-repair", reasoning_effort: "minimal", thread_id: null, iterations: 0 },
+    verification: { rounds: executor.verification.rounds, required_commands_passed: true, verified_change_set_sha256: executor.change_set_digest, commands: [] },
+    terra_review: { ...noReview },
+    sol_review: { ...noReview },
+    usage: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_turns: 0, implementation_iterations: 0, internal_review_rounds: 0, sol_review_rounds: 0, started_at: nowIso },
+    revision_change_set_sha256: delta.change_set_sha256,
+    revision_paths: revisionPaths,
+    approved_snapshot_sha256: approvedSnapshot,
+    new_published_commit_sha: published.commit_sha,
+    remote_branch_sha: published.remote_branch_sha,
+    result_bundle_sha256: null,
+    result_manifest_sha256: null,
+    next_review_round: options.revisionRound + 1,
+    errors: [],
+    created_at: nowIso,
+    updated_at: nowIso,
+    completed_at: null,
+  };
+  await writeRevisionReceipt(paths.receiptPath, receipt);
+  await writeCanonicalRevisionArtifact(paths.implementationPath, { run_id: options.runId, revision_round: options.revisionRound, authority: "web-bounded-repair", model_calls: 0, repair_source_change_set_sha256: repair.source_change_set_digest, repaired_change_set_sha256: executor.change_set_digest, revision_paths: revisionPaths });
+  await writeCanonicalRevisionArtifact(paths.verificationPath, receipt.verification);
+  await writeCanonicalRevisionArtifact(paths.terraReviewPath, receipt.terra_review);
+  await writeCanonicalRevisionArtifact(paths.solReviewPath, receipt.sol_review);
+
+  const finalPr = await attestRevisionPullRequest({
+    expected: {
+      pullRequestUrl: source.previousResultBundle.receipt.pull_request.url,
+      pullRequestNumber: source.request.pull_request_number,
+      headBranch: receipt.branch_name,
+      headSha: published.commit_sha,
+      baseBranch: receipt.base_branch,
+      baseSha: source.previousResultBundle.receipt.base_commit,
+    },
+    config: options.config,
+  });
+  const publishArtifact = { run_id: options.runId, revision_round: options.revisionRound, previous_head_sha: source.request.previous_pr_head_sha, new_commit_sha: published.commit_sha, remote_branch_sha: published.remote_branch_sha, branch_name: receipt.branch_name, pull_request_number: receipt.pull_request_number, same_pull_request: true, force_push: false, merged: false, authority: "phase10-harness" };
+  const publishWritten = await writeCanonicalRevisionArtifact(paths.publishPath, publishArtifact);
+  const revisionEvidence = { run_id: options.runId, revision_round: options.revisionRound, state: "PUSHED", authority: "web-bounded-repair", model_calls: 0, sealed_revision_request_sha256: source.requestSha256, spec_set_sha256: receipt.spec_set_sha256, previous_result_bundle_sha256: receipt.previous_result_bundle_sha256, previous_result_receipt_sha256: receipt.previous_result_receipt_sha256, previous_verdict_sha256: receipt.previous_verdict_sha256, previous_head_sha: receipt.previous_pr_head_sha, repair_source_change_set_sha256: repair.source_change_set_digest, repaired_change_set_sha256: executor.change_set_digest, revision_change_set_sha256: receipt.revision_change_set_sha256, revision_paths: receipt.revision_paths, approved_snapshot_sha256: receipt.approved_snapshot_sha256, verification: receipt.verification, terra_review: receipt.terra_review, sol_review: receipt.sol_review, usage: receipt.usage, published_commit_sha: receipt.new_published_commit_sha, remote_branch_sha: receipt.remote_branch_sha };
+  const revisionEvidenceWritten = await writeCanonicalRevisionArtifact(paths.evidencePath, revisionEvidence);
+
+  const runContext = await resolveTrustedRunContext(options.runId, options.stateDirectory, options.configPath);
+  const result = await packageRevisionResultBundle({
+    stateDirectory: options.stateDirectory,
+    paths,
+    source,
+    revisionReceipt: receipt,
+    revisionEvidence,
+    revisionEvidenceSha256: revisionEvidenceWritten.sha256,
+    publishEvidence: publishArtifact,
+    publishEvidenceSha256: publishWritten.sha256,
+    prAttestation: finalPr,
+    acceptedBundlePath: runContext.runReceipt.accepted_bundle_path,
+    originalBaseCommit: executor.base_commit,
+    worktreePath: executor.worktree_path,
+    runner: options.runner,
+    limits: options.config.result_bundle,
+    secrets: collectSecrets(options.config),
+    ...(options.now ? { now: options.now } : {}),
+  });
+  if (result.state !== "READY_FOR_WEB_REVIEW" || result.result_bundle_version !== "1.2" || result.input_kind !== "revision" || result.revision_round !== options.revisionRound || !result.archive_sha256 || !result.manifest_sha256 || result.published_commit_sha !== published.commit_sha || result.pull_request.number !== options.authority.pullRequestNumber) {
+    throw new OrchestrationError("ORCHESTRATION_WEB_REVISION_RESULT_INVALID", "Harness Web revision did not produce an exact v1.2 same-PR Result Bundle.");
+  }
+  receipt.result_bundle_sha256 = result.archive_sha256;
+  receipt.result_manifest_sha256 = result.manifest_sha256;
+  receipt.state = "RESULT_READY";
+  receipt.completed_at = (options.now ? options.now() : new Date()).toISOString();
+  receipt.updated_at = receipt.completed_at;
+  await writeRevisionReceipt(paths.receiptPath, receipt);
+  return receipt;
+}
+
 export async function reviseRunForOrchestration(options: {
   runId: string;
   revisionRound: number;
@@ -174,16 +331,12 @@ export async function reviseRunForOrchestration(options: {
   if (authority.revisionRound !== options.revisionRound) {
     throw new OrchestrationError("ORCHESTRATION_REVISION_AUTHORITY_INVALID", "Requested revision round does not match the latest sealed Web revision authority.");
   }
-  // Critical product boundary: PAIR is Web-author/Web-review/Web-final and must
-  // never instantiate a Codex runtime as a fallback revision implementer.
-  await assertLegacyRevisionDoesNotCrossPairBoundary({ runId: options.runId, stateDirectory: options.stateDirectory });
   try {
     const runContext = await resolveTrustedRunContext(options.runId, options.stateDirectory, options.configPath);
     if (!runContext.runReceipt.remote_url) throw new OrchestrationError("ORCHESTRATION_REVISION_HISTORY_INVALID", "Canonical run receipt has no trusted remote_url.");
     const config = await loadPhase4Config(options.configPath);
     if (!config.publish) throw new OrchestrationError("ORCHESTRATION_REVISION_CONFIG_INVALID", "Trusted publish configuration is required.");
     const runtimeDirectory = await prepareRuntimeDirectory(options.stateDirectory);
-    const runtime = await resolveCodexRuntime(config.runtime, options.stateDirectory);
     const auth = await preparePublishGitSecurity(config.publish, runContext.runReceipt.remote_url, runtimeDirectory, process.env);
     if (auth.mode === "https_token") authPath = auth.askpassScriptPath;
     const runner = new GitRunner(process.env, runtimeDirectory, {
@@ -191,6 +344,28 @@ export async function reviseRunForOrchestration(options: {
       auth,
       allowedRemoteUrl: runContext.runReceipt.remote_url,
     });
+
+    // Harness-first PAIR/AUTOPILOT: the terminal Web-A verdict already supplied
+    // bounded repair bytes and materialization already applied + re-verified them.
+    // Promote that exact checkpoint through same-PR publication and a v1.2
+    // revision Result Bundle. No Codex runtime/client or second reviewer call is
+    // created on this path. Legacy pre-Harness runs retain the old Phase 8 path.
+    const harness = await tryHarnessWebRevision({
+      runId: options.runId,
+      revisionRound: options.revisionRound,
+      stateDirectory: options.stateDirectory,
+      configPath: options.configPath,
+      authority,
+      config,
+      runner,
+      ...(options.now ? { now: options.now } : {}),
+    });
+    if (harness) {
+      assertRevisionResultForOrchestration(options.runId, harness, authority);
+      return harness;
+    }
+
+    const runtime = await resolveCodexRuntime(config.runtime, options.stateDirectory);
     const receipt = await reviseRun({
       runId: options.runId,
       revisionRound: options.revisionRound,
