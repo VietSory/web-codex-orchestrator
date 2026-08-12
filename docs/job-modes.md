@@ -2,7 +2,7 @@
 
 WCO exposes two normal modes with the same security boundary: **Web authors bounded implementation authority, Harness owns mutation, deterministic verification is mandatory, original ChatGPT Web performs final intent review, and merge/release remain human-only.**
 
-The modes differ at the code-review stage.
+The modes differ only at the code-review stage.
 
 ## PAIR — default, zero Codex requirement
 
@@ -10,24 +10,29 @@ Plain goals and `/new <goal>` start PAIR.
 
 ```text
 user goal
-→ original ChatGPT Web inspects/researches exact repository
-→ Web seals contract + exact bounded implementation authority
+→ original ChatGPT Web (Web-A) inspects/researches exact repository
+→ Web-A seals contract + bounded implementation authority
 → Harness validates/applies exact operations
 → deterministic verification in provider-independent sandbox
-→ independent Web code review
+→ independent Web code review (Web-B)
    ├─ APPROVE
-   ├─ REVISE + bounded repair authority → Harness apply/re-verify
+   ├─ REVISE + bounded repair operations → Harness apply/re-verify → Web-B again
    └─ consequential/policy boundary → NEEDS YOU
-→ original ChatGPT Web final intent review
+→ exact publication / Draft PR / Result Bundle
+→ original Web-A final intent review
+   ├─ APPROVE
+   ├─ REVISE + bounded repair operations → Harness apply/re-verify
+   │                                  → same PR/new Result Bundle → Web-A again
+   └─ ESCALATE → NEEDS YOU
 → READY FOR YOU
 → human review/merge
 ```
 
 PAIR does **not** select, initialize or charge a Sol/Terra reviewer. PAIR readiness must not require Codex CLI/runtime/auth. Deterministic verification uses the provider-independent sandbox and fails closed when its isolation guarantees are unavailable.
 
-Independent Web code review is separate from the original-Web final intent review. A code-review approval checks code-level correctness/security/regression/tests/scope/performance; the final review checks the exact published result against original user intent, architecture and acceptance evidence.
+Web-B code review is separate from Web-A final intent review. Web-B checks code-level correctness, security, regressions, tests, scope and performance. Web-A checks the exact published result against original user intent, architecture and acceptance evidence.
 
-A PAIR revision must remain Web-owned + Harness-applied. Legacy Codex Phase 8 is not a permitted fallback for PAIR.
+Both Web-B and Web-A may return bounded repair operations. The Harness is the only mutation authority. Legacy Codex Phase 8 is not a permitted fallback for a Harness-first PAIR run.
 
 ## AUTOPILOT — Harness-first with one adaptive model review pass
 
@@ -41,24 +46,27 @@ No Task Bundle, ZIP, run ID, state directory or internal Node entry point is exp
 
 ```text
 user /auto goal
-→ original ChatGPT Web inspects/researches exact repository
-→ Web seals contract + exact bounded implementation authority
+→ original Web-A inspects/researches exact repository
+→ Web-A seals contract + bounded implementation authority
 → Harness validates/applies exact operations
 → deterministic verification
 → exactly ONE selected Sol/Terra reviewer (default Sol/high)
    ├─ APPROVE
    ├─ REVISE + bounded repair operations in the same review pass
-   │    → Harness validates preimage/path/postimage authority
-   │    → Harness applies
-   │    → deterministic verification
+   │    → Harness validates/applies → deterministic re-verification
    └─ consequential/policy/replan boundary → NEEDS YOU
 → exact publication / Draft PR / Result Bundle
-→ original ChatGPT Web mandatory final intent review
+→ original Web-A mandatory final intent review
+   ├─ APPROVE
+   ├─ REVISE + bounded Web-A repair operations
+   │    → Harness apply/re-verify → same PR/new Result Bundle → Web-A again
+   │    → NO second Sol/Terra call
+   └─ ESCALATE → NEEDS YOU
 → READY FOR YOU
 → human review/merge
 ```
 
-AUTOPILOT is not a Codex-implementer pipeline. The Web author supplies the initial bounded implementation pack; the selected model is reviewer/repair proposer only. It never receives direct worktree-write or shell mutation authority.
+AUTOPILOT is not a Codex-implementer pipeline. Web-A supplies the initial bounded implementation pack; the selected model is reviewer/repair proposer only. It never receives direct worktree-write or shell mutation authority.
 
 The reviewer preference for new AUTOPILOT tasks is controlled from the normal shell:
 
@@ -77,8 +85,8 @@ PAIR:
 
 ```text
 deterministic verification
-→ independent Web code review
-→ original-Web final intent review
+→ independent Web-B code review
+→ original Web-A final intent review
 ```
 
 AUTOPILOT:
@@ -86,10 +94,10 @@ AUTOPILOT:
 ```text
 deterministic verification
 → one selected Sol/Terra adaptive code-review pass
-→ original-Web final intent review
+→ original Web-A final intent review
 ```
 
-WCO does not stack Terra → Sol → Web. AUTOPILOT uses exactly one selected model reviewer per model-review pass. PAIR uses zero model-review turns.
+WCO does not stack Terra → Sol → Web. AUTOPILOT uses one selected model pass on the normal path. PAIR uses zero model-review turns. A later Web-A repair is not a new model-review round.
 
 ## Bounded repair authority
 
@@ -105,20 +113,24 @@ A bounded repair proposal is limited to exact `create_file`, `replace_file` or `
 - exact final changed-path set;
 - deterministic verification of the repaired digest.
 
-For AUTOPILOT, `REVISE` should include the bounded repair proposal in the same selected reviewer call so WCO avoids review → repair → re-review chatter when the repair itself can be verified deterministically.
+AUTOPILOT's selected reviewer should include a bounded repair proposal in the same review call when the blocking correction is sufficiently local. This avoids review → repair → model re-review chatter without weakening deterministic verification.
 
-For PAIR, independent Web `REVISE` must eventually carry equivalent bounded repair authority. Until that transport is fully wired, WCO fails closed rather than falling back to Codex and violating the zero-Codex guarantee.
+PAIR Web-B `REVISE` uses the same bounded repair transport. A sealed verdict is digest-bound to the reviewed Result generation; stale or conflicting repair authority fails closed.
 
 ## Final-review revision boundary
 
-The original Web final review is mandatory in both modes. It is bound to the exact Result Bundle and freshly attested Draft PR head.
+Web-A final review is mandatory in both modes and is bound to the exact Result Bundle plus freshly attested Draft PR head.
 
-A final-review `REVISION_REQUESTED` must remain a bounded same-PR fast-forward revision. Repair ownership remains mode-specific:
+A final `REVISION_REQUESTED` is always **Web-A-proposed + Harness-applied** in the normal Harness-first product flow, regardless of mode:
 
-- PAIR: Web-proposed, Harness-applied, zero Codex fallback.
-- AUTOPILOT: selected-reviewer-proposed, Harness-applied.
+- the sealed verdict may carry bounded exact repair operations;
+- Harness applies and deterministically re-verifies the new digest;
+- publication is a strict fast-forward on the same Draft PR;
+- the prior publish/Result/review generation remains immutable evidence;
+- a new revision Result Bundle is created and sent back to Web-A;
+- AUTOPILOT does not call the frozen Sol/Terra reviewer again.
 
-After repair, deterministic verification must bind the new exact digest before a new Result Bundle is reviewed again by the original Web.
+The legacy model-owned Phase 8 path exists only for compatibility with pre-Harness prepared runs.
 
 ## Mode-aware doctor/readiness
 
@@ -126,7 +138,7 @@ After repair, deterministic verification must bind the new exact digest before a
 
 PAIR readiness requires provider-independent verification isolation, Git/GitHub publication prerequisites and Web connectivity; it must not fail merely because Codex runtime/auth is absent.
 
-AUTOPILOT requires all common prerequisites plus the selected model review runtime/auth.
+AUTOPILOT requires the common prerequisites plus the selected model review runtime/auth.
 
 ## Durable state and recovery
 
@@ -139,9 +151,11 @@ Recovery principles:
 - bounded repair checkpoints are durable before mutation;
 - apply is resumable/idempotent against exact preimage/postimage classification;
 - deterministic verification binds the exact effective digest;
+- final Web revision uses a write-ahead revision checkpoint before publication;
 - publication and Draft PR receipts bind exact Git heads;
-- stale Web review approval is rejected after Result Bundle/head movement;
-- READY is re-attested rather than trusted from a cached UI state.
+- crash recovery adopts exact durable pushed state rather than reconstructing authority from a changed worktree;
+- stale Web approval is rejected after Result Bundle/head movement;
+- READY is freshly re-attested rather than trusted from a cached UI state.
 
 ## Performance policy
 
@@ -149,10 +163,11 @@ WCO optimizes latency/token cost by reducing model round trips rather than weake
 
 - PAIR: zero Codex model turns by design;
 - AUTOPILOT: one selected model review pass by default;
-- adaptive `REVISE` returns bounded repair operations in the same pass when possible;
+- adaptive model `REVISE` returns bounded repair operations in the same pass when possible;
+- Web-A final repairs do not trigger another model review;
 - deterministic context selection sends changed files + dependency hints rather than whole-repo context by default;
 - independent reads/research may run concurrently, while mutation/authority transitions remain serialized;
-- Harness verification/publish reuse exact durable receipts instead of repeating model work.
+- Harness verification/publication reuse exact durable receipts instead of repeating model work.
 
 ## Human-owned actions
 
@@ -162,4 +177,4 @@ Neither mode automatically merges, marks a PR ready, enables auto-merge, force-p
 
 ## Hosted-service boundary
 
-Local product flow, protocol, reference relay, managed client, GPT instructions and fail-closed metadata are repository-owned and testable. A stable managed relay/OAuth deployment, hosted Senior Architect GPT configuration and real provider/hosted-Web end-to-end acceptance remain external runtime gates; synthetic CI is not proof of those external systems.
+Local product flow, protocol, reference relay, managed client, GPT instructions and fail-closed metadata are repository-owned and testable. A stable managed relay/OAuth deployment, hosted Web configuration and real provider/hosted-Web end-to-end acceptance remain external runtime gates; synthetic CI is not proof of those external systems.
