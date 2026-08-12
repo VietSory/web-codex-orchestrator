@@ -34,7 +34,7 @@ import { listLocalTaskHistory } from "../web-bridge/session-history.js";
 import { ManagedWebOnboardingClient } from "../web-bridge/managed-onboarding.js";
 import { resolveManagedWebService } from "../web-bridge/managed-service.js";
 import { readNativeOpenAiCredential } from "../web-bridge/native-openai-credential.js";
-import { startNativeTunnel, type NativeTunnelProcess } from "../web-bridge/native-tunnel-runtime.js";
+import { startNativeTunnel, stopNativeTunnel, type NativeTunnelProcess } from "../web-bridge/native-tunnel-runtime.js";
 import { triggerWorkspaceAgent } from "../web-bridge/workspace-agent-client.js";
 import { contentDigest } from "../web-bridge/contracts.js";
 import { formatAutopilotOutcome, formatAutopilotStatus } from "./autopilot-presenter.js";
@@ -388,6 +388,6 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
         return { message: `Unknown command '${command}'. Type / for the command palette.` };
       },
     });
-  } finally { await nativeTunnel?.stop().catch(() => undefined); }
+  } finally { await stopNativeTunnel(nativeTunnel).catch(() => undefined); }
   return 0;
 }
