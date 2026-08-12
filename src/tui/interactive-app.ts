@@ -26,14 +26,17 @@ import {
 } from "../web-bridge/local-worker.js";
 import { createConfiguredWebBridge } from "../web-bridge/bridge-factory.js";
 import { readWebCodeReviewReceipt } from "../web-bridge/code-review-service.js";
-import { createPendingFinalReview } from "../web-bridge/final-review-service.js";
+import { createPendingFinalReview, type WebReviewPurpose } from "../web-bridge/final-review-service.js";
 import { materializeAndSubmitWebVerdict } from "../web-bridge/verdict-materializer.js";
 import { runWebCommand } from "../web-bridge/web-cli.js";
 import type { WebBridge } from "../web-bridge/web-bridge.js";
 import { listLocalTaskHistory } from "../web-bridge/session-history.js";
 import { ManagedWebOnboardingClient } from "../web-bridge/managed-onboarding.js";
 import { resolveManagedWebService } from "../web-bridge/managed-service.js";
-import { writeTrustedConfigAtomic } from "../setup/config-writer.js";
+import { readNativeOpenAiCredential } from "../web-bridge/native-openai-credential.js";
+import { startNativeTunnel, type NativeTunnelProcess } from "../web-bridge/native-tunnel-runtime.js";
+import { triggerWorkspaceAgent } from "../web-bridge/workspace-agent-client.js";
+import { contentDigest } from "../web-bridge/contracts.js";
 import { formatAutopilotOutcome, formatAutopilotStatus } from "./autopilot-presenter.js";
 import { withFinalReviewNotification } from "./autopilot-web-bridge.js";
 import { pairSessionCanComplete } from "./pair-completion.js";
@@ -85,17 +88,18 @@ async function reviewSummary(runId: string, stateDirectory: string): Promise<str
 }
 
 function configSummary(config: TrustedConfig, repositoryId: string, reviewer: ReviewerSelection): string {
+  const mode = config.web_bridge?.mode ?? "manual_file";
+  const chatgpt = mode === "web_native_mcp" ? "official Secure MCP Tunnel + Workspace Agent" : mode === "managed_actions" ? "managed OAuth" : mode === "personal_actions" || mode === "actions_relay" ? "advanced personal relay" : "offline/manual";
   return [
     `Repository    ${repositoryId}`,
-    `Web bridge    ${config.web_bridge?.mode ?? "manual_file"}`,
-    `ChatGPT Web   ${config.web_bridge?.mode === "managed_actions" ? "managed OAuth" : config.web_bridge?.mode === "personal_actions" || config.web_bridge?.mode === "actions_relay" ? "personal Bearer" : "offline/manual"}`,
+    `Web bridge    ${mode}`,
+    `ChatGPT Web   ${chatgpt}`,
     `AUTOPILOT review ${reviewerLabel(reviewer)}`,
     "Final review  original ChatGPT Web · required",
     "",
-    "Change AUTOPILOT reviewer with `/mode <sol|terra> <minimal|low|medium|high|xhigh>`.",
+    "Normal setup uses only official OpenAI/ChatGPT Web-native configuration through `wco web connect`.",
     "PAIR does not use the selected model reviewer.",
-    "Set up the default personal profile with `wco web setup --personal`.",
-    "Managed OAuth remains available through `/web connect`; legacy bearer config through `/web connect --self-hosted`.",
+    "Advanced compatibility only: `wco web setup --personal`, `wco web connect --managed`, or manual_file config.",
   ].join("\n");
 }
 
@@ -127,6 +131,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
   const [repositoryId, repositoryConfig] = registration;
   let bridge: WebBridge | null = null;
   let latest = await readLocalWorkerSession(paths.state, repositoryId);
+  let nativeTunnel: NativeTunnelProcess | null = null;
   const webIo = {
     write: (value: string) => io.write(value),
     error: (value: string) => io.write(value),
@@ -141,8 +146,18 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
   };
   await reloadBridge();
 
+  const isNative = (): boolean => config.web_bridge?.mode === "web_native_mcp";
+  const ensureNativeTunnel = async (): Promise<void> => {
+    if (!isNative()) return;
+    if (nativeTunnel && nativeTunnel.child.exitCode === null) return;
+    const credential = await readNativeOpenAiCredential(paths.credentials);
+    nativeTunnel = await startNativeTunnel({ cacheDirectory: paths.cache, credential });
+  };
   const connectionWorks = async (): Promise<boolean> => {
     if (!bridge || config.web_bridge?.mode === "manual_file") return false;
+    if (isNative()) {
+      try { await readNativeOpenAiCredential(paths.credentials); return (await bridge.getConnectionStatus()).connected; } catch { return false; }
+    }
     try { return (await bridge.getConnectionStatus()).connected; } catch { return false; }
   };
   const managedServiceAvailable = async (): Promise<boolean> => {
@@ -150,25 +165,45 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     catch { return false; }
   };
   const ensureWebConnected = async (): Promise<boolean> => {
-    if (await connectionWorks()) return true;
+    if (await connectionWorks()) { if (isNative()) await ensureNativeTunnel(); return true; }
     if (config.web_bridge?.mode === "manual_file") return false;
+    if (isNative()) {
+      const answer = (await io.question("Connect ChatGPT Web using official OpenAI Web-native setup? [Y/n] ")).trim();
+      if (answer && !/^y(es)?$/i.test(answer)) return false;
+      const code = await runWebCommand(["connect"], webIo);
+      if (code !== 0) return false;
+      await reloadBridge(); await ensureNativeTunnel(); return true;
+    }
     const personal = config.web_bridge?.mode === "personal_actions" || config.web_bridge?.mode === "actions_relay";
-    const answer = (await io.question(personal ? "Personal Web transport is not connected. Open setup instructions? [Y/n] " : "Connect managed ChatGPT Web? [Y/n] ")).trim();
-    if (answer && !/^y(es)?$/i.test(answer)) return false;
-    if (personal) { io.write("Run `wco web setup --personal` after authorizing or deploying a RelayProtocol-compatible HTTPS endpoint.\n"); return false; }
-    const code = await runWebCommand(["connect"], webIo);
+    const answer = (await io.question(personal ? "Advanced personal relay is not connected. Configure it? [y/N] " : "Connect managed ChatGPT Web? [Y/n] ")).trim();
+    if (personal && !/^y(es)?$/i.test(answer)) return false;
+    if (!personal && answer && !/^y(es)?$/i.test(answer)) return false;
+    const code = await runWebCommand(personal ? ["setup", "--personal"] : ["connect", "--managed"], webIo);
     if (code !== 0) return false;
-    await reloadBridge();
-    return await connectionWorks();
+    await reloadBridge(); return await connectionWorks();
   };
   const openWebArchitect = async (): Promise<void> => {
     const code = await runWebCommand(["open"], webIo);
     if (code !== 0) throw new Error("WEB_GPT_OPEN_FAILED: the configured Senior Architect GPT could not be opened.");
   };
+  const nativeConversationKey = (): string => `wco-author-${latest?.session_id ?? repositoryId}`.slice(0, 128);
+  const triggerNativeTurn = async (purpose: "author" | WebReviewPurpose, identity: string): Promise<void> => {
+    if (!isNative()) return;
+    await ensureNativeTunnel();
+    const credential = await readNativeOpenAiCredential(paths.credentials);
+    const conversationKey = purpose === "independent_code_review" ? `wco-review-${contentDigest({ identity }).slice(0, 48)}` : nativeConversationKey();
+    const input = purpose === "author"
+      ? "Continue the exact pending WCO authoring task. Use only WCO MCP tools: get the pending task, inspect the exact sealed Git base with bounded reads, seal the contract, then submit bounded implementation authority. Never request shell/Git mutation; Harness alone mutates and verifies."
+      : purpose === "independent_code_review"
+        ? "Perform the exact pending independent PAIR code review. Fetch pending review identity and exact review evidence through WCO MCP, inspect every changed hunk and necessary bounded context, then submit APPROVE, REVISE with bounded repair authority, or BLOCK. Never mutate or merge."
+        : "Continue the original WCO author conversation and perform the exact pending final intent review. Fetch pending review identity/evidence through WCO MCP, compare the exact final Draft PR result to the original sealed intent and every changed hunk, then submit APPROVE, REVISE with bounded repair authority, or BLOCK. Never mutate or merge.";
+    const receipt = await triggerWorkspaceAgent({ credential, input, conversationKey, idempotencyKey: `wco-${contentDigest({ purpose, identity }).slice(0, 48)}` });
+    io.write(`ChatGPT Web-native ${purpose === "author" ? "authoring" : "review"} started. ${receipt.conversation_url}\n`);
+  };
 
   const waitForImplementation = async (): Promise<LocalWorkerSession> => {
     if (!latest) throw new Error("No active Web authoring session.");
-    if (!bridge) throw new Error("WCO Relay is not connected.");
+    if (!bridge) throw new Error("WCO Web bridge is not connected.");
     const poll = Math.max(250, Math.min(config.web_bridge?.poll_interval_ms ?? 1_000, 10_000));
     io.write("Waiting for ChatGPT Web to inspect the exact base, seal the contract, and submit implementation authority…\n");
     while (latest.state !== "IMPLEMENTATION_REGISTERED") {
@@ -182,7 +217,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
 
   const continuePairWorkflow = async (): Promise<string> => {
     if (!latest?.run_id || !latest.web_pack_path || latest.state !== "IMPLEMENTATION_REGISTERED") return `Workflow is waiting at ${latest?.state ?? "NO_TASK"}.`;
-    if (!bridge) throw new Error("WCO Relay is not connected.");
+    if (!bridge) throw new Error("WCO Web bridge is not connected.");
     const runId = latest.run_id;
     try {
       await drivePairHarnessToCodeReview({ runId, webPackPath: latest.web_pack_path, stateDirectory: paths.state, configPath: paths.config });
@@ -209,8 +244,9 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
       }
 
       const review = await createPendingFinalReview({ bridge, runId, stateDirectory: paths.state });
-      await openWebArchitect();
       const reviewLabel = review.purpose === "independent_code_review" ? "independent ChatGPT Web code review" : "original ChatGPT Web final intent review";
+      if (isNative()) await triggerNativeTurn(review.purpose, review.job_id);
+      else await openWebArchitect();
       io.write(`Waiting for ${reviewLabel}${round > 0 ? ` · round ${round + 1}` : ""}…\n`);
       const poll = Math.max(250, Math.min(config.web_bridge?.poll_interval_ms ?? 1_000, 10_000));
       let verdict = await bridge.waitForVerdict(review.job_id);
@@ -226,13 +262,18 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
 
   const driveAutopilotForUser = async (): Promise<string> => {
     if (!latest?.run_id || !latest.web_pack_path || latest.state !== "IMPLEMENTATION_REGISTERED") return "AUTOPILOT is waiting for Web implementation authority.";
-    if (!bridge) throw new Error("WCO Relay is not connected.");
+    if (!bridge) throw new Error("WCO Web bridge is not connected.");
     const controller = new AbortController(); const interrupt = (): void => controller.abort(); process.once("SIGINT", interrupt);
     try {
-      const interactiveBridge = withFinalReviewNotification(bridge, async () => {
+      const interactiveBridge = withFinalReviewNotification(bridge, async (reviewId) => {
         io.write("AUTOPILOT is ready for final review.\n");
-        try { await openWebArchitect(); io.write("Waiting for original ChatGPT Web final intent review…\n"); }
-        catch { io.write("Final review remains pending. Open the configured Senior Architect GPT manually, or run `wco web open` in another terminal.\n"); }
+        if (isNative()) {
+          await triggerNativeTurn("final_intent_review", reviewId);
+          io.write("Waiting for original ChatGPT Web final intent review…\n");
+        } else {
+          try { await openWebArchitect(); io.write("Waiting for original ChatGPT Web final intent review…\n"); }
+          catch { io.write("Final review remains pending. Open the configured Senior Architect GPT manually, or run `wco web open` in another terminal.\n"); }
+        }
       });
       const receipt = await driveAutopilotJob({ bridge: interactiveBridge, runId: latest.run_id, stateDirectory: paths.state, configPath: paths.config, webPackPath: latest.web_pack_path, signal: controller.signal, ...(config.web_bridge?.poll_interval_ms !== undefined ? { pollIntervalMs: config.web_bridge.poll_interval_ms } : {}) });
       if (receipt.status === "READY_FOR_YOU") await completeLocalWorkerSession({ session: latest, stateDirectory: paths.state });
@@ -244,13 +285,14 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
   };
 
   const startAndDriveTask = async (goal: string, replaceExplicit = false, mode: JobMode = "PAIR"): Promise<string> => {
-    if (!await ensureWebConnected()) return "Task was not started because the Web Architect is not connected. Use /web connect when ready.";
-    if (!bridge) throw new Error("WCO Relay is not connected.");
+    if (!await ensureWebConnected()) return "Task was not started because ChatGPT Web-native authorization is unavailable. Run /web connect when ready.";
+    if (!bridge) throw new Error("WCO Web bridge is not connected.");
     const selectedReviewer = await readReviewMode(paths.state);
     latest = await startLocalAuthoring({ bridge, repository: { repository_id: repositoryId, base_branch: detected.base_branch, base_commit: detected.base_commit }, goal, stateDirectory: paths.state, replaceExplicit, mode });
-    io.write("Task sent securely to WCO Web.\n");
+    io.write("Task registered with WCO.\n");
     if (mode === "AUTOPILOT") io.write(`Reviewer: ${reviewerLabel(selectedReviewer)}\n`);
-    io.write("Opening WCO Senior Architect...\n"); await openWebArchitect(); io.write("In ChatGPT Web, click “Start my pending WCO task”. No ZIP/download handoff is required.\n");
+    if (isNative()) await triggerNativeTurn("author", latest.job_id!);
+    else { io.write("Opening WCO Senior Architect...\n"); await openWebArchitect(); io.write("In ChatGPT Web, start the pending WCO task. No ZIP/download handoff is required.\n"); }
     await waitForImplementation();
     io.write("Web implementation accepted. Starting verification and review…\n");
     return mode === "AUTOPILOT" ? await driveAutopilotForUser() : await continuePairWorkflow();
@@ -264,96 +306,88 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     catch { return "AUTOPILOT · NEEDS_YOU"; }
   };
 
-  if (firstRun) {
-    const choice = (await io.question("Web transport [Personal/Managed/Manual] (Personal): ")).trim().toLowerCase();
-    const selected = !choice || choice === "p" || choice === "personal" ? "personal_actions" : choice === "m" || choice === "managed" ? "managed_actions" : choice === "manual" || choice === "file" || choice === "offline" ? "manual_file" : null;
-    if (!selected) io.write("Unknown transport choice; keeping recommended personal_actions.\n");
-    else if (selected !== config.web_bridge?.mode) {
-      await writeTrustedConfigAtomic(paths.config, { ...config, web_bridge: { mode: selected, poll_interval_ms: config.web_bridge?.poll_interval_ms ?? 1_000, job_ttl_seconds: config.web_bridge?.job_ttl_seconds ?? 86_400 } }, { overwrite: true });
-      await reloadBridge();
-    }
-    if ((selected ?? "personal_actions") === "personal_actions") io.write("Personal is recommended. Run `wco web setup --personal` after authorizing a compatible free relay provider; no OAuth or managed account is required.\n");
-    else if ((selected ?? "personal_actions") === "managed_actions") {
-      if (await managedServiceAvailable()) { const answer = (await io.question("Connect managed ChatGPT Web? [Y/n] ")).trim(); if (!answer || /^y(es)?$/i.test(answer)) { await runWebCommand(["connect"], webIo); await reloadBridge(); } else io.write("Managed ChatGPT Web is not connected. The TUI remains available; use `/web connect` later.\n"); }
-      else io.write("! Managed WCO Relay deployment required. Personal and manual profiles remain independent.\n");
-    } else io.write("Manual/offline Web transport selected. No relay or Internet connection is required.\n");
-  } else if (!await connectionWorks() && config.web_bridge?.mode === "managed_actions" && await managedServiceAvailable()) {
-    const answer = (await io.question("WCO connection expired or was revoked. Reconnect ChatGPT Web? [Y/n] ")).trim();
+  if (firstRun && isNative()) {
+    io.write("Default Web transport: official OpenAI Secure MCP Tunnel + Workspace Agent. No third-party hosting is required.\n");
+    const answer = (await io.question("Complete the one-time official OpenAI/ChatGPT authorization now? [Y/n] ")).trim();
     if (!answer || /^y(es)?$/i.test(answer)) { await runWebCommand(["connect"], webIo); await reloadBridge(); }
+    else io.write("Web-native authorization deferred. Run `/web connect` later; WCO will not substitute Cloudflare or another external relay automatically.\n");
+  } else if (!await connectionWorks() && config.web_bridge?.mode === "managed_actions" && await managedServiceAvailable()) {
+    const answer = (await io.question("WCO connection expired or was revoked. Reconnect managed ChatGPT Web? [Y/n] ")).trim();
+    if (!answer || /^y(es)?$/i.test(answer)) { await runWebCommand(["connect", "--managed"], webIo); await reloadBridge(); }
   }
 
-  await runInteractiveSession(io, {
-    state: async () => {
-      latest = await readLocalWorkerSession(paths.state, repositoryId);
-      return { active: Boolean(latest && !["BLOCKED", "COMPLETED"].includes(latest.state)), sealed: latest?.sealed ?? false, summary: `WCO · ${repositoryId}\nRepository   ${detected.base_branch}@${detected.base_commit.slice(0, 7)}\nStatus       ${await displayUserStatus(latest)}${latest ? `\nTask         ${latest.goal}` : ""}` };
-    },
-    newTask: async (goal) => await startAndDriveTask(goal),
-    clarify: async (value) => {
-      if (!latest) return "No active task. Enter a goal to start one.";
-      const connectedBridge = bridge; if (!connectedBridge) return "WCO Relay is not connected.";
-      await appendLocalClarification({ bridge: connectedBridge, session: latest, value, stateDirectory: paths.state }); return "Clarification sent before contract sealing.";
-    },
-    command: async (command, args) => {
-      if (command === "/quit") return { message: "Goodbye.", quit: true };
-      if (command === "/help") return { message: commandPalette() };
-      if (command === "/new") { if (!args) return { message: "Usage: /new <goal>" }; return { message: await startAndDriveTask(args, true, "PAIR") }; }
-      if (command === "/auto") { if (!args) return { message: "Usage: /auto <goal>" }; return { message: await startAndDriveTask(args, true, "AUTOPILOT") }; }
-      if (command === "/mode") {
-        const current = await readReviewMode(paths.state);
-        if (!args) return { message: `AUTOPILOT reviewer: ${reviewerLabel(current)}\nFinal review: original ChatGPT Web · required\nUsage: /mode <sol|terra> <minimal|low|medium|high|xhigh>` };
-        if (latest && localWorkerJobMode(latest) === "AUTOPILOT" && !["BLOCKED", "COMPLETED"].includes(latest.state)) return { message: `AUTOPILOT reviewer is frozen for the active task (${reviewerLabel(current)}). Finish it before changing /mode.` };
-        const values = args.split(/\s+/u).filter(Boolean);
-        if (values.length !== 2) return { message: "Usage: /mode <sol|terra> <minimal|low|medium|high|xhigh>" };
-        try { const selected = parseReviewerSelection(values[0]!, values[1]!); await writeReviewMode(paths.state, selected); return { message: `AUTOPILOT reviewer: ${reviewerLabel(selected)}. Applies to new AUTOPILOT tasks.` }; }
-        catch (error) { return { message: error instanceof Error ? error.message : String(error) }; }
-      }
-      if (command === "/task") {
-        if (!latest) return { message: "No active task." };
-        const mode = localWorkerJobMode(latest); return { message: mode === "AUTOPILOT" ? `Goal: ${latest.goal}\nMode: AUTOPILOT\nContract: ${latest.sealed ? "sealed" : "open"}` : `Goal: ${latest.goal}\nContract: ${latest.sealed ? "sealed" : "open"}` };
-      }
-      if (command === "/web") { const webArgs = args ? args.split(/\s+/u).filter(Boolean) : ["status"]; const code = await runWebCommand(webArgs, webIo); await reloadBridge(); return { message: `Web command finished with exit ${code}.` }; }
-      if (command === "/doctor") {
-        const lines: string[] = [];
-        const doctorMode = latest ? localWorkerJobMode(latest) : "PAIR";
-        const code = await runControlCommand("doctor", ["--state-dir", paths.state, "--config", paths.config, "--mode", doctorMode], { stdout: (value) => lines.push(value), stderr: (value) => lines.push(value) });
-        return { message: `${lines.join("\n")}\nMode: ${doctorMode}\nDoctor exit: ${code}` };
-      }
-      if (command === "/status") {
-        if (!latest) return { message: "No active run." };
-        const status = await displayUserStatus(latest); return { message: localWorkerJobMode(latest) === "AUTOPILOT" ? `Status: ${status}\nGoal: ${latest.goal}\nMode: AUTOPILOT\nContract: ${latest.sealed ? "sealed" : "open"}` : `Status: ${status}\nGoal: ${latest.goal}\nContract: ${latest.sealed ? "sealed" : "open"}` };
-      }
-      if (command === "/review") return { message: latest?.run_id ? await reviewSummary(latest.run_id, paths.state) : "No active run." };
-      if (command === "/pause" || command === "/resume") {
-        if (!latest?.run_id) return { message: "No prepared run to pause/resume." };
-        const code = await runControlCommand(command.slice(1), ["--run-id", latest.run_id, "--state-dir", paths.state], { stdout: () => undefined, stderr: () => undefined }); return { message: code === 0 ? `Workflow ${command === "/pause" ? "paused" : "resumed"} safely.` : `${command === "/pause" ? "Pause" : "Resume"} failed safely with exit ${code}.` };
-      }
-      if (command === "/run") {
-        if (!latest) return { message: "Enter a task goal first." };
-        if (localWorkerJobMode(latest) === "AUTOPILOT") {
-          if (!await ensureWebConnected()) return { message: "Web Architect is not connected." };
-          if (latest.state !== "IMPLEMENTATION_REGISTERED") { await openWebArchitect(); await waitForImplementation(); }
-          return { message: await driveAutopilotForUser() };
+  try {
+    await runInteractiveSession(io, {
+      state: async () => {
+        latest = await readLocalWorkerSession(paths.state, repositoryId);
+        return { active: Boolean(latest && !["BLOCKED", "COMPLETED"].includes(latest.state)), sealed: latest?.sealed ?? false, summary: `WCO · ${repositoryId}\nRepository   ${detected.base_branch}@${detected.base_commit.slice(0, 7)}\nStatus       ${await displayUserStatus(latest)}${latest ? `\nTask         ${latest.goal}` : ""}` };
+      },
+      newTask: async (goal) => await startAndDriveTask(goal),
+      clarify: async (value) => {
+        if (!latest) return "No active task. Enter a goal to start one.";
+        const connectedBridge = bridge; if (!connectedBridge) return "WCO Web bridge is not connected.";
+        await appendLocalClarification({ bridge: connectedBridge, session: latest, value, stateDirectory: paths.state }); return "Clarification recorded before contract sealing.";
+      },
+      command: async (command, args) => {
+        if (command === "/quit") return { message: "Goodbye.", quit: true };
+        if (command === "/help") return { message: commandPalette() };
+        if (command === "/new") { if (!args) return { message: "Usage: /new <goal>" }; return { message: await startAndDriveTask(args, true, "PAIR") }; }
+        if (command === "/auto") { if (!args) return { message: "Usage: /auto <goal>" }; return { message: await startAndDriveTask(args, true, "AUTOPILOT") }; }
+        if (command === "/mode") {
+          const current = await readReviewMode(paths.state);
+          if (!args) return { message: `AUTOPILOT reviewer: ${reviewerLabel(current)}\nFinal review: original ChatGPT Web · required\nUsage: /mode <sol|terra> <minimal|low|medium|high|xhigh>` };
+          if (latest && localWorkerJobMode(latest) === "AUTOPILOT" && !["BLOCKED", "COMPLETED"].includes(latest.state)) return { message: `AUTOPILOT reviewer is frozen for the active task (${reviewerLabel(current)}). Finish it before changing /mode.` };
+          const values = args.split(/\s+/u).filter(Boolean);
+          if (values.length !== 2) return { message: "Usage: /mode <sol|terra> <minimal|low|medium|high|xhigh>" };
+          try { const selected = parseReviewerSelection(values[0]!, values[1]!); await writeReviewMode(paths.state, selected); return { message: `AUTOPILOT reviewer: ${reviewerLabel(selected)}. Applies to new AUTOPILOT tasks.` }; }
+          catch (error) { return { message: error instanceof Error ? error.message : String(error) }; }
         }
-        if (latest.state === "COMPLETED") return { message: "Current task is complete. Enter a new goal or use /new <goal>." };
-        if (!await ensureWebConnected()) return { message: "Web Architect is not connected." };
-        if (latest.state !== "IMPLEMENTATION_REGISTERED") { await openWebArchitect(); await waitForImplementation(); }
-        return { message: await continuePairWorkflow() };
-      }
-      if (command === "/uninstall") {
-        const answer = (await io.question("Remove WCO-owned local data and uninstall WCO? Your repositories/branches/PRs will be preserved. [y/N] ")).trim();
-        if (!/^y(es)?$/i.test(answer)) return { message: "Uninstall cancelled." };
-        const code = await runUninstallCommand(["--purge", "--yes"]); return { message: code === 0 ? "WCO uninstall scheduled/completed. Goodbye." : `Uninstall failed with exit ${code}.`, quit: code === 0 };
-      }
-      if (command === "/config") {
-        if (args === "web") { const code = await runWebCommand(["connect"], webIo); await reloadBridge(); return { message: code === 0 ? configSummary(config, repositoryId, await readReviewMode(paths.state)) : `Web configuration failed with exit ${code}.` }; }
-        return { message: configSummary(config, repositoryId, await readReviewMode(paths.state)) };
-      }
-      if (command === "/history") {
-        const previous = await listLocalTaskHistory(paths.state, repositoryId, 10); const entries = [...(latest ? [latest] : []), ...previous].slice(0, 10);
-        return { message: entries.length ? entries.map((item, index) => `${index + 1}. ${item.goal}\n   ${item.state}${localWorkerJobMode(item) === "AUTOPILOT" ? " · AUTOPILOT" : ""} · ${item.updated_at}`).join("\n") : "No task history for this repository." };
-      }
-      return { message: `Unknown command '${command}'. Type / for the command palette.` };
-    },
-  });
+        if (command === "/task") {
+          if (!latest) return { message: "No active task." };
+          const mode = localWorkerJobMode(latest); return { message: mode === "AUTOPILOT" ? `Goal: ${latest.goal}\nMode: AUTOPILOT\nContract: ${latest.sealed ? "sealed" : "open"}` : `Goal: ${latest.goal}\nContract: ${latest.sealed ? "sealed" : "open"}` };
+        }
+        if (command === "/web") { const webArgs = args ? args.split(/\s+/u).filter(Boolean) : ["status"]; const code = await runWebCommand(webArgs, webIo); await reloadBridge(); return { message: `Web command finished with exit ${code}.` }; }
+        if (command === "/doctor") {
+          const lines: string[] = [];
+          const doctorMode = latest ? localWorkerJobMode(latest) : "PAIR";
+          const code = await runControlCommand("doctor", ["--state-dir", paths.state, "--config", paths.config, "--mode", doctorMode], { stdout: (value) => lines.push(value), stderr: (value) => lines.push(value) });
+          return { message: `${lines.join("\n")}\nMode: ${doctorMode}\nDoctor exit: ${code}` };
+        }
+        if (command === "/status") {
+          if (!latest) return { message: "No active run." };
+          const status = await displayUserStatus(latest); return { message: localWorkerJobMode(latest) === "AUTOPILOT" ? `Status: ${status}\nGoal: ${latest.goal}\nMode: AUTOPILOT\nContract: ${latest.sealed ? "sealed" : "open"}` : `Status: ${status}\nGoal: ${latest.goal}\nContract: ${latest.sealed ? "sealed" : "open"}` };
+        }
+        if (command === "/review") return { message: latest?.run_id ? await reviewSummary(latest.run_id, paths.state) : "No active run." };
+        if (command === "/pause" || command === "/resume") {
+          if (!latest?.run_id) return { message: "No prepared run to pause/resume." };
+          const code = await runControlCommand(command.slice(1), ["--run-id", latest.run_id, "--state-dir", paths.state], { stdout: () => undefined, stderr: () => undefined }); return { message: code === 0 ? `Workflow ${command === "/pause" ? "paused" : "resumed"} safely.` : `${command === "/pause" ? "Pause" : "Resume"} failed safely with exit ${code}.` };
+        }
+        if (command === "/run") {
+          if (!latest) return { message: "Enter a task goal first." };
+          if (latest.state === "COMPLETED") return { message: "Current task is complete. Enter a new goal or use /new <goal>." };
+          if (!await ensureWebConnected()) return { message: "ChatGPT Web-native authorization is unavailable." };
+          if (latest.state !== "IMPLEMENTATION_REGISTERED") {
+            if (isNative()) await triggerNativeTurn("author", latest.job_id ?? latest.session_id); else await openWebArchitect();
+            await waitForImplementation();
+          }
+          return { message: localWorkerJobMode(latest) === "AUTOPILOT" ? await driveAutopilotForUser() : await continuePairWorkflow() };
+        }
+        if (command === "/uninstall") {
+          const answer = (await io.question("Remove WCO-owned local data and uninstall WCO? Your repositories/branches/PRs will be preserved. [y/N] ")).trim();
+          if (!/^y(es)?$/i.test(answer)) return { message: "Uninstall cancelled." };
+          const code = await runUninstallCommand(["--purge", "--yes"]); return { message: code === 0 ? "WCO uninstall scheduled/completed. Goodbye." : `Uninstall failed with exit ${code}.`, quit: code === 0 };
+        }
+        if (command === "/config") {
+          if (args === "web") { const code = await runWebCommand(["connect"], webIo); await reloadBridge(); return { message: code === 0 ? configSummary(config, repositoryId, await readReviewMode(paths.state)) : `Web configuration failed with exit ${code}.` }; }
+          return { message: configSummary(config, repositoryId, await readReviewMode(paths.state)) };
+        }
+        if (command === "/history") {
+          const previous = await listLocalTaskHistory(paths.state, repositoryId, 10); const entries = [...(latest ? [latest] : []), ...previous].slice(0, 10);
+          return { message: entries.length ? entries.map((item, index) => `${index + 1}. ${item.goal}\n   ${item.state}${localWorkerJobMode(item) === "AUTOPILOT" ? " · AUTOPILOT" : ""} · ${item.updated_at}`).join("\n") : "No task history for this repository." };
+        }
+        return { message: `Unknown command '${command}'. Type / for the command palette.` };
+      },
+    });
+  } finally { await nativeTunnel?.stop().catch(() => undefined); }
   return 0;
 }
