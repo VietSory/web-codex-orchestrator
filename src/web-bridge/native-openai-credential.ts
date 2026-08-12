@@ -5,7 +5,9 @@ import path from "node:path";
 import { WebBridgeError } from "./contracts.js";
 
 const FILE = "openai-web-native.json";
-const TUNNEL_ID = /^tunnel_[A-Za-z0-9_-]{8,128}$/;
+// Official Secure MCP Tunnel onboarding currently defines tunnel IDs as
+// `tunnel_` followed by exactly 32 lowercase hexadecimal characters.
+const TUNNEL_ID = /^tunnel_[0-9a-f]{32}$/;
 const TRIGGER_ID = /^agtch_[A-Za-z0-9_-]{3,128}$/;
 
 export interface NativeOpenAiCredential {
