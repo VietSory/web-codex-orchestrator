@@ -13,6 +13,7 @@ import type {
 export function withFinalReviewNotification(
   bridge: WebBridge,
   notify: (reviewId: string) => Promise<void> | void,
+  assertHealthy?: (reviewId: string) => Promise<void>,
 ): WebBridge {
   const notified = new Set<string>();
 
@@ -41,7 +42,9 @@ export function withFinalReviewNotification(
       await bridge.submitFinalReviewEvidence(reviewId, evidence, key),
     waitForVerdict: async (reviewId: string, signal?: AbortSignal): Promise<WebVerdictEnvelope | null> => {
       await notifyOnce(reviewId);
-      return await bridge.waitForVerdict(reviewId, signal);
+      const verdict = await bridge.waitForVerdict(reviewId, signal);
+      if (!verdict && assertHealthy) await assertHealthy(reviewId);
+      return verdict;
     },
     getConnectionStatus: async (): Promise<BridgeConnectionStatus> => await bridge.getConnectionStatus(),
   };
