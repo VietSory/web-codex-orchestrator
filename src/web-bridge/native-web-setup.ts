@@ -6,9 +6,11 @@ import { startNativeTunnel } from "./native-tunnel-runtime.js";
 export const OPENAI_NATIVE_SETUP_URLS = {
   tunnels: "https://platform.openai.com/settings/organization/tunnels",
   runtime_api_keys: "https://platform.openai.com/settings/organization/api-keys",
-  // Kept in sync with the official tunnel-client onboarding guide. This is a
-  // ChatGPT-owned page; WCO never exposes a local/public setup UI.
-  chatgpt_apps: "https://chatgpt.com/#settings/Connectors",
+  // ChatGPT settings routes are UI-owned and may change. Open the canonical
+  // first-party origin and let the guided text direct the user to
+  // Settings/Workspace Settings → Apps/Connectors → Create instead of baking a
+  // fragile hash route into WCO.
+  chatgpt_apps: "https://chatgpt.com/",
   chatgpt_admin: "https://chatgpt.com/admin",
 } as const;
 
