@@ -22,5 +22,9 @@ export function createConfiguredWebBridge(config: TrustedConfig, bridgeDirectory
       token: async () => await readRelayToken(credentialsDirectory, env),
     });
   }
+  // web_native_mcp and manual_file deliberately share the same local durable
+  // mailbox. In native mode the official Secure MCP Tunnel exposes a narrow
+  // semantic MCP adapter over this store; transport never gains Harness/Git
+  // authority. Manual mode simply leaves that external transport detached.
   return new ManualFileWebBridge(new RelayFileStore(bridgeDirectory));
 }
