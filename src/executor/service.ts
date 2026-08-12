@@ -9,6 +9,7 @@ import { attestPersistedExecutorGateEvidence, persistExecutorEvidence } from "./
 import { assertExecutorTransactionBoundToPack, attestExecutorTransactionBackups } from "./transaction-authority.js";
 import { selectSmartContext } from "./smart-context.js";
 import { applyReviewerRepair, bindReviewerRepair } from "./repair.js";
+import { finalWebRepairCompletesModelAuthority } from "./review-authority.js";
 import { ExecutorError, type ExecutorReceipt, type ExecutorReviewStrategy, type ExecutorUsage } from "./contracts.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -63,6 +64,7 @@ async function failToWeb(receipt: ExecutorReceipt, stateDirectory: string, code:
 async function failTerminal(receipt: ExecutorReceipt, stateDirectory: string, code: string, message: string, now: () => Date): Promise<ExecutorReceipt> { receipt.state = "FAILED"; pushError(receipt, code, message, now); receipt.updated_at = timestamp(now); await writeExecutorReceipt(stateDirectory, receipt); return receipt; }
 
 function selectedReviewReady(receipt: ExecutorReceipt, digest: string, kind: "terra" | "sol"): boolean {
+  if (finalWebRepairCompletesModelAuthority(receipt, digest)) return true;
   const review = kind === "terra" ? receipt.terra_review : receipt.sol_review;
   if (review.verdict === "APPROVE" && review.change_set_digest === digest) return true;
   return Boolean(receipt.repair?.state === "VERIFIED" && receipt.repair.reviewer === kind && receipt.repair.final_change_set_digest === digest && review.verdict === "REVISE" && review.change_set_digest === receipt.repair.source_change_set_digest && review.evidence_sha256 === receipt.repair.source_review_evidence_sha256);
@@ -115,18 +117,20 @@ export async function executeRegisteredWebPack(options: { runId: string; artifac
     if (!receipt) receipt = await prepareExecutorTransaction({ stateDirectory: options.stateDirectory, runId: options.runId, taskId: identity.taskId, taskBundleSha256: identity.taskBundleSha256, artifactSha256: options.artifactSha256, pack: source.pack, repositoryId: source.trusted.runReceipt.repository_id, baseBranch: source.trusted.runReceipt.base_branch, baseCommit: source.trusted.runReceipt.base_commit, baseTreeSha: source.registration.repository.tree_sha, worktreePath: source.trusted.runReceipt.worktree_path, registrationManifestSha256: source.registration.manifest_sha256, now });
     if (options.reviewStrategy && receipt.review_strategy === undefined) { if (!canBindStrategy(receipt)) throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", "Harness review strategy cannot be introduced after model-review authority exists."); receipt.review_strategy = options.reviewStrategy; receipt.updated_at = timestamp(now); await writeExecutorReceipt(options.stateDirectory, receipt); }
     const strategy: EffectiveReviewStrategy = receipt.review_strategy ?? options.reviewStrategy ?? "legacy";
+    const resumingFinalWebRepair = strategy === "model" && receipt.repair?.reviewer === "web";
     if (strategy === "web" && options.reviewer) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Web-review Harness execution must not initialize a model reviewer.");
-    if (strategy !== "web" && !options.reviewer) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Model/legacy Harness execution requires a reviewer port.");
+    if (strategy !== "web" && !options.reviewer && !resumingFinalWebRepair) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Model/legacy Harness execution requires a reviewer port unless resuming a sealed final-Web repair.");
     const selectedKind = options.reviewer?.reviewer_kind; const selectedProfile = options.reviewer?.reviewer_profile;
     if ((selectedKind === undefined) !== (selectedProfile === undefined)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Selected reviewer kind/profile must be supplied together.");
-    if (strategy === "model" && (!selectedKind || !selectedProfile)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Model-review Harness execution requires exactly one selected reviewer.");
+    if (strategy === "model" && (!selectedKind || !selectedProfile) && !resumingFinalWebRepair) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Model-review Harness execution requires exactly one selected reviewer except while completing sealed final-Web repair.");
     if (selectedKind && selectedProfile) {
       const persisted = receipt.reviewer_selection; if (persisted && (persisted.kind !== selectedKind || persisted.model !== selectedProfile.model || persisted.reasoning_effort !== selectedProfile.reasoning_effort)) throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", "Selected reviewer changed after this executor run started.");
       if (!persisted) { receipt.reviewer_selection = { kind: selectedKind, model: selectedProfile.model, reasoning_effort: selectedProfile.reasoning_effort }; receipt.updated_at = timestamp(now); await writeExecutorReceipt(options.stateDirectory, receipt); }
-    } else if (receipt.reviewer_selection) throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", "A selected-review executor cannot resume without its reviewer port.");
+    } else if (receipt.reviewer_selection && !resumingFinalWebRepair) throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", "A selected-review executor cannot resume without its reviewer port outside sealed final-Web repair.");
 
     if ((strategy === "model" || strategy === "web") && receipt.repair) {
-      if (strategy === "web" && receipt.repair.reviewer !== "web" || strategy === "model" && receipt.repair.reviewer === "web") throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", "Bounded repair authority does not match the frozen Harness review strategy.");
+      if (strategy === "web" && receipt.repair.reviewer !== "web") throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", "Web-review Harness repair authority must come from Web.");
+      if (strategy === "model" && receipt.repair.reviewer !== "web" && receipt.repair.reviewer !== receipt.reviewer_selection?.kind) throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", "Model-review Harness repair authority is neither the frozen selected reviewer nor final Web authority.");
       return await completeAdaptiveRepair({ receipt, stateDirectory: options.stateDirectory, verifier: options.verifier, pack: source.pack, acceptedBundlePath: source.trusted.runReceipt.accepted_bundle_path, ...(options.signal ? { signal: options.signal } : {}), now });
     }
     if (["PREPARED", "APPLYING"].includes(receipt.state)) receipt = await applyExecutorTransaction({ stateDirectory: options.stateDirectory, receipt, pack: source.pack, now });
