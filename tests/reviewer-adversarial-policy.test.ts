@@ -35,7 +35,7 @@ const request = {
   reasoning_effort: "high" as const,
   prompt: `Base commit: ${"b".repeat(40)}\nChange-set digest: ${DIGEST}\nBounded tracked diff:\n@@ -1 +1 @@\n-old\n+new\nDeterministic verification evidence: PASS`,
   threadId: undefined,
-  workspacePath: "/tmp/review-workspace",
+  workspacePath: "/tmp/wco-reviewer-policy-test-workspace-that-must-not-exist",
   acceptedBundlePath: "/tmp/review-bundle",
 };
 
@@ -95,4 +95,23 @@ test("reviewer approval is rejected when reported acceptance is failed or unveri
     acceptance_results: [{ acceptance_id: "AC-1", status: "FAIL", evidence: ["tests/example.test.ts:1"] }],
   });
   await assert.rejects(reviewWithTerra(client, request), /APPROVE requires all reported acceptance evidence to be PASS/);
+});
+
+test("review findings must point to a real file and valid line range in the reviewed worktree", async () => {
+  const client = new CaptureClient({
+    ...APPROVAL,
+    non_blocking_findings: [{
+      id: "NIT-1",
+      severity: "medium",
+      category: "maintainability",
+      file: "src/does-not-exist.ts",
+      line_start: 1,
+      line_end: 1,
+      acceptance_ids: [],
+      problem: "Concrete review evidence must resolve to the exact worktree.",
+      evidence: "src/does-not-exist.ts:1",
+      required_fix: "No fix required; this fixture proves evidence re-attestation.",
+    }],
+  });
+  await assert.rejects(reviewWithSol(client, request), /Review finding points to a file that does not exist/);
 });
