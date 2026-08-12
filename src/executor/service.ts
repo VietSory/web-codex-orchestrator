@@ -115,13 +115,20 @@ export async function executeRegisteredWebPack(options: { runId: string; artifac
       if (options.reviewer) assertNoAmbiguousReviewResume(receipt, options.reviewer); await attestExecutorResumeChangedPaths(receipt);
     }
     if (!receipt) receipt = await prepareExecutorTransaction({ stateDirectory: options.stateDirectory, runId: options.runId, taskId: identity.taskId, taskBundleSha256: identity.taskBundleSha256, artifactSha256: options.artifactSha256, pack: source.pack, repositoryId: source.trusted.runReceipt.repository_id, baseBranch: source.trusted.runReceipt.base_branch, baseCommit: source.trusted.runReceipt.base_commit, baseTreeSha: source.registration.repository.tree_sha, worktreePath: source.trusted.runReceipt.worktree_path, registrationManifestSha256: source.registration.manifest_sha256, now });
-    if (options.reviewStrategy && receipt.review_strategy === undefined) { if (!canBindStrategy(receipt)) throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", "Harness review strategy cannot be introduced after model-review authority exists."); receipt.review_strategy = options.reviewStrategy; receipt.updated_at = timestamp(now); await writeExecutorReceipt(options.stateDirectory, receipt); }
+    const selectedKind = options.reviewer?.reviewer_kind; const selectedProfile = options.reviewer?.reviewer_profile;
+    if ((selectedKind === undefined) !== (selectedProfile === undefined)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Selected reviewer kind/profile must be supplied together.");
+    if (options.reviewStrategy && receipt.review_strategy === undefined) {
+      if (!canBindStrategy(receipt)) throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", "Harness review strategy cannot be introduced after model-review authority exists.");
+      if (options.reviewStrategy === "model") {
+        if (!selectedKind || !selectedProfile) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Model-review Harness execution requires exactly one selected reviewer before durable strategy binding.");
+        receipt.reviewer_selection = { kind: selectedKind, model: selectedProfile.model, reasoning_effort: selectedProfile.reasoning_effort };
+      }
+      receipt.review_strategy = options.reviewStrategy; receipt.updated_at = timestamp(now); await writeExecutorReceipt(options.stateDirectory, receipt);
+    }
     const strategy: EffectiveReviewStrategy = receipt.review_strategy ?? options.reviewStrategy ?? "legacy";
     const resumingFinalWebRepair = strategy === "model" && receipt.repair?.reviewer === "web";
     if (strategy === "web" && options.reviewer) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Web-review Harness execution must not initialize a model reviewer.");
     if (strategy !== "web" && !options.reviewer && !resumingFinalWebRepair) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Model/legacy Harness execution requires a reviewer port unless resuming a sealed final-Web repair.");
-    const selectedKind = options.reviewer?.reviewer_kind; const selectedProfile = options.reviewer?.reviewer_profile;
-    if ((selectedKind === undefined) !== (selectedProfile === undefined)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Selected reviewer kind/profile must be supplied together.");
     if (strategy === "model" && (!selectedKind || !selectedProfile) && !resumingFinalWebRepair) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Model-review Harness execution requires exactly one selected reviewer except while completing sealed final-Web repair.");
     if (selectedKind && selectedProfile) {
       const persisted = receipt.reviewer_selection; if (persisted && (persisted.kind !== selectedKind || persisted.model !== selectedProfile.model || persisted.reasoning_effort !== selectedProfile.reasoning_effort)) throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", "Selected reviewer changed after this executor run started.");
