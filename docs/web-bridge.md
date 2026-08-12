@@ -1,13 +1,67 @@
 # ChatGPT Web bridge
 
-WCO integrates ChatGPT Web through an explicit `WebBridge` profile. `personal_actions` is the default for one human, one local installation and one ChatGPT account. It uses a Custom GPT Action with Bearer/API-key authentication and a small durable mailbox. `managed_actions` keeps OAuth, account identity and device binding for organization/hosted deployments. `manual_file` is offline. The legacy `actions_relay` spelling remains accepted as a personal bearer compatibility profile and is never silently interpreted as managed OAuth.
+WCO integrates ChatGPT Web through an explicit `WebBridge` profile while keeping all repository mutation authority local.
 
-The relay is bounded durable transport. It can queue authoring/review jobs, repository read requests, structured submissions and verdicts. It cannot validate a Task Bundle, accept an implementation, apply code, advance canonical run state, publish, or merge.
+## Default: `web_native_mcp`
 
-Local WCO reads only Git objects at the sealed base commit for Web authoring. Tree/search/file/byte-region responses have count, byte and time limits; `.env`, keys, credentials, secrets and Git metadata are denied. Immutable blob/range content is cached by digest and a caller may send a known digest to avoid retransmission. The cache is disposable performance state. Every read creates a local receipt, and a replacement or deletion still cannot enter a canonical Web Implementation Pack without a full exact read receipt and locally derived preimage.
+The normal single-user path is official OpenAI Web-native transport:
 
-For personal use, run `wco web setup --personal`. WCO creates a high-entropy secret in owner-only WCO credential storage, accepts a stable RelayProtocol-compatible HTTPS origin, authenticates it, materializes the exact API-key OpenAPI schema and Senior Architect instruction files, and prints the minimum GPT-editor steps. It never prints the secret. The optional free Cloudflare Workers adapter under `web/personal-relay/` is one reference deployment; the protocol and local client are platform-neutral and Cloudflare is not an authority or requirement. Provider login and the human-owned GPT editor remain explicit human authorization boundaries.
+```text
+ChatGPT private WCO Workspace Agent
+        |
+        | WCO MCP app
+        v
+OpenAI Secure MCP Tunnel
+        ^
+        | outbound HTTPS only
+        |
+WCO local MCP semantic adapter
+        |
+WCO durable state / exact repository reads
+        |
+Harness
+```
 
-In managed mode, `wco web connect` performs OAuth/device onboarding without URL/token questions. Its expiring, PKCE-bound credential remains outside trusted configuration. `web/managed-service.json` describes only that profile; null managed deployment metadata never disables personal or manual use. `wco web status` probes only the selected profile. Doctor likewise skips OAuth/device checks for personal, skips the network for manual, skips Codex in PAIR, and checks only the selected reviewer prerequisites in AUTOPILOT.
+The developer workstation is never exposed as a public HTTP server. The default path does not require Cloudflare, ngrok, a VPS, a custom domain, DNS, AWS, a user-hosted OAuth service, or a relay secret.
 
-Secure MCP Tunnel is an official outbound tunnel mechanism, but its tunnel/API-key/workspace/developer-mode capabilities must be independently present and its tools must satisfy WCO's semantic bridge contract. WCO therefore keeps it as a capability-driven future adapter, not a dependency. Browser DOM automation, session/cookie scraping, automatic ChatGPT output extraction and undocumented endpoints are not supported transports.
+First-run setup is one-time and uses official OpenAI/ChatGPT web surfaces only. `wco web connect` opens the relevant OpenAI Platform and ChatGPT configuration pages, guides the user through Secure MCP Tunnel + private WCO Workspace Agent authorization, stores resulting credentials only in owner-protected WCO credential storage, verifies that the official tunnel can reach the local WCO MCP server, and then returns to normal CLI operation. WCO pins and checksum-verifies the official `openai/tunnel-client` binary it runs locally.
+
+The local MCP adapter is intentionally narrow. It exposes exact task/repository retrieval plus non-destructive semantic submissions for contract, implementation authority and review verdicts. Those semantic submit tools append bounded envelopes to WCO durable state; they do not edit files, execute shell or Git, verify code, publish, merge, deploy or release. Harness remains the only repository mutation authority.
+
+For zero-click daily use, the one-time private Workspace Agent/App setup should configure WCO's three semantic submit tools to avoid per-run confirmation when the workspace's security policy permits it. If OpenAI suspends a Workspace Agent run for interaction or the run completes without the required semantic output, WCO fails closed with an explicit diagnostic instead of hanging or silently enabling another transport.
+
+A Workspace Agent trigger is content/idempotency bound. WCO uses one stable author conversation for original Web-A intent continuity, while independent PAIR code review uses a separate conversation identity. Provider failures and ambiguous states never authorize a repository mutation.
+
+## OpenAI capability boundary
+
+The official features WCO needs are not available on every ChatGPT/OpenAI plan or workspace. WCO must detect/validate the required Secure MCP Tunnel, full MCP tool and Workspace Agent capabilities. When they are unavailable, the normal path stops with `OPENAI_CAPABILITY_BLOCKED` (or a more specific Web-native diagnostic). WCO does **not** silently substitute Cloudflare, browser automation, a public endpoint, or another third-party relay.
+
+An unsupported OpenAI account is a platform-capability boundary, not permission to weaken WCO's security/authority model.
+
+## Exact repository context
+
+Local WCO reads only Git objects at the sealed base commit for Web authoring. Tree/search/file/byte-region responses have count, byte and time limits; `.env`, keys, credentials, secrets and Git metadata are denied. Immutable blob/range content is cached by digest and a caller may send a known digest to avoid retransmission. The cache is disposable performance state. Every read creates a local receipt, and replacement/deletion authority still requires a full exact read receipt and locally derived preimage.
+
+## Optional compatibility profiles
+
+These remain supported but are not the normal installation path:
+
+- `personal_actions`: advanced Custom GPT Action + Bearer/RelayProtocol deployment. The optional Cloudflare Workers adapter under `web/personal-relay/` is only a reference implementation.
+- `actions_relay`: legacy spelling for the advanced self-hosted Bearer profile.
+- `managed_actions`: organization/SaaS OAuth, account and device onboarding.
+- `manual_file`: offline/manual compatibility path.
+
+`web/managed-service.json` applies only to `managed_actions`; missing managed service metadata never disables Web-native or manual operation. WCO never auto-switches profiles after a capability/auth failure.
+
+## Doctor behavior
+
+`wco doctor` is mode- and transport-aware:
+
+- `web_native_mcp`: checks owner-local OpenAI Web-native credentials and does not probe a third-party relay or managed device/account.
+- `personal_actions` / `actions_relay`: probes only that optional bearer relay.
+- `managed_actions`: probes managed service/OAuth/device state.
+- `manual_file`: performs no network bridge requirement.
+- PAIR never probes Codex runtime/auth.
+- AUTOPILOT additionally checks only the selected Sol/Terra review runtime/auth prerequisites.
+
+Browser DOM automation, ChatGPT cookie/session scraping, automatic UI-output extraction, private ChatGPT endpoints and undocumented product APIs are not supported transports.
