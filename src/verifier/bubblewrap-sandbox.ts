@@ -1,4 +1,4 @@
-import { access, lstat, mkdtemp, realpath, rm } from "node:fs/promises";
+import { access, lstat, mkdtemp, readlink, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { ExecutionError } from "../execution/errors.js";
@@ -82,6 +82,22 @@ async function readonlyRuntimeDirectories(writableRoot: string): Promise<string[
   return resolved;
 }
 
+async function readonlyRuntimeSymlinks(runtimeDirectories: readonly string[]): Promise<Array<{ path: string; target: string }>> {
+  const result: Array<{ path: string; target: string }> = [];
+  for (const candidate of ["/bin", "/sbin", "/lib", "/lib64"] as const) {
+    try {
+      const info = await lstat(candidate);
+      if (!info.isSymbolicLink()) continue;
+      const [target, canonical] = await Promise.all([readlink(candidate), realpath(candidate)]);
+      if (target.includes("\u0000") || !runtimeDirectories.some((directory) => canonical === directory || isContained(directory, canonical))) continue;
+      result.push({ path: candidate, target });
+    } catch {
+      // A missing optional compatibility path needs no sandbox entry.
+    }
+  }
+  return result;
+}
+
 function boundedEnvironment(environment: Record<string, string>): Array<[string, string]> {
   const entries = Object.entries(environment);
   if (entries.length > MAX_ENVIRONMENT_KEYS) throw new ExecutionError("VERIFIER_SANDBOX_UNAVAILABLE", "Validation environment exceeds the sandbox key cap.");
@@ -113,6 +129,7 @@ async function sandboxArgs(executable: string, args: readonly string[], options:
   if (!isContained(writableRoot, cwd)) throw new ExecutionError("VERIFIER_SANDBOX_UNAVAILABLE", "Verification cwd escapes the writable root.");
 
   const runtimeDirectories = await readonlyRuntimeDirectories(writableRoot);
+  const runtimeSymlinks = await readonlyRuntimeSymlinks(runtimeDirectories);
   const command: string[] = [
     "--unshare-all",
     "--die-with-parent",
@@ -136,6 +153,11 @@ async function sandboxArgs(executable: string, args: readonly string[], options:
     ensureAncestors(directory);
     command.push("--ro-bind", directory, directory);
     created.add(directory);
+  }
+  for (const link of runtimeSymlinks) {
+    ensureAncestors(link.path);
+    command.push("--symlink", link.target, link.path);
+    created.add(link.path);
   }
   ensureAncestors(writableRoot);
   command.push("--bind", writableRoot, writableRoot, "--chdir", cwd, "--clearenv");

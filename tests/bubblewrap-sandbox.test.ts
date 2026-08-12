@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readlink, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -77,6 +77,13 @@ test("Bubblewrap verifier clears environment, unshares namespaces and binds only
     assert.ok(indexOfSequence(args, ["--", "node", "--version"]) >= 0);
     assert.equal(args.includes("/etc"), false);
     assert.equal(args.some((value) => value.includes(".local")), false);
+
+    for (const runtimePath of ["/bin", "/sbin", "/lib", "/lib64"]) {
+      const info = await lstat(runtimePath).catch(() => null);
+      if (info?.isSymbolicLink()) {
+        assert.ok(indexOfSequence(args, ["--symlink", await readlink(runtimePath), runtimePath]) >= 0);
+      }
+    }
 
     const writableBinds: string[] = [];
     for (let index = 0; index < args.length - 2; index += 1) if (args[index] === "--bind") writableBinds.push(args[index + 1]!);
