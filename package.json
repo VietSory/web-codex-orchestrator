@@ -1,7 +1,6 @@
 {
   "name": "web-codex-orchestrator",
   "version": "0.3.3",
-  "private": true,
   "description": "A durable, security-focused CLI for orchestrating Web-authored code changes through verification, review, and Draft PR delivery.",
   "license": "Apache-2.0",
   "repository": {
@@ -12,6 +11,9 @@
     "url": "https://github.com/VietSory/web-codex-orchestrator/issues"
   },
   "homepage": "https://github.com/VietSory/web-codex-orchestrator#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "keywords": [
     "codex",
     "orchestration",
