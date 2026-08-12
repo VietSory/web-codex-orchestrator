@@ -26,6 +26,8 @@ export interface ExecutorVerifierPort {
 
 export interface ExecutorReviewRequest extends ExecutorVerificationRequest {
   reviewer: "terra" | "sol";
+  /** Exact paths absent because the registered operation deleted them. */
+  deleted_paths?: string[];
   prior_evidence_sha256: string[];
   context_selection: SmartContextSelection;
 }

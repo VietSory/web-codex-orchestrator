@@ -1,8 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type { AgentClient, AgentTurnRequest, AgentTurnResponse } from "../src/agent/contracts.js";
 import { reviewWithSol } from "../src/agent/sol-reviewer.js";
 import { reviewWithTerra } from "../src/agent/terra-reviewer.js";
+import { validateReviewFindings } from "../src/agent/output-validator.js";
 
 const DIGEST = "a".repeat(64);
 const APPROVAL = {
@@ -37,7 +41,7 @@ const request = {
   threadId: undefined,
   workspacePath: "/tmp/wco-reviewer-policy-test-workspace-that-must-not-exist",
   acceptedBundlePath: "/tmp/review-bundle",
-  changedPaths: [] as string[],
+  deletedPaths: [] as string[],
 };
 
 function finding(file: string) {
@@ -74,6 +78,8 @@ test("selected Sol reviewer receives senior adversarial diff-review policy", asy
   assert.equal(client.requests.length, 1);
   assert.equal(client.requests[0]!.read_only, true);
   assert.equal(client.requests[0]!.sandbox_mode, "read-only");
+  assert.equal(client.requests[0]!.approval_policy, "never");
+  assert.equal(client.requests[0]!.network_access, false);
   assertSeniorPolicy(client.requests[0]!.prompt);
 });
 
@@ -83,6 +89,8 @@ test("selected Terra reviewer receives the same senior adversarial diff-review p
   assert.equal(client.requests.length, 1);
   assert.equal(client.requests[0]!.read_only, true);
   assert.equal(client.requests[0]!.sandbox_mode, "read-only");
+  assert.equal(client.requests[0]!.approval_policy, "never");
+  assert.equal(client.requests[0]!.network_access, false);
   assertSeniorPolicy(client.requests[0]!.prompt);
 });
 
@@ -109,14 +117,75 @@ test("reviewer approval is rejected when reported acceptance is failed or unveri
   await assert.rejects(reviewWithTerra(client, request), /APPROVE requires all reported acceptance evidence to be PASS/);
 });
 
-test("review findings cannot cite an invented path outside the exact changed set", async () => {
-  const client = new CaptureClient({ ...APPROVAL, non_blocking_findings: [finding("src/does-not-exist.ts")] });
-  await assert.rejects(reviewWithSol(client, request), /does not exist and is not an exact changed\/deleted path/);
+test("reviewer approval is rejected for each contradictory authority field", async () => {
+  const contradictions = [
+    { patch: { scope_violations: ["outside frozen scope"] }, expected: /scope violations/ },
+    { patch: { unverified_acceptance: ["AC-1"] }, expected: /fully verified/ },
+    { patch: { human_action: { category: "other", description: "decide", requested_capability: "human choice" } }, expected: /human action/ },
+    { patch: { repair_operations: [{ op_id: "repair-1", kind: "delete_file", path: "src/example.ts", preimage_sha256: DIGEST, postimage_base64: null, postimage_sha256: null }] }, expected: /Only REVISE may carry repair operations|repair operations/ },
+  ];
+  for (const contradiction of contradictions) {
+    const client = new CaptureClient({ ...APPROVAL, ...contradiction.patch });
+    await assert.rejects(reviewWithSol(client, request), contradiction.expected);
+  }
 });
 
-test("a finding may cite an exact deleted diff path that is absent from the post-change worktree", async () => {
+test("REVISE without a concrete blocker is rejected", async () => {
+  const client = new CaptureClient({ ...APPROVAL, verdict: "REVISE" });
+  await assert.rejects(reviewWithTerra(client, request), /REVISE requires at least one concrete blocking finding/);
+});
+
+test("review findings cannot cite an invented path outside the exact changed set", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-review-invented-"));
+  try {
+    const client = new CaptureClient({ ...APPROVAL, non_blocking_findings: [finding("src/does-not-exist.ts")] });
+    await assert.rejects(reviewWithSol(client, { ...request, workspacePath: root }), /does not exist and is not an exact deleted\/renamed-away path/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("a missing changed path is rejected unless exact authority says it was deleted", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-review-created-"));
+  try {
+    const client = new CaptureClient({ ...APPROVAL, non_blocking_findings: [finding("src/new-file.ts")] });
+    await assert.rejects(reviewWithSol(client, { ...request, workspacePath: root, deletedPaths: [] }), /not an exact deleted\/renamed-away path/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("a finding may cite an exact deleted diff path through both review validators", async () => {
   const deletedPath = "src/deleted.ts";
-  const client = new CaptureClient({ ...APPROVAL, non_blocking_findings: [finding(deletedPath)] });
-  const result = await reviewWithTerra(client, { ...request, changedPaths: [deletedPath] });
-  assert.equal(result.review.non_blocking_findings[0]!.file, deletedPath);
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-review-deleted-"));
+  try {
+    const client = new CaptureClient({ ...APPROVAL, non_blocking_findings: [finding(deletedPath)] });
+    const result = await reviewWithTerra(client, { ...request, workspacePath: root, deletedPaths: [deletedPath] });
+    assert.equal(result.review.non_blocking_findings[0]!.file, deletedPath);
+    await validateReviewFindings(result.review, root, "TERRA_REVIEW_OUTPUT_INVALID", [deletedPath]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("finding paths reject traversal, leaf symlinks, symlinked ancestors, and out-of-range lines", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-review-policy-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "wco-review-outside-"));
+  try {
+    await mkdir(path.join(root, "src"));
+    await writeFile(path.join(root, "src", "one-line.ts"), "export const value = 1;\n");
+    await writeFile(path.join(outside, "secret.ts"), "do not read\n");
+    await symlink(path.join(outside, "secret.ts"), path.join(root, "src", "leaf.ts"));
+    await symlink(outside, path.join(root, "linked"));
+
+    const cases = [
+      { file: "../outside.ts", expected: /Invalid reviewer output|escapes the worktree/ },
+      { file: "src/leaf.ts", expected: /canonical worktree directories|non-symlink/ },
+      { file: "linked/secret.ts", expected: /canonical worktree directories/ },
+    ];
+    for (const item of cases) {
+      const client = new CaptureClient({ ...APPROVAL, non_blocking_findings: [finding(item.file)] });
+      await assert.rejects(reviewWithSol(client, { ...request, workspacePath: root }), item.expected);
+    }
+
+    const client = new CaptureClient({ ...APPROVAL, non_blocking_findings: [{ ...finding("src/one-line.ts"), line_start: 2, line_end: 2 }] });
+    await assert.rejects(reviewWithTerra(client, { ...request, workspacePath: root }), /outside the reviewed file/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
 });

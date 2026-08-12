@@ -345,6 +345,7 @@ export async function reviseRun(options: RevisionServiceOptions): Promise<Revisi
 
       const beforeReview=await calculateChangeSet({ worktreePath:activeReceipt.worktree_path, baseCommit:activeReceipt.previous_pr_head_sha, branchName:activeReceipt.branch_name, runner:gitRunner, allowedGeneratedPaths:config.verification.allowed_generated_paths });
       if (beforeReview.change_set_sha256!==currentChangeSet.change_set_sha256) throw new RevisionError("REVISION_POLICY_BLOCKED","Revision changed between deterministic verification and code review.");
+      const deletedReviewPaths=currentChangeSet.entries.flatMap((entry)=>entry.change_type==="deleted"?[entry.path]:entry.change_type==="renamed"&&entry.old_path?[entry.old_path]:[]);
       const allPriorThreads=[...activeReceipt.terra_review.thread_ids,...activeReceipt.sol_review.thread_ids];
       let selectedReview: ReviewResult;
       let selectedThreadId: string;
@@ -355,21 +356,21 @@ export async function reviseRun(options: RevisionServiceOptions): Promise<Revisi
         await persist(paths.receiptPath,activeReceipt,now);
         budget.beginInternalReview();
         await persistBudget(paths.receiptPath,activeReceipt,budget,now);
-        const reviewed=await reviewWithTerra(agentClient,{ model:reviewerSelection.model, reasoning_effort:reviewerSelection.reasoning_effort, prompt:reviewerPrompt(source,currentChangeSet.change_set_sha256), threadId:undefined, workspacePath:activeReceipt.worktree_path, acceptedBundlePath, signal });
+        const reviewed=await reviewWithTerra(agentClient,{ model:reviewerSelection.model, reasoning_effort:reviewerSelection.reasoning_effort, prompt:reviewerPrompt(source,currentChangeSet.change_set_sha256), threadId:undefined, workspacePath:activeReceipt.worktree_path, acceptedBundlePath, deletedPaths:deletedReviewPaths, signal });
         selectedReview=reviewed.review; selectedThreadId=reviewed.threadId; selectedResponse=reviewed.response;
       } else {
         activeReceipt.state="SOL_REVIEWING";
         await persist(paths.receiptPath,activeReceipt,now);
         budget.beginSolReview();
         await persistBudget(paths.receiptPath,activeReceipt,budget,now);
-        const reviewed=await reviewWithSol(agentClient,{ model:reviewerSelection.model, reasoning_effort:reviewerSelection.reasoning_effort, prompt:reviewerPrompt(source,currentChangeSet.change_set_sha256), threadId:undefined, workspacePath:activeReceipt.worktree_path, acceptedBundlePath, signal });
+        const reviewed=await reviewWithSol(agentClient,{ model:reviewerSelection.model, reasoning_effort:reviewerSelection.reasoning_effort, prompt:reviewerPrompt(source,currentChangeSet.change_set_sha256), threadId:undefined, workspacePath:activeReceipt.worktree_path, acceptedBundlePath, deletedPaths:deletedReviewPaths, signal });
         selectedReview=reviewed.review; selectedThreadId=reviewed.threadId; selectedResponse=reviewed.response;
       }
       recordUsage(budget,selectedResponse);
       if (!selectedThreadId || selectedThreadId===activeReceipt.implementer.thread_id || allPriorThreads.includes(selectedThreadId)) throw new RevisionError(reviewerSelection.kind === "terra" ? "REVISION_TERRA_REVIEW_FAILED" : "REVISION_SOL_REVIEW_FAILED", "Selected revision reviewer must use a fresh independent thread.");
       if (!["APPROVE","REVISE"].includes(selectedReview.verdict) || selectedReview.human_action) throw new RevisionError(reviewerSelection.kind === "terra" ? "REVISION_TERRA_REVIEW_FAILED" : "REVISION_SOL_REVIEW_FAILED", `Selected revision reviewer returned ${selectedReview.verdict}.`);
       assertRevisionAcceptance(selectedReview,bundle.acceptance.criteria);
-      try { await validateReviewFindings(selectedReview,activeReceipt.worktree_path,reviewerSelection.kind === "terra" ? "TERRA_REVIEW_OUTPUT_INVALID" : "REVIEW_OUTPUT_INVALID"); }
+      try { await validateReviewFindings(selectedReview,activeReceipt.worktree_path,reviewerSelection.kind === "terra" ? "TERRA_REVIEW_OUTPUT_INVALID" : "REVIEW_OUTPUT_INVALID",deletedReviewPaths); }
       catch (error) { throw new RevisionError(reviewerSelection.kind === "terra" ? "REVISION_TERRA_REVIEW_FAILED" : "REVISION_SOL_REVIEW_FAILED", error instanceof Error ? error.message : String(error)); }
       const afterReview=await calculateChangeSet({ worktreePath:activeReceipt.worktree_path, baseCommit:activeReceipt.previous_pr_head_sha, branchName:activeReceipt.branch_name, runner:gitRunner, allowedGeneratedPaths:config.verification.allowed_generated_paths });
       if (afterReview.change_set_sha256!==currentChangeSet.change_set_sha256) throw new RevisionError("REVISION_POLICY_BLOCKED","Selected code reviewer mutated or raced the revision worktree.");

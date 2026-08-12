@@ -1,8 +1,8 @@
 import crypto from "node:crypto";
 import { ExecutionError } from "../execution/errors.js";
 import type { AgentAssessment, AgentImplementationResult, ReviewFinding, ReviewResult, ReviewerRepairOperation } from "../execution/contracts.js";
-import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
+import { assertSeniorReviewFindingLocations } from "./reviewer-policy.js";
 
 const MAX_REPAIR_OPERATIONS = 16;
 const MAX_REPAIR_PAYLOAD_BYTES = 256 * 1024;
@@ -85,16 +85,10 @@ export function validateReview(output: unknown): ReviewResult {
   return { ...(value as unknown as ReviewResult), repair_operations: operations };
 }
 
-export async function validateReviewFindings(review: ReviewResult, worktreePath: string, code: "TERRA_REVIEW_OUTPUT_INVALID" | "REVIEW_OUTPUT_INVALID" = "REVIEW_OUTPUT_INVALID"): Promise<void> {
-  for (const finding of [...review.blocking_findings, ...review.non_blocking_findings]) {
-    if (!finding.file || path.posix.isAbsolute(finding.file) || finding.file.split("/").includes("..") || finding.file.includes("\\")) throw new ExecutionError(code, "Review finding path is unsafe.");
-    const target = path.resolve(worktreePath, finding.file); const root = `${path.resolve(worktreePath)}${path.sep}`;
-    if (!target.startsWith(root) && target !== path.resolve(worktreePath)) throw new ExecutionError(code, "Review finding path escapes the worktree.");
-    const info = await lstat(target).catch(() => undefined);
-    if (!info || info.isSymbolicLink() || !info.isFile()) throw new ExecutionError(code, "Review finding points to a file that does not exist.");
-    let source: string;
-    try { source = await readFile(target, "utf8"); } catch { throw new ExecutionError(code, "Review finding file could not be read safely."); }
-    const lines = source.split(/\r?\n/).length;
-    if (!Number.isInteger(finding.line_start) || !Number.isInteger(finding.line_end) || finding.line_start < 1 || finding.line_end < finding.line_start || finding.line_end > Math.max(1, lines)) throw new ExecutionError(code, "Review finding line range is invalid.");
+export async function validateReviewFindings(review: ReviewResult, worktreePath: string, code: "TERRA_REVIEW_OUTPUT_INVALID" | "REVIEW_OUTPUT_INVALID" = "REVIEW_OUTPUT_INVALID", deletedPaths: readonly string[] = []): Promise<void> {
+  try {
+    await assertSeniorReviewFindingLocations(review, worktreePath, deletedPaths);
+  } catch (error) {
+    throw new ExecutionError(code, error instanceof Error ? error.message : "Review finding location is invalid.");
   }
 }

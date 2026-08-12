@@ -1,7 +1,7 @@
-import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 import { ExecutionError } from "../execution/errors.js";
 import type { ReviewResult } from "../execution/contracts.js";
+import { readStableWorktreeFile } from "../executor/worktree-io.js";
 
 export const SENIOR_DIFF_REVIEW_INSTRUCTION = [
   "Act as a senior maintainer performing an adversarial pull-request review, not as a test-result summarizer.",
@@ -43,32 +43,33 @@ export function assertSeniorReviewConsistency(review: ReviewResult): void {
 
 /**
  * Re-attest reviewer citations against the exact read-only worktree. A missing
- * path is accepted only when it is part of the exact changed-path set: in a
- * stable post-change worktree that is the representation needed for a deleted
- * or renamed-away diff hunk. Existing files must be regular, non-symlink files
- * and the reported line range must exist.
+ * path is accepted only when it is part of the exact deleted-path set. Existing
+ * files are read through the same bounded, no-symlink stable-file primitive as
+ * Harness mutations, and the reported line range must exist.
  */
-export async function assertSeniorReviewFindingLocations(review: ReviewResult, workspacePath: string, changedPaths: readonly string[] = []): Promise<void> {
+export async function assertSeniorReviewFindingLocations(review: ReviewResult, workspacePath: string, deletedPaths: readonly string[] = []): Promise<void> {
   const root = path.resolve(workspacePath);
   const rootPrefix = `${root}${path.sep}`;
-  const changed = new Set(changedPaths);
+  const deleted = new Set(deletedPaths);
 
   for (const finding of [...review.blocking_findings, ...review.non_blocking_findings]) {
     const target = path.resolve(root, finding.file);
     if (!target.startsWith(rootPrefix) && target !== root) throw new ExecutionError("REVIEW_OUTPUT_INVALID", "Review finding path escapes the worktree.");
     if (!Number.isInteger(finding.line_start) || !Number.isInteger(finding.line_end) || finding.line_start < 1 || finding.line_end < finding.line_start) throw new ExecutionError("REVIEW_OUTPUT_INVALID", "Review finding line range is invalid.");
 
-    const info = await lstat(target).catch(() => undefined);
-    if (!info) {
-      if (changed.has(finding.file)) continue;
-      throw new ExecutionError("REVIEW_OUTPUT_INVALID", "Review finding points to a file that does not exist and is not an exact changed/deleted path.");
+    let snapshot;
+    try {
+      snapshot = await readStableWorktreeFile(root, finding.file);
+    } catch {
+      throw new ExecutionError("REVIEW_OUTPUT_INVALID", "Review finding must point through canonical worktree directories to a bounded regular non-symlink file.");
     }
-    if (info.isSymbolicLink() || !info.isFile()) throw new ExecutionError("REVIEW_OUTPUT_INVALID", "Review finding must point to a regular non-symlink file.");
-
-    let source: string;
-    try { source = await readFile(target, "utf8"); }
-    catch { throw new ExecutionError("REVIEW_OUTPUT_INVALID", "Review finding file could not be read safely."); }
-    const lineCount = Math.max(1, source.split(/\r?\n/).length);
+    if (!snapshot) {
+      if (deleted.has(finding.file)) continue;
+      throw new ExecutionError("REVIEW_OUTPUT_INVALID", "Review finding points to a file that does not exist and is not an exact deleted/renamed-away path.");
+    }
+    const source = snapshot.bytes.toString("utf8");
+    const splitLineCount = source.split(/\r?\n/).length;
+    const lineCount = Math.max(1, splitLineCount - (/\r?\n$/.test(source) ? 1 : 0));
     if (finding.line_end > lineCount) throw new ExecutionError("REVIEW_OUTPUT_INVALID", "Review finding line range is outside the reviewed file.");
   }
 }
