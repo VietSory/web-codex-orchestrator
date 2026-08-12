@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { validateConfig } from "../src/config/config-validator.js";
+import { NativeAgentRunGuard } from "../src/web-bridge/native-agent-run-guard.js";
 import {
   readNativeOpenAiCredential,
   removeNativeOpenAiCredential,
@@ -24,6 +26,22 @@ function rpc(value: string | null): any {
   assert.ok(value);
   return JSON.parse(value);
 }
+
+function nativeConfig(webBridge: Record<string, unknown> = { mode: "web_native_mcp", poll_interval_ms: 1_000, job_ttl_seconds: 86_400 }): Record<string, unknown> {
+  return {
+    config_version: "1.0",
+    inbox: { poll_interval_ms: 2_000, stable_age_ms: 3_000, stable_observations: 2, maximum_candidates_per_scan: 100 },
+    repositories: { repo: { path: path.resolve("/tmp/wco-native-repo"), remote: "origin", expected_remote_urls: ["https://github.com/example/repo.git"], fetch_policy: "never" } },
+    web_bridge: webBridge,
+  };
+}
+
+test("web_native_mcp is a first-class trusted config profile with no relay/GPT URL authority", () => {
+  assert.equal(validateConfig(nativeConfig()).ok, true);
+  const withRelay = validateConfig(nativeConfig({ mode: "web_native_mcp", relay_url: "https://relay.example", poll_interval_ms: 1_000, job_ttl_seconds: 86_400 }));
+  assert.equal(withRelay.ok, false);
+  assert.match(withRelay.issues.map((item) => item.message).join(" "), /web_native_mcp.*relay_url.*forbidden/i);
+});
 
 test("Web-native credential is owner-local, round-trips, and rejects drifted tunnel identity", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-native-credential-"));
@@ -108,4 +126,17 @@ test("Workspace Agent run status preserves suspended and failed states for fail-
     assert.equal(result.status, status);
     if (status === "failed") assert.equal(result.error?.code, "agent_failed");
   }
+});
+
+test("native Agent run guard converts suspended/completed-without-output into explicit fail-closed states", async () => {
+  const suspendedFetch: typeof fetch = async () => new Response(JSON.stringify({
+    id: "apirun_test123", status: "suspended", conversation_url: "https://chatgpt.com/c/wco", error: null,
+  }), { status: 200, headers: { "content-type": "application/json" } });
+  const guard = new NativeAgentRunGuard(credential, "apirun_test123", suspendedFetch);
+  await assert.rejects(guard.assertCanStillComplete(), (error: any) => error?.code === "WEB_NATIVE_INTERACTION_REQUIRED" && /third-party relay/.test(error.message));
+
+  const completedFetch: typeof fetch = async () => new Response(JSON.stringify({
+    id: "apirun_test123", status: "completed", conversation_url: "https://chatgpt.com/c/wco", error: null,
+  }), { status: 200, headers: { "content-type": "application/json" } });
+  assert.equal(await new NativeAgentRunGuard(credential, "apirun_test123", completedFetch).assertCanStillComplete(), "completed");
 });
