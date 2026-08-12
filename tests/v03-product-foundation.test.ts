@@ -11,13 +11,14 @@ import { resolveGitHubToken } from "../src/setup/credential-provider.js";
 import { RelayFileStore } from "../src/web-bridge/relay/file-store.js";
 import { purgeWcoHome } from "../src/uninstall/purge.js";
 
-test("v0.3 slash palette supports idle goals, sealed safety, and /unitsall", () => {
-  assert.match(commandPalette(), /\/new\s+Start a new task/);
-  assert.match(commandPalette(), /\/web status\s+Show Web Architect connection/);
-  assert.match(commandPalette(), /\/web setup\s+Set up personal Actions/);
-  assert.match(commandPalette(), /\/web connect\s+Connect the managed/);
-  assert.match(commandPalette(), /\/config web\s+Configure the selected Web transport/);
-  assert.match(commandPalette(), /\/unitsall\s+Alias for \/uninstall/);
+test("v0.3 slash palette keeps normal Web setup official/OpenAI-only and /unitsall", () => {
+  const palette = commandPalette();
+  assert.match(palette, /\/new\s+Start a new task/);
+  assert.match(palette, /\/web status\s+Show official Web-native connection/);
+  assert.match(palette, /\/web connect\s+One-time official OpenAI\/ChatGPT Web-native setup/);
+  assert.match(palette, /\/config web\s+Configure\/reconnect the default Web-native transport/);
+  assert.doesNotMatch(palette, /Cloudflare|ngrok|VPS|personal Actions|managed Senior Architect/i);
+  assert.match(palette, /\/unitsall\s+Alias for \/uninstall/);
   assert.equal(canonicalSlashCommand("/unitsall"), "/uninstall");
   assert.deepEqual(parseInteractiveInput("build it", { active: false, sealed: false }), { kind: "new", goal: "build it" });
   assert.equal(parseInteractiveInput("change scope", { active: true, sealed: true }).kind, "sealed_block");
