@@ -16,7 +16,7 @@ import { generatePersonalRelaySecret, materializePersonalActionAssets } from "./
 import { readRelayToken, relayCredentialPath, writeRelayToken } from "./relay-credential.js";
 import { readNativeOpenAiCredential, removeNativeOpenAiCredential, writeNativeOpenAiCredential, type NativeOpenAiCredential } from "./native-openai-credential.js";
 import { runNativeMcpServer } from "./native-mcp-server.js";
-import { OPENAI_NATIVE_SETUP_URLS, probeNativeOpenAiSetup } from "./native-web-setup.js";
+import { nativeWorkspaceAgentInstructionsPath, OPENAI_NATIVE_SETUP_URLS, probeNativeOpenAiSetup } from "./native-web-setup.js";
 
 export interface WebCommandIo {
   write(value: string): void;
@@ -75,7 +75,7 @@ function formatWebError(error: unknown): string {
 function webRecoveryCommand(error: unknown, operation: string): string {
   const code = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : "";
   if (code === "WEB_MANAGED_RECONNECT_REQUIRED") return "wco web connect --managed";
-  if (code === "WEB_NATIVE_SETUP_REQUIRED" || code === "OPENAI_CAPABILITY_BLOCKED") return "wco web connect";
+  if (code === "WEB_NATIVE_SETUP_REQUIRED" || code === "OPENAI_CAPABILITY_BLOCKED" || code === "WEB_NATIVE_INTERACTION_REQUIRED") return "wco web connect";
   if (code === "CONFIG_NOT_FOUND") return "wco setup";
   return `wco web ${operation}`;
 }
@@ -128,8 +128,8 @@ async function promptNativeConnection(io: WebCommandIo, openUrl: (url: string) =
   const interactive = interactiveQuestions(io), question = interactive.question, secret = interactive.secret;
   if (!question || !secret) { io.error("OpenAI Web-native setup is interactive. Run it in a TTY.\n"); return null; }
   try {
-    io.write("WCO Web-native setup uses official OpenAI/ChatGPT surfaces only. No Cloudflare, domain, VPS, public localhost, or external OAuth service is required.\n");
-    io.write("This capability requires an OpenAI workspace that exposes Secure MCP Tunnel, full MCP tools, and Workspace Agent API triggers. If those official controls are unavailable, WCO reports OPENAI_CAPABILITY_BLOCKED instead of substituting third-party hosting.\n\n");
+    io.write("WCO Web-native setup uses official OpenAI/ChatGPT surfaces only. No Cloudflare, ngrok, domain, DNS, VPS, public localhost, or external OAuth service is required.\n");
+    io.write("This one-time setup requires an OpenAI workspace that exposes Secure MCP Tunnel, full MCP tools, and Workspace Agent API triggers. If those official controls are unavailable, WCO reports OPENAI_CAPABILITY_BLOCKED instead of substituting third-party hosting.\n\n");
 
     await openUrl(OPENAI_NATIVE_SETUP_URLS.tunnels);
     const tunnelId = (await question("OpenAI Platform tunnel ID (tunnel_...): ")).trim();
@@ -140,11 +140,24 @@ async function promptNativeConnection(io: WebCommandIo, openUrl: (url: string) =
     if (!runtimeKey) return null;
 
     await openUrl(OPENAI_NATIVE_SETUP_URLS.chatgpt_apps);
-    io.write("In ChatGPT Developer settings, add the WCO MCP app using Tunnel and the tunnel ID above. Keep WCO local/Harness as the only mutation authority.\n");
+    io.write([
+      "In ChatGPT Developer/Connector settings, add the WCO MCP app using Tunnel and the tunnel ID above.",
+      "The WCO MCP app exposes exact read tools plus three NON-DESTRUCTIVE semantic submit tools:",
+      "  - wco_submit_contract",
+      "  - wco_submit_implementation",
+      "  - wco_submit_review_verdict",
+      "These tools only append bounded semantic envelopes to WCO local durable state; Harness alone mutates/verifies the repository.",
+      "For zero-click daily use, configure those three submit tools to Never ask / the equivalent no-per-run-confirmation setting when your workspace policy permits it.",
+    ].join("\n") + "\n");
     await question("Press Enter after the WCO ChatGPT MCP app is saved (or Ctrl+C to stop): ");
 
     await openUrl(OPENAI_NATIVE_SETUP_URLS.chatgpt_admin);
-    io.write("Publish a private WCO Workspace Agent that uses the WCO MCP app and the shipped WCO Senior Architect instructions. Then create a Workspace Agents personal access token.\n");
+    io.write([
+      "Publish a PRIVATE WCO Workspace Agent that uses the WCO MCP app.",
+      `Use the exact shipped Senior Architect instructions: ${nativeWorkspaceAgentInstructionsPath()}`,
+      "The Workspace Agent must retain the WCO MCP app and the no-per-run-confirmation policy above; do not add shell/Git/deploy tools.",
+      "Then create a Workspace Agents personal access token in the official ChatGPT admin UI.",
+    ].join("\n") + "\n");
     const triggerId = (await question("Workspace Agent API trigger ID (agtch_...): ")).trim();
     const agentToken = (await secret("Workspace Agent access token (input hidden): ")).trim();
     if (!triggerId || !agentToken) return null;
@@ -227,12 +240,12 @@ export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = d
         await removeNativeOpenAiCredential(paths.credentials).catch(() => undefined);
         throw error;
       }
-      io.write(`OpenAI Secure MCP Tunnel  ready\nWCO MCP transport          outbound-only\nWorkspace Agent trigger    configured\nCredential storage         ${credentialPath}\nNormal daily use           cd <repo> && wco\n`);
+      io.write(`OpenAI Secure MCP Tunnel  ready\nWCO MCP transport          outbound-only\nWorkspace Agent trigger    configured\nCredential storage         ${credentialPath}\nNormal daily use           cd <repo> && wco\nNo daily Cloudflare/relay/browser configuration is required.\n`);
       return 0;
     }
     if (operation === "open") {
       const opened = await openArchitect(config);
-      if (config.web_bridge?.mode === "web_native_mcp") io.write(opened ? "Opened official ChatGPT app settings. Normal WCO tasks do not require a daily browser click.\n" : `Open official ChatGPT app settings: ${OPENAI_NATIVE_SETUP_URLS.chatgpt_apps}\n`);
+      if (config.web_bridge?.mode === "web_native_mcp") io.write(opened ? "Opened official ChatGPT connector settings. Normal WCO tasks do not require a daily browser click.\n" : `Open official ChatGPT connector settings: ${OPENAI_NATIVE_SETUP_URLS.chatgpt_apps}\n`);
       else {
         const configuredGpt = config.web_bridge?.mode === "managed_actions" ? resolveManagedWebService().gpt_url : config.web_bridge?.gpt_url;
         io.write(opened ? "Opened the configured WCO Senior Architect GPT.\n" : `Could not open a desktop browser automatically. Open the fixed WCO Senior Architect GPT: ${configuredGpt}\n`);
