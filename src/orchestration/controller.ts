@@ -5,7 +5,12 @@ import { appendLedgerEvent, createRunLedger, readRunLedger, recordDiagnostic, wr
 import { withRunLock } from "./run-lock.js";
 import { beginAttempt, decideRetry, sealTransitionRequest, type RetryOptions } from "./retry-policy.js";
 
-const MODEL_BUDGET_TRANSITIONS = new Set<TransitionKind>(["EXECUTE_REGISTERED_PACK", "REVISE"]);
+// EXECUTE_REGISTERED_PACK may invoke the selected AUTOPILOT reviewer. REVISE is
+// deliberately excluded: the normal Harness-first final Web-A revision is a
+// zero-model bounded repair/publication transition. Legacy Phase 8 retains its
+// own BudgetTracker and therefore must not make the shared controller falsely
+// reject the zero-model product path when the earlier reviewer exhausted budget.
+const MODEL_BUDGET_TRANSITIONS = new Set<TransitionKind>(["EXECUTE_REGISTERED_PACK"]);
 const TERMINAL_STATUSES = new Set<OrchestrationStatus>(["BLOCKED", "FAILED", "COMPLETE"]);
 function resultHash(value: unknown): string { return crypto.createHash("sha256").update(canonicalJsonBuffer(value)).digest("hex"); }
 function modelBudgetUnavailable(ledger: RunLedger): boolean {
