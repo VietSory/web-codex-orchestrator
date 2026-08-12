@@ -1,5 +1,4 @@
 import crypto from "node:crypto";
-import { createWriteStream } from "node:fs";
 import { chmod, lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
@@ -116,6 +115,10 @@ export async function startNativeTunnel(options: { cacheDirectory: string; crede
       await new Promise<void>((resolve) => { const timer = setTimeout(() => { child.kill("SIGKILL"); resolve(); }, 2_000); child.once("exit", () => { clearTimeout(timer); resolve(); }); child.kill("SIGTERM"); });
     },
   };
+}
+
+export async function stopNativeTunnel(runtime: NativeTunnelProcess | null | undefined): Promise<void> {
+  if (runtime) await runtime.stop();
 }
 
 export const PINNED_TUNNEL_CLIENT_RELEASE = RELEASE;
