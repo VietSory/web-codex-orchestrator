@@ -37,7 +37,23 @@ const request = {
   threadId: undefined,
   workspacePath: "/tmp/wco-reviewer-policy-test-workspace-that-must-not-exist",
   acceptedBundlePath: "/tmp/review-bundle",
+  changedPaths: [] as string[],
 };
+
+function finding(file: string) {
+  return {
+    id: "FINDING-1",
+    severity: "medium",
+    category: "maintainability",
+    file,
+    line_start: 1,
+    line_end: 1,
+    acceptance_ids: [],
+    problem: "Concrete review evidence must resolve to the exact worktree or a deleted diff path.",
+    evidence: `${file}:1`,
+    required_fix: "Use exact review evidence.",
+  };
+}
 
 function assertSeniorPolicy(prompt: string): void {
   assert.match(prompt, /senior maintainer performing an adversarial pull-request review/i);
@@ -74,15 +90,11 @@ test("reviewer approval is rejected when its own structured evidence contains a 
   const client = new CaptureClient({
     ...APPROVAL,
     blocking_findings: [{
+      ...finding("src/example.ts"),
       id: "BLOCK-1",
       severity: "high",
       category: "correctness",
-      file: "src/example.ts",
-      line_start: 1,
-      line_end: 1,
-      acceptance_ids: [],
       problem: "The patch can return the wrong result.",
-      evidence: "src/example.ts:1",
       required_fix: "Correct the branch before approval.",
     }],
   });
@@ -97,21 +109,14 @@ test("reviewer approval is rejected when reported acceptance is failed or unveri
   await assert.rejects(reviewWithTerra(client, request), /APPROVE requires all reported acceptance evidence to be PASS/);
 });
 
-test("review findings must point to a real file and valid line range in the reviewed worktree", async () => {
-  const client = new CaptureClient({
-    ...APPROVAL,
-    non_blocking_findings: [{
-      id: "NIT-1",
-      severity: "medium",
-      category: "maintainability",
-      file: "src/does-not-exist.ts",
-      line_start: 1,
-      line_end: 1,
-      acceptance_ids: [],
-      problem: "Concrete review evidence must resolve to the exact worktree.",
-      evidence: "src/does-not-exist.ts:1",
-      required_fix: "No fix required; this fixture proves evidence re-attestation.",
-    }],
-  });
-  await assert.rejects(reviewWithSol(client, request), /Review finding points to a file that does not exist/);
+test("review findings cannot cite an invented path outside the exact changed set", async () => {
+  const client = new CaptureClient({ ...APPROVAL, non_blocking_findings: [finding("src/does-not-exist.ts")] });
+  await assert.rejects(reviewWithSol(client, request), /does not exist and is not an exact changed\/deleted path/);
+});
+
+test("a finding may cite an exact deleted diff path that is absent from the post-change worktree", async () => {
+  const deletedPath = "src/deleted.ts";
+  const client = new CaptureClient({ ...APPROVAL, non_blocking_findings: [finding(deletedPath)] });
+  const result = await reviewWithTerra(client, { ...request, changedPaths: [deletedPath] });
+  assert.equal(result.review.non_blocking_findings[0]!.file, deletedPath);
 });

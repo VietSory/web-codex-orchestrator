@@ -130,8 +130,8 @@ export async function createProductionModelReviewer(options: ProductionGateOptio
       if (request.reviewer !== reviewMode.kind) throw new ExecutorError("EXECUTOR_STATE_INVALID", `Selected reviewer is ${reviewMode.kind}; refusing an unexpected ${request.reviewer} review turn.`);
       const prompt = reviewPrompt(request);
       const result = reviewMode.kind === "terra"
-        ? await reviewWithTerra(agentClient, { model: reviewMode.model, reasoning_effort: reviewMode.reasoning_effort, prompt, threadId: undefined, workspacePath: request.worktree_path, acceptedBundlePath: request.accepted_bundle_path, ...(request.signal ? { signal: request.signal } : {}) })
-        : await reviewWithSol(agentClient, { model: reviewMode.model, reasoning_effort: reviewMode.reasoning_effort, prompt, threadId: undefined, workspacePath: request.worktree_path, acceptedBundlePath: request.accepted_bundle_path, ...(request.signal ? { signal: request.signal } : {}) });
+        ? await reviewWithTerra(agentClient, { model: reviewMode.model, reasoning_effort: reviewMode.reasoning_effort, prompt, threadId: undefined, workspacePath: request.worktree_path, acceptedBundlePath: request.accepted_bundle_path, changedPaths: request.changed_paths, ...(request.signal ? { signal: request.signal } : {}) })
+        : await reviewWithSol(agentClient, { model: reviewMode.model, reasoning_effort: reviewMode.reasoning_effort, prompt, threadId: undefined, workspacePath: request.worktree_path, acceptedBundlePath: request.accepted_bundle_path, changedPaths: request.changed_paths, ...(request.signal ? { signal: request.signal } : {}) });
       const usage = reviewUsage(result.response.usage);
       const digestMatches = result.review.reviewed_change_set_sha256 === request.change_set_digest;
       const repairOperations = result.review.repair_operations ?? [];
