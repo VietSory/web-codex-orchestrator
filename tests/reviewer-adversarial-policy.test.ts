@@ -5,29 +5,28 @@ import { reviewWithSol } from "../src/agent/sol-reviewer.js";
 import { reviewWithTerra } from "../src/agent/terra-reviewer.js";
 
 const DIGEST = "a".repeat(64);
+const APPROVAL = {
+  verdict: "APPROVE",
+  reviewed_change_set_sha256: DIGEST,
+  summary: "No blocking defect found after adversarial diff review.",
+  acceptance_results: [],
+  blocking_findings: [],
+  non_blocking_findings: [],
+  scope_violations: [],
+  unverified_acceptance: [],
+  human_action: null,
+  repair_operations: [],
+};
 
 class CaptureClient implements AgentClient {
   readonly requests: AgentTurnRequest[] = [];
+  constructor(private readonly output: unknown = APPROVAL) {}
 
   async checkAvailability(): Promise<void> {}
 
   async turn(request: AgentTurnRequest): Promise<AgentTurnResponse> {
     this.requests.push(request);
-    return {
-      thread_id: `review-thread-${this.requests.length}`,
-      output: {
-        verdict: "APPROVE",
-        reviewed_change_set_sha256: DIGEST,
-        summary: "No blocking defect found after adversarial diff review.",
-        acceptance_results: [],
-        blocking_findings: [],
-        non_blocking_findings: [],
-        scope_violations: [],
-        unverified_acceptance: [],
-        human_action: null,
-        repair_operations: [],
-      },
-    };
+    return { thread_id: `review-thread-${this.requests.length}`, output: this.output };
   }
 }
 
@@ -69,4 +68,31 @@ test("selected Terra reviewer receives the same senior adversarial diff-review p
   assert.equal(client.requests[0]!.read_only, true);
   assert.equal(client.requests[0]!.sandbox_mode, "read-only");
   assertSeniorPolicy(client.requests[0]!.prompt);
+});
+
+test("reviewer approval is rejected when its own structured evidence contains a blocker", async () => {
+  const client = new CaptureClient({
+    ...APPROVAL,
+    blocking_findings: [{
+      id: "BLOCK-1",
+      severity: "high",
+      category: "correctness",
+      file: "src/example.ts",
+      line_start: 1,
+      line_end: 1,
+      acceptance_ids: [],
+      problem: "The patch can return the wrong result.",
+      evidence: "src/example.ts:1",
+      required_fix: "Correct the branch before approval.",
+    }],
+  });
+  await assert.rejects(reviewWithSol(client, request), /APPROVE cannot carry blocking findings/);
+});
+
+test("reviewer approval is rejected when reported acceptance is failed or unverified", async () => {
+  const client = new CaptureClient({
+    ...APPROVAL,
+    acceptance_results: [{ acceptance_id: "AC-1", status: "FAIL", evidence: ["tests/example.test.ts:1"] }],
+  });
+  await assert.rejects(reviewWithTerra(client, request), /APPROVE requires all reported acceptance evidence to be PASS/);
 });
