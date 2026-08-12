@@ -33,10 +33,11 @@ import type { WebBridge } from "../web-bridge/web-bridge.js";
 import { listLocalTaskHistory } from "../web-bridge/session-history.js";
 import { ManagedWebOnboardingClient } from "../web-bridge/managed-onboarding.js";
 import { resolveManagedWebService } from "../web-bridge/managed-service.js";
+import { NativeAgentRunGuard } from "../web-bridge/native-agent-run-guard.js";
 import { readNativeOpenAiCredential } from "../web-bridge/native-openai-credential.js";
 import { startNativeTunnel, stopNativeTunnel, type NativeTunnelProcess } from "../web-bridge/native-tunnel-runtime.js";
 import { triggerWorkspaceAgent } from "../web-bridge/workspace-agent-client.js";
-import { contentDigest } from "../web-bridge/contracts.js";
+import { contentDigest, WebBridgeError } from "../web-bridge/contracts.js";
 import { formatAutopilotOutcome, formatAutopilotStatus } from "./autopilot-presenter.js";
 import { withFinalReviewNotification } from "./autopilot-web-bridge.js";
 import { pairSessionCanComplete } from "./pair-completion.js";
@@ -132,6 +133,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
   let bridge: WebBridge | null = null;
   let latest = await readLocalWorkerSession(paths.state, repositoryId);
   let nativeTunnel: NativeTunnelProcess | null = null;
+  const nativeRuns = new Map<string, NativeAgentRunGuard>();
   const webIo = {
     write: (value: string) => io.write(value),
     error: (value: string) => io.write(value),
@@ -187,8 +189,8 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     if (code !== 0) throw new Error("WEB_GPT_OPEN_FAILED: the configured Senior Architect GPT could not be opened.");
   };
   const nativeConversationKey = (): string => `wco-author-${latest?.session_id ?? repositoryId}`.slice(0, 128);
-  const triggerNativeTurn = async (purpose: "author" | WebReviewPurpose, identity: string): Promise<void> => {
-    if (!isNative()) return;
+  const triggerNativeTurn = async (purpose: "author" | WebReviewPurpose, identity: string): Promise<NativeAgentRunGuard | null> => {
+    if (!isNative()) return null;
     await ensureNativeTunnel();
     const credential = await readNativeOpenAiCredential(paths.credentials);
     const conversationKey = purpose === "independent_code_review" ? `wco-review-${contentDigest({ identity }).slice(0, 48)}` : nativeConversationKey();
@@ -198,7 +200,19 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
         ? "Perform the exact pending independent PAIR code review. Fetch pending review identity and exact review evidence through WCO MCP, inspect every changed hunk and necessary bounded context, then submit APPROVE, REVISE with bounded repair authority, or BLOCK. Never mutate or merge."
         : "Continue the original WCO author conversation and perform the exact pending final intent review. Fetch pending review identity/evidence through WCO MCP, compare the exact final Draft PR result to the original sealed intent and every changed hunk, then submit APPROVE, REVISE with bounded repair authority, or BLOCK. Never mutate or merge.";
     const receipt = await triggerWorkspaceAgent({ credential, input, conversationKey, idempotencyKey: `wco-${contentDigest({ purpose, identity }).slice(0, 48)}` });
+    const guard = new NativeAgentRunGuard(credential, receipt.agent_trigger_run_id);
+    nativeRuns.set(identity, guard);
     io.write(`ChatGPT Web-native ${purpose === "author" ? "authoring" : "review"} started. ${receipt.conversation_url}\n`);
+    return guard;
+  };
+  const assertNativeOutputStillPossible = async (identity: string, output: "implementation" | "verdict"): Promise<void> => {
+    if (!isNative()) return;
+    const guard = nativeRuns.get(identity);
+    if (!guard) return;
+    const status = await guard.assertCanStillComplete();
+    if (status === "completed") {
+      throw new WebBridgeError("WEB_NATIVE_AGENT_INCOMPLETE", `The official Workspace Agent run completed without submitting the required WCO ${output}. WCO stopped without third-party fallback or repository mutation; retry /run after checking the one-time WCO Agent/App tool configuration.`);
+    }
   };
 
   const waitForImplementation = async (): Promise<LocalWorkerSession> => {
@@ -210,6 +224,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
       latest = await advanceLocalWorker({ bridge, session: latest, repositoryPath: repositoryConfig.path, stateDirectory: paths.state, configPath: paths.config, config });
       if (latest.state === "IMPLEMENTATION_REGISTERED") break;
       if (latest.state === "BLOCKED") throw new Error("Web authoring is blocked. Use /status for details.");
+      if (latest.job_id) await assertNativeOutputStillPossible(latest.job_id, "implementation");
       await sleep(poll);
     }
     return latest;
@@ -250,7 +265,11 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
       io.write(`Waiting for ${reviewLabel}${round > 0 ? ` · round ${round + 1}` : ""}…\n`);
       const poll = Math.max(250, Math.min(config.web_bridge?.poll_interval_ms ?? 1_000, 10_000));
       let verdict = await bridge.waitForVerdict(review.job_id);
-      while (!verdict) { await sleep(poll); verdict = await bridge.waitForVerdict(review.job_id); }
+      while (!verdict) {
+        await assertNativeOutputStillPossible(review.job_id, "verdict");
+        await sleep(poll);
+        verdict = await bridge.waitForVerdict(review.job_id);
+      }
       const adopted = await materializeAndSubmitWebVerdict({ envelope: verdict, stateDirectory: paths.state, configPath: paths.config });
       io.write(`${reviewLabel}: ${adopted.receipt.state}\n`);
       code = await runControlCommand("continue", ["--run-id", runId, "--state-dir", paths.state, "--config", paths.config, "--max-transitions", "8"], { stdout: () => undefined, stderr: () => undefined });
@@ -265,16 +284,20 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     if (!bridge) throw new Error("WCO Web bridge is not connected.");
     const controller = new AbortController(); const interrupt = (): void => controller.abort(); process.once("SIGINT", interrupt);
     try {
-      const interactiveBridge = withFinalReviewNotification(bridge, async (reviewId) => {
-        io.write("AUTOPILOT is ready for final review.\n");
-        if (isNative()) {
-          await triggerNativeTurn("final_intent_review", reviewId);
-          io.write("Waiting for original ChatGPT Web final intent review…\n");
-        } else {
-          try { await openWebArchitect(); io.write("Waiting for original ChatGPT Web final intent review…\n"); }
-          catch { io.write("Final review remains pending. Open the configured Senior Architect GPT manually, or run `wco web open` in another terminal.\n"); }
-        }
-      });
+      const interactiveBridge = withFinalReviewNotification(
+        bridge,
+        async (reviewId) => {
+          io.write("AUTOPILOT is ready for final review.\n");
+          if (isNative()) {
+            await triggerNativeTurn("final_intent_review", reviewId);
+            io.write("Waiting for original ChatGPT Web final intent review…\n");
+          } else {
+            try { await openWebArchitect(); io.write("Waiting for original ChatGPT Web final intent review…\n"); }
+            catch { io.write("Final review remains pending. Open the configured Senior Architect GPT manually, or run `wco web open` in another terminal.\n"); }
+          }
+        },
+        isNative() ? async (reviewId) => await assertNativeOutputStillPossible(reviewId, "verdict") : undefined,
+      );
       const receipt = await driveAutopilotJob({ bridge: interactiveBridge, runId: latest.run_id, stateDirectory: paths.state, configPath: paths.config, webPackPath: latest.web_pack_path, signal: controller.signal, ...(config.web_bridge?.poll_interval_ms !== undefined ? { pollIntervalMs: config.web_bridge.poll_interval_ms } : {}) });
       if (receipt.status === "READY_FOR_YOU") await completeLocalWorkerSession({ session: latest, stateDirectory: paths.state });
       const result = await resultReceipt(receipt.run_id, paths.state);
