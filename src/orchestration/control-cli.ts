@@ -23,6 +23,7 @@ import { resolveManagedWebService } from "../web-bridge/managed-service.js";
 import { ManagedWebOnboardingClient } from "../web-bridge/managed-onboarding.js";
 import { createConfiguredWebBridge } from "../web-bridge/bridge-factory.js";
 import { readRelayToken } from "../web-bridge/relay-credential.js";
+import { readNativeOpenAiCredential } from "../web-bridge/native-openai-credential.js";
 
 export interface ControlCliIo { stdout(value: string): void; stderr(value: string): void; }
 
@@ -174,6 +175,10 @@ export function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
     await readRelayToken(webPaths.credentials);
     return await createConfiguredWebBridge(config, webPaths.bridge).getConnectionStatus();
   }));
+  const loadNativeCredential = lazyPromise(() => loadConfig().then(async (config) => {
+    if (config.web_bridge?.mode !== "web_native_mcp") throw new Error("OpenAI Web-native mode is not configured");
+    return await readNativeOpenAiCredential(webPaths.credentials);
+  }));
 
   const probes: DoctorProbe[] = [
     { id: "node", async run() { return { severity: Number(process.versions.node.split(".")[0]) >= 22 ? "OK" as const : "FAIL" as const, summary: `Node ${process.versions.node}` }; } },
@@ -199,6 +204,7 @@ export function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
     { id: "wco-relay-service", async run() {
       const mode = await webMode();
       if (mode === "manual_file") return { severity: "OK" as const, summary: "offline manual_file profile; no relay probe required" };
+      if (mode === "web_native_mcp") { try { await loadNativeCredential(); return { severity: "OK" as const, summary: "official OpenAI Secure MCP Tunnel profile; no third-party relay required" }; } catch (error) { return { severity: "FAIL" as const, summary: `OpenAI Web-native setup incomplete - ${error instanceof Error ? error.message : String(error)}` }; } }
       if (mode === "personal_actions" || mode === "actions_relay") { try { const status = await loadPersonalConnection(); return status.connected ? { severity: "OK" as const, summary: "PASS - personal bearer relay reachable" } : { severity: "WARN" as const, summary: "personal relay offline" }; } catch (error) { return webFailure("Personal WCO Relay", error); } }
       try { await loadManagedService(); return { severity: "OK" as const, summary: "PASS - managed service reachable and compatible" }; } catch (error) { return webFailure("Managed WCO Relay service", error); }
     } },
@@ -210,12 +216,14 @@ export function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
     { id: "chatgpt-web", async run() {
       const mode = await webMode();
       if (mode === "manual_file") return { severity: "OK" as const, summary: "offline manual_file profile" };
+      if (mode === "web_native_mcp") { try { await loadNativeCredential(); return { severity: "OK" as const, summary: "official ChatGPT Web-native MCP credential configured" }; } catch (error) { return { severity: "FAIL" as const, summary: `Web-native authorization missing - ${error instanceof Error ? error.message : String(error)}` }; } }
       if (mode === "personal_actions" || mode === "actions_relay") { try { return (await loadPersonalConnection()).connected ? { severity: "OK" as const, summary: "personal Action relay linked" } : { severity: "WARN" as const, summary: "personal Action relay not linked" }; } catch { return { severity: "WARN" as const, summary: "personal Action relay not linked" }; } }
       try { const value = await loadWebConnection(); return value.service.chatgpt_oauth_configured && value.connection.connected ? { severity: "OK" as const, summary: "managed OAuth linked" } : { severity: "WARN" as const, summary: "managed OAuth not linked" }; } catch { return { severity: "WARN" as const, summary: "managed OAuth not linked" }; }
     } },
     { id: "senior-architect-gpt", async run() {
       const config = await loadConfig(), mode = config.web_bridge?.mode ?? "manual_file";
       if (mode === "manual_file") return { severity: "OK" as const, summary: "not required for offline manual_file profile" };
+      if (mode === "web_native_mcp") { try { await loadNativeCredential(); return { severity: "OK" as const, summary: "private WCO Workspace Agent trigger configured" }; } catch { return { severity: "FAIL" as const, summary: "private WCO Workspace Agent trigger not configured; run `wco web connect`" }; } }
       if (mode === "personal_actions" || mode === "actions_relay") return config.web_bridge?.gpt_url ? { severity: "OK" as const, summary: "personal GPT metadata configured" } : { severity: "WARN" as const, summary: "personal GPT one-time editor setup not yet recorded" };
       try { const value = await loadManagedService(); return value.service.senior_architect_gpt_configured ? { severity: "OK" as const, summary: "managed GPT configured" } : { severity: "WARN" as const, summary: "managed GPT not configured" }; } catch { return { severity: "WARN" as const, summary: "managed GPT not configured" }; }
     } },
