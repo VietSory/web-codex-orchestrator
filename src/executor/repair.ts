@@ -5,6 +5,7 @@ import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
 import type { WebImplementationPack, WebImplementationOperation } from "../web-authority/contracts.js";
 import { ExecutorError, type ExecutorReceipt, type ExecutorRepairPreimageBackup, type ExecutorTransactionOperation } from "./contracts.js";
 import { executorPaths, prepareExecutorDirectory } from "./paths.js";
+import { selectedModelAuthorityCoversDigest } from "./review-authority.js";
 import { ensureSecureExecutorSubdirectory, installImmutableDurableExecutorStateFile, readStableExecutorStateFile } from "./state-io.js";
 import { writeExecutorReceipt } from "./store.js";
 import { deleteExactWorktreeFile, readStableWorktreeFile, writeExactWorktreeFile } from "./worktree-io.js";
@@ -69,19 +70,30 @@ export async function bindReviewerRepair(options: { stateDirectory: string; rece
   receipt.updated_at = nowIso(now); await writeExecutorReceipt(options.stateDirectory, receipt); return receipt;
 }
 
-function archiveVerifiedWebRepair(receipt: ExecutorReceipt, now: () => Date): void {
+function archiveVerifiedRepair(receipt: ExecutorReceipt, now: () => Date): void {
   const repair = receipt.repair;
-  if (!repair || repair.reviewer !== "web" || repair.state !== "VERIFIED" || !repair.final_change_set_digest || repair.final_change_set_digest !== receipt.change_set_digest || !receipt.verification.passed || receipt.verification.change_set_digest !== repair.final_change_set_digest) throw new ExecutorError("EXECUTOR_REPAIR_INVALID", "Only the exact deterministically verified Web repair generation may be archived.");
+  if (!repair || repair.state !== "VERIFIED" || !repair.final_change_set_digest || repair.final_change_set_digest !== receipt.change_set_digest || !receipt.verification.passed || receipt.verification.change_set_digest !== repair.final_change_set_digest) throw new ExecutorError("EXECUTOR_REPAIR_INVALID", "Only the exact deterministically verified repair generation may be archived.");
   const history = receipt.repair_history ?? [];
-  if (history.length >= MAX_REPAIR_GENERATIONS - 1) throw new ExecutorError("EXECUTOR_REPAIR_INVALID", `Web repair total generation budget ${MAX_REPAIR_GENERATIONS} is exhausted.`);
+  if (history.length >= MAX_REPAIR_GENERATIONS - 1) throw new ExecutorError("EXECUTOR_REPAIR_INVALID", `Repair total generation budget ${MAX_REPAIR_GENERATIONS} is exhausted.`);
   const previous = history.at(-1);
-  if (previous && previous.final_change_set_digest !== repair.source_change_set_digest) throw new ExecutorError("EXECUTOR_REPAIR_INVALID", "Web repair history digest chain is broken.");
-  history.push({ generation: history.length + 1, reviewer: "web", source_change_set_digest: repair.source_change_set_digest, source_review_evidence_sha256: repair.source_review_evidence_sha256, operations_sha256: operationsDigest(repair.operations), operation_count: repair.operations.length, final_change_set_digest: repair.final_change_set_digest, verified_at: nowIso(now) });
+  if (previous && previous.final_change_set_digest !== repair.source_change_set_digest) throw new ExecutorError("EXECUTOR_REPAIR_INVALID", "Repair history digest chain is broken.");
+  if (repair.reviewer !== "web" && (receipt.review_strategy !== "model" || receipt.reviewer_selection?.kind !== repair.reviewer || history.length !== 0)) throw new ExecutorError("EXECUTOR_REPAIR_INVALID", "Selected model adaptive repair may be archived only as the first generation of its authority chain.");
+  history.push({ generation: history.length + 1, reviewer: repair.reviewer, source_change_set_digest: repair.source_change_set_digest, source_review_evidence_sha256: repair.source_review_evidence_sha256, operations_sha256: operationsDigest(repair.operations), operation_count: repair.operations.length, final_change_set_digest: repair.final_change_set_digest, verified_at: nowIso(now) });
   receipt.repair_history = history; delete receipt.repair;
+}
+
+function webRepairSourceAllowed(receipt: ExecutorReceipt, sourceDigest: string): boolean {
+  if (receipt.review_strategy === "web") return receipt.reviewer_selection === undefined && receipt.terra_review.rounds === 0 && receipt.sol_review.rounds === 0 && receipt.terra_review.verdict === null && receipt.sol_review.verdict === null;
+  if (receipt.review_strategy !== "model" || !receipt.reviewer_selection) return false;
+  if (selectedModelAuthorityCoversDigest(receipt, sourceDigest)) return true;
+  const current = receipt.repair;
+  if (current?.reviewer === "web" && current.state === "VERIFIED" && current.final_change_set_digest === sourceDigest) return true;
+  return receipt.repair_history?.at(-1)?.final_change_set_digest === sourceDigest;
 }
 
 export async function bindWebReviewRepair(options: { stateDirectory: string; receipt: ExecutorReceipt; sourceChangeSetDigest: string; sourceReviewEvidenceSha256: string; operations: ReviewerRepairOperation[]; now?: () => Date; }): Promise<ExecutorReceipt> {
   const now = options.now ?? (() => new Date()); const receipt = options.receipt;
+  if (!webRepairSourceAllowed(receipt, options.sourceChangeSetDigest)) throw new ExecutorError("EXECUTOR_REPAIR_INVALID", "Web repair source is not covered by the frozen Harness review authority chain.");
   if (receipt.repair) {
     const sameEvidence = receipt.repair.reviewer === "web" && receipt.repair.source_review_evidence_sha256 === options.sourceReviewEvidenceSha256;
     if (sameEvidence) {
@@ -89,10 +101,10 @@ export async function bindWebReviewRepair(options: { stateDirectory: string; rec
       if (exactReplay) return receipt;
       throw new ExecutorError("EXECUTOR_REPAIR_INVALID", "The same Web repair evidence digest cannot authorize different source or operations.");
     }
-    archiveVerifiedWebRepair(receipt, now);
+    archiveVerifiedRepair(receipt, now);
   }
   const previous = receipt.repair_history?.at(-1);
-  if (receipt.review_strategy !== "web" || receipt.reviewer_selection !== undefined || receipt.state !== "READY_FOR_PUBLISH" || receipt.change_set_digest !== options.sourceChangeSetDigest || !receipt.verification.passed || receipt.verification.change_set_digest !== options.sourceChangeSetDigest || (previous && previous.final_change_set_digest !== options.sourceChangeSetDigest) || receipt.terra_review.rounds !== 0 || receipt.sol_review.rounds !== 0 || receipt.terra_review.verdict !== null || receipt.sol_review.verdict !== null) throw new ExecutorError("EXECUTOR_REPAIR_INVALID", "Web repair cannot be bound to this PAIR Harness authority.");
+  if (receipt.state !== "READY_FOR_PUBLISH" || receipt.change_set_digest !== options.sourceChangeSetDigest || !receipt.verification.passed || receipt.verification.change_set_digest !== options.sourceChangeSetDigest || (previous && previous.final_change_set_digest !== options.sourceChangeSetDigest)) throw new ExecutorError("EXECUTOR_REPAIR_INVALID", "Web repair cannot bind a stale or unverified Harness source generation.");
   if (!/^[a-f0-9]{64}$/.test(options.sourceReviewEvidenceSha256)) throw new ExecutorError("EXECUTOR_REPAIR_INVALID", "Web repair evidence digest is invalid.");
   await assertProposalPreimages(receipt, options.operations);
   const preimageBackups = await captureGenerationPreimages({ stateDirectory: options.stateDirectory, receipt, evidenceSha256: options.sourceReviewEvidenceSha256, operations: options.operations });
