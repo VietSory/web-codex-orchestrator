@@ -19,8 +19,17 @@ export function withFinalReviewNotification(
 
   const notifyOnce = async (reviewId: string): Promise<void> => {
     if (notified.has(reviewId)) return;
-    notified.add(reviewId);
-    try { await notify(reviewId); } catch { /* UI notification must never become orchestration authority. */ }
+    // Mark only after a required native notification succeeds; otherwise a
+    // retry must be able to launch the same idempotent Workspace Agent run.
+    try {
+      await notify(reviewId);
+      notified.add(reviewId);
+    } catch (error) {
+      if (assertHealthy) throw error;
+      // Browser/UI notification is advisory for non-native transports and must
+      // never become orchestration authority.
+      notified.add(reviewId);
+    }
   };
 
   return {
