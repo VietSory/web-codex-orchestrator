@@ -55,10 +55,11 @@ export async function runSetupCommand(args: string[], cwd = process.cwd(), suppl
     checks.push([github === "authentication unavailable" ? "warn" : "ok", "GitHub", github]);
     checks.push([codex === "unavailable" ? "warn" : "ok", "Codex", codex]);
     const mode = result.config.web_bridge?.mode ?? "manual_file";
-    checks.push([mode === "manual_file" ? "ok" : "warn", "Web transport", mode === "personal_actions" ? "personal setup available (`wco web setup --personal`)" : mode]);
+    checks.push([mode === "web_native_mcp" || mode === "manual_file" ? "ok" : "warn", "Web transport", mode === "web_native_mcp" ? "OpenAI Web-native (one-time `wco web connect`)" : mode]);
     suppliedIo.write(`\nWeb Codex Orchestrator v0.3 setup\n\n${checks.map(([severity, label, value]) => `${severity === "ok" ? "✓" : "!"} ${label.padEnd(16)} ${value}`).join("\n")}\n`);
+    suppliedIo.write("\nNormal Web setup uses only official OpenAI/ChatGPT configuration. WCO does not require Cloudflare, ngrok, VPS, a custom domain, DNS, or public localhost.\n");
     if (codex === "unavailable" || github === "authentication unavailable") {
-      suppliedIo.write("\nSetup is complete. Credential checks need attention before model execution or publication. Run `wco doctor`.\n");
+      suppliedIo.write("Setup is complete. Credential checks need attention before AUTOPILOT review or Draft PR publication. PAIR itself does not require Codex. Run `wco doctor`.\n");
     }
     return 0;
   } catch (error) {
