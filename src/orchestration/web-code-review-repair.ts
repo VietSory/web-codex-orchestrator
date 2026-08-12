@@ -27,6 +27,7 @@ export async function applyHarnessWebRepair(options: { envelope: WebVerdictEnvel
   const pairAuthority = receipt.review_strategy === "web" && receipt.reviewer_selection === undefined;
   const autopilotAuthority = receipt.review_strategy === "model" && receipt.reviewer_selection !== undefined;
   if (!pairAuthority && !autopilotAuthority) throw new WebBridgeError("WEB_CODE_REVIEW_REPAIR_INVALID", "Web repair is valid only for a frozen Harness-first PAIR or AUTOPILOT executor.");
+  const reviewStrategy = pairAuthority ? "web" as const : "model" as const;
 
   const evidenceSha256 = contentDigest(options.envelope);
   const sameCurrent = receipt.repair?.reviewer === "web" && receipt.repair.source_review_evidence_sha256 === evidenceSha256;
@@ -43,7 +44,7 @@ export async function applyHarnessWebRepair(options: { envelope: WebVerdictEnvel
     stateDirectory: options.stateDirectory,
     configPath: options.configPath,
     verifier,
-    reviewStrategy: receipt.review_strategy,
+    reviewStrategy,
     ...(options.now ? { now: options.now } : {}),
   });
   if (repaired.state !== "READY_FOR_PUBLISH" || repaired.repair?.reviewer !== "web" || repaired.repair.state !== "VERIFIED" || !repaired.repair.final_change_set_digest || repaired.change_set_digest !== repaired.repair.final_change_set_digest) throw new WebBridgeError("WEB_CODE_REVIEW_REPAIR_FAILED", `Harness Web repair stopped in ${repaired.state} without an exact verified repaired snapshot.`);
