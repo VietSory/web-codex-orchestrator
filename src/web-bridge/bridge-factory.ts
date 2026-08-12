@@ -15,7 +15,7 @@ export function createConfiguredWebBridge(config: TrustedConfig, bridgeDirectory
     const managed = new ManagedWebOnboardingClient({ metadata, credentialsDirectory });
     return new ActionRelayWebBridge({ relayUrl: metadata.relay_url!, token: async () => await managed.accessToken() });
   }
-  if (config.web_bridge?.mode === "actions_relay") {
+  if (config.web_bridge?.mode === "personal_actions" || config.web_bridge?.mode === "actions_relay") {
     if (!config.web_bridge.relay_url) throw new Error("WEB_RELAY_NOT_CONFIGURED: relay_url is required.");
     return new ActionRelayWebBridge({
       relayUrl: config.web_bridge.relay_url,

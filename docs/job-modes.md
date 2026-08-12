@@ -177,4 +177,4 @@ Neither mode automatically merges, marks a PR ready, enables auto-merge, force-p
 
 ## Hosted-service boundary
 
-Local product flow, protocol, reference relay, managed client, GPT instructions and fail-closed metadata are repository-owned and testable. A stable managed relay/OAuth deployment, hosted Web configuration and real provider/hosted-Web end-to-end acceptance remain external runtime gates; synthetic CI is not proof of those external systems.
+Local product flow, profile-neutral relay protocol, personal reference adapter, managed client, GPT instructions and fail-closed metadata are repository-owned and testable. Provider-authorized personal relay/GPT configuration or a managed relay/OAuth deployment, plus real hosted-Web acceptance, remain external runtime gates; synthetic CI is not proof of those external systems.

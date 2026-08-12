@@ -33,6 +33,7 @@ import type { WebBridge } from "../web-bridge/web-bridge.js";
 import { listLocalTaskHistory } from "../web-bridge/session-history.js";
 import { ManagedWebOnboardingClient } from "../web-bridge/managed-onboarding.js";
 import { resolveManagedWebService } from "../web-bridge/managed-service.js";
+import { writeTrustedConfigAtomic } from "../setup/config-writer.js";
 import { formatAutopilotOutcome, formatAutopilotStatus } from "./autopilot-presenter.js";
 import { withFinalReviewNotification } from "./autopilot-web-bridge.js";
 import { pairSessionCanComplete } from "./pair-completion.js";
@@ -87,14 +88,14 @@ function configSummary(config: TrustedConfig, repositoryId: string, reviewer: Re
   return [
     `Repository    ${repositoryId}`,
     `Web bridge    ${config.web_bridge?.mode ?? "manual_file"}`,
-    `ChatGPT Web   ${config.web_bridge?.mode === "managed_actions" ? "managed" : config.web_bridge?.mode === "actions_relay" ? "advanced self-hosted" : "not connected"}`,
+    `ChatGPT Web   ${config.web_bridge?.mode === "managed_actions" ? "managed OAuth" : config.web_bridge?.mode === "personal_actions" || config.web_bridge?.mode === "actions_relay" ? "personal Bearer" : "offline/manual"}`,
     `AUTOPILOT review ${reviewerLabel(reviewer)}`,
     "Final review  original ChatGPT Web · required",
     "",
     "Change AUTOPILOT reviewer with `/mode <sol|terra> <minimal|low|medium|high|xhigh>`.",
     "PAIR does not use the selected model reviewer.",
-    "Reconnect managed Web with `/config web` or `/web connect`.",
-    "Advanced self-hosting is available only through `/web connect --self-hosted`.",
+    "Set up the default personal profile with `wco web setup --personal`.",
+    "Managed OAuth remains available through `/web connect`; legacy bearer config through `/web connect --self-hosted`.",
   ].join("\n");
 }
 
@@ -150,8 +151,11 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
   };
   const ensureWebConnected = async (): Promise<boolean> => {
     if (await connectionWorks()) return true;
-    const answer = (await io.question(config.web_bridge?.mode === "managed_actions" ? "Connect ChatGPT Web? [Y/n] " : "Use the managed WCO Web service? [Y/n] ")).trim();
+    if (config.web_bridge?.mode === "manual_file") return false;
+    const personal = config.web_bridge?.mode === "personal_actions" || config.web_bridge?.mode === "actions_relay";
+    const answer = (await io.question(personal ? "Personal Web transport is not connected. Open setup instructions? [Y/n] " : "Connect managed ChatGPT Web? [Y/n] ")).trim();
     if (answer && !/^y(es)?$/i.test(answer)) return false;
+    if (personal) { io.write("Run `wco web setup --personal` after authorizing or deploying a RelayProtocol-compatible HTTPS endpoint.\n"); return false; }
     const code = await runWebCommand(["connect"], webIo);
     if (code !== 0) return false;
     await reloadBridge();
@@ -260,12 +264,19 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     catch { return "AUTOPILOT · NEEDS_YOU"; }
   };
 
-  if (firstRun && config.web_bridge?.mode === "managed_actions") {
-    if (await managedServiceAvailable()) {
-      const answer = (await io.question("Connect ChatGPT Web? [Y/n] ")).trim();
-      if (!answer || /^y(es)?$/i.test(answer)) { const code = await runWebCommand(["connect"], webIo); await reloadBridge(); if (code !== 0) io.write("ChatGPT Web is not connected yet. You can continue locally and retry `/web connect`.\n"); }
-      else io.write("ChatGPT Web is not connected. The TUI remains available; use `/web connect` later.\n");
-    } else io.write("! WCO Relay             managed service deployment required\nChatGPT Web onboarding is unavailable until the maintainer deploys the stable service.\n");
+  if (firstRun) {
+    const choice = (await io.question("Web transport [Personal/Managed/Manual] (Personal): ")).trim().toLowerCase();
+    const selected = !choice || choice === "p" || choice === "personal" ? "personal_actions" : choice === "m" || choice === "managed" ? "managed_actions" : choice === "manual" || choice === "file" || choice === "offline" ? "manual_file" : null;
+    if (!selected) io.write("Unknown transport choice; keeping recommended personal_actions.\n");
+    else if (selected !== config.web_bridge?.mode) {
+      await writeTrustedConfigAtomic(paths.config, { ...config, web_bridge: { mode: selected, poll_interval_ms: config.web_bridge?.poll_interval_ms ?? 1_000, job_ttl_seconds: config.web_bridge?.job_ttl_seconds ?? 86_400 } }, { overwrite: true });
+      await reloadBridge();
+    }
+    if ((selected ?? "personal_actions") === "personal_actions") io.write("Personal is recommended. Run `wco web setup --personal` after authorizing a compatible free relay provider; no OAuth or managed account is required.\n");
+    else if ((selected ?? "personal_actions") === "managed_actions") {
+      if (await managedServiceAvailable()) { const answer = (await io.question("Connect managed ChatGPT Web? [Y/n] ")).trim(); if (!answer || /^y(es)?$/i.test(answer)) { await runWebCommand(["connect"], webIo); await reloadBridge(); } else io.write("Managed ChatGPT Web is not connected. The TUI remains available; use `/web connect` later.\n"); }
+      else io.write("! Managed WCO Relay deployment required. Personal and manual profiles remain independent.\n");
+    } else io.write("Manual/offline Web transport selected. No relay or Internet connection is required.\n");
   } else if (!await connectionWorks() && config.web_bridge?.mode === "managed_actions" && await managedServiceAvailable()) {
     const answer = (await io.question("WCO connection expired or was revoked. Reconnect ChatGPT Web? [Y/n] ")).trim();
     if (!answer || /^y(es)?$/i.test(answer)) { await runWebCommand(["connect"], webIo); await reloadBridge(); }

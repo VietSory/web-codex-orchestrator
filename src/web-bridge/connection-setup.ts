@@ -8,7 +8,8 @@ import { ManagedWebOnboardingClient } from "./managed-onboarding.js";
 import type { ManagedWebServiceMetadata } from "./managed-service.js";
 import { removeManagedDeviceCredential } from "./managed-credential.js";
 
-function requireGptUrl(value: string): string {
+function requireGptUrl(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
   const parsed = new URL(value);
   if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.hash || value !== value.trim()) {
     throw new Error("WEB_GPT_URL_UNSAFE: GPT URL must be a clean HTTPS URL.");
@@ -20,8 +21,9 @@ export async function configureWebBridgeConnection(options: {
   configPath: string;
   credentialsDirectory: string;
   relayUrl: string;
-  gptUrl: string;
+  gptUrl?: string;
   token: string;
+  mode?: "personal_actions" | "actions_relay";
   env?: NodeJS.ProcessEnv;
 }): Promise<{ config: TrustedConfig; status: BridgeConnectionStatus; backup_path: string | null }> {
   const current = await loadTrustedConfig(options.configPath);
@@ -33,9 +35,9 @@ export async function configureWebBridgeConnection(options: {
   const next: TrustedConfig = {
     ...current,
     web_bridge: {
-      mode: "actions_relay",
+      mode: options.mode ?? "actions_relay",
       relay_url: options.relayUrl,
-      gpt_url: gptUrl,
+      ...(gptUrl ? { gpt_url: gptUrl } : {}),
       poll_interval_ms: current.web_bridge?.poll_interval_ms ?? 1_000,
       job_ttl_seconds: current.web_bridge?.job_ttl_seconds ?? 86_400,
     },

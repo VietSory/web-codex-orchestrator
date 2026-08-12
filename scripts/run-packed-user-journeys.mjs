@@ -304,13 +304,14 @@ exit 0
   await check("SETUP-001/TUI-001/MANAGED-001/JOURNEY-01", "first installed no-arg run completes setup, managed authorization, and enters the TUI", async () => {
     const result = await wcoTty(nodeRepo, [
       { waitFor: /Set up WCO for the current Git repository\? \[Y\/n\] /, send: "\n" },
-      { waitFor: /Connect ChatGPT Web\? \[Y\/n\] /, send: "\n" },
+      { waitFor: /Web transport \[Personal\/Managed\/Manual\] \(Personal\): /, send: "managed\n" },
+      { waitFor: /Connect managed ChatGPT Web\? \[Y\/n\] /, send: "\n" },
       { waitFor: /Status\s+READY[\s\S]*\n> /, send: "/quit\n" },
     ]);
     assert.equal(result.code, 0, result.stdout + result.stderr);
-    assert.equal(result.completedSteps, 3);
+    assert.equal(result.completedSteps, 4);
     assert.match(result.stdout, /Welcome to WCO/);
-    assert.match(result.stdout, /WCO Relay\s+available/);
+    assert.match(result.stdout, /WCO Relay\s+connected/);
     assert.match(result.stdout, /ChatGPT Web\s+linked/);
     assert.match(result.stdout, /Status\s+READY/);
     assert.equal(await exists(path.join(wcoHome, "config.json")), true);
@@ -334,12 +335,28 @@ exit 0
     const declineHome = path.join(workspace, "decline-home"), declineWco = path.join(declineHome, "wco"), declineRepo = await createRepository("fixture-decline");
     const result = await wcoTty(declineRepo, [
       { waitFor: /Set up WCO for the current Git repository\? \[Y\/n\] /, send: "\n" },
-      { waitFor: /Connect ChatGPT Web\? \[Y\/n\] /, send: "n\n" },
+      { waitFor: /Web transport \[Personal\/Managed\/Manual\] \(Personal\): /, send: "managed\n" },
+      { waitFor: /Connect managed ChatGPT Web\? \[Y\/n\] /, send: "n\n" },
       { waitFor: /Status\s+READY[\s\S]*\n> /, send: "/quit\n" },
     ], { home: declineHome, wcoHome: declineWco });
-    assert.equal(result.code, 0, result.stdout + result.stderr); assert.equal(result.completedSteps, 3);
+    assert.equal(result.code, 0, result.stdout + result.stderr); assert.equal(result.completedSteps, 4);
     assert.match(result.stdout, /not connected.*TUI remains available/i);
     assert.equal(await exists(path.join(declineWco, "credentials", "managed-device.json")), false);
+  });
+
+  await check("PERSONAL-001/JOURNEY-PERSONAL", "fresh installed first run recommends personal without managed or OAuth prerequisites", async () => {
+    const personalHome = path.join(workspace, "personal-home"), personalWco = path.join(personalHome, "wco"), personalRepo = await createRepository("fixture-personal");
+    const result = await wcoTty(personalRepo, [
+      { waitFor: /Set up WCO for the current Git repository\? \[Y\/n\] /, send: "\n" },
+      { waitFor: /Web transport \[Personal\/Managed\/Manual\] \(Personal\): /, send: "\n" },
+      { waitFor: /Status\s+READY[\s\S]*\n> /, send: "/quit\n" },
+    ], { home: personalHome, wcoHome: personalWco });
+    assert.equal(result.code, 0, result.stdout + result.stderr); assert.equal(result.completedSteps, 3);
+    assert.match(result.stdout, /Personal is recommended/);
+    const saved = JSON.parse(await readFile(path.join(personalWco, "config.json"), "utf8"));
+    assert.equal(saved.web_bridge.mode, "personal_actions");
+    assert.equal(await exists(path.join(personalWco, "credentials", "managed-device.json")), false);
+    assert.doesNotMatch(result.stdout, /OAuth Client|Client Secret|device registration/i);
   });
 
   await check("SETUP-002/014/015", "setup is idempotent and safely registers another repository", async () => {
@@ -536,8 +553,8 @@ exit 1
     assert.match(result.stdout, /config:/);
     assert.match(result.stdout, /wco-relay-service: PASS/);
     assert.match(result.stdout, /wco-device-account: PASS/);
-    assert.match(result.stdout, /chatgpt-web: linked/);
-    assert.match(result.stdout, /senior-architect-gpt: configured/);
+    assert.match(result.stdout, /chatgpt-web: managed OAuth linked/);
+    assert.match(result.stdout, /senior-architect-gpt: managed GPT configured/);
     assert.doesNotMatch(result.stderr, /Missing '--config'|Missing '--state-dir'/);
   });
 

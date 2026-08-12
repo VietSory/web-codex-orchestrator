@@ -48,17 +48,9 @@ The native Codex integration can create provider-backed turns. Keep the failed i
 
 If `test:native:codex` fails, preserve the ordinary test output and the printed `WCO_FAILED_INTEGRATION_ROOT=` / `WCO_FAILED_INTEGRATION_STATE=` paths. Do not share tokens, cookies, credential files, `~/.codex`, or browser-profile data.
 
-## Optional Web bridge diagnostics
+## Supported Web transport diagnostics
 
-If `codex-chatgpt-web` is installed as part of the local Web transport environment, these checks are useful but are not WCO lifecycle authority:
-
-```bash
-codex-chatgpt-web doctor
-codex-chatgpt-web service status
-codex-chatgpt-web browser check
-```
-
-Never share files from `~/.codex-chatgpt-web/browser`.
+Use `wco web status` and the transport-aware `wco doctor`. WCO does not support controlled-browser automation, DOM/output extraction, cookies/session scraping or undocumented ChatGPT endpoints. Diagnostic data must never include relay secrets, provider credentials, browser profiles or session state.
 
 ## Native context A/B benchmark
 

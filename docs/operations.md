@@ -20,13 +20,13 @@ First-run setup detects the canonical Git root, the deterministic remote (`origi
 
 ### First connection and task
 
-First run checks the stable managed WCO Relay and asks `Connect ChatGPT Web? [Y/n]`. On yes, WCO creates an expiring, replay-protected device registration, opens the fixed WCO Senior Architect authorization, and stores only the resulting scoped device credential in protected WCO-owned credential storage. The managed service and ChatGPT Action bind the local device and the GPT session to the same account.
+First run asks for Personal, Managed or Manual transport; Personal is recommended. Personal uses one Custom GPT Action, a Bearer-authenticated bounded mailbox and outbound local polling. It requires no OAuth, managed account/device, custom domain or inbound workstation port. Managed retains the expiring replay-protected device/OAuth path for organizations. Manual remains offline.
 
-Normal users do not configure a Custom GPT, import OpenAPI, enter relay/GPT URLs, paste tokens, run a tunnel, or edit WCO JSON. Invalid metadata, authentication failures, malformed responses and offline services leave repository files and workflow authority unchanged.
+Personal users perform one explicit GPT-editor import after `wco web setup --personal`; WCO generates the exact files and never logs the secret. Users never edit WCO JSON or paste secrets into chat/task text. Invalid metadata, authentication failures, malformed responses and offline services leave repository files and workflow authority unchanged.
 
 WCO creates the authoring job and opens the GPT. The hosted UI may require one click to start the pending WCO task. Repository inspection is bounded to exact Git objects at the sealed base; `.git/**`, `.env` and sensitive paths are denied. Search/read receipts become part of local authority validation.
 
-The Web actor seals a testable contract and implementation submission. WCO materializes them locally into canonical internal artifacts, validates them, prepares an isolated worktree, applies exact preimages, runs allowed commands in the pinned network-disabled sandbox, and obtains Terra then Sol review on the same digest.
+The Web actor seals a testable contract and implementation submission. WCO materializes them locally into canonical internal artifacts, validates them, prepares an isolated worktree, applies exact preimages, and runs allowed commands in the pinned network-disabled sandbox. PAIR uses an independent Web-B review and no model reviewer. AUTOPILOT uses exactly one frozen Sol/Terra review by default, including any bounded repair in that same response.
 
 Only the exact verified/reviewed result may be committed and normally pushed to the configured delivery branch. WCO creates or reuses one Draft PR. It does not force-push, push to a protected base, mark ready, merge, delete branches or deploy.
 
@@ -74,19 +74,20 @@ Inside the interactive shell:
 
 ```text
 /web status
+/web setup --personal
 /web connect
 /web open
 /web disconnect
 /config web
 ```
 
-`/web disconnect` requests remote device revocation and removes the local credential. Expiring access credentials refresh silently; a revoked device causes one reconnect prompt. Tokens must never be put in repository config, task text, logs, result bundles or screenshots.
+`/web setup --personal` is the recommended single-user flow. It generates an owner-only secret, verifies a RelayProtocol-compatible HTTPS mailbox, and materializes the API-key GPT Action files. Provider login and saving the Custom GPT remain one-time human actions. `/web disconnect` removes the selected local credential; managed mode also requests remote device revocation. Tokens must never be put in repository config, task text, logs, result bundles or screenshots.
 
-The legacy relay is an explicit advanced path only: `/web connect --self-hosted`. Only that command may ask for relay URL, GPT URL, or relay authentication details.
+`/web connect` selects managed OAuth/device onboarding. `/web connect --self-hosted` preserves legacy `actions_relay` configuration. `manual_file` needs neither network path. `web/managed-service.json` is managed-only metadata and does not gate either other profile.
 
 ## Doctor
 
-Run `/doctor` interactively or `wco doctor` from the repository. The command automatically discovers WCO-owned config/state defaults. It checks Node, Git, trusted config/state, the pinned bundled Codex runtime, Codex authentication, the network-disabled Codex sandbox, publication credentials, managed relay availability, device/account linkage, ChatGPT Web linkage, and Senior Architect GPT configuration.
+Run `/doctor` interactively or `wco doctor` from the repository. It probes only the selected profile and orchestration mode. Personal checks the Bearer relay but not OAuth/device/account. Managed checks those managed capabilities. Manual stays offline. PAIR does not require Codex or Sol/Terra; AUTOPILOT checks only its frozen adaptive reviewer runtime. Every mutation path still requires the network-disabled deterministic sandbox.
 
 A failed sandbox check is fatal for model-backed work. There is no unrestricted fallback.
 

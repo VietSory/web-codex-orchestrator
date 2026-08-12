@@ -11,6 +11,8 @@ import { createRelayServer } from "./relay/server.js";
 import { questionWithoutEcho } from "../shared/secret-prompt.js";
 import { resolveManagedWebService } from "./managed-service.js";
 import { readManagedDeviceCredential } from "./managed-credential.js";
+import { generatePersonalRelaySecret, materializePersonalActionAssets } from "./personal-setup.js";
+import { readRelayToken, relayCredentialPath, writeRelayToken } from "./relay-credential.js";
 
 export interface WebCommandIo {
   write(value: string): void;
@@ -102,6 +104,23 @@ async function promptSelfHostedConnection(io: WebCommandIo, config: TrustedConfi
   }
 }
 
+async function promptPersonalConnection(io: WebCommandIo, config: TrustedConfig): Promise<{ relayUrl: string; gptUrl?: string } | null> {
+  let owned: ReturnType<typeof readline.createInterface> | undefined;
+  const question = io.question ?? (process.stdin.isTTY && process.stdout.isTTY ? (() => {
+    owned = readline.createInterface({ input: process.stdin, output: process.stdout });
+    return async (prompt: string) => await owned!.question(prompt);
+  })() : undefined);
+  if (!question) { io.error("Personal Web setup is interactive. Run it in a TTY.\n"); return null; }
+  try {
+    const currentRelay = config.web_bridge?.mode === "personal_actions" || config.web_bridge?.mode === "actions_relay" ? config.web_bridge.relay_url : undefined;
+    const relayUrl = withDefault(await question(`Personal relay HTTPS URL${currentRelay ? ` [${currentRelay}]` : ""}: `), currentRelay);
+    if (!relayUrl) { io.error("WEB_PERSONAL_RELAY_REQUIRED: deploy the optional reference relay or provide another RelayProtocol-compatible HTTPS endpoint.\n"); return null; }
+    const currentGpt = config.web_bridge?.gpt_url;
+    const gptUrl = withDefault(await question(`Senior Architect GPT URL (optional until the one-time GPT setup is complete)${currentGpt ? ` [${currentGpt}]` : ""}: `), currentGpt) || undefined;
+    return { relayUrl, ...(gptUrl ? { gptUrl } : {}) };
+  } finally { owned?.close(); }
+}
+
 export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = defaultIo, openArchitect: (config: TrustedConfig) => Promise<boolean> = openConfiguredWebArchitect, openUrl: (url: string) => Promise<boolean> = openBrowser): Promise<number> {
   const operation = args[0] ?? "status";
   const io = suppliedIo;
@@ -121,13 +140,31 @@ export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = d
     });
   }
   const selfHosted = operation === "connect" && args[1] === "--self-hosted" && args.length === 2;
-  if (!["status", "open", "connect", "disconnect"].includes(operation) || args.length > (selfHosted ? 2 : 1)) {
-    io.error("Usage: wco web [status|open|connect [--self-hosted]|disconnect|relay]\n");
+  const personalSetup = operation === "setup" && args[1] === "--personal" && args.length === 2;
+  if (!["status", "open", "connect", "setup", "disconnect"].includes(operation) || operation === "setup" && !personalSetup || args.length > (selfHosted || personalSetup ? 2 : 1)) {
+    io.error("Usage: wco web [status|open|connect [--self-hosted]|setup --personal|disconnect|relay]\n");
     return 2;
   }
   const paths = resolveWcoPaths({});
   try {
     let config = await loadTrustedConfig(paths.config);
+    if (personalSetup) {
+      let token: string;
+      try { token = await readRelayToken(paths.credentials); }
+      catch { token = generatePersonalRelaySecret(); await writeRelayToken(paths.credentials, token); }
+      const values = await promptPersonalConnection(io, config);
+      if (!values) {
+        io.write(`Personal relay secret prepared in owner-only WCO storage: ${relayCredentialPath(paths.credentials)}\nOptional free adapter assets: ${new URL("../../web/personal-relay/", import.meta.url).pathname}\nAuthorize a provider, install the secret there without posting it to chat/logs, then rerun this command with its stable HTTPS endpoint.\n`);
+        return 1;
+      }
+      const connected = await configureWebBridgeConnection({ configPath: paths.config, credentialsDirectory: paths.credentials, relayUrl: values.relayUrl, ...(values.gptUrl ? { gptUrl: values.gptUrl } : {}), token, mode: "personal_actions" });
+      const assets = await materializePersonalActionAssets(`${paths.cache}/personal-actions`, values.relayUrl);
+      config = connected.config;
+      io.write(`Personal relay          connected\nAuthentication          API key / Bearer (stored only in WCO credentials)\nGPT Action schema       ${assets.openapi_path}\nGPT instructions        ${assets.instructions_path}\n`);
+      if (!values.gptUrl) io.write("One-time human step: create or edit the Senior Architect GPT, import the schema, choose API Key + Bearer authentication, paste the relay secret from WCO credential storage without exposing it to chat, then rerun setup with the GPT URL.\n");
+      else io.write("Personal Web transport READY. OAuth, managed account and device registration were not used.\n");
+      return values.gptUrl ? 0 : 1;
+    }
     if (operation === "connect") {
       if (selfHosted) {
         const values = await promptSelfHostedConnection(io, config);

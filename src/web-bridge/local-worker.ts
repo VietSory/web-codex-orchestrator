@@ -13,6 +13,7 @@ import { ExactRepositoryReadService } from "./repo-read-service.js";
 import { ReadCoverageStore } from "./read-coverage-store.js";
 import { materializeTaskBundle } from "./task-contract-materializer.js";
 import { materializeWebImplementationPack } from "./web-pack-materializer.js";
+import { ContentAddressedContextCache } from "./context-cache.js";
 
 export interface LocalWorkerSession {
   schema_version: "1.0";
@@ -135,7 +136,7 @@ export async function advanceLocalWorker(options: {
   const session = options.session;
   if (!session.job_id) throw new WebBridgeError("WEB_SESSION_INVALID", "Authoring job identity is missing.");
   const coverage = new ReadCoverageStore(path.join(options.stateDirectory, "bridge", "read-coverage"));
-  const reader = new ExactRepositoryReadService(options.repositoryPath, session.repository, coverage);
+  const reader = new ExactRepositoryReadService(options.repositoryPath, session.repository, coverage, {}, new ContentAddressedContextCache(path.join(options.stateDirectory, "cache", "web-context")));
 
   for (let count = 0; count < (options.maximumEvents ?? 32); count += 1) {
     const event = await options.bridge.waitForAuthoringEvent(session.job_id, session.last_event_sequence);

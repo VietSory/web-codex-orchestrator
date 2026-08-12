@@ -90,7 +90,7 @@ For PAIR:
 - Git;
 - Bubblewrap (`bwrap`) for deterministic network-disabled verification;
 - GitHub authentication for Draft PR delivery;
-- a browser for one-time managed ChatGPT Web authorization.
+- a Custom GPT Action and personal Bearer relay (default), or the managed OAuth profile, or offline manual files.
 
 AUTOPILOT additionally requires the pinned Codex runtime/authentication for the selected Sol/Terra code-review pass.
 
@@ -117,7 +117,13 @@ cd /path/to/project
 wco
 ```
 
-On first run WCO detects the repository and base, writes WCO-owned state/configuration, checks local prerequisites, offers the managed Web connection, and enters the interactive shell.
+On first run WCO detects the repository and base, writes WCO-owned state/configuration, and offers **Personal** (recommended), Managed, or Manual transport. Personal setup is:
+
+```bash
+wco web setup --personal
+```
+
+It keeps the local machine outbound-only, stores its generated relay secret outside the repository with owner-only permissions, verifies the selected relay, and materializes the exact GPT Action schema/instructions. OAuth, a managed account/device, a custom domain and paid infrastructure are not personal-mode requirements. Provider login and saving the Custom GPT are one-time human steps.
 
 Then enter a normal-language goal:
 
@@ -271,7 +277,7 @@ Normal CI uses deterministic fakes/synthetic relay actors and does not prove a d
 
 ## Hosted-service deployment boundary
 
-The repository contains the managed client, OAuth/device-flow contracts, reference relay behavior, GPT instructions/schema, and fail-closed managed metadata. A real stable relay/OAuth deployment, configured hosted Web experience, and real provider/hosted end-to-end acceptance remain external deployment gates and must be validated separately before claiming that hosted path is live.
+The repository contains profile-neutral relay contracts, the personal API-key Action setup/reference adapter, the managed OAuth/device client, GPT assets, and fail-closed metadata. A real provider-authorized personal relay plus human-configured GPT—or a real managed relay/OAuth deployment—and hosted end-to-end acceptance remain external gates; synthetic CI is never proof that either hosted path is live.
 
 ## Uninstall
 

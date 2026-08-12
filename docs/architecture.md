@@ -26,6 +26,28 @@ human merge authority
 
 The browser, ChatGPT/Codex transcripts, model thread history, terminal output, and derived caches are transport or diagnostic surfaces. They never become lifecycle authority.
 
+## Web transport profiles
+
+```text
+ChatGPT Web / Senior Architect
+             |
+          GPT Action
+             |
+   +---------+----------+
+   |                    |
+personal_actions   managed_actions       manual_file
+Bearer / 1 owner   OAuth / accounts      offline files
+   |                    |
+small mailbox      managed relay
+   +---------+----------+
+             ^
+      outbound WCO local -> Harness -> verifier -> PAIR/AUTOPILOT
+```
+
+Transport selection cannot grant mutation, verification, publication or merge authority. The relay stores only bounded authenticated events with TTL and idempotency identity; it has no repository, Git, shell or lifecycle capability. `actions_relay` is a preserved alias/profile spelling for existing personal bearer configuration.
+
+Repository context is progressive: compact map, ranked paths, exact regions/files on demand, then result/diff deltas. Base commit, tree/blob SHA, Result digest, generation and contract digest identify immutable context. A disposable content-addressed cache suppresses repeated bytes, but canonical Git objects and durable receipts are always re-attested where context becomes authority. PAIR transmits no model-review turn; AUTOPILOT retains exactly one adaptive reviewer call by default; Harness model tokens remain zero.
+
 ## Authority model
 
 From highest to lower authority:

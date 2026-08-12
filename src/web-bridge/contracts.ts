@@ -88,7 +88,7 @@ export type RepositoryCommand =
   | { operation: "summary" }
   | { operation: "tree"; prefix?: string; maximum_paths?: number }
   | { operation: "search"; query: string; maximum_matches?: number }
-  | { operation: "read"; paths: string[] };
+  | { operation: "read"; paths?: string[]; regions?: Array<{ path: string; start_byte: number; end_byte_exclusive: number }>; known_content_sha256?: Record<string, string> };
 
 export interface RepositoryCommandResult { request_id: string; result: unknown; }
 export interface FinalReviewRequest { run_id: string; result_bundle_sha256: string; published_commit_sha: string; pull_request_url: string; review_round: number; }
@@ -105,6 +105,23 @@ function identifier(value: unknown, label: string): string { const result = text
 function sha(value: unknown, label: string): string { const result = text(value, label, 64); if (!SHA.test(result)) throw new WebBridgeError("WEB_BRIDGE_SCHEMA_INVALID", `${label} must be lowercase SHA-256.`); return result; }
 function nullableSha(value: unknown, label: string): string | null { return value === null ? null : sha(value, label); }
 function bool(value: unknown, label: string): boolean { if (typeof value !== "boolean") throw new WebBridgeError("WEB_BRIDGE_SCHEMA_INVALID", `${label} must be boolean.`); return value; }
+function boundedInteger(value: unknown, label: string, minimum: number, maximum: number): number { if (!Number.isSafeInteger(value) || (value as number) < minimum || (value as number) > maximum) throw new WebBridgeError("WEB_BRIDGE_SCHEMA_INVALID", `${label} must be a bounded integer.`); return value as number; }
+
+export function parseRepositoryCommand(input: unknown): RepositoryCommand {
+  const r = record(input, "repository command");
+  if (r.operation === "summary") { closed(r, ["operation"], "repository command"); return { operation: "summary" }; }
+  if (r.operation === "tree") { closed(r, ["operation", "prefix", "maximum_paths"], "repository command"); return { operation: "tree", ...(r.prefix === undefined ? {} : { prefix: text(r.prefix, "repository command.prefix", 4096) }), ...(r.maximum_paths === undefined ? {} : { maximum_paths: boundedInteger(r.maximum_paths, "repository command.maximum_paths", 1, 5_000) }) }; }
+  if (r.operation === "search") { closed(r, ["operation", "query", "maximum_matches"], "repository command"); return { operation: "search", query: text(r.query, "repository command.query", 256), ...(r.maximum_matches === undefined ? {} : { maximum_matches: boundedInteger(r.maximum_matches, "repository command.maximum_matches", 1, 500) }) }; }
+  if (r.operation !== "read") throw new WebBridgeError("WEB_BRIDGE_SCHEMA_INVALID", "Repository command operation is invalid.");
+  closed(r, ["operation", "paths", "regions", "known_content_sha256"], "repository command");
+  if ((r.paths === undefined) === (r.regions === undefined)) throw new WebBridgeError("WEB_BRIDGE_SCHEMA_INVALID", "Repository read must contain exactly one of paths or regions.");
+  const known: Record<string, string> = {};
+  if (r.known_content_sha256 !== undefined) { const values = record(r.known_content_sha256, "known_content_sha256"); if (Object.keys(values).length > 32) throw new WebBridgeError("WEB_BRIDGE_SCHEMA_INVALID", "known_content_sha256 is too large."); for (const [key, value] of Object.entries(values)) known[text(key, "known_content_sha256 key", 4096)] = sha(value, `known_content_sha256.${key}`); }
+  if (r.paths !== undefined) return { operation: "read", paths: strings(r.paths, "repository command.paths", 32), ...(Object.keys(known).length ? { known_content_sha256: known } : {}) };
+  if (!Array.isArray(r.regions) || r.regions.length < 1 || r.regions.length > 32) throw new WebBridgeError("WEB_BRIDGE_SCHEMA_INVALID", "repository command.regions must be a non-empty bounded array.");
+  const regions = r.regions.map((item, index) => { const value = exactKeys(item, ["path", "start_byte", "end_byte_exclusive"], `regions[${index}]`); return { path: text(value.path, `regions[${index}].path`, 4096), start_byte: boundedInteger(value.start_byte, `regions[${index}].start_byte`, 0, 1_048_575), end_byte_exclusive: boundedInteger(value.end_byte_exclusive, `regions[${index}].end_byte_exclusive`, 1, 1_048_576) }; });
+  return { operation: "read", regions, ...(Object.keys(known).length ? { known_content_sha256: known } : {}) };
+}
 
 function repository(value: unknown): RepositoryBinding {
   const r = exactKeys(value, ["repository_id", "base_branch", "base_commit"], "repository");

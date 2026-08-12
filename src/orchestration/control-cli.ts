@@ -22,6 +22,7 @@ import { resolveWcoPaths } from "../setup/default-paths.js";
 import { resolveManagedWebService } from "../web-bridge/managed-service.js";
 import { ManagedWebOnboardingClient } from "../web-bridge/managed-onboarding.js";
 import { createConfiguredWebBridge } from "../web-bridge/bridge-factory.js";
+import { readRelayToken } from "../web-bridge/relay-credential.js";
 
 export interface ControlCliIo { stdout(value: string): void; stderr(value: string): void; }
 
@@ -167,6 +168,12 @@ export function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
     return { service, connection };
   }));
   const webFailure = (label: string, error: unknown) => ({ severity: "WARN" as const, summary: `${label} FAIL - ${error instanceof Error ? error.message : String(error)}` });
+  const webMode = lazyPromise(() => loadConfig().then((config) => config.web_bridge?.mode ?? "manual_file"));
+  const loadPersonalConnection = lazyPromise(() => loadConfig().then(async (config) => {
+    if (config.web_bridge?.mode !== "personal_actions" && config.web_bridge?.mode !== "actions_relay") throw new Error("personal Web mode is not configured");
+    await readRelayToken(webPaths.credentials);
+    return await createConfiguredWebBridge(config, webPaths.bridge).getConnectionStatus();
+  }));
 
   const probes: DoctorProbe[] = [
     { id: "node", async run() { return { severity: Number(process.versions.node.split(".")[0]) >= 22 ? "OK" as const : "FAIL" as const, summary: `Node ${process.versions.node}` }; } },
@@ -189,10 +196,29 @@ export function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
       return { severity: "OK" as const, summary: result.stdout.trim() };
     } },
     { id: "verification-sandbox", async run() { await new BubblewrapVerificationSandbox().checkAvailability(); return { severity: "OK" as const, summary: "Bubblewrap verification sandbox available with isolated filesystem/network namespaces" }; } },
-    { id: "wco-relay-service", async run() { try { await loadManagedService(); return { severity: "OK" as const, summary: "PASS - managed service reachable and compatible" }; } catch (error) { return webFailure("WCO Relay service", error); } } },
-    { id: "wco-device-account", async run() { try { const { client } = await loadManagedService(); await client.accessToken(); return { severity: "OK" as const, summary: "PASS - scoped device/account credential valid" }; } catch (error) { return webFailure("WCO device/account", error); } } },
-    { id: "chatgpt-web", async run() { try { const value = await loadWebConnection(); return value.service.chatgpt_oauth_configured && value.connection.connected ? { severity: "OK" as const, summary: "linked" } : { severity: "WARN" as const, summary: "not-linked" }; } catch { return { severity: "WARN" as const, summary: "not-linked" }; } } },
-    { id: "senior-architect-gpt", async run() { try { const value = await loadManagedService(); return value.service.senior_architect_gpt_configured ? { severity: "OK" as const, summary: "configured" } : { severity: "WARN" as const, summary: "not configured" }; } catch { return { severity: "WARN" as const, summary: "not configured" }; } } },
+    { id: "wco-relay-service", async run() {
+      const mode = await webMode();
+      if (mode === "manual_file") return { severity: "OK" as const, summary: "offline manual_file profile; no relay probe required" };
+      if (mode === "personal_actions" || mode === "actions_relay") { try { const status = await loadPersonalConnection(); return status.connected ? { severity: "OK" as const, summary: "PASS - personal bearer relay reachable" } : { severity: "WARN" as const, summary: "personal relay offline" }; } catch (error) { return webFailure("Personal WCO Relay", error); } }
+      try { await loadManagedService(); return { severity: "OK" as const, summary: "PASS - managed service reachable and compatible" }; } catch (error) { return webFailure("Managed WCO Relay service", error); }
+    } },
+    { id: "wco-device-account", async run() {
+      const mode = await webMode();
+      if (mode !== "managed_actions") return { severity: "OK" as const, summary: `${mode} profile has no managed device/account requirement` };
+      try { const { client } = await loadManagedService(); await client.accessToken(); return { severity: "OK" as const, summary: "PASS - scoped device/account credential valid" }; } catch (error) { return webFailure("WCO device/account", error); }
+    } },
+    { id: "chatgpt-web", async run() {
+      const mode = await webMode();
+      if (mode === "manual_file") return { severity: "OK" as const, summary: "offline manual_file profile" };
+      if (mode === "personal_actions" || mode === "actions_relay") { try { return (await loadPersonalConnection()).connected ? { severity: "OK" as const, summary: "personal Action relay linked" } : { severity: "WARN" as const, summary: "personal Action relay not linked" }; } catch { return { severity: "WARN" as const, summary: "personal Action relay not linked" }; } }
+      try { const value = await loadWebConnection(); return value.service.chatgpt_oauth_configured && value.connection.connected ? { severity: "OK" as const, summary: "managed OAuth linked" } : { severity: "WARN" as const, summary: "managed OAuth not linked" }; } catch { return { severity: "WARN" as const, summary: "managed OAuth not linked" }; }
+    } },
+    { id: "senior-architect-gpt", async run() {
+      const config = await loadConfig(), mode = config.web_bridge?.mode ?? "manual_file";
+      if (mode === "manual_file") return { severity: "OK" as const, summary: "not required for offline manual_file profile" };
+      if (mode === "personal_actions" || mode === "actions_relay") return config.web_bridge?.gpt_url ? { severity: "OK" as const, summary: "personal GPT metadata configured" } : { severity: "WARN" as const, summary: "personal GPT one-time editor setup not yet recorded" };
+      try { const value = await loadManagedService(); return value.service.senior_architect_gpt_configured ? { severity: "OK" as const, summary: "managed GPT configured" } : { severity: "WARN" as const, summary: "managed GPT not configured" }; } catch { return { severity: "WARN" as const, summary: "managed GPT not configured" }; }
+    } },
   ];
 
   if (args.doctorMode === "AUTOPILOT") {
