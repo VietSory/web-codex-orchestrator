@@ -2,128 +2,33 @@
 
 [![CI](https://github.com/VietSory/web-codex-orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/VietSory/web-codex-orchestrator/actions/workflows/ci.yml)
 
-**Let ChatGPT Web author bounded changes, let WCO own every mutation, verify the exact result, and keep merge/release human-owned.**
+**Give ChatGPT Web a goal, let WCO own every exact mutation and verification step, and come back to a reviewed Draft PR. Only you ship it.**
 
-Web Codex Orchestrator (WCO) is a durable local CLI for medium and large AI-assisted coding jobs. It separates **authority** from **execution**:
+Web Codex Orchestrator (WCO) is a local-first control plane for AI-assisted software engineering. ChatGPT Web supplies bounded semantic author/review decisions; WCO owns exact repository state, filesystem/Git mutation, deterministic verification, durable recovery, evidence and Draft-PR lifecycle.
 
-- ChatGPT Web can inspect the exact repository/base and author bounded implementation or repair operations.
-- The WCO Harness validates preimages, paths and postimages, applies the exact operations, and owns every filesystem mutation.
-- Deterministic verification runs in an isolated network-disabled sandbox.
-- AUTOPILOT may use exactly one frozen Sol/Terra code-review pass; PAIR does not require Codex at all.
-- The original ChatGPT Web session performs the mandatory final intent review of the exact published Draft PR head.
-- WCO never merges, marks ready, enables auto-merge, force-pushes, deploys or releases on the normal flow.
+## Normal user experience
 
-## Two product modes
-
-### PAIR — zero Codex requirement
-
-PAIR is the default for a plain goal or `/new <goal>`.
-
-```text
-user goal
-→ original ChatGPT Web (Web-A) inspects exact repository/base
-→ Web-A seals architecture + bounded implementation operations
-→ WCO Harness validates/applies exact operations
-→ deterministic verification (Bubblewrap, network disabled)
-→ independent Web code review (Web-B)
-   ├─ APPROVE
-   ├─ REVISE + bounded repair operations → Harness apply/re-verify → Web-B again
-   └─ consequential/policy boundary → NEEDS YOU
-→ exact fast-forward publication
-→ same open Draft PR + exact Result Bundle
-→ original Web-A mandatory final intent review
-   ├─ APPROVE
-   ├─ REVISE + bounded repair operations → Harness apply/re-verify
-   │                                  → same Draft PR/new Result Bundle → Web-A again
-   └─ ESCALATE → NEEDS YOU
-→ READY FOR YOU
-→ human reviews/merges
-```
-
-PAIR never creates a Codex model client, never requires Codex authentication, and never invents a Terra/Sol approval. Web reviewers may propose bounded file operations; only the Harness mutates the worktree.
-
-### AUTOPILOT — one adaptive model review pass by default
-
-Start explicitly with:
-
-```text
-/auto Fix the authentication race condition and add regression tests.
-```
-
-```text
-user /auto goal
-→ original Web-A inspects exact repository/base
-→ Web-A seals architecture + bounded implementation operations
-→ WCO Harness validates/applies exact operations
-→ deterministic verification
-→ exactly one frozen Sol/Terra review pass (default Sol/high)
-   ├─ APPROVE
-   ├─ REVISE + bounded repair operations in the same pass
-   │        → Harness apply/re-verify
-   └─ consequential/policy boundary → NEEDS YOU
-→ exact fast-forward publication
-→ open Draft PR + exact Result Bundle
-→ original Web-A mandatory final intent review
-   ├─ APPROVE
-   ├─ REVISE + bounded Web repair → Harness apply/re-verify
-   │                            → same Draft PR/new Result Bundle → Web-A again
-   │                            → no second Sol/Terra call
-   └─ ESCALATE → NEEDS YOU
-→ READY FOR YOU
-→ human reviews/merges
-```
-
-The selected reviewer is frozen per run. The normal pipeline is **not** `Terra → Sol → Web`, and a final Web-A revision does **not** restart the model reviewer. This keeps latency and token usage bounded while preserving an independent final intent check.
-
-## Why Harness-first
-
-WCO treats model/Web output as proposed authority, never as direct mutation permission. Bounded operations are limited to `create_file`, `replace_file`, and `delete_file` with exact preimage/postimage bindings. The Harness applies them through the same transaction, rollback, path/symlink and change-set controls regardless of who proposed them.
-
-This design deliberately parallelizes independent reads/research/attestations while serializing mutation and authority transitions. More agents are not automatically faster: WCO prefers one useful reviewer call with bounded repair output over review → repair → re-review chatter when one pass can safely express the correction.
-
-## Requirements
-
-For PAIR:
-
-- Linux or WSL;
-- Node.js 22 or newer and npm;
-- Git;
-- Bubblewrap (`bwrap`) for deterministic network-disabled verification;
-- GitHub authentication for Draft PR delivery;
-- a Custom GPT Action and personal Bearer relay (default), or the managed OAuth profile, or offline manual files.
-
-AUTOPILOT additionally requires the pinned Codex runtime/authentication for the selected Sol/Terra code-review pass.
-
-Use `/doctor` on an active task. It is mode-aware: PAIR does not fail merely because Codex runtime/auth is unavailable; AUTOPILOT checks the reviewer prerequisites it actually uses.
-
-## Install the Latest release
-
-The public release is resolved from GitHub **Latest**. The package is distributed as a checksummed GitHub release tarball and remains private on npm.
+After a human maintainer publishes a release to npm, installation is:
 
 ```bash
-release_tag="$(gh release view --repo VietSory/web-codex-orchestrator --json tagName --jq '.tagName')"
-release_version="${release_tag#v}"
-release_asset="web-codex-orchestrator-${release_version}.tgz"
-gh release download "$release_tag" --repo VietSory/web-codex-orchestrator --pattern "${release_asset}*"
-sha256sum -c "${release_asset}.sha256"
-npm install --global "./${release_asset}"
-test "$(wco --version)" = "$release_version"
+npm install -g web-codex-orchestrator
 ```
 
-## Daily use
+Then, for any registered Git repository:
 
 ```bash
 cd /path/to/project
 wco
 ```
 
-On first run WCO detects the repository and base, writes WCO-owned state/configuration, and offers **Personal** (recommended), Managed, or Manual transport. Personal setup is:
+On the first run only, WCO offers to open the **official OpenAI/ChatGPT configuration pages** needed to authorize the Web-native connection. Complete that one-time OpenAI/ChatGPT setup, return to WCO, and you are done.
+
+Daily use is simply:
 
 ```bash
-wco web setup --personal
+cd /path/to/project
+wco
 ```
-
-It keeps the local machine outbound-only, stores its generated relay secret outside the repository with owner-only permissions, verifies the selected relay, and materializes the exact GPT Action schema/instructions. OAuth, a managed account/device, a custom domain and paid infrastructure are not personal-mode requirements. Provider login and saving the Custom GPT are one-time human steps.
 
 Then enter a normal-language goal:
 
@@ -131,17 +36,100 @@ Then enter a normal-language goal:
 Add rate limiting to POST /login, preserve existing login behavior, and add regression tests.
 ```
 
-That starts PAIR. Use `/auto <goal>` when you want the optional single Sol/Terra review pass.
-
-### Reviewer policy for AUTOPILOT
-
-Default:
+Or explicitly choose AUTOPILOT:
 
 ```text
-Sol · high
+/auto Fix the authentication race condition and add regression tests.
 ```
 
-Inspect or change the preference for **new AUTOPILOT tasks**:
+The normal user does **not** configure Cloudflare, ngrok, a VPS, a custom domain, DNS, AWS, a user-hosted OAuth server, a public localhost endpoint, relay secrets, manual ZIPs or run IDs.
+
+## Web-native architecture
+
+The default transport is `web_native_mcp`:
+
+```text
+WCO local
+  |
+  | local durable semantic state
+  v
+WCO MCP adapter
+  ^
+  | official openai/tunnel-client
+  | outbound HTTPS only
+  |
+OpenAI Secure MCP Tunnel
+  |
+private WCO MCP app in ChatGPT
+  |
+private WCO Workspace Agent
+  ^
+  | official Workspace Agent trigger API
+  |
+WCO local
+```
+
+The trusted workstation is not exposed to public inbound traffic. WCO downloads only its pinned official `openai/tunnel-client` release, verifies the archive digest, starts/stops it itself, and keeps tunnel/Workspace-Agent credentials in owner-protected WCO storage outside repositories.
+
+The WCO MCP surface is deliberately narrow. It can retrieve the pending task, inspect exact bounded Git-base context, and submit three kinds of semantic authority: task contract, bounded implementation proposal and review verdict. These semantic submit tools **cannot** edit repository files, execute shell/Git, verify code, publish, merge, deploy or release. The Harness remains the sole mutation authority.
+
+### OpenAI capability boundary
+
+The official OpenAI capabilities required by Web-native WCO are not available on every ChatGPT plan/workspace. If Secure MCP Tunnel, the required full MCP tools, or Workspace Agent API access is unavailable, WCO stops with `OPENAI_CAPABILITY_BLOCKED` (or a more specific Web-native diagnostic).
+
+WCO does **not** silently fall back to Cloudflare, browser automation, public hosting or undocumented ChatGPT APIs. Optional compatibility transports still exist for advanced users, but they are never required by the normal install path.
+
+## PAIR
+
+PAIR is the default for a plain goal or `/new <goal>`:
+
+```text
+user goal
+→ original ChatGPT Web (Web-A) inspects exact sealed repository/base
+→ Web-A submits bounded implementation authority
+→ WCO Harness validates/applies exact operations
+→ deterministic network-disabled verification
+→ independent Web code review (Web-B)
+   ├─ APPROVE
+   ├─ REVISE + bounded repair → Harness apply/re-verify → Web-B again
+   └─ consequential boundary → NEEDS YOU
+→ exact fast-forward publication
+→ same open Draft PR + exact Result Bundle
+→ original Web-A final intent review
+   ├─ APPROVE
+   ├─ REVISE + bounded repair → Harness apply/re-verify → same Draft PR → Web-A again
+   └─ ESCALATE → NEEDS YOU
+→ READY FOR YOU
+→ human reviews/merges
+```
+
+PAIR creates **zero Codex/model-review calls**. It does not require Codex runtime/authentication. Harness model tokens remain zero.
+
+## AUTOPILOT
+
+AUTOPILOT starts only with `/auto <goal>`:
+
+```text
+user goal
+→ original Web-A bounded implementation authority
+→ Harness apply
+→ deterministic verification
+→ exactly ONE frozen Sol/Terra review pass by default
+   ├─ APPROVE
+   ├─ REVISE + complete bounded repair in that same model response
+   │        → Harness apply/re-verify
+   └─ consequential boundary → NEEDS YOU
+→ same Draft PR + exact Result Bundle
+→ original Web-A final intent review
+   ├─ APPROVE
+   ├─ REVISE + Web repair → Harness apply/re-verify → Web-A again
+   │                         (no second Sol/Terra call)
+   └─ ESCALATE → NEEDS YOU
+→ READY FOR YOU
+→ human reviews/merges
+```
+
+The default reviewer is `Sol · high`. Change the preference for **new** AUTOPILOT tasks with:
 
 ```text
 /mode
@@ -150,115 +138,106 @@ Inspect or change the preference for **new AUTOPILOT tasks**:
 /mode terra xhigh
 ```
 
-Supported reasoning efforts are `minimal`, `low`, `medium`, `high`, and `xhigh`. `/mode` does not affect PAIR and never disables the mandatory original-Web final review.
+PAIR ignores this preference. AUTOPILOT currently requires the pinned Codex runtime/authentication only for its selected Sol/Terra reviewer pass.
 
-## No manual ZIP workflow on the normal path
+## First-run and daily commands
 
-Normal PAIR/AUTOPILOT users do not create a Task Bundle, move a ZIP, copy a run ID, set a state directory, or invoke an internal Node entry point. WCO materializes and binds those artifacts internally for deterministic authority/recovery.
-
-The Web bridge can request bounded repository summary/tree/search/read operations against the exact locked base. Repository text is treated as data, not instructions. After Web seals implementation authority, WCO validates it locally before the Harness can mutate anything.
-
-## Review identities
-
-WCO intentionally separates review responsibilities:
-
-- **Web-A author/final reviewer:** the original ChatGPT Web task/session; owns architecture/intent and the final exact-head intent decision.
-- **Web-B code reviewer (PAIR):** an independent Web review identity; checks correctness/security/regression/performance and may return bounded repair operations.
-- **Sol/Terra code reviewer (AUTOPILOT):** exactly one frozen model reviewer on the normal path; may approve, escalate, or return bounded repair operations in its single adaptive pass.
-
-A cached approval is never enough. `READY_FOR_YOU` is re-attested against the live exact Draft PR head.
-
-## Discoverable commands
-
-At the WCO prompt, enter `/` or `/help`:
+Normal commands:
 
 ```text
-/new <goal>             start a different PAIR task
+/new <goal>             start a new PAIR task
 /auto <goal>            start an AUTOPILOT task
 /mode                    show AUTOPILOT reviewer preference
-/mode <model> <effort>   choose Sol/Terra + effort for new AUTOPILOT tasks
+/mode <model> <effort>   set reviewer preference for new AUTOPILOT tasks
 /status                  show current progress
 /task                    show current goal/contract state
 /run                     continue the active workflow
-/web status              diagnose Web connection
-/web connect             connect the managed Senior Architect
-/web open                open the configured Web experience
-/web disconnect          revoke/remove local device credential
-/review                   show verification/review/result/Draft PR evidence
+/web status              show Web-native connection state
+/web connect             one-time official OpenAI/ChatGPT Web-native setup
+/web open                open official ChatGPT connector/developer settings
+/web disconnect          remove local Web-native credential
+/review                   show verification/review/result/Draft-PR evidence
 /pause                   stop before the next safe transition
 /resume                  clear an explicit pause
-/history                 show bounded repository task history
+/history                 show bounded local task history
 /config                  show user-facing settings
-/config web              reconnect managed Web
+/config web              configure/reconnect Web-native transport
 /doctor                  mode-aware prerequisite diagnostics
 /uninstall               remove WCO-owned local resources
 /unitsall                alias for /uninstall
 /quit                    exit safely
 ```
 
-Plain text before contract sealing is a clarification. After sealing, WCO refuses silent contract mutation and asks for a new task instead.
+WCO automatically resumes from durable local state after terminal/machine restart. Reopen the repository, run `wco`, inspect `/status`, then `/run` when needed. Ambiguous provider/model calls are not blindly replayed.
 
-## Deterministic verification and isolation
+## Requirements
 
-PAIR verification uses Bubblewrap with network disabled and a bounded writable workspace. WCO does not fall back to unrestricted host execution when the required isolation is unavailable.
+For PAIR:
 
-AUTOPILOT uses the same deterministic verification authority. The Sol/Terra reviewer is read/review authority; any repair it proposes is converted to bounded operations and applied by the Harness, then the exact new digest is re-verified before publication.
+- Linux or WSL;
+- Node.js 22+ and npm;
+- Git;
+- Bubblewrap (`bwrap`) for deterministic network-disabled verification;
+- GitHub authentication for Draft-PR delivery;
+- an OpenAI/ChatGPT workspace with the official Web-native capabilities required above.
 
-## Recovery and generations
+AUTOPILOT additionally requires authentication for WCO's pinned Codex reviewer runtime.
 
-WCO persists create-once/attested receipts around model calls and external side effects. If the terminal closes or the machine restarts, return to the repository and run:
+Use `/doctor` on an active task. It is transport- and mode-aware: PAIR never fails merely because Codex runtime/auth is unavailable, Web-native mode does not require a third-party relay or managed OAuth/device account, and AUTOPILOT checks only the reviewer prerequisites it actually uses.
 
-```bash
-wco
+## Security and authority boundary
+
+WCO treats Web/model/repository/tool content as untrusted input and preserves these invariants:
+
+- exact repository/base/tree/head and digest binding;
+- bounded exact repository reads with sensitive-path denial;
+- full exact read/preimage authority before replace/delete;
+- strict closed semantic/mutation schemas;
+- path traversal, symlink and TOCTOU protections;
+- deterministic verification in Bubblewrap with network disabled and no unrestricted fallback;
+- content-addressed disposable context cache that never creates authority;
+- durable idempotent receipts around model/provider/network side effects;
+- no blind replay after ambiguous provider calls;
+- strict fast-forward same-Draft-PR publication, never force push;
+- immutable prior result/review/publication generations;
+- mandatory original-Web final review of the exact result;
+- human-only merge, Mark Ready, release, tag, deployment and production publication boundaries.
+
+## Context and token efficiency
+
+WCO keeps repository context local and progressive:
+
+```text
+goal
+→ compact exact repository map/search
+→ ranked relevant paths/regions
+→ bounded exact reads on demand
+→ digest/cache references for unchanged content
+→ diff/result deltas
 ```
 
-Use `/status` and `/run` to continue. `/resume` is only needed after an explicit pause.
+It does not transmit the full repository or full historical transcript on every semantic turn. Harness and deterministic verification use zero model tokens.
 
-Important recovery rules:
+## Advanced compatibility transports
 
-- ambiguous model calls are not blindly replayed;
-- publication uses write-ahead/durable checkpoints and exact remote-head attestation;
-- repairs are digest-chained to the exact review/result generation they answer;
-- repaired publication is strict fast-forward on the same Draft PR, never force push;
-- older publish/Result/review generations remain immutable evidence;
-- a crash after push but before Result Bundle rotation is recovered by adopting exact durable publication authority, not by reconstructing trust from the current worktree;
-- final Web-A revision produces a new immutable revision Result Bundle and returns to Web-A without another Sol/Terra call.
+These profiles are retained for explicit advanced/compatibility use only:
 
-## Safety boundary
+- `personal_actions`: Custom GPT Action + Bearer + RelayProtocol endpoint;
+- `actions_relay`: legacy advanced self-hosted Bearer profile;
+- `managed_actions`: organization/hosted OAuth + account/device profile;
+- `manual_file`: offline/manual artifact compatibility.
 
-WCO preserves these invariants on normal interactive and automation paths:
+The optional Cloudflare Worker under `web/personal-relay/` is only a reference adapter for users who deliberately choose `personal_actions`; it is not the default, not an installation requirement and not a Web-native release gate.
 
-- exact repository/base-commit binding;
-- secure bounded archive/artifact intake;
-- allowed/forbidden path enforcement;
-- exact preimage/postimage verification;
-- symlink/TOCTOU-resistant state and worktree reads/writes;
-- network-disabled deterministic verification with no unrestricted fallback;
-- exact change-set/evidence binding;
-- bounded model turns/tokens and repair generations;
-- mandatory original-Web final review before `READY_FOR_YOU`;
-- exact remote URL/repository/base/head/Draft PR attestation;
-- no direct protected-branch push, force push, auto-merge, Mark Ready, remote branch deletion, deploy or release;
-- credential redaction and durable restart-safe receipts;
-- fail-closed recovery when authority or side-effect state cannot be proven.
+Browser DOM automation, ChatGPT cookie/session scraping, automatic UI-output extraction, undocumented ChatGPT endpoints and product/rate-limit bypass are not supported transports.
 
-Both PAIR and AUTOPILOT stop at the human merge boundary.
+## Packaging and release
 
-See [SECURITY.md](SECURITY.md), [Architecture](docs/architecture.md), [Job modes](docs/job-modes.md), [Operations](docs/operations.md), and [Protocols](docs/protocols.md) for lower-level contracts.
+The package is prepared for the public npm name `web-codex-orchestrator`, but **publishing remains a human release action**. Repository automation and WCO itself must never run `npm publish`, tag a release, merge this project, or deploy production resources without the maintainer's explicit release decision.
 
-## Advanced automation and compatibility
-
-The packed CLI retains Task Bundle, Web implementation-pack, verdict, run-ID and explicit state/config commands for deterministic automation and backward compatibility. They are not required for normal interactive use.
-
-Legacy Phase 4/Phase 8 execution surfaces remain compatibility code for older prepared runs. Normal Harness-first PAIR/AUTOPILOT flows do not use legacy model-owned mutation authority.
-
-Run `wco --help` before building low-level automation.
-
-## Development
+Before a human release, maintainers qualify the exact candidate with:
 
 ```bash
-git clone https://github.com/VietSory/web-codex-orchestrator.git
-cd web-codex-orchestrator
 npm ci
 npm run check
 npm run pack:check
@@ -266,30 +245,31 @@ npm run pack:smoke
 npm run test:user:packed
 ```
 
-Real native/provider gates are explicit and may consume provider usage:
+Optional environment-backed qualification:
 
 ```bash
 WCO_RUN_SANDBOX_INTEGRATION=1 npm run test:native:sandbox
 WCO_RUN_CODEX_INTEGRATION=1 npm run test:native:codex
 ```
 
-Normal CI uses deterministic fakes/synthetic relay actors and does not prove a deployed managed relay or live hosted ChatGPT/provider path.
-
-## Hosted-service deployment boundary
-
-The repository contains profile-neutral relay contracts, the personal API-key Action setup/reference adapter, the managed OAuth/device client, GPT assets, and fail-closed metadata. A real provider-authorized personal relay plus human-configured GPT—or a real managed relay/OAuth deployment—and hosted end-to-end acceptance remain external gates; synthetic CI is never proof that either hosted path is live.
-
-## Uninstall
-
-Inside WCO run `/uninstall` (or `/unitsall`) and confirm. From a shell:
+After the human publishes the release to npm, end users use only:
 
 ```bash
-wco uninstall --purge
-wco uninstall --purge --yes
+npm install -g web-codex-orchestrator
+cd /path/to/project
+wco
 ```
 
-WCO removes only its canonical owned home and clean, re-attested managed worktrees. It preserves source repositories, uncommitted work, Git history, remote branches, Draft PRs and deployments.
+## Architecture and operations
 
-## License
+See:
 
-Apache License 2.0. See [LICENSE](LICENSE).
+- [Architecture](docs/architecture.md)
+- [Web bridge](docs/web-bridge.md)
+- [ADR 0002 — official OpenAI Web-native default](docs/adr/0002-official-openai-web-native-default.md)
+- [Job modes](docs/job-modes.md)
+- [Operations](docs/operations.md)
+- [Protocols](docs/protocols.md)
+- [Security](SECURITY.md)
+
+Advanced Task Bundle/Web-pack commands remain for deterministic automation and backward compatibility; normal users do not move ZIPs, copy run IDs, or invoke internal phase commands.
