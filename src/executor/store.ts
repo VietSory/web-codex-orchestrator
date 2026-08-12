@@ -31,12 +31,26 @@ function validateRepairHistory(receipt: ExecutorReceipt): void {
   const history = receipt.repair_history;
   if (history === undefined) return;
   if (!Array.isArray(history) || history.length > MAX_REPAIR_GENERATIONS) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor repair history exceeds its bounded generation budget.");
-  if (history.length > 0 && receipt.review_strategy !== "web") throw new ExecutorError("EXECUTOR_STATE_INVALID", "Repair history is currently valid only for Web-review Harness generations.");
   const evidence = new Set<string>();
   for (let index = 0; index < history.length; index += 1) {
     const entry = history[index]!;
-    if (entry.generation !== index + 1 || entry.reviewer !== "web" || !SHA256.test(entry.source_change_set_digest) || !SHA256.test(entry.source_review_evidence_sha256) || !SHA256.test(entry.operations_sha256) || !SHA256.test(entry.final_change_set_digest) || !Number.isSafeInteger(entry.operation_count) || entry.operation_count < 1 || entry.operation_count > MAX_REPAIR_OPERATIONS || !Number.isFinite(Date.parse(entry.verified_at)) || evidence.has(entry.source_review_evidence_sha256)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor repair history contains invalid, duplicate, or out-of-order evidence.");
+    if (entry.generation !== index + 1 || !["web","terra","sol"].includes(entry.reviewer) || !SHA256.test(entry.source_change_set_digest) || !SHA256.test(entry.source_review_evidence_sha256) || !SHA256.test(entry.operations_sha256) || !SHA256.test(entry.final_change_set_digest) || !Number.isSafeInteger(entry.operation_count) || entry.operation_count < 1 || entry.operation_count > MAX_REPAIR_OPERATIONS || !Number.isFinite(Date.parse(entry.verified_at)) || evidence.has(entry.source_review_evidence_sha256)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor repair history contains invalid, duplicate, or out-of-order evidence.");
     if (index > 0 && history[index - 1]!.final_change_set_digest !== entry.source_change_set_digest) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor repair history digest chain is broken.");
+    if (receipt.review_strategy === "web") {
+      if (entry.reviewer !== "web") throw new ExecutorError("EXECUTOR_STATE_INVALID", "Web-review Harness history cannot contain model repair authority.");
+    } else if (receipt.review_strategy === "model") {
+      const selected = receipt.reviewer_selection;
+      const review = selectedReview(receipt);
+      if (!selected || !review) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Model-review Harness history is missing selected reviewer authority.");
+      if (index === 0 && entry.reviewer === selected.kind) {
+        if (review.verdict !== "REVISE" || review.change_set_digest !== entry.source_change_set_digest || review.evidence_sha256 !== entry.source_review_evidence_sha256) throw new ExecutorError("EXECUTOR_STATE_INVALID", "First model repair generation is not chained to the selected REVISE evidence.");
+      } else {
+        if (entry.reviewer !== "web") throw new ExecutorError("EXECUTOR_STATE_INVALID", "Only the selected reviewer may own the first model repair generation; later generations must be Web-owned.");
+        if (index === 0 && (review.verdict !== "APPROVE" || review.change_set_digest !== entry.source_change_set_digest)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "First Web repair generation is not chained to the selected APPROVE digest.");
+      }
+    } else if (history.length > 0) {
+      throw new ExecutorError("EXECUTOR_STATE_INVALID", "Repair history requires an explicit review strategy.");
+    }
     evidence.add(entry.source_review_evidence_sha256);
   }
   const latest = history.at(-1);
@@ -44,14 +58,25 @@ function validateRepairHistory(receipt: ExecutorReceipt): void {
   if (latest && !receipt.repair && receipt.change_set_digest !== latest.final_change_set_digest) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor current digest no longer matches the last completed repair generation.");
 }
 
+function webRepairBoundToAuthority(receipt: ExecutorReceipt): boolean {
+  const repair = receipt.repair;
+  if (!repair || repair.reviewer !== "web") return false;
+  if (receipt.review_strategy === "web") return receipt.reviewer_selection === undefined;
+  if (receipt.review_strategy !== "model" || !receipt.reviewer_selection) return false;
+  const previous = receipt.repair_history?.at(-1);
+  if (previous) return previous.final_change_set_digest === repair.source_change_set_digest;
+  const review = selectedReview(receipt);
+  return Boolean(review?.verdict === "APPROVE" && review.change_set_digest === repair.source_change_set_digest);
+}
+
 function validateRepair(receipt: ExecutorReceipt, originalPaths: Set<string>): void {
   validateRepairHistory(receipt);
   const repair = receipt.repair;
   if (!repair) { if (["REVIEWING_WEB", "REPAIR_APPLYING", "REPAIR_APPLIED"].includes(receipt.state)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Repair executor state has no durable repair authority."); return; }
   if (!SHA256.test(repair.source_change_set_digest) || !SHA256.test(repair.source_review_evidence_sha256) || !["PROPOSED","APPLYING","APPLIED","VERIFIED"].includes(repair.state) || !validDigest(repair.final_change_set_digest)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor repair identity/state is invalid.");
-  if (repair.reviewer === "web") { if (receipt.review_strategy !== "web" || receipt.reviewer_selection !== undefined) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Web repair is not bound to Web-review Harness authority."); }
+  if (repair.reviewer === "web") { if (!webRepairBoundToAuthority(receipt)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Web repair is not bound to the frozen Harness authority chain."); }
   else {
-    if (receipt.review_strategy !== "model" || !receipt.reviewer_selection || repair.reviewer !== receipt.reviewer_selection.kind) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Model repair is not bound to selected reviewer authority.");
+    if (receipt.review_strategy !== "model" || !receipt.reviewer_selection || repair.reviewer !== receipt.reviewer_selection.kind || (receipt.repair_history?.length ?? 0) !== 0) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Model repair is not bound as the first selected-reviewer repair generation.");
     const review = selectedReview(receipt);
     if (!review || review.verdict !== "REVISE" || review.change_set_digest !== repair.source_change_set_digest || review.evidence_sha256 !== repair.source_review_evidence_sha256) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor repair is not chained to the selected REVISE evidence.");
   }
@@ -89,10 +114,21 @@ function validateRepair(receipt: ExecutorReceipt, originalPaths: Set<string>): v
   if (repair.state === "VERIFIED" && (repair.final_change_set_digest === null || receipt.change_set_digest !== repair.final_change_set_digest || !receipt.verification.passed || receipt.verification.change_set_digest !== repair.final_change_set_digest)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Verified repair is not chained to deterministic verification of the final digest.");
 }
 
-function reviewReady(receipt: ExecutorReceipt, digest: string, kind: "terra" | "sol"): boolean {
+function selectedModelAuthorityCoversDigest(receipt: ExecutorReceipt, digest: string, kind: "terra" | "sol"): boolean {
   const review = kind === "terra" ? receipt.terra_review : receipt.sol_review;
   if (review.verdict === "APPROVE" && review.change_set_digest === digest) return true;
-  return Boolean(receipt.repair?.state === "VERIFIED" && receipt.repair.reviewer === kind && receipt.repair.final_change_set_digest === digest && review.verdict === "REVISE" && review.change_set_digest === receipt.repair.source_change_set_digest && review.evidence_sha256 === receipt.repair.source_review_evidence_sha256);
+  if (receipt.repair?.state === "VERIFIED" && receipt.repair.reviewer === kind && receipt.repair.final_change_set_digest === digest && review.verdict === "REVISE" && review.change_set_digest === receipt.repair.source_change_set_digest && review.evidence_sha256 === receipt.repair.source_review_evidence_sha256) return true;
+  if (receipt.repair?.state === "VERIFIED" && receipt.repair.reviewer === "web" && receipt.repair.final_change_set_digest === digest) {
+    const history = receipt.repair_history ?? [];
+    const previous = history.at(-1);
+    if (previous) return previous.final_change_set_digest === receipt.repair.source_change_set_digest;
+    return review.verdict === "APPROVE" && review.change_set_digest === receipt.repair.source_change_set_digest;
+  }
+  const history = receipt.repair_history;
+  if (!history?.length || history.at(-1)!.final_change_set_digest !== digest) return false;
+  const first = history[0]!;
+  if (first.reviewer === kind) return review.verdict === "REVISE" && review.change_set_digest === first.source_change_set_digest && review.evidence_sha256 === first.source_review_evidence_sha256;
+  return first.reviewer === "web" && review.verdict === "APPROVE" && review.change_set_digest === first.source_change_set_digest;
 }
 
 function validateGateConsistency(receipt: ExecutorReceipt): void {
@@ -104,12 +140,11 @@ function validateGateConsistency(receipt: ExecutorReceipt): void {
     if (receipt.reviewer_selection !== undefined || receipt.terra_review.rounds !== 0 || receipt.sol_review.rounds !== 0 || receipt.terra_review.verdict !== null || receipt.sol_review.verdict !== null || receipt.terra_review.change_set_digest !== null || receipt.sol_review.change_set_digest !== null || receipt.terra_review.evidence_sha256 !== null || receipt.sol_review.evidence_sha256 !== null || receipt.repair !== undefined && receipt.repair.reviewer !== "web") throw new ExecutorError("EXECUTOR_STATE_INVALID", "Web-review Harness receipt contains model-review authority.");
   }
   if (receipt.review_strategy === "model" && receipt.reviewer_selection === undefined) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Model-review Harness receipt is missing its frozen reviewer selection.");
-  if (receipt.terra_review.verdict === "APPROVE" && (!receipt.verification.passed || digest === null || receipt.verification.change_set_digest !== digest || receipt.terra_review.change_set_digest !== digest)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Terra approval is not chained to an approved verification of the exact current digest.");
-  if (receipt.sol_review.verdict === "APPROVE") {
+  if (receipt.terra_review.verdict === "APPROVE" && receipt.reviewer_selection?.kind !== "terra" && (!receipt.verification.passed || digest === null || receipt.verification.change_set_digest !== digest || receipt.terra_review.change_set_digest !== digest)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Terra approval is not chained to an approved verification of the exact current digest.");
+  if (receipt.sol_review.verdict === "APPROVE" && receipt.reviewer_selection?.kind !== "sol") {
     const baseValid = receipt.verification.passed && digest !== null && receipt.verification.change_set_digest === digest && receipt.sol_review.change_set_digest === digest;
     if (!baseValid) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Sol approval is not chained to approved verification of the exact current digest.");
     if (!receipt.reviewer_selection && (receipt.terra_review.verdict !== "APPROVE" || receipt.terra_review.change_set_digest !== digest)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Legacy Sol approval is not chained to Terra approval of the exact current digest.");
-    if (receipt.reviewer_selection?.kind === "terra") throw new ExecutorError("EXECUTOR_STATE_INVALID", "A Terra-selected executor cannot persist Sol approval authority.");
   }
   if (receipt.reviewer_selection?.kind === "sol" && receipt.terra_review.verdict !== null) throw new ExecutorError("EXECUTOR_STATE_INVALID", "A Sol-selected executor cannot persist an additional Terra review verdict.");
   if (receipt.reviewer_selection?.kind === "terra" && receipt.sol_review.verdict !== null) throw new ExecutorError("EXECUTOR_STATE_INVALID", "A Terra-selected executor cannot persist an additional Sol review verdict.");
@@ -119,8 +154,8 @@ function validateGateConsistency(receipt: ExecutorReceipt): void {
       if (receipt.repair && (receipt.repair.reviewer !== "web" || receipt.repair.state !== "VERIFIED" || receipt.repair.final_change_set_digest !== digest)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "READY_FOR_PUBLISH has an unverified or stale Web repair.");
       return;
     }
-    if (receipt.reviewer_selection?.kind === "terra") { if (!reviewReady(receipt, digest, "terra")) throw new ExecutorError("EXECUTOR_STATE_INVALID", "READY_FOR_PUBLISH lacks selected Terra approval or a verified Terra adaptive repair chain."); }
-    else if (receipt.reviewer_selection?.kind === "sol") { if (!reviewReady(receipt, digest, "sol")) throw new ExecutorError("EXECUTOR_STATE_INVALID", "READY_FOR_PUBLISH lacks selected Sol approval or a verified Sol adaptive repair chain."); }
+    if (receipt.reviewer_selection?.kind === "terra") { if (!selectedModelAuthorityCoversDigest(receipt, digest, "terra")) throw new ExecutorError("EXECUTOR_STATE_INVALID", "READY_FOR_PUBLISH lacks selected Terra approval or a valid downstream Harness repair chain."); }
+    else if (receipt.reviewer_selection?.kind === "sol") { if (!selectedModelAuthorityCoversDigest(receipt, digest, "sol")) throw new ExecutorError("EXECUTOR_STATE_INVALID", "READY_FOR_PUBLISH lacks selected Sol approval or a valid downstream Harness repair chain."); }
     else if (receipt.terra_review.verdict !== "APPROVE" || receipt.sol_review.verdict !== "APPROVE" || receipt.terra_review.change_set_digest !== digest || receipt.sol_review.change_set_digest !== digest) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Legacy READY_FOR_PUBLISH lacks a complete exact-digest verification/Terra/Sol approval chain.");
   }
 }
