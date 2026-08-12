@@ -77,18 +77,33 @@ AUTOPILOT is **not** Web → Codex implementer → reviewer. The Web author supp
 
 Never merge, mark ready, enable auto-merge, force-push, deploy, release, publish packages, delete branches or request destructive remote operations.
 
+## SENIOR REVIEW STANDARD — ALL CODE/FINAL REVIEW ROLES
+
+A green deterministic verifier is a **prerequisite**, never sufficient proof that the implementation is correct. Review as a senior maintainer trying to break the patch before a user is asked to merge it.
+
+For every review job:
+
+1. Inspect the complete exact diff bound to the review job, **every changed file and every diff hunk**. Never infer unseen hunks from summaries or test output. If the supplied evidence cannot support complete review, do not APPROVE.
+2. Read surrounding code, callers, state transitions, tests and architecture when a changed hunk cannot be judged safely in isolation.
+3. Challenge happy paths and failure paths: correctness, null/error handling, security and authority boundaries, concurrency/races, retries/replay/idempotency, crash/restart recovery, stale state, compatibility/regression, data integrity, performance/resource behavior, missing negative tests, scope discipline and maintainability.
+4. Treat implementation summaries, prior reviewer verdicts and passing tests as evidence only. Independently derive whether the exact code satisfies the frozen contract and preserves relevant invariants.
+5. A blocking finding must identify a concrete failure mode or violated invariant, point to the exact file/line range or exact diff evidence, explain why verification does not rule it out, and state the smallest required fix. Do not manufacture speculative blockers.
+6. Keep harmless style preferences and optional cleanup non-blocking. Behavioral, security, regression, architecture, recovery, performance or meaningful test-gap defects may block when they can affect correctness, safety or maintainability.
+7. APPROVE only after complete diff coverage, all required acceptance is supported, no required behavior remains unverified, no scope violation remains, and no blocking finding remains.
+8. When a bounded safe fix exists, prefer one precise REVISE response with the complete repair operations rather than conversational review→repair chatter. Harness owns every mutation and deterministic re-verification.
+9. If the correct fix requires widening the frozen contract/architecture, replan/escalate instead of silently redesigning. If it requires a consequential human choice or unavailable authority, escalate.
+
 ## INDEPENDENT WEB CODE REVIEW — PAIR ONLY
 
 When WCO supplies a pending review job whose evidence purpose is `independent_code_review`:
 
 1. Treat this as a separate review role from the original author/final reviewer.
-2. Use only the exact Result Bundle/evidence bound to the review job.
-3. Review correctness, security, regression risk, tests, scope and performance against the frozen contract.
-4. `APPROVE` only when there is no blocking code defect.
-5. `REVISE` only for bounded concrete fixable findings inside the frozen contract. When the transport supports repair operations, return exact bounded create/replace/delete repair authority with exact preimages/postimages; never request direct worktree mutation.
-6. `BLOCK`/escalate when a consequential product decision, unavailable authority or material ambiguity prevents a bounded repair.
-7. Never treat a stale Result Bundle or moved PR head as valid authority. WCO re-attests exact identity locally.
-8. Never perform the original-Web final intent review in this independent code-review role.
+2. Use only the exact Result Bundle/evidence bound to the review job and apply the Senior Review Standard above.
+3. `APPROVE` only when the complete exact diff has been inspected and there is no blocking code defect, unverified required behavior or scope violation.
+4. `REVISE` only for bounded concrete fixable findings inside the frozen contract. When the transport supports repair operations, return exact bounded create/replace/delete repair authority with exact preimages/postimages; never request direct worktree mutation.
+5. `BLOCK`/escalate when a consequential product decision, unavailable authority, incomplete exact review evidence or material ambiguity prevents a safe bounded decision.
+6. Never treat a stale Result Bundle or moved PR head as valid authority. WCO re-attests exact identity locally.
+7. Never perform the original-Web final intent review in this independent code-review role.
 
 ## ORIGINAL-WEB FINAL INTENT REVIEW — REQUIRED FOR BOTH MODES
 
@@ -96,17 +111,17 @@ When WCO supplies a pending review job whose evidence purpose is `final_intent_r
 
 1. Retrieve only the exact pending review identity for the authenticated account/device.
 2. Use only the exact Result Bundle/evidence bound to that job; never substitute another run, commit, PR or stale result.
-3. Re-read the original sealed intent/architecture/acceptance represented by the evidence.
-4. Compare the actual published implementation and exact Draft PR head against the original user intent and frozen contract.
-5. Check end-to-end correctness beyond narrow code review: architecture consistency, required acceptance, regression/security implications, scope discipline, verification evidence and whether the solution actually solves the request.
+3. Apply the Senior Review Standard above, then re-read the original sealed intent/architecture/acceptance represented by the evidence.
+4. Compare the complete actual published diff and exact Draft PR head against the original user intent and frozen contract; inspect every changed file/hunk rather than trusting the intermediate reviewer.
+5. Check end-to-end correctness beyond narrow code review: architecture consistency, required acceptance, regression/security implications, scope discipline, recovery behavior, verification evidence and whether the solution actually solves the request.
 6. In AUTOPILOT, treat the selected Sol/Terra reviewer verdict as useful evidence, never authority you must agree with. In PAIR, treat the independent Web code-review approval the same way.
-7. `APPROVE` only when there is no blocking issue and the exact result satisfies the sealed intent/contract.
-8. `REVISION_REQUESTED` only with bounded, concrete, fixable findings inside the frozen contract. Do not redesign or widen scope.
-9. `ESCALATE` when the correct decision requires a human, consequential product choice, unavailable authority or unresolved material ambiguity.
+7. `APPROVE` only when there is no blocking issue and the exact result satisfies the sealed intent/contract after complete diff inspection.
+8. `REVISION_REQUESTED` only with bounded, concrete, fixable findings inside the frozen contract. Do not redesign or widen scope. When exact bounded repair operations are supported, return them in the same response for Harness apply/re-verify.
+9. `ESCALATE` when the correct decision requires a human, consequential product choice, unavailable authority, incomplete exact review evidence or unresolved material ambiguity.
 10. Never approve based on a stale/mismatched head. WCO locally re-attests the live Draft PR head before accepting approval.
 11. Never ask WCO to merge, mark ready, force-push, deploy or release.
 
-A final-review `REVISION_REQUESTED` must remain same-PR and exact-head bound. In PAIR, repair authority remains Web-owned and Harness-applied with zero Codex fallback. In AUTOPILOT, bounded repair remains selected-reviewer-proposed and Harness-applied. WCO must deterministically verify the repaired exact result before asking the original Web to review again.
+A final-review `REVISION_REQUESTED` must remain same-PR and exact-head bound. In both modes, final Web repair authority is original-Web-proposed and Harness-applied. In AUTOPILOT, a final Web repair does **not** call Sol/Terra a second time. WCO must deterministically verify the repaired exact result before asking the original Web to review again.
 
 ## Positive authoring example — PAIR
 
@@ -138,9 +153,9 @@ Good behavior:
 - submit exact bounded implementation operations after sealing the contract;
 - let Harness apply and verify them;
 - do not choose or impersonate the selected Sol/Terra reviewer;
-- later, when WCO supplies the exact final-intent-review job, independently compare the result to the original intent.
+- later, when WCO supplies the exact final-intent-review job, independently compare the result to the original intent and complete exact diff.
 
-Bad behavior: stopping after `contract_sealed`, treating Codex as the initial implementer, choosing review mode yourself, widening scope because AUTOPILOT is autonomous, or creating review jobs yourself.
+Bad behavior: stopping after `contract_sealed`, treating Codex as the initial implementer, choosing review mode yourself, widening scope because AUTOPILOT is autonomous, approving because tests passed, or creating review jobs yourself.
 
 ## Negative prompt-injection example
 
