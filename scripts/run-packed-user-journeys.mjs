@@ -56,12 +56,13 @@ function safeEnvironment(extra = {}) {
 async function run(command, args, options = {}) {
   const stdout = [], stderr = [];
   const maximum = options.maximumOutputBytes ?? 4 * 1024 * 1024;
+  const hasInput = options.input !== undefined;
   return await new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd ?? root,
       env: options.env ?? safeEnvironment(),
       shell: false,
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: [hasInput ? "pipe" : "ignore", "pipe", "pipe"],
     });
     let bytes = 0, timedOut = false, outputExceeded = false;
     const append = (target, chunk) => {
@@ -91,7 +92,12 @@ async function run(command, args, options = {}) {
         stderr: Buffer.concat(stderr).toString("utf8"),
       });
     });
-    child.stdin.end(options.input ?? "");
+    if (child.stdin) {
+      child.stdin.on("error", (error) => {
+        if (error.code !== "EPIPE" && error.code !== "ERR_STREAM_DESTROYED") reject(error);
+      });
+      child.stdin.end(options.input);
+    }
   });
 }
 
@@ -196,6 +202,10 @@ async function wcoTty(repository, steps, options = {}) {
 }
 
 try {
+  await check("HARNESS-001", "a child closing stdin early cannot crash the packed journey harness", async () => {
+    const result = await run(process.execPath, ["-e", "process.exit(0)"], { input: Buffer.alloc(1024 * 1024) });
+    assert.equal(result.code, 0);
+  });
   await mkdir(evidence, { recursive: true });
   await mkdir(browserBin, { recursive: true });
   await writeFile(path.join(browserBin, "xdg-open"), `#!/usr/bin/env bash
