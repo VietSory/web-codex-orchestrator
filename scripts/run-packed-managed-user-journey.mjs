@@ -25,7 +25,7 @@ function requireSuccess(result, label) {
   assert.equal(result.code, 0, `${label} failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
 }
 
-const root = await mkdtemp(path.join(os.tmpdir(), "wco-managed-packed-"));
+const root = await mkdtemp(path.join(os.tmpdir(), "wco-local-native-packed-"));
 try {
   const packDir = path.join(root, "pack");
   const prefix = path.join(root, "prefix");
@@ -47,50 +47,41 @@ try {
   requireSuccess(await run("git", ["init", "-b", "main"], { cwd: repo }), "git init");
   requireSuccess(await run("git", ["config", "user.name", "WCO Packed Test"], { cwd: repo }), "git user.name");
   requireSuccess(await run("git", ["config", "user.email", "wco-packed@example.invalid"], { cwd: repo }), "git user.email");
-  await writeFile(path.join(repo, "README.md"), "# disposable WCO managed packed journey\n", "utf8");
+  await writeFile(path.join(repo, "README.md"), "# disposable WCO local-native packed journey\n", "utf8");
   requireSuccess(await run("git", ["add", "README.md"], { cwd: repo }), "git add");
   requireSuccess(await run("git", ["commit", "-m", "initial"], { cwd: repo }), "git commit");
-  requireSuccess(await run("git", ["remote", "add", "origin", "https://github.com/example/wco-managed-packed.git"], { cwd: repo }), "git remote");
+  requireSuccess(await run("git", ["remote", "add", "origin", "https://github.com/example/wco-local-native-packed.git"], { cwd: repo }), "git remote");
 
   const setup = await run(bin, ["setup", "--yes"], { cwd: repo, env });
   requireSuccess(setup, "wco setup --yes");
-  assert.match(setup.stdout, /WCO managed Web \(one-link authorization\)/i);
-  assert.match(setup.stdout, /one maintainer-operated HTTPS authorization link/i);
-  assert.match(setup.stdout, /do not enter relay URLs, tunnel IDs, API keys, Workspace Agent tokens/i);
+  assert.match(setup.stdout, /local OpenAI Secure MCP/i);
+  assert.match(setup.stdout, /WCO keeps repository state, mailbox, receipts, Harness and credentials local/i);
+  assert.match(setup.stdout, /does not require a WCO server, Cloudflare, ngrok, VPS, domain, DNS, or public localhost/i);
 
   const config = JSON.parse(await readFile(path.join(wcoHome, "config.json"), "utf8"));
-  assert.equal(config.web_bridge?.mode, "managed_actions");
+  assert.equal(config.web_bridge?.mode, "web_native_mcp");
   assert.equal(config.web_bridge?.relay_url, undefined);
   assert.equal(config.web_bridge?.gpt_url, undefined);
 
-  // Before the single authorization decision, status must require only the
-  // one-link managed connect flow. It must not expose any operator/provider
-  // provisioning controls to this end user.
+  // Before the one-time provider setup, WCO must fail closed toward the local
+  // native setup command. It must never redirect a fresh user to hosted WCO,
+  // Cloudflare, ngrok, a relay URL, or another public endpoint.
   const status = await run(bin, ["web", "status"], { cwd: repo, env });
   assert.equal(status.signal, null);
-  assert.equal(status.code, 1, `unlinked managed status must fail closed\n${status.stdout}\n${status.stderr}`);
+  assert.equal(status.code, 1, `unconfigured local-native status must fail closed\n${status.stdout}\n${status.stderr}`);
   const statusText = `${status.stdout}\n${status.stderr}`;
-  assert.match(statusText, /WEB_MANAGED_RECONNECT_REQUIRED|not linked/i);
+  assert.match(statusText, /WEB_NATIVE_SETUP_REQUIRED|not configured/i);
   assert.match(statusText, /Next: wco web connect/i);
-  assert.doesNotMatch(statusText, /Personal relay HTTPS URL|tunnel ID|runtime API key|Workspace Agent access token|Cloudflare|ngrok|VPS/i);
-
-  // This source candidate deliberately ships no real production managed URL.
-  // Trying to connect must therefore identify an OPERATOR/RELEASE deployment
-  // boundary, not ask the end user to provision anything themselves.
-  const connect = await run(bin, ["web", "connect"], { cwd: repo, env });
-  assert.equal(connect.signal, null);
-  assert.equal(connect.code, 1, `undeployed managed service must fail closed\n${connect.stdout}\n${connect.stderr}`);
-  const connectText = `${connect.stdout}\n${connect.stderr}`;
-  assert.match(connectText, /WEB_MANAGED_DEPLOYMENT_REQUIRED|managed WCO Web service|service owner/i);
-  assert.doesNotMatch(connectText, /Personal relay HTTPS URL|tunnel ID|runtime API key|Workspace Agent access token|Cloudflare|ngrok|VPS/i);
+  assert.doesNotMatch(statusText, /managed WCO Web service|Personal relay HTTPS URL|Cloudflare|ngrok|VPS|deploy.*relay/i);
 
   const contract = await readFile(path.join(prefix, "lib", "node_modules", "web-codex-orchestrator", "docs", "user-experience-contract.md"), "utf8");
-  assert.match(contract, /exactly one HTTPS authorization link/i);
+  assert.match(contract, /normal path is `web_native_mcp`/i);
+  assert.match(contract, /WCO-hosted services\s+= 0/i);
+  assert.match(contract, /third-party relay\/cloud setup\s+= 0/i);
   assert.match(contract, /per-task browser interactions\s+= 0/i);
-  assert.match(contract, /manual tunnel IDs\s+= 0/i);
-  assert.match(contract, /manual API keys\s+= 0/i);
+  assert.match(contract, /per-task tunnel\/key\/token inputs\s+= 0/i);
 
-  console.log("Packed managed one-link normal-user contract: 1/1 PASS, 0 skipped");
+  console.log("Packed local-native normal-user contract: 1/1 PASS, 0 skipped");
 } finally {
   await rm(root, { recursive: true, force: true });
 }
