@@ -11,13 +11,14 @@ import { resolveGitHubToken } from "../src/setup/credential-provider.js";
 import { RelayFileStore } from "../src/web-bridge/relay/file-store.js";
 import { purgeWcoHome } from "../src/uninstall/purge.js";
 
-test("v0.3 slash palette keeps normal Web setup official/OpenAI-only and /unitsall", () => {
+test("v0.3 slash palette keeps the normal path one-link managed and /unitsall", () => {
   const palette = commandPalette();
   assert.match(palette, /\/new\s+Start a new task/);
-  assert.match(palette, /\/web status\s+Show official Web-native connection/);
-  assert.match(palette, /\/web connect\s+One-time official OpenAI\/ChatGPT Web-native setup/);
-  assert.match(palette, /\/config web\s+Configure\/reconnect the default Web-native transport/);
-  assert.doesNotMatch(palette, /Cloudflare|ngrok|VPS|personal Actions|managed Senior Architect/i);
+  assert.match(palette, /\/web status\s+Show managed Web authorization/);
+  assert.match(palette, /\/web connect\s+One-time one-link WCO Web authorization/);
+  assert.match(palette, /\/config web\s+Authorize\/reconnect the default managed Web transport/);
+  assert.match(palette, /\/web open\s+Show Web automation status \(no per-task browser step\)/);
+  assert.doesNotMatch(palette, /Cloudflare|ngrok|VPS|tunnel ID|API key|Workspace Agent token/i);
   assert.match(palette, /\/unitsall\s+Alias for \/uninstall/);
   assert.equal(canonicalSlashCommand("/unitsall"), "/uninstall");
   assert.deepEqual(parseInteractiveInput("build it", { active: false, sealed: false }), { kind: "new", goal: "build it" });
