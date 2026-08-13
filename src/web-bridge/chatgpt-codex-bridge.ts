@@ -2,11 +2,13 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
 import type { TrustedConfig } from "../config/contracts.js";
+import { readPreparationForExecution } from "../execution/execution-store.js";
 import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
 import { parseChatGptCodexAuthority } from "./chatgpt-codex-authority.js";
+import { ChatGptCodexImplementationClient } from "./chatgpt-codex-implementation-client.js";
 import { chatGptCodexAuthorPrompt, chatGptCodexRepositoryResultPrompt, chatGptCodexReviewPrompt } from "./chatgpt-codex-prompts.js";
 import { ChatGptCodexSemanticClient } from "./chatgpt-codex-semantic-client.js";
-import { WebBridgeError, contentDigest, parseWebContractEnvelope, parseWebVerdictEnvelope, type AuthoringEvent, type BridgeConnectionStatus, type BridgeJobIdentity, type FinalReviewRequest, type RepositoryCommandResult, type WebContractEnvelope, type WebImplementationSubmission, type WebVerdictEnvelope } from "./contracts.js";
+import { WebBridgeError, contentDigest, parseWebContractEnvelope, parseWebImplementationSubmission, parseWebVerdictEnvelope, type AuthoringEvent, type BridgeConnectionStatus, type BridgeJobIdentity, type FinalReviewRequest, type RepositoryCommandResult, type WebContractEnvelope, type WebImplementationSubmission, type WebVerdictEnvelope } from "./contracts.js";
 import type { PreparedRunAwareWebBridge } from "./prepared-run-aware.js";
 import { RelayFileStore } from "./relay/file-store.js";
 import { toAuthoringEvent } from "./relay/protocol.js";
@@ -20,12 +22,19 @@ function threadId(events: Awaited<ReturnType<RelayFileStore["events"]>>): string
   return typeof value?.thread_id === "string" ? value.thread_id : undefined;
 }
 
+function preparedRunId(events: Awaited<ReturnType<RelayFileStore["events"]>>): string | null {
+  const event = events.slice().reverse().find((value) => value.type === "chatgpt_codex_prepared_run");
+  const value = event?.payload as { run_id?: unknown } | undefined;
+  return typeof value?.run_id === "string" ? value.run_id : null;
+}
+
 export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBridge {
   private readonly store: RelayFileStore;
   private readonly stateDirectory: string;
   private readonly scratchDirectory: string;
   private readonly authorityDirectory: string;
   private semantic: ChatGptCodexSemanticClient | null = null;
+  private implementation: ChatGptCodexImplementationClient | null = null;
 
   constructor(private readonly config: TrustedConfig, bridgeDirectory: string) {
     this.store = new RelayFileStore(path.join(bridgeDirectory, "chatgpt-codex"));
@@ -34,11 +43,21 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
     this.authorityDirectory = path.join(bridgeDirectory, "chatgpt-codex-runtime", "authority");
   }
 
+  private async rawAgent(): Promise<CodexSdkAgentClient> {
+    const runtime = await resolveCodexRuntime(this.config.runtime, this.stateDirectory);
+    return new CodexSdkAgentClient(runtime);
+  }
+
   private async client(): Promise<ChatGptCodexSemanticClient> {
     if (this.semantic) return this.semantic;
-    const runtime = await resolveCodexRuntime(this.config.runtime, this.stateDirectory);
-    this.semantic = new ChatGptCodexSemanticClient(new CodexSdkAgentClient(runtime));
+    this.semantic = new ChatGptCodexSemanticClient(await this.rawAgent());
     return this.semantic;
+  }
+
+  private async implementationClient(): Promise<ChatGptCodexImplementationClient> {
+    if (this.implementation) return this.implementation;
+    this.implementation = new ChatGptCodexImplementationClient(await this.rawAgent());
+    return this.implementation;
   }
 
   private async turn(prompt: string, existingThreadId?: string, signal?: AbortSignal): Promise<{ thread_id: string; output: unknown }> {
@@ -91,7 +110,30 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
     return event ? parseWebContractEnvelope((event.payload as { envelope?: unknown }).envelope ?? event.payload) : null;
   }
 
-  async receiveWebImplementation(_jobId: string): Promise<WebImplementationSubmission | null> { return null; }
+  async receiveWebImplementation(jobId: string): Promise<WebImplementationSubmission | null> {
+    const record = await this.store.get(jobId, OWNER);
+    if (record.kind !== "authoring") throw new WebBridgeError("WEB_JOB_KIND_INVALID", "Requested job is not an authoring job.");
+    const existing = record.events.slice().reverse().find((value) => value.type === "implementation_sealed");
+    if (existing) return parseWebImplementationSubmission((existing.payload as { submission?: unknown }).submission ?? existing.payload);
+    const runId = preparedRunId(record.events);
+    if (!runId) return null;
+    if (!record.events.some((event) => event.type === "contract_sealed")) throw new WebBridgeError("WEB_CHATGPT_CODEX_PHASE_INVALID", "Implementation proposal requires a sealed semantic contract.");
+    const reservation = record.events.slice().reverse().find((event) => event.type === "chatgpt_codex_implementation_reserved");
+    if (reservation) throw new WebBridgeError("WEB_CHATGPT_CODEX_AMBIGUOUS_IMPLEMENTATION", "A prior implementation provider turn may have started without a durable result; WCO refuses to replay an ambiguous mutation proposal.");
+    await this.store.append(jobId, OWNER, "chatgpt_codex_implementation_reserved", { run_id: runId }, `implementation-reserve-${contentDigest({ jobId, runId })}`);
+    const preparation = await readPreparationForExecution(this.stateDirectory, runId);
+    const profile = this.config.agents?.implementer;
+    if (!profile) throw new WebBridgeError("WEB_CHATGPT_CODEX_CONFIG_INVALID", "Harness implementer profile is missing.");
+    const submission = await (await this.implementationClient()).propose({
+      profile,
+      jobId,
+      runId,
+      workspacePath: preparation.receipt.worktree_path,
+      acceptedBundlePath: preparation.receipt.accepted_bundle_path,
+    });
+    await this.store.append(jobId, OWNER, "implementation_sealed", { submission }, `implementation-${contentDigest(submission)}`);
+    return submission;
+  }
 
   async bindPreparedRun(jobId: string, runId: string, idempotencyKey: string): Promise<void> {
     await this.store.append(jobId, OWNER, "chatgpt_codex_prepared_run", { run_id: runId }, idempotencyKey);
