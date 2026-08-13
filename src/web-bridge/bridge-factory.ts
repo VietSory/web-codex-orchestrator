@@ -24,8 +24,9 @@ export function createConfiguredWebBridge(config: TrustedConfig, bridgeDirectory
       token: async () => await readRelayToken(credentialsDirectory, env),
     });
   }
-  // Advanced web_native_mcp and offline manual_file deliberately share the
-  // same local durable mailbox. Native mode exposes it through the official
-  // Secure MCP Tunnel; normal users use managed_actions instead.
+  // The normal web_native_mcp path and offline manual_file path both use the
+  // same owner-local durable mailbox. In native mode the official OpenAI Secure
+  // MCP Tunnel reaches the local MCP server; no WCO-hosted relay/control plane
+  // receives repository state or mutation authority.
   return new ManualFileWebBridge(new RelayFileStore(bridgeDirectory));
 }
