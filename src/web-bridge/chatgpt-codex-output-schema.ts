@@ -15,3 +15,6 @@ export const CHATGPT_CODEX_OUTPUT_SCHEMA = {
     payload_json: { type: "string" },
   },
 } as const;
+
+export const CHATGPT_CODEX_AUTHOR_KINDS = ["repository_command", "contract_sealed", "implementation_sealed"] as const;
+export const CHATGPT_CODEX_REVIEW_KIND = "web_verdict" as const;
