@@ -122,7 +122,7 @@ test("advanced self-hosted Web CLI preserves stable structured error codes for u
   }
 });
 
-test("missing desktop URL opener is an actionable fallback instead of an unhandled process error", async () => {
+test("missing desktop URL opener fails cleanly for explicit advanced GPT open instead of throwing", async () => {
   const child = new EventEmitter() as EventEmitter & { unref(): void };
   child.unref = () => undefined;
   const opened = openBrowser("https://chatgpt.com/g/example-wco", () => {
@@ -142,8 +142,8 @@ test("missing desktop URL opener is an actionable fallback instead of an unhandl
     const stdout: string[] = [];
     const code = await runWebCommand(["open"], { write: (value) => stdout.push(value), error: () => undefined }, async () => false);
     assert.equal(code, 0);
-    assert.match(stdout.join(""), /Could not open a desktop browser automatically/);
-    assert.match(stdout.join(""), /https:\/\/chatgpt\.com\/g\/example-wco/);
+    assert.match(stdout.join(""), /Could not open the configured advanced GPT automatically/);
+    assert.doesNotMatch(stdout.join(""), /Cloudflare|tunnel ID|runtime API key|Workspace Agent access token/i);
   } finally {
     if (old === undefined) delete process.env.WCO_HOME; else process.env.WCO_HOME = old;
   }
