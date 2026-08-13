@@ -36,10 +36,11 @@ test("public documentation freezes install + one authorization + prompt-only dai
   assert.match(operations, /web_native_mcp.*advanced|Advanced `web_native_mcp`/is);
 });
 
-test("CI permanently executes packed daily-user and managed compatibility gates", async () => {
+test("CI keeps real packed install and zero-config product-contract gates separate", async () => {
   const workflow = await repositoryText(".github/workflows/ci.yml");
-  const managed = await repositoryText(".github/workflows/managed-one-link-packed.yml");
+  const compatibility = await repositoryText(".github/workflows/managed-one-link-packed.yml");
 
-  assert.match(workflow, /name: Packed daily-user journeys\n\s+run: npm run test:user:packed/);
-  assert.match(managed, /Packed managed one-link normal-user contract/);
+  assert.match(workflow, /name: Clean-install packed CLI without dev dependencies\n\s+run: npm run pack:smoke/);
+  assert.match(workflow, /name: Zero-config daily-user contract\n\s+run: npm run test:user:contract/);
+  assert.match(compatibility, /compatibility/i);
 });
