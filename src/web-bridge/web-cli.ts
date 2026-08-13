@@ -55,8 +55,8 @@ export async function openBrowser(urlValue: string, spawnBrowser: BrowserSpawner
 }
 
 /**
- * Explicit /web open helper. Managed normal-user jobs never call a browser per
- * task; they are automatically triggered by the maintainer-operated service.
+ * Explicit /web open helper. The local-native normal path does not open a
+ * browser per task; this helper only opens first-party setup/settings on demand.
  */
 export async function openConfiguredWebArchitect(config: TrustedConfig): Promise<boolean> {
   if (config.web_bridge?.mode === "managed_actions") return true;
@@ -79,8 +79,8 @@ function formatWebError(error: unknown): string {
 
 function webRecoveryCommand(error: unknown, operation: string): string {
   const code = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : "";
-  if (code === "WEB_MANAGED_RECONNECT_REQUIRED") return "wco web connect";
-  if (code === "WEB_NATIVE_SETUP_REQUIRED" || code === "OPENAI_CAPABILITY_BLOCKED" || code === "WEB_NATIVE_INTERACTION_REQUIRED") return "wco web connect --native";
+  if (code === "WEB_MANAGED_RECONNECT_REQUIRED") return "wco web connect --managed";
+  if (code === "WEB_NATIVE_SETUP_REQUIRED" || code === "OPENAI_CAPABILITY_BLOCKED" || code === "WEB_NATIVE_INTERACTION_REQUIRED") return "wco web connect";
   if (code === "WEB_MANAGED_OPERATOR_NOT_READY" || code.startsWith("WEB_MANAGED_AGENT_")) return "wco web status";
   if (code === "CONFIG_NOT_FOUND") return "wco setup";
   return `wco web ${operation}`;
@@ -130,33 +130,38 @@ async function promptPersonalConnection(io: WebCommandIo, config: TrustedConfig)
   } finally { interactive.close(); }
 }
 
-/** Advanced/operator-only native setup. It is intentionally not the normal user path. */
+/**
+ * One-time official OpenAI setup for the local-native path.
+ * All WCO authority/state stays on the user's machine. OpenAI currently
+ * requires a tunnel id, runtime key, ChatGPT connector and Workspace Agent
+ * credential; WCO stores the resulting secrets only in owner-local storage.
+ */
 async function promptNativeConnection(io: WebCommandIo, openUrl: (url: string) => Promise<boolean>): Promise<NativeOpenAiCredential | null> {
   const interactive = interactiveQuestions(io), question = interactive.question, secret = interactive.secret;
-  if (!question || !secret) { io.error("Advanced OpenAI native setup is interactive. Run it in a TTY.\n"); return null; }
+  if (!question || !secret) { io.error("OpenAI Web setup is interactive. Run it in a TTY.\n"); return null; }
   try {
-    io.write("Advanced/operator Web-native setup. Normal WCO users should cancel and run `wco web connect` instead.\n\n");
+    io.write("One-time OpenAI setup for local WCO. No WCO server, Cloudflare, ngrok, VPS, domain, or public localhost is used.\n\n");
     await openUrl(OPENAI_NATIVE_SETUP_URLS.tunnels);
     const tunnelId = (await question("OpenAI Platform tunnel ID (tunnel_...): ")).trim();
     if (!tunnelId) return null;
     await openUrl(OPENAI_NATIVE_SETUP_URLS.runtime_api_keys);
-    const runtimeKey = (await secret("OpenAI tunnel runtime API key (input hidden): ")).trim();
+    const runtimeKey = (await secret("OpenAI tunnel runtime API key (input hidden; stored only on this machine): ")).trim();
     if (!runtimeKey) return null;
     await openUrl(OPENAI_NATIVE_SETUP_URLS.chatgpt_apps);
     io.write([
-      "In ChatGPT Developer/Connector settings, add the WCO MCP app using Tunnel and the tunnel ID above.",
-      "The WCO MCP app exposes exact read tools plus three non-destructive semantic submit tools.",
-      "Harness alone mutates/verifies the repository.",
+      "In ChatGPT Settings → Apps/Connectors, add the WCO MCP app using Tunnel and the tunnel ID above.",
+      "The WCO MCP app exposes exact read tools plus non-destructive semantic submit tools only.",
+      "Harness remains the only repository mutation authority on this machine.",
     ].join("\n") + "\n");
-    await question("Press Enter after the advanced WCO MCP app is saved (or Ctrl+C to stop): ");
+    await question("Press Enter after the WCO MCP app is saved (or Ctrl+C to stop): ");
     await openUrl(OPENAI_NATIVE_SETUP_URLS.chatgpt_admin);
     io.write([
       "Publish a private WCO Workspace Agent that uses the WCO MCP app.",
       `Use the exact shipped Senior Architect instructions: ${nativeWorkspaceAgentInstructionsPath()}`,
-      "Then create an advanced Workspace Agents access token.",
+      "Then create a Workspace Agents access token for automatic Web turns.",
     ].join("\n") + "\n");
     const triggerId = (await question("Workspace Agent API trigger ID (agtch_...): ")).trim();
-    const agentToken = (await secret("Workspace Agent access token (input hidden): ")).trim();
+    const agentToken = (await secret("Workspace Agent access token (input hidden; stored only on this machine): ")).trim();
     if (!triggerId || !agentToken) return null;
     return { schema_version: "1.0", tunnel_id: tunnelId, control_plane_api_key: runtimeKey, workspace_agent_trigger_id: triggerId, workspace_agent_access_token: agentToken };
   } finally { interactive.close(); }
@@ -183,11 +188,11 @@ export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = d
   }
 
   const selfHosted = operation === "connect" && args[1] === "--self-hosted" && args.length === 2;
-  const nativeConnect = operation === "connect" && args[1] === "--native" && args.length === 2;
-  const managedConnect = operation === "connect" && (args.length === 1 || args[1] === "--managed" && args.length === 2);
+  const nativeConnect = operation === "connect" && (args.length === 1 || args[1] === "--native" && args.length === 2);
+  const managedConnect = operation === "connect" && args[1] === "--managed" && args.length === 2;
   const personalSetup = operation === "setup" && args[1] === "--personal" && args.length === 2;
-  if (!["status", "open", "connect", "setup", "disconnect"].includes(operation) || operation === "setup" && !personalSetup || operation === "connect" && !(selfHosted || managedConnect || nativeConnect) || args.length > (selfHosted || nativeConnect || personalSetup || args[1] === "--managed" ? 2 : 1)) {
-    io.error("Usage: wco web [status|open|connect [--managed|--native|--self-hosted]|setup --personal|disconnect|relay]\n");
+  if (!["status", "open", "connect", "setup", "disconnect"].includes(operation) || operation === "setup" && !personalSetup || operation === "connect" && !(selfHosted || managedConnect || nativeConnect) || args.length > (selfHosted || managedConnect || personalSetup || args[1] === "--native" ? 2 : 1)) {
+    io.error("Usage: wco web [status|open|connect [--native|--managed|--self-hosted]|setup --personal|disconnect|relay]\n");
     return 2;
   }
 
@@ -200,7 +205,7 @@ export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = d
       catch { token = generatePersonalRelaySecret(); await writeRelayToken(paths.credentials, token); }
       const values = await promptPersonalConnection(io, config);
       if (!values) {
-        io.write(`Optional personal-relay secret prepared in owner-only WCO storage: ${relayCredentialPath(paths.credentials)}\nThis is an advanced compatibility profile. Normal users run \`wco web connect\` and authorize one browser link.\n`);
+        io.write(`Optional personal-relay secret prepared in owner-only WCO storage: ${relayCredentialPath(paths.credentials)}\nThis is an advanced compatibility profile. Normal users run \`wco web connect\` for local OpenAI transport.\n`);
         return 1;
       }
       const connected = await configureWebBridgeConnection({ configPath: paths.config, credentialsDirectory: paths.credentials, relayUrl: values.relayUrl, ...(values.gptUrl ? { gptUrl: values.gptUrl } : {}), token, mode: "personal_actions" });
@@ -219,9 +224,17 @@ export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = d
         io.write("Advanced self-hosted Web bridge connected. Credential stored in WCO-owned credentials.\n");
         return 0;
       }
+      if (managedConnect) {
+        const metadata = resolveManagedWebService();
+        io.write("Opening optional managed Web authorization...\n");
+        const connected = await configureManagedWebBridgeConnection({ configPath: paths.config, credentialsDirectory: paths.credentials, metadata, openAuthorization: openUrl });
+        config = connected.config;
+        io.write("Optional managed Web authorization connected.\n");
+        return 0;
+      }
       if (nativeConnect) {
         const credential = await promptNativeConnection(io, openUrl);
-        if (!credential) { io.error("WEB_NATIVE_SETUP_CANCELLED: advanced OpenAI native setup was not completed.\n"); return 1; }
+        if (!credential) { io.error("WEB_NATIVE_SETUP_CANCELLED: local OpenAI Web setup was not completed.\n"); return 1; }
         const credentialPath = await writeNativeOpenAiCredential(paths.credentials, credential);
         try {
           await probeNativeOpenAiSetup({ cacheDirectory: paths.cache, credential });
@@ -231,27 +244,18 @@ export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = d
           await removeNativeOpenAiCredential(paths.credentials).catch(() => undefined);
           throw error;
         }
-        io.write(`Advanced OpenAI native transport ready\nCredential storage         ${credentialPath}\n`);
+        io.write(`Local OpenAI Web transport ready\nCredential storage         ${credentialPath}\nWCO authority/state        local only\nDaily use                  run \`wco\` and type a goal\n`);
         return 0;
       }
-
-      // Normal path: exactly one browser authorization URL. No IDs, keys,
-      // endpoints, schemas, Agent creation, or hosting questions are presented.
-      const metadata = resolveManagedWebService();
-      io.write("Opening the one-time WCO authorization page...\n");
-      const connected = await configureManagedWebBridgeConnection({ configPath: paths.config, credentialsDirectory: paths.credentials, metadata, openAuthorization: openUrl });
-      config = connected.config;
-      io.write("WCO Web authorization  connected\nChatGPT Web             linked\nCredential              protected + refreshable\nDaily use               run `wco` and type a goal\n");
-      return 0;
     }
 
     if (operation === "open") {
       if (config.web_bridge?.mode === "managed_actions") {
-        io.write("Managed ChatGPT Web runs automatically. No per-task browser action is required.\n");
+        io.write("Optional managed ChatGPT Web runs automatically. No per-task browser action is required.\n");
         return 0;
       }
       const opened = await openArchitect(config);
-      if (config.web_bridge?.mode === "web_native_mcp") io.write(opened ? "Opened advanced ChatGPT connector settings.\n" : `Open advanced ChatGPT connector settings: ${OPENAI_NATIVE_SETUP_URLS.chatgpt_apps}\n`);
+      if (config.web_bridge?.mode === "web_native_mcp") io.write(opened ? "Opened ChatGPT connector settings for local WCO.\n" : `Open ChatGPT connector settings: ${OPENAI_NATIVE_SETUP_URLS.chatgpt_apps}\n`);
       else io.write(opened ? "Opened the configured advanced WCO Senior Architect GPT.\n" : "Could not open the configured advanced GPT automatically.\n");
       return 0;
     }
@@ -259,12 +263,12 @@ export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = d
     if (operation === "disconnect") {
       if (config.web_bridge?.mode === "web_native_mcp") {
         await removeNativeOpenAiCredential(paths.credentials);
-        io.write("Advanced OpenAI native credential removed. Run `wco web connect --native` to configure it again.\n");
+        io.write("Local OpenAI Web credential removed. Run `wco web connect` to configure it again.\n");
       } else if (config.web_bridge?.mode === "managed_actions") {
         let metadata;
-        try { metadata = resolveManagedWebService(); } catch { /* local removal must still succeed if operator service is unavailable */ }
+        try { metadata = resolveManagedWebService(); } catch { /* local removal must still succeed if optional managed service is unavailable */ }
         await disconnectManagedWebBridgeConnection({ configPath: paths.config, credentialsDirectory: paths.credentials, ...(metadata ? { metadata } : {}) });
-        io.write("WCO Web authorization removed. Your repositories/PRs were not changed. Run `wco web connect` to authorize once again.\n");
+        io.write("Optional managed Web authorization removed. Your repositories/PRs were not changed.\n");
       } else {
         await disconnectWebBridgeConnection({ configPath: paths.config, credentialsDirectory: paths.credentials });
         io.write("Optional relay Web bridge disconnected locally.\n");
@@ -275,7 +279,7 @@ export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = d
     if (config.web_bridge?.mode === "web_native_mcp") {
       await readNativeOpenAiCredential(paths.credentials);
       const bridge = createConfiguredWebBridge(config, paths.bridge), status = await bridge.getConnectionStatus();
-      io.write(`Mode                   advanced OpenAI native MCP\nLocal WCO mailbox      ${status.connected ? "ready" : "unavailable"}\nPending author task   ${status.pending_author_job ? "yes" : "none"}\nPending final review  ${status.pending_final_review ? "yes" : "none"}\n`);
+      io.write(`Mode                  local OpenAI Secure MCP\nWCO state/mailbox     local only\nThird-party WCO host  none\nLocal WCO mailbox     ${status.connected ? "ready" : "unavailable"}\nPer-task browser      not required\nPending author task   ${status.pending_author_job ? "yes" : "none"}\nPending final review  ${status.pending_final_review ? "yes" : "none"}\n`);
       return status.connected ? 0 : 1;
     }
     if (config.web_bridge?.mode === "manual_file" || !config.web_bridge) {
@@ -285,7 +289,7 @@ export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = d
     if (config.web_bridge.mode === "managed_actions") await readManagedDeviceCredential(paths.credentials);
     const bridge = createConfiguredWebBridge(config, paths.bridge);
     const status = await bridge.getConnectionStatus();
-    io.write(`Mode                  ${config.web_bridge.mode === "managed_actions" ? "one-link managed Web" : "advanced compatibility"}\nWCO Web service       ${status.connected ? "connected" : "offline"}\nChatGPT Web           ${status.connected ? "linked" : "not linked"}\nPer-task browser      ${config.web_bridge.mode === "managed_actions" ? "not required" : "profile dependent"}\nPending author task   ${status.pending_author_job ? "yes" : "none"}\nPending final review  ${status.pending_final_review ? "yes" : "none"}\n`);
+    io.write(`Mode                  ${config.web_bridge.mode === "managed_actions" ? "optional managed Web" : "advanced compatibility"}\nWCO Web service       ${status.connected ? "connected" : "offline"}\nChatGPT Web           ${status.connected ? "linked" : "not linked"}\nPer-task browser      ${config.web_bridge.mode === "managed_actions" ? "not required" : "profile dependent"}\nPending author task   ${status.pending_author_job ? "yes" : "none"}\nPending final review  ${status.pending_final_review ? "yes" : "none"}\n`);
     return status.connected ? 0 : 1;
   } catch (error) {
     io.error(`${formatWebError(error)}\nNo repository files or workflow authority were changed. Next: ${webRecoveryCommand(error, operation)}\n`);
