@@ -1,4 +1,4 @@
-name: Managed one-link packed acceptance
+name: Advanced bridge compatibility
 
 on:
   push:
@@ -8,8 +8,13 @@ permissions:
   contents: read
 
 jobs:
-  packed-managed-one-link:
+  compatibility:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CI: "true"
+      WCO_RUN_CODEX_INTEGRATION: "0"
+      WCO_RUN_SANDBOX_INTEGRATION: "0"
     steps:
       - name: Checkout exact event head
         uses: actions/checkout@v5
@@ -26,6 +31,7 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      - run: npm ci
-      - name: Packed managed one-link normal-user contract
-        run: node scripts/run-packed-managed-user-journey.mjs
+      - name: Install dependencies
+        run: npm ci
+      - name: Advanced compatibility regression suite
+        run: npm test
