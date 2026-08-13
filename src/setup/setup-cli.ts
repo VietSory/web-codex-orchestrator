@@ -55,9 +55,9 @@ export async function runSetupCommand(args: string[], cwd = process.cwd(), suppl
     checks.push([github === "authentication unavailable" ? "warn" : "ok", "GitHub", github]);
     checks.push([codex === "unavailable" ? "warn" : "ok", "Codex", codex]);
     const mode = result.config.web_bridge?.mode ?? "manual_file";
-    checks.push([mode === "managed_actions" ? "ok" : "warn", "Web transport", mode === "managed_actions" ? "WCO managed Web (one-link authorization)" : `${mode} (advanced)`]);
+    checks.push([mode === "web_native_mcp" ? "ok" : "warn", "Web transport", mode === "web_native_mcp" ? "local WCO + official OpenAI Secure MCP Tunnel" : `${mode} (optional compatibility)`]);
     suppliedIo.write(`\nWeb Codex Orchestrator v0.3 setup\n\n${checks.map(([severity, label, value]) => `${severity === "ok" ? "✓" : "!"} ${label.padEnd(16)} ${value}`).join("\n")}\n`);
-    suppliedIo.write("\nFirst use: WCO opens one maintainer-operated HTTPS authorization link. Approve it once; WCO stores a refreshable device credential. Normal users do not enter relay URLs, tunnel IDs, API keys, Workspace Agent tokens, Cloudflare, ngrok, VPS, DNS, or public-localhost settings.\n");
+    suppliedIo.write("\nArchitecture: repository, Harness, receipts, cache, MCP mailbox and verification stay on this machine. The default path does not deploy a WCO server, Cloudflare, ngrok, VPS, domain/DNS or public localhost. Run `wco web connect` once to configure the official OpenAI local transport for this account/workspace.\n");
     if (codex === "unavailable" || github === "authentication unavailable") {
       suppliedIo.write("Setup is complete. Credential checks need attention before AUTOPILOT review or Draft PR publication. PAIR itself does not require Codex. Run `wco doctor`.\n");
     }
