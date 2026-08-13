@@ -99,7 +99,7 @@ test("managed semantic trigger uses only scoped device auth and no local provide
   assert.equal(receipt.agent_trigger_run_id, "apirun_test123");
   assert.equal(fixture.triggers.length, 1);
   assert.deepEqual(fixture.triggers[0].body, { purpose: "author", identity: "job-1", input: "Continue WCO task" });
-  const headers = fixture.triggers[0].headers as Record<string, string>;
+  const headers = fixture.triggers[0].headers as { Authorization: string; "Idempotency-Key": string };
   assert.match(headers.Authorization, /^Bearer a{40}$/);
   assert.equal(headers["Idempotency-Key"], "trigger-1");
   assert.equal((await client.readAgentRun(receipt.agent_trigger_run_id)).status, "in_progress");
