@@ -14,6 +14,22 @@ The official Codex app-server exposes ChatGPT browser authorization, persisted/r
 
 WCO should initially reuse its existing hardened `CodexSdkAgentClient`, then keep thread/session bindings engine-neutral so an app-server adapter can later use fork/compaction/review primitives directly.
 
+### App-server primitives WCO may use
+
+- `account/login/start` with ChatGPT browser authorization;
+- `account/read` / account update state for readiness;
+- `thread/start` and `thread/resume` for durable semantic conversations;
+- `thread/fork` for a deliberately independent branch when appropriate;
+- `thread/compact/start` for bounded long-running context;
+- `review/start` with detached delivery when an independent review thread is useful;
+- regular turn/item lifecycle events, bound to exact response/thread/turn identities.
+
+### App-server primitives WCO must not expose to semantic transport
+
+`thread/shellCommand` is explicitly unsuitable: the official app-server documentation states that it is user-initiated and runs unsandboxed with full access instead of inheriting the thread sandbox. WCO semantic transport must never call or surface it. Repository commands remain behind the existing closed WCO repository-read protocol and every mutation/verification command remains Harness-owned.
+
+The app-server is also treated as an external state machine, not infallible local truth. Recent upstream bug reports show review lifecycle turn-ID disagreement and invalid model/reasoning combinations that can hang without events. WCO therefore needs explicit timeouts, model/effort prevalidation where possible, exact response identity binding and fail-closed handling for inconsistent lifecycle events.
+
 ## Durable-agent workflow research
 
 LangGraph's persistence model reinforces a pattern WCO already uses: checkpoint each durable step, give each execution a stable thread identity, persist writes before advancing, and resume from the last completed step rather than blindly re-running earlier work. WCO should reuse the pattern, not add LangGraph as a hosted dependency.
@@ -26,6 +42,8 @@ Modern browser-agent projects contribute useful ideas: persistent-session recove
 
 Those ideas may inform diagnostics or a non-default experimental adapter, but browser automation is not the release transport. The normal implementation must not scrape ChatGPT DOM/output, copy browser cookies, call private ChatGPT endpoints or depend on the ChatGPT UI shape.
 
+This is both a reliability and release concern: the current OpenAI Terms of Use prohibit automatically or programmatically extracting data or Output from the consumer Services. WCO therefore uses official Codex/runtime surfaces rather than treating the ChatGPT website as a scrape target.
+
 ## Context optimization
 
 Keep WCO's existing progressive exact-base context protocol instead of exposing an entire repository to the semantic transport:
@@ -37,7 +55,7 @@ Keep WCO's existing progressive exact-base context protocol instead of exposing 
 5. content digest references for immutable repeated context;
 6. diff/result deltas for review.
 
-A future local symbol index may improve step 3 using syntax-aware symbol references, but it must remain disposable derived context; exact Git reads and receipts remain authoritative.
+A future local symbol index may improve step 3 using syntax-aware symbol references, but it must remain disposable derived context; exact Git reads and receipts remain authoritative. Tree-sitter and ast-grep are useful implementation references for incremental parsing and structural search; neither should become mutation authority.
 
 ## Review topology
 
@@ -57,5 +75,6 @@ Independent review must not inherit hidden author reasoning. Final-intent review
 4. implement local durable semantic thread bindings and idempotent turn receipts;
 5. connect authoring to the existing exact repository-command loop;
 6. connect independent/final review without granting mutation authority;
-7. change first-run default only after CI, packed-user and live one-authorization acceptance pass;
-8. retain managed/native/relay/manual transports as explicit compatibility profiles only.
+7. add app-server-specific timeout/identity/model guards before relying on fork/compact/detached-review primitives;
+8. change first-run default only after CI, packed-user and live one-authorization acceptance pass;
+9. retain managed/native/relay/manual transports as explicit compatibility profiles only.
