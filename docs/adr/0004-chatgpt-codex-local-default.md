@@ -59,6 +59,10 @@ WCO orchestrator (local)
 human remains the only merge/release authority
 ```
 
+## Official runtime capabilities to reuse
+
+The local transport should reuse official persisted/resumable semantic threads, independent thread forks, context compaction, structured output, read-only sandbox controls and live web search instead of implementing a browser session manager. The existing TypeScript SDK is the first implementation surface because WCO already ships and tests it; the WebBridge state remains engine-neutral so a later app-server adapter can reuse the same authority protocol.
+
 ## Why not automate chatgpt.com as the release default?
 
 Browser-agent projects provide useful engineering ideas such as persistent-session recovery, accessibility-tree targeting, deterministic action caching, fail-closed selector drift and evidence capture. WCO may reuse those general resilience patterns where appropriate.
@@ -120,4 +124,4 @@ The following may remain explicit advanced/debug compatibility modes, but are no
 - `actions_relay`
 - `manual_file`
 
-The implementation should introduce a dedicated local ChatGPT/Codex transport mode rather than silently changing the semantics of one of those legacy profiles.
+The implementation introduces a dedicated `chatgpt_codex` local transport mode rather than silently changing the semantics of one of those legacy profiles.
