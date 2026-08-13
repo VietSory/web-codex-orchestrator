@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
+import path from "node:path";
 import type { TrustedConfig } from "../config/contracts.js";
 import { resolveCodexRuntime, type ResolvedCodexRuntime } from "./codex-runtime.js";
 
 function run(runtime: ResolvedCodexRuntime, args: string[], stdio: "ignore" | "inherit"): Promise<number> {
   return new Promise((resolve, reject) => {
     const child = spawn(runtime.executable, [...runtime.prefix_args, ...args], {
-      cwd: runtime.launcher_directory,
+      cwd: path.dirname(runtime.launcher_path),
       env: runtime.environment,
       shell: false,
       stdio,
