@@ -11,22 +11,31 @@ import type { WebBridge } from "./web-bridge.js";
 
 export function createConfiguredWebBridge(config: TrustedConfig, bridgeDirectory: string, env: NodeJS.ProcessEnv = process.env): WebBridge {
   const credentialsDirectory = path.join(path.dirname(path.resolve(bridgeDirectory)), "credentials");
-  if (config.web_bridge?.mode === "managed_actions") {
+  const mode = config.web_bridge?.mode ?? "manual_file";
+
+  if (mode === "chatgpt_codex") {
+    throw new Error("WEB_CHATGPT_CODEX_NOT_READY: chatgpt_codex is gated until its local semantic bridge and one-authorization acceptance path are fully wired.");
+  }
+  if (mode === "managed_actions") {
     const metadata = resolveManagedWebService(env);
     const managed = new ManagedWebOnboardingClient({ metadata, credentialsDirectory });
     const relay = new ActionRelayWebBridge({ relayUrl: metadata.relay_url!, token: async () => await managed.accessToken() });
     return new ManagedAutoWebBridge(relay, managed);
   }
-  if (config.web_bridge?.mode === "personal_actions" || config.web_bridge?.mode === "actions_relay") {
-    if (!config.web_bridge.relay_url) throw new Error("WEB_RELAY_NOT_CONFIGURED: relay_url is required.");
+  if (mode === "personal_actions" || mode === "actions_relay") {
+    if (!config.web_bridge?.relay_url) throw new Error("WEB_RELAY_NOT_CONFIGURED: relay_url is required.");
     return new ActionRelayWebBridge({
       relayUrl: config.web_bridge.relay_url,
       token: async () => await readRelayToken(credentialsDirectory, env),
     });
   }
-  // The normal web_native_mcp path and offline manual_file path both use the
-  // same owner-local durable mailbox. In native mode the official OpenAI Secure
-  // MCP Tunnel reaches the local MCP server; no WCO-hosted relay/control plane
-  // receives repository state or mutation authority.
-  return new ManualFileWebBridge(new RelayFileStore(bridgeDirectory));
+  if (mode === "web_native_mcp" || mode === "manual_file") {
+    // Both legacy native-MCP and offline manual-file compatibility paths use
+    // the same owner-local durable mailbox. Native MCP remains advanced-only;
+    // it must never become an implicit fallback for another configured mode.
+    return new ManualFileWebBridge(new RelayFileStore(bridgeDirectory));
+  }
+
+  const exhaustive: never = mode;
+  throw new Error(`WEB_BRIDGE_MODE_UNSUPPORTED: ${exhaustive}`);
 }
