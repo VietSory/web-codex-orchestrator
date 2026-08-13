@@ -1,6 +1,6 @@
 # Frozen normal-user experience contract
 
-This document is the release acceptance contract for WCO's normal user path. Historical phase documents and optional compatibility transports do not override it.
+This document is the release acceptance contract for WCO's normal single-user path. Historical phase documents and optional compatibility transports do not override it.
 
 ## End-user steps
 
@@ -12,11 +12,9 @@ cd /path/to/project
 wco
 ```
 
-On first use only, WCO guides the user through the **official OpenAI/ChatGPT Web setup required to connect ChatGPT to the private WCO MCP server on that same user's machine**. This is an OpenAI account/workspace authorization/configuration boundary, not a WCO-hosted service.
+On first interactive use only, WCO hands authorization to its **bundled official Codex runtime**, which performs the normal ChatGPT browser sign-in. Codex owns the OAuth callback, credential storage and token refresh lifecycle. WCO never asks the normal user to copy or enter a ChatGPT/OpenAI API key, tunnel ID, runtime key, endpoint, bearer token, cookie, browser profile, MCP connector, Workspace Agent identifier, domain or relay configuration.
 
-Current Secure MCP Tunnel prerequisites are provider-owned: a tunnel ID and runtime API key, plus the ChatGPT connector/Workspace Agent configuration needed for automatic Web turns. WCO must not pretend those provider requirements can be replaced by a fictional one-click API. It should guide and validate them once, store resulting credentials only in owner-protected local WCO storage, and never ask for them again during normal tasks.
-
-After that one-time OpenAI setup, daily use is only:
+After that authorization succeeds, daily use is only:
 
 ```bash
 cd /path/to/project
@@ -29,34 +27,54 @@ and a goal, for example:
 Add rate limiting to login and add regression tests.
 ```
 
-WCO automatically starts every required ChatGPT Web author/review turn. Per-task browser interactions = 0.
+Per-task browser interactions = 0. If the provider later expires or revokes the ChatGPT session, WCO may request the same official ChatGPT authorization again; it must never recover by asking for an API key, tunnel, relay, connector or hosted WCO service.
 
 The successful terminal product state is `READY_FOR_YOU` with an exact reviewed Draft PR. The human alone decides merge/release.
 
-## Local-only authority rule
+## Zero-config local transport
 
-The normal path is `web_native_mcp`.
+A fresh normal-user config intentionally contains **no `web_bridge` field**. Absence is the effective local ChatGPT/Codex transport. Explicit `web_bridge` profiles are advanced compatibility overrides only.
 
-All WCO-owned engineering state remains on the user's machine:
+All WCO-owned engineering authority/state remains on the user's machine:
 
-- repository/worktree state;
+- repository and isolated worktree state;
 - durable task/session state and receipts;
-- context cache/read coverage;
+- exact repository-context cache/read coverage;
 - local semantic mailbox;
-- local MCP server;
+- Task Bundles and Result Bundles;
 - Harness mutation authority;
 - deterministic verifier/sandbox state;
-- locally protected OpenAI transport credentials.
+- Git/Draft-PR recovery state.
 
-The official OpenAI Secure MCP Tunnel client is an **outbound-only transport** from the user's machine to OpenAI. WCO does not require an inbound workstation port or a public WCO endpoint.
+The bundled official Codex runtime communicates outbound to OpenAI using the user's ChatGPT authorization. WCO does not operate a normal-path server, database, relay, mailbox service or hosted control plane.
 
-There is no normal-path WCO SaaS/control-plane/database/mailbox server.
+## Authority split
+
+The normal pipeline is:
+
+```text
+user goal
+  -> local semantic author (read-only)
+  -> bounded exact RepositoryCommand reads
+  -> sealed WCO contract
+  -> canonical prepared run
+  -> Harness-side Codex implementation proposal (read-only proposal)
+  -> WCO validation + Harness mutation/execution
+  -> deterministic verification / repair gates
+  -> independent semantic final review
+  -> exact reviewed Draft PR
+  -> human merge/release
+```
+
+Semantic author/reviewer turns have no repository mutation, Git, publish, merge, deployment, credential or network-tool authority. Provider output is not workflow authority until it passes WCO's closed local validators and exact job/run/digest binding.
+
+The implementation planner proposes bounded file operations only. WCO/Harness validates path policy, content digests, exact preimages, task/run binding and verifier gates before repository mutation can occur. There is no model-controlled direct publish or merge path.
 
 ## Forbidden normal-user infrastructure
 
 The normal path must never require the user to configure:
 
-- a WCO-hosted backend or managed WCO service;
+- a WCO-hosted backend, database or managed WCO service;
 - Cloudflare;
 - ngrok;
 - a VPS;
@@ -65,72 +83,52 @@ The normal path must never require the user to configure:
 - a user-hosted OAuth server;
 - public localhost/workstation ingress;
 - WCO relay secrets;
+- a ChatGPT/OpenAI API key;
+- an OpenAI tunnel ID or tunnel runtime key;
 - a Custom GPT/OpenAPI Action;
+- an MCP App/connector or Workspace Agent;
+- copied ChatGPT cookies or browser profiles;
 - manual task/result ZIP handoff;
 - run IDs or internal phase commands.
 
-Optional compatibility profiles may expose relay/hosted concepts only after an advanced user deliberately selects that profile. WCO must never auto-fallback to one after local OpenAI capability/setup failure.
+Optional compatibility profiles may expose some of those concepts only after an advanced user deliberately selects that profile. WCO must never auto-fallback to one after local ChatGPT authorization/runtime failure.
 
-## OpenAI setup boundary
+## Authentication boundary
 
-`web_native_mcp` is the default because it preserves local authority while using OpenAI's supported private-MCP transport.
+The normal authorization mechanism is the bundled official Codex ChatGPT login flow. WCO may invoke that flow and verify `login status`; WCO must not parse, duplicate, export or independently persist the resulting ChatGPT OAuth credential.
 
-WCO owns the local lifecycle after initial provider setup:
+Fresh first run in CI/headless mode must never open a browser or claim authorization succeeded. Interactive first use may open the official browser authorization exactly once. A failed or interrupted authorization fails closed and can be retried with `wco` or `wco web connect`.
 
-```text
-wco
-  -> local MCP/mailbox
-  -> local tunnel-client supervision
-  -> outbound OpenAI tunnel
-  -> ChatGPT Workspace Agent/App
-```
+## Exact repository context and recovery
 
-WCO should download/verify or use its pinned supported `tunnel-client`, create the local runtime profile, run readiness checks, start/reuse the local tunnel process, and recover it after restart without exposing those mechanics during daily use.
+Semantic authoring uses progressive, bounded repository context rather than full-repository transmission. Exact reads are bound to the sealed Git base and digest receipts. Disposable summaries/indexes may improve localization, but they can never authorize mutation; authoritative content must return to exact Git/file reads and SHA receipts.
 
-If the current OpenAI account/workspace lacks the required Tunnel / full MCP / Workspace Agent capabilities, WCO must fail closed with an actionable `OPENAI_CAPABILITY_BLOCKED`-class status. It must not tell the user to deploy Cloudflare/ngrok/VPS or silently change transport.
+Provider/model calls that can affect durable authority must be idempotency-bound or fail closed when a crash makes replay ambiguous. Recovery must never silently generate a second conflicting mutation proposal.
 
-`managed_actions`, `personal_actions`, `actions_relay`, and `manual_file` are explicit optional compatibility profiles, not the normal installation path.
+Both PAIR and AUTOPILOT preserve exact Git/digest/evidence binding, isolated mutation, deterministic verification, same-Draft-PR repair/recovery and the human-only shipment boundary. Agent-turn and token budgets remain bounded by trusted configuration; no mode may bypass those limits.
 
-## Mode invariants
+## Machine-auditable normal-user budget
 
-PAIR:
-
-```text
-Codex/model reviewer calls = 0
-Harness model tokens        = 0
-independent Web-B review    = required
-original Web-A final review = required
-```
-
-AUTOPILOT:
-
-```text
-adaptive Sol/Terra calls      = exactly 1 by default
-second Sol/Terra after repair = 0
-Harness model tokens          = 0
-original Web-A final review   = required
-```
-
-Both modes preserve exact Git/digest/evidence binding, same-Draft-PR repair/recovery and the human-only shipment boundary.
-
-## Machine-auditable UX budget
-
-A releasable normal-user path has this budget **after the one-time official OpenAI setup**:
+After the initial ChatGPT authorization:
 
 ```text
 WCO-hosted services                 = 0
 third-party relay/cloud setup       = 0
 public localhost/inbound ports      = 0
+API/tunnel/relay keys entered       = 0
+MCP/App/Workspace Agent setup       = 0
+copied browser credentials          = 0
 per-task browser interactions       = 0
-per-task tunnel/key/token inputs    = 0
-per-task MCP/App configuration      = 0
-Harness model tokens                = 0
+per-task authorization/config       = 0
+automatic merge/release             = 0
 ```
 
-The first-run setup budget is provider-capability driven and must be represented truthfully. WCO may guide only the current official OpenAI setup surfaces required for the local Secure MCP path; it must not invent additional infrastructure or claim a single-click provisioning API where OpenAI does not provide one.
+## Compatibility profiles
+
+`web_native_mcp`, `managed_actions`, `personal_actions`, `actions_relay`, and `manual_file` are explicit advanced/compatibility profiles only. They may remain tested for existing users, but none may become an implicit fallback or change the fresh normal-user contract above.
 
 ## Audit rule
 
-A release/audit agent must treat any newly introduced mandatory normal-user infrastructure outside this document as a product defect. After OpenAI setup succeeds once, any newly introduced per-task browser, credential, tunnel, endpoint, relay, server, or deployment step is also a product defect.
+A release/audit agent must treat any newly introduced mandatory normal-user infrastructure outside this document as a product defect. It must also reject claims of release readiness until the packed zero-config path and a real local one-authorization acceptance have both succeeded.
 
-Local prerequisites remain Linux/WSL, Node/npm, Git, Bubblewrap, GitHub authentication for Draft-PR delivery, and AUTOPILOT reviewer authentication where selected.
+Local prerequisites remain Node.js 22+, Git, the platform sandbox prerequisites required by selected execution mode, and GitHub authentication only when Draft-PR delivery is requested.
