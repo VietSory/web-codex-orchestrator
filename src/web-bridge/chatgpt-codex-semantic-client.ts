@@ -2,6 +2,12 @@ import type { AgentClient } from "../agent/contracts.js";
 import type { AgentProfile } from "../config/contracts.js";
 import { CHATGPT_CODEX_OUTPUT_SCHEMA } from "./chatgpt-codex-output-schema.js";
 
+/**
+ * Thin adapter over WCO's already-hardened Codex SDK client. It intentionally
+ * requests read-only/no-approval/no-network execution and returns semantic
+ * output only. Nested WCO payloads are validated by the WebBridge layer before
+ * they can become repository or review authority.
+ */
 export class ChatGptCodexSemanticClient {
   constructor(private readonly agent: AgentClient) {}
 
