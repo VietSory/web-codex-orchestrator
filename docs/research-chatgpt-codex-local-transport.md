@@ -55,7 +55,37 @@ Keep WCO's existing progressive exact-base context protocol instead of exposing 
 5. content digest references for immutable repeated context;
 6. diff/result deltas for review.
 
-A future local symbol index may improve step 3 using syntax-aware symbol references, but it must remain disposable derived context; exact Git reads and receipts remain authoritative. Tree-sitter and ast-grep are useful implementation references for incremental parsing and structural search; neither should become mutation authority.
+### 2026 repository-localization findings
+
+Recent repository-exploration research strengthens this design but suggests a better retrieval layer in front of exact reads:
+
+- SWE-Explore evaluates exploration independently from final repair and measures relevant-region coverage, ranking quality and context efficiency under a fixed line budget. WCO should add equivalent deterministic localization metrics instead of benchmarking bytes/tokens alone.
+- Retrieval-oriented code representation research reports that role-aware file summaries can substantially improve localization at far smaller representation footprint than raw source. WCO should add disposable local role summaries as retrieval hints, keyed by exact file digest.
+- Aider's repo-map implementation remains a useful practical reference: tree-sitter definitions/references plus graph ranking produce a compact token-aware repository map.
+- Structural multi-file localization research warns that forced multi-agent consultation can raise token cost without consistent benefit. WCO should not add an always-on explorer swarm. Keep one durable semantic author by default; parallel/domain exploration is only worth revisiting if a measured benchmark shows a net gain for large cross-subsystem tasks.
+
+### Proposed local retrieval stack
+
+```text
+exact Git base
+   |
+   +--> disposable role summary cache     (digest keyed)
+   +--> disposable symbol/reference map   (Tree-sitter/structural parser)
+   +--> relevance/ranking layer           (goal + mentioned symbols + graph rank)
+   |
+   v
+bounded candidate regions
+   |
+   v
+existing exact WCO read command
+   |
+   v
+SHA-backed authoritative context
+```
+
+The derived summary/symbol/ranking layers are advisory only. Cache corruption, unsupported language parsing or low graph coverage causes them to be discarded or bypassed; exact Git reads remain authoritative. No vector database, cloud index or user setup is required.
+
+A future local symbol index may improve bounded search using syntax-aware symbol references. Tree-sitter and ast-grep are useful implementation references for incremental parsing and structural search; neither should become mutation authority.
 
 ## Review topology
 
@@ -76,5 +106,6 @@ Independent review must not inherit hidden author reasoning. Final-intent review
 5. connect authoring to the existing exact repository-command loop;
 6. connect independent/final review without granting mutation authority;
 7. add app-server-specific timeout/identity/model guards before relying on fork/compact/detached-review primitives;
-8. change first-run default only after CI, packed-user and live one-authorization acceptance pass;
-9. retain managed/native/relay/manual transports as explicit compatibility profiles only.
+8. add digest-keyed role summaries/symbol-map retrieval plus SWE-Explore-style localization benchmarks;
+9. change first-run default only after CI, packed-user and live one-authorization acceptance pass;
+10. retain managed/native/relay/manual transports as explicit compatibility profiles only.
