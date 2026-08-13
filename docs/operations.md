@@ -1,10 +1,12 @@
 # Operations and user workflow
 
-WCO's normal product path is local-first. Repository state, durable task/session state, context cache, semantic mailbox, MCP server, credentials, Harness and deterministic verification stay on the user's machine.
+WCO is single-user and local-first. Repository state, durable task/session state, exact-read receipts, context cache, Harness state and deterministic verification stay on the user's machine.
+
+ADR 0004 defines the target normal-user transport. It becomes the shipped default only after its exact-head release gates pass; until then this Draft PR must not claim production readiness.
 
 ## Normal interactive workflow
 
-After a human maintainer publishes the package:
+After a human maintainer publishes a qualified release:
 
 ```bash
 npm install -g web-codex-orchestrator
@@ -12,57 +14,52 @@ cd /path/to/project
 wco
 ```
 
-First-run setup detects the canonical Git root, remote/base, project tools, GitHub readiness and verification prerequisites, registers the repository, and selects `web_native_mcp`.
+### First use only
 
-WCO-owned state lives under the platform user-data location (`$XDG_DATA_HOME/wco` or `~/.local/share/wco` on Linux/WSL). Secrets are stored separately in owner-protected local WCO credential storage.
+**Exactly one Web authorization link** is allowed in the normal path: WCO opens the official ChatGPT browser authorization owned by the bundled Codex runtime. The runtime owns its account credential lifecycle. WCO does not ask the user to copy provider credentials or browser state.
 
-### One-time official OpenAI setup
-
-ChatGPT Web cannot directly reach a localhost MCP server. The normal bridge therefore uses OpenAI Secure MCP Tunnel with `tunnel-client` running locally and outbound-only.
-
-Current OpenAI setup may require provider-owned values such as:
-
-- tunnel ID;
-- tunnel runtime API key;
-- ChatGPT MCP App/Connector configuration;
-- private Workspace Agent trigger/access credential for automatic Web turns.
-
-WCO guides and validates those official OpenAI surfaces once and stores resulting credentials locally. It does not invent a WCO-hosted service or claim a single-click provider provisioning API where none exists.
-
-Normal-path infrastructure budget:
+Normal-user manual setup budget:
 
 ```text
-WCO-hosted service              = 0
-Cloudflare/ngrok/VPS/domain     = 0
-public localhost/inbound port   = 0
-third-party WCO relay           = 0
+ChatGPT browser authorization        = exactly 1 on first use
+Cloudflare/ngrok/VPS/domain/DNS      = 0
+relay/GPT URL inputs                 = 0
+tunnel IDs                           = 0
+API/bearer keys                      = 0
+MCP App setup                        = 0
+Workspace Agent/trigger setup        = 0
+OAuth client setup                   = 0
+browser cookie/profile import        = 0
+public workstation endpoint          = 0
 ```
 
-After provider setup succeeds once:
+After authorization:
 
 ```text
-per-task browser interactions   = 0
-per-task tunnel/key/token input = 0
-per-task MCP/App configuration  = 0
+per-task browser interactions = 0
+per-task credential inputs    = 0
+per-task infrastructure setup = 0
 ```
 
-If the account/workspace lacks the required Secure MCP/full MCP/Workspace Agent capability, WCO fails closed with an OpenAI capability/setup diagnostic. It never tells the normal user to deploy Cloudflare/ngrok/VPS or silently changes transport.
+If the bundled official runtime cannot use the authorized ChatGPT account, WCO fails closed. It must not silently fall back to hosting, relay, tunnel, browser scraping or manual credentials.
 
 ### Start a task
 
-The user types a goal directly in WCO:
+The user types only a goal:
 
 ```text
 > Add rate limiting to POST /login and add regression tests.
 ```
 
-WCO creates a durable local authoring job and starts the required ChatGPT Web turn automatically through the configured OpenAI path. The user does not open ChatGPT for each task.
+WCO creates durable semantic state locally. The `chatgpt_codex` transport supplies bounded architect/research/review decisions through the official runtime. WCO's existing exact repository-read protocol supplies only the context requested by the semantic workflow: summary, bounded tree/search, exact full-file or byte-region reads and digest references.
 
-Repository inspection is bounded to exact Git objects at the sealed base. Sensitive paths are denied. Web-A seals a testable contract and bounded implementation submission. WCO materializes/validates it locally, applies exact operations in its isolated worktree and runs allowed verification commands in the network-disabled Bubblewrap sandbox.
+Provider output is not repository authority by itself. The provider envelope is closed and its nested repository-command, contract, implementation or verdict payload is parsed again through WCO's existing strict validators.
 
-PAIR then starts independent Web-B review. AUTOPILOT instead uses exactly one frozen Sol/Terra reviewer call by default. Final exact-result evidence starts/resumes the original Web-A final intent review. These task turns require no browser interaction after first setup.
+Harness remains the only worktree mutation, command, deterministic verification and Git authority. Sensitive-path, traversal/symlink, preimage/postimage, stale-digest and sandbox checks remain unchanged.
 
-Final APPROVE ends at `READY_FOR_YOU`. REVISE uses bounded Harness-applied same-PR repair and fresh verification. ESCALATE stops for a human decision. Only the human decides merge/release.
+PAIR uses an independent semantic review identity. AUTOPILOT keeps its existing bounded reviewer policy. Final intent review remains bound to the original author intent/thread or an exact durable reconstruction after crash recovery.
+
+Final APPROVE ends at `READY_FOR_YOU`. REVISE uses bounded Harness-applied same-PR repair plus fresh verification. ESCALATE stops for a human decision. Only the human decides merge/release.
 
 ## Returning user
 
@@ -71,9 +68,9 @@ cd /path/to/project
 wco
 ```
 
-Then type a goal. Repository registration, local OpenAI transport credentials and durable task state are reused.
+Then type a goal. No normal returning-user configuration step is allowed. If authorization has been revoked and cannot be silently refreshed by the official runtime, WCO may request the same ChatGPT browser authorization again; it must not request another kind of setup.
 
-Important commands:
+Important commands remain:
 
 - `/status`: current stage;
 - `/task`: goal/contract state;
@@ -81,56 +78,50 @@ Important commands:
 - `/review`: exact verification/review/result/PR evidence;
 - `/pause` / `/resume`: safe transition control;
 - `/doctor`: selected-mode/transport diagnosis;
-- `/web status`: local Web transport state;
-- `/web connect`: normal one-time/recovery OpenAI setup;
-- `/web disconnect`: remove local OpenAI Web credentials;
+- `/web status`: local semantic transport state;
 - `/history`: bounded repository task history.
-
-`/web open` is a setup/settings helper, not a per-task requirement.
 
 ## Failure and restart behavior
 
-Errors identify the subsystem, state whether repository/workflow authority changed and provide the next safe action. Expected user errors do not print raw stack traces.
+After terminal loss/process death/restart, run `wco` again. WCO reads durable local state and resumes from completed checkpoints instead of blindly replaying model turns.
 
-After terminal loss/process death/restart, run `wco` again. WCO reads durable local state, re-attests completed evidence and restarts/reuses the local tunnel as needed. It does not blindly replay ambiguous provider/model calls.
+Persisted semantic thread identities are conversation bindings only. They never create filesystem, command, Git, verifier, publication or merge authority.
 
-Workspace Agent triggers are deterministic/idempotency-bound. Suspended/failed/completed-without-required-output runs fail closed. Temporary network failure preserves local state. Diverged branch, changed base, stale Web submission or mismatched PR also fails closed.
+The official app-server/runtime may be used for persisted thread resume, independent forks, context compaction and detached review. WCO must still bind lifecycle events to exact response/thread/turn identities, enforce timeouts and fail closed on inconsistent provider lifecycle data.
 
-Original uncommitted user work is not overwritten; implementation uses an isolated worktree.
+Original uncommitted user work is not overwritten; implementation uses the existing isolated worktree/Harness path.
 
 ## Multiple repositories
 
-Running `wco` in another repository registers it while preserving trusted configuration. Each task remains bound to its exact repository/base identity. Local credentials/runtime may be reused where safe, but repository authority never crosses task bindings.
+Running `wco` in another repository registers it while preserving trusted configuration. Each task remains bound to its exact repository/base identity. Runtime account authorization may be reused locally where safe, but repository authority never crosses task bindings.
 
 ## Optional Web profiles
 
-Normal:
+Target normal profile after ADR 0004 release gates pass:
+
+```text
+chatgpt_codex
+```
+
+Advanced `web_native_mcp` remains explicit and is not part of normal setup.
+
+Other explicit compatibility/operator profiles remain available only when deliberately selected:
 
 ```text
 web_native_mcp
-wco web connect
+managed_actions
+personal_actions
+actions_relay
+manual_file
 ```
 
-Explicit optional compatibility profiles:
-
-```text
-wco web connect --managed      # optional hosted/team profile
-wco web setup --personal       # optional Custom GPT Action + bearer relay
-wco web connect --self-hosted  # optional legacy self-hosted relay
-manual_file                    # offline/manual compatibility
-```
-
-These profiles are never automatic fallbacks from the local-native path.
+None is an automatic fallback from `chatgpt_codex`.
 
 ## Doctor
 
-`/doctor` probes only the selected profile and orchestration mode.
+For `chatgpt_codex`, Doctor must check only the bundled runtime, ChatGPT account authorization, local semantic state and ordinary WCO/Harness prerequisites. It must not ask for a relay, tunnel, API key, MCP App, Workspace Agent, hosted service or browser cookie.
 
-For `web_native_mcp`, Doctor checks local OpenAI/tunnel credentials and native Web prerequisites while explicitly requiring no third-party relay and no managed device/account service.
-
-PAIR does not probe Codex runtime/auth. AUTOPILOT additionally probes only the selected reviewer runtime/auth prerequisites for its single Sol/Terra pass.
-
-Every mutation path still requires Bubblewrap network-disabled deterministic verification; there is no unrestricted host fallback.
+Every mutation path still requires the existing deterministic verifier boundary; there is no unrestricted host fallback.
 
 ## Uninstall
 
@@ -164,7 +155,23 @@ Transport/chat text never substitutes for canonical artifact identities.
 
 ## Release-candidate validation
 
-Deterministic gates:
+ADR 0004 cannot become the shipped default until exact-head evidence proves:
+
+```text
+first-run browser authorization surfaces = exactly 1
+manual credential/ID/endpoint inputs      = 0
+Cloudflare/VPS/domain/DNS requirements    = 0
+tunnel/MCP/App/Agent setup requirements   = 0
+per-task browser interactions             = 0
+browser DOM/output scraping               = 0
+repository mutation outside Harness       = 0
+force push / auto merge / release         = 0
+crash/restart requires reconfiguration    = 0
+PAIR and AUTOPILOT safety suites          = PASS
+packed-user journey                       = PASS
+```
+
+Deterministic gates remain:
 
 ```bash
 npm ci
@@ -172,31 +179,6 @@ npm run check
 npm run pack:check
 npm run pack:smoke
 npm run test:user:packed
-node scripts/run-packed-managed-user-journey.mjs
 ```
 
-The packed script name is retained temporarily for compatibility; its assertions qualify the local-native normal path.
-
-Environment-backed gates where available:
-
-```bash
-WCO_RUN_SANDBOX_INTEGRATION=1 npm run test:native:sandbox
-WCO_RUN_CODEX_INTEGRATION=1 npm run test:native:codex
-```
-
-Release acceptance must prove:
-
-```text
-default Web profile                  = web_native_mcp
-WCO-hosted normal-path services      = 0
-third-party relay/cloud setup        = 0
-per-task browser interactions        = 0
-PAIR model reviewer calls            = 0
-AUTOPILOT adaptive reviewer calls    = exactly 1 by default
-second Sol/Terra calls               = 0
-Harness model tokens                 = 0
-same Draft PR / exact digest binding = preserved
-human-only merge/release             = preserved
-```
-
-A missing OpenAI account/workspace capability is reported as a provider capability blocker, not converted into a WCO server deployment requirement.
+Environment-backed integration gates remain additional evidence where available. A missing provider/runtime capability is reported as a capability blocker; it is never converted into a requirement for the user to deploy infrastructure.
