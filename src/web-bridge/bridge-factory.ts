@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { TrustedConfig } from "../config/contracts.js";
 import { ActionRelayWebBridge } from "./action-relay-client.js";
+import { ChatGptCodexWebBridge } from "./chatgpt-codex-bridge.js";
 import { ManualFileWebBridge } from "./manual-file-bridge.js";
 import { RelayFileStore } from "./relay/file-store.js";
 import { readRelayToken } from "./relay-credential.js";
@@ -14,7 +15,7 @@ export function createConfiguredWebBridge(config: TrustedConfig, bridgeDirectory
   const mode = config.web_bridge?.mode ?? "manual_file";
 
   if (mode === "chatgpt_codex") {
-    throw new Error("WEB_CHATGPT_CODEX_NOT_READY: chatgpt_codex is gated until its local semantic bridge and one-authorization acceptance path are fully wired.");
+    return new ChatGptCodexWebBridge(config, bridgeDirectory);
   }
   if (mode === "managed_actions") {
     const metadata = resolveManagedWebService(env);
@@ -30,9 +31,9 @@ export function createConfiguredWebBridge(config: TrustedConfig, bridgeDirectory
     });
   }
   if (mode === "web_native_mcp" || mode === "manual_file") {
-    // Both legacy native-MCP and offline manual-file compatibility paths use
-    // the same owner-local durable mailbox. Native MCP remains advanced-only;
-    // it must never become an implicit fallback for another configured mode.
+    // Legacy native-MCP and offline manual-file compatibility paths use the
+    // owner-local durable mailbox. Neither is an implicit fallback for the
+    // local ChatGPT/Codex transport or any other configured mode.
     return new ManualFileWebBridge(new RelayFileStore(bridgeDirectory));
   }
 
