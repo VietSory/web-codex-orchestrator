@@ -3,6 +3,7 @@ import path from "node:path";
 import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
 import type { TrustedConfig } from "../config/contracts.js";
 import { readPreparationForExecution } from "../execution/execution-store.js";
+import { ensureChatGptLogin } from "../runtime/chatgpt-login.js";
 import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
 import { parseChatGptCodexAuthority } from "./chatgpt-codex-authority.js";
 import { ChatGptCodexImplementationClient } from "./chatgpt-codex-implementation-client.js";
@@ -15,6 +16,7 @@ import { toAuthoringEvent } from "./relay/protocol.js";
 import type { AuthoringJobRequest, WebBridge } from "./web-bridge.js";
 
 const OWNER = "local-chatgpt-codex";
+export const CHATGPT_CODEX_AUTH_REQUIRED_ACCOUNT = "ChatGPT authorization required";
 
 function threadId(events: Awaited<ReturnType<RelayFileStore["events"]>>): string | undefined {
   const event = events.slice().reverse().find((value) => value.type === "chatgpt_codex_thread");
@@ -26,6 +28,10 @@ function preparedRunId(events: Awaited<ReturnType<RelayFileStore["events"]>>): s
   const event = events.slice().reverse().find((value) => value.type === "chatgpt_codex_prepared_run");
   const value = event?.payload as { run_id?: unknown } | undefined;
   return typeof value?.run_id === "string" ? value.run_id : null;
+}
+
+function errorCode(error: unknown): string | null {
+  return error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : null;
 }
 
 export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBridge {
@@ -60,7 +66,15 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
     return this.implementation;
   }
 
+  private async ensureAuthorizedForProviderTurn(): Promise<void> {
+    const authorized = await ensureChatGptLogin({ config: this.config, stateDirectory: this.stateDirectory });
+    if (!authorized) {
+      throw new WebBridgeError("CODEX_AUTH_UNAVAILABLE", "ChatGPT authorization is required. Run `wco web connect` in an interactive terminal.");
+    }
+  }
+
   private async turn(prompt: string, existingThreadId?: string, signal?: AbortSignal): Promise<{ thread_id: string; output: unknown }> {
+    await this.ensureAuthorizedForProviderTurn();
     await mkdir(this.scratchDirectory, { recursive: true, mode: 0o700 });
     await mkdir(this.authorityDirectory, { recursive: true, mode: 0o700 });
     const profile = this.config.agents?.final_reviewer;
@@ -121,6 +135,7 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
     const reservation = record.events.slice().reverse().find((event) => event.type === "chatgpt_codex_implementation_reserved");
     if (reservation) throw new WebBridgeError("WEB_CHATGPT_CODEX_AMBIGUOUS_IMPLEMENTATION", "A prior implementation provider turn may have started without a durable result; WCO refuses to replay an ambiguous mutation proposal.");
     await this.store.append(jobId, OWNER, "chatgpt_codex_implementation_reserved", { run_id: runId }, `implementation-reserve-${contentDigest({ jobId, runId })}`);
+    await this.ensureAuthorizedForProviderTurn();
     const preparation = await readPreparationForExecution(this.stateDirectory, runId);
     const profile = this.config.agents?.implementer;
     if (!profile) throw new WebBridgeError("WEB_CHATGPT_CODEX_CONFIG_INVALID", "Harness implementer profile is missing.");
@@ -159,7 +174,17 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
   }
 
   async getConnectionStatus(): Promise<BridgeConnectionStatus> {
-    try { await (await this.client()).checkAvailability(); return { configured: true, connected: true, account: "ChatGPT via bundled Codex" }; }
-    catch { return { configured: true, connected: false }; }
+    try {
+      await (await this.client()).checkAvailability();
+      return { configured: true, connected: true, account: "ChatGPT via bundled Codex" };
+    } catch (error) {
+      if (errorCode(error) === "CODEX_AUTH_UNAVAILABLE") {
+        // `connected` here means the local bridge/runtime is reachable. The
+        // account sentinel lets status surfaces remain truthful while TUI
+        // routing never falls through to an unrelated compatibility setup.
+        return { configured: true, connected: true, account: CHATGPT_CODEX_AUTH_REQUIRED_ACCOUNT };
+      }
+      return { configured: true, connected: false };
+    }
   }
 }
