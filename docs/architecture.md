@@ -1,82 +1,145 @@
 # Architecture
 
-WCO is a durable local control plane between untrusted external semantic proposals and a human-owned Git merge decision. Correctness is based on exact identities, deterministic verification and durable receipts—not on conversational continuity.
+WCO is a durable local control plane between untrusted external semantic proposals and a human-owned Git merge decision. Correctness is based on exact identities, deterministic verification and durable receipts—not on conversational continuity or provider UI state.
 
 ## System boundary
 
 ```text
+user goal
+   ↓
 ChatGPT Web semantic authority
-        ↓
-bounded schema + exact identity
-        ↓
+   ↓ bounded schema + exact identity
 WCO local durable state
-        ↓
+   ↓
 Harness mutation + deterministic verification
-        ↓
+   ↓
 mode-specific code review
   PAIR: independent Web-B
   AUTO: exactly one frozen Sol/Terra pass
-        ↓
+   ↓
 exact Git/GitHub publication evidence
-        ↓
+   ↓
 original Web-A final intent verdict
-        ↓
+   ↓
 human merge/release authority
 ```
 
-Browser UI, ChatGPT/Codex transcripts, provider run status, terminal output, MCP transport state and caches are transport/diagnostic surfaces. They never become repository or lifecycle mutation authority.
+Browser UI, provider transcripts/status, terminal output, transport state and caches are diagnostic/transport surfaces. They never become repository or lifecycle mutation authority.
 
-## Default Web-native transport
+## Normal-user transport: one-link `managed_actions`
 
-The preferred/default single-user profile is `web_native_mcp`:
+The default profile is `managed_actions` because the frozen end-user contract is:
 
 ```text
-WCO local
-  |
-  | durable semantic mailbox + exact reads
-  v
-WCO MCP stdio adapter
-  ^
-  | pinned/checksummed official openai/tunnel-client
-  | outbound HTTPS only
-  |
-OpenAI Secure MCP Tunnel
-  |
-private WCO MCP app in ChatGPT
-  |
-private WCO Workspace Agent
-  ^
-  | official Workspace Agent trigger API
-  |
-WCO local
+npm install -g web-codex-orchestrator
+cd repository
+wco
+→ exactly one browser authorization on first use
+→ thereafter only goals/prompts
 ```
 
-The workstation never exposes a public inbound HTTP endpoint. The normal user does not provision Cloudflare, ngrok, a VPS, domain/DNS, AWS, external OAuth infrastructure or a relay secret. WCO owns the local tunnel-client lifecycle and stores native OpenAI credentials only in owner-protected WCO credential storage, outside trusted repository configuration.
+Architecture:
 
-The MCP adapter exposes bounded exact repository reads plus three semantic submit capabilities: contract, implementation authority and review verdict. These submit tools are correctly classified as writes at the MCP/ChatGPT permission layer because they append semantic state, but they are **non-destructive with respect to the repository**. They cannot write the worktree, run shell/Git, verify, publish, merge, deploy or release. Harness remains the sole mutation authority.
+```text
+FIRST AUTHORIZATION
 
-For zero-click daily operation, a workspace may configure those specific semantic submit tools for no per-run confirmation during the one-time private App/Agent setup when its OpenAI security policy explicitly permits that setting. WCO never lies about tool annotations or bypasses platform approval policy.
+WCO local
+  |
+  | device id + nonce + PKCE S256 challenge
+  v
+maintainer-operated WCO Web service
+  |
+  | one verification_uri_complete
+  v
+browser → user Authorize once
+  |
+  v
+scoped WCO access/refresh credential
 
-Original Web-A author/final-review activity uses one stable Workspace Agent `conversation_key`; independent PAIR Web-B review uses a separate identity. Workspace Agent triggers use deterministic idempotency keys. Suspended, failed, ambiguous or completed-without-required-output provider runs fail closed; they cannot authorize mutation and never cause automatic transport fallback.
+NORMAL TASK
 
-### OpenAI capability boundary
+user prompt
+  |
+  v
+WCO local durable job
+  |
+  v
+managed WCO control plane / relay
+  |
+  v
+maintainer-configured ChatGPT Web / Workspace Agent
+  |
+  | bounded semantic envelope
+  v
+WCO local Harness
+```
 
-Secure MCP Tunnel, the required full MCP tool capabilities and Workspace Agent APIs are not available to every OpenAI plan/workspace. If the required official capabilities are unavailable, WCO reports `OPENAI_CAPABILITY_BLOCKED` or a more specific Web-native error. It does not substitute a third-party relay, browser automation, public ingress or undocumented ChatGPT interfaces.
+The end user never provisions the hosted control plane, OAuth backend, ChatGPT App/MCP connector, Workspace Agent, trigger credentials or provider infrastructure. Those are service-owner release responsibilities.
 
-This is an explicit platform-capability boundary. WCO must not weaken its authority model to make an unsupported account appear compatible.
+The local device credential is scoped, owner-protected and stored outside repositories. Refresh is silent. Revocation may require the same one-link authorization again; it never exposes provider credentials or infrastructure configuration to the end user.
+
+### Automatic semantic turns
+
+Managed mode is zero-browser after authorization:
+
+```text
+createAuthoringJob
+→ managed control plane automatically triggers original Web-A
+→ Web-A submits bounded contract/implementation authority
+→ Harness apply + verify
+→ exact review evidence registered
+→ managed control plane automatically triggers independent Web-B for PAIR
+→ managed control plane automatically resumes original Web-A for final intent review
+→ READY_FOR_YOU
+```
+
+The managed service must retain the original author conversation/intent identity for final review and use a distinct identity for independent Web-B. Trigger requests are idempotency-bound. A suspended/failed Agent or a completed run that did not submit the required semantic output is an operator/service defect and fails closed; WCO must never ask the normal user to open ChatGPT or approve/configure tools per task.
+
+### Managed service readiness
+
+The package can advertise the normal one-link flow only when operator metadata and the hosted service prove:
+
+- ChatGPT/account authorization backend ready;
+- Senior Architect/App/Agent configuration ready;
+- automatic Agent trigger ready;
+- scoped device registration/token/refresh/revoke ready;
+- exact relay protocol compatible.
+
+If not, WCO reports an operator/release blocker such as `WEB_MANAGED_OPERATOR_NOT_READY` or `WEB_MANAGED_DEPLOYMENT_REQUIRED`. It does not redirect end users to Cloudflare, native tunnel setup, browser automation or manual artifacts.
+
+## Advanced official `web_native_mcp`
+
+Secure MCP Tunnel remains a supported explicit advanced/operator profile:
+
+```text
+wco web connect --native
+```
+
+```text
+WCO local MCP
+  ^
+  | official openai/tunnel-client · outbound only
+OpenAI Secure MCP Tunnel
+  |
+private ChatGPT MCP App / Workspace Agent
+```
+
+It is not the normal default because current provider setup exposes developer/operator controls such as tunnel IDs, runtime API credentials, App/MCP configuration and Workspace Agent credentials. Those are forbidden in the normal-user UX budget.
+
+The native MCP adapter still exposes only bounded exact reads and semantic submit capabilities. It cannot write the worktree, execute shell/Git, verify, publish, merge, deploy or release.
 
 ## Optional compatibility transports
 
 Explicit advanced profiles remain:
 
 ```text
-personal_actions  → Custom GPT Action + Bearer RelayProtocol endpoint
- actions_relay    → legacy self-hosted Bearer profile
- managed_actions  → organization/hosted OAuth + account/device
- manual_file      → offline/manual artifact compatibility
+web_native_mcp   → official Secure MCP Tunnel/operator profile
+personal_actions → Custom GPT Action + Bearer RelayProtocol endpoint
+actions_relay    → legacy self-hosted Bearer profile
+manual_file      → offline/manual compatibility
 ```
 
-They implement the same `WebBridge` semantic boundary and cannot gain Harness/Git authority. The optional Cloudflare Worker is merely a reference implementation for `personal_actions`; it is not default, not a normal-user dependency and not a Web-native release gate.
+No failed normal managed connection may silently switch to one of these profiles. The optional Cloudflare Worker is only a reference adapter for an advanced `personal_actions` user.
 
 ## Context architecture
 
@@ -87,13 +150,13 @@ goal
 → exact repository identity/map/search
 → ranked relevant paths/regions
 → bounded exact reads on demand
-→ content-addressed cache references for unchanged bytes
+→ content-addressed references for unchanged bytes
 → diff/result deltas
 ```
 
-Base commit, tree/blob SHA, Result digest, generation and contract digest identify immutable context. The local cache is disposable performance state. Canonical Git objects and durable read receipts are re-attested wherever context becomes mutation authority. Full exact reads/preimages remain required before replace/delete operations.
+Base commit, tree/blob SHA, Result digest, generation and contract digest identify immutable context. Local caches are disposable performance state. Canonical Git objects and durable read receipts are re-attested wherever context becomes mutation authority. Full exact reads/preimages remain required before replace/delete operations.
 
-PAIR sends no model-review turn. AUTOPILOT retains exactly one adaptive reviewer call by default. Harness and deterministic verification use zero model tokens.
+PAIR sends no model-review turn. AUTOPILOT retains exactly one adaptive Sol/Terra reviewer call by default. Harness and deterministic verification use zero model tokens.
 
 ## Authority hierarchy
 
@@ -110,88 +173,63 @@ From stronger to weaker authority:
 9. durable orchestration receipts that advance only after re-attesting stronger evidence above;
 10. provider status, logs, UI/session state and caches.
 
-Recovery follows the same hierarchy. A cached/provider `success` flag cannot overrule changed Git, archive, PR, Result Bundle, review or digest identity.
+Recovery follows the same hierarchy. A provider `success` flag cannot overrule changed Git, archive, PR, Result Bundle, review or digest identity.
 
 ## Mode-specific review authority
 
 ### PAIR
 
-PAIR has **no Codex dependency**. After deterministic verification, an independent Web-B identity may approve, escalate or return bounded repair authority. Harness applies/reverifies any repair. Original Web-A remains a separate mandatory final intent reviewer.
+PAIR has no Codex/model-review dependency. After deterministic verification, an independent Web-B may APPROVE, ESCALATE or return bounded repair authority. Harness applies/reverifies any repair. Original Web-A remains mandatory final intent reviewer.
 
-PAIR model/Codex reviewer calls = 0. Harness model tokens = 0.
+```text
+PAIR model/Codex reviewer calls = 0
+Harness model tokens            = 0
+```
 
 ### AUTOPILOT
 
-AUTOPILOT uses exactly one frozen Sol/Terra reviewer on the normal path. That reviewer has read/review authority only. It may return a complete bounded repair set in that same call; Harness validates/applies/reverifies it.
+AUTOPILOT uses exactly one frozen Sol/Terra reviewer on the normal path. It has read/review authority only and may return a complete bounded repair set in that same call; Harness validates/applies/reverifies it.
 
-Original Web-A final review remains mandatory. A final Web-A `REVISION_REQUESTED` is Web-proposed + Harness-applied, fast-forwards the same Draft PR, creates a new immutable result generation, and returns to Web-A. It does **not** invoke Sol/Terra a second time.
-
-Legacy model-owned Phase 4/Phase 8 surfaces remain compatibility code for older prepared runs, not normal Harness-first authority.
+Original Web-A final review remains mandatory. A final Web-A REVISE is Web-proposed + Harness-applied, fast-forwards the same Draft PR, creates a new immutable result generation, and returns to Web-A. It never invokes Sol/Terra a second time.
 
 ## Harness owns every mutation
 
 Web/model reviewers can propose only closed bounded operations (`create_file`, `replace_file`, `delete_file`) with exact path/preimage/postimage identity. The same Harness transaction machinery owns worktree writes, rollback, repair checkpoints and exact digest calculation regardless of who proposed the change.
 
-MCP, Workspace Agent, GPT Action, relay and manual-file transports can only deliver semantic envelopes. None is allowed direct shell/filesystem/Git authority.
+Managed control plane, MCP, Workspace Agent, GPT Action, relay and manual-file transports can only deliver semantic envelopes. None receives shell/filesystem/Git authority.
 
-## Fail-safe defaults and complete mediation
+## Fail-safe defaults and recovery
 
 Ambiguity is a stop condition. Security-sensitive state is revalidated where it becomes authority.
 
-Applied in WCO:
-
-- unsupported/malformed semantic authority fails closed instead of guessing;
-- provider capability/auth failures never enable another transport automatically;
+- unsupported/malformed semantic authority fails closed;
+- provider/auth/service failures never enable another transport automatically;
 - Git/GitHub identities are re-attested before irreversible boundaries;
-- Web/model, transport, verifier, Git and GitHub capabilities remain separated;
-- dangerous actions stay outside the autonomous command set;
-- missing isolation never falls back to unrestricted host execution.
+- missing isolation never falls back to unrestricted host execution;
+- already-durable provider/network results are reused rather than blindly replayed;
+- ambiguous external call outcomes are not blindly repeated.
 
-## End-to-end correctness
-
-Lower layers validate their own work, while orchestration endpoints still verify the property that matters to the user:
-
-- a push is adopted only after the expected remote SHA is observed;
-- a Draft PR becomes authority only after repository/base/head/draft state are re-attested;
-- Result Bundles and Web verdicts bind the exact published head;
-- repairs bind the exact review/result generation they answer;
-- crash recovery adopts exact completed side effects rather than blindly replaying them.
-
-## Write-ahead recovery and idempotency
-
-WCO persists the smallest durable authority required before external/model/provider side effects. Workspace Agent triggers, model review, commit, push, PR creation and result generation are idempotency/recovery boundaries.
-
-If a response/side effect is already durably bound, WCO reuses/adopts it. If a provider call outcome is ambiguous, WCO does not blindly replay it. This reduces duplicate side effects, token usage and semantic drift.
-
-## Bounded resources
-
-Every adversarial or long-lived surface has explicit bounds: archive entries/bytes, JSON receipts, repository reads/regions, subprocess output/time, retries, events, candidate scans, provider/model turns, repair generations and concurrency. Bounds are correctness constraints, not merely performance tuning.
+A push is adopted only after expected remote SHA is observed. A Draft PR becomes authority only after repository/base/head/draft state are re-attested. Result Bundles and Web verdicts bind exact published head. Repairs bind the exact generation they answer.
 
 ## Parallel reads, serialized authority
 
-Independent exact reads, research, context ranking and safe attestations may run concurrently. Mutation, artifact selection, repair adoption, commit/push, publication promotion and lifecycle state transitions remain serialized. WCO does not add agents merely to increase nominal parallelism when coordination/context cost would exceed benefit.
-
-## Content-addressed evidence
-
-Stable artifacts are named/compared by hashes or immutable Git identities wherever practical. Derived maps, summaries and caches may accelerate retrieval but can never create authorization. Deleting a cache must not change a mutation decision.
+Independent exact reads, context ranking and safe attestations may run concurrently. Mutation, artifact selection, repair adoption, commit/push, publication promotion and lifecycle state transitions remain serialized.
 
 ## Human boundary
 
-Neither PAIR nor AUTOPILOT automatically merges, marks a PR ready, enables auto-merge, force-pushes, directly pushes protected branches, deletes remote branches, deploys, tags, publishes npm packages or releases. `READY_FOR_YOU` means the exact result is ready for human review; it is not shipment authority.
+Neither PAIR nor AUTOPILOT automatically merges, marks ready, enables auto-merge, force-pushes, deploys, tags, publishes npm or releases. `READY_FOR_YOU` means the exact result is ready for human review; it is not shipment authority.
 
 ## Product entry point
-
-The normal product path is:
 
 ```text
 npm install -g web-codex-orchestrator
 cd repository
 wco
-→ one-time official OpenAI/ChatGPT Web-native authorization if needed
+→ first use: exactly one WCO authorization link
 → goal
 → reviewed Draft PR
 → READY_FOR_YOU
 → human merge/release
 ```
 
-The interactive TUI and transport adapters sit over durable orchestration services; they are not parallel authority state machines. See [web-bridge.md](web-bridge.md), [ADR 0002](adr/0002-official-openai-web-native-default.md), [job-modes.md](job-modes.md), [operations.md](operations.md) and [protocols.md](protocols.md).
+See [frozen user experience contract](user-experience-contract.md), [web bridge](web-bridge.md), [ADR 0003](adr/0003-one-link-managed-default.md), [job modes](job-modes.md), [operations](operations.md) and [protocols](protocols.md).
