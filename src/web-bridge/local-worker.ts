@@ -14,6 +14,7 @@ import { ReadCoverageStore } from "./read-coverage-store.js";
 import { materializeTaskBundle } from "./task-contract-materializer.js";
 import { materializeWebImplementationPack } from "./web-pack-materializer.js";
 import { ContentAddressedContextCache } from "./context-cache.js";
+import { isPreparedRunAwareWebBridge } from "./prepared-run-aware.js";
 
 export interface LocalWorkerSession {
   schema_version: "1.0";
@@ -149,6 +150,13 @@ export async function advanceLocalWorker(options: {
     } else if (event.type === "contract_sealed") {
       const materialized = await materializeTaskBundle({ envelope: event.envelope, repository: session.repository, config: options.config, stateDirectory: options.stateDirectory });
       const prepared = await prepareTask({ archivePath: materialized.archive_path, stateDirectory: options.stateDirectory, configPath: options.configPath });
+      if (isPreparedRunAwareWebBridge(options.bridge)) {
+        await options.bridge.bindPreparedRun(
+          session.job_id,
+          prepared.run_id,
+          `bind-prepared-${contentDigest({ job_id: session.job_id, run_id: prepared.run_id })}`,
+        );
+      }
       session.sealed = true;
       session.contract = event.envelope;
       session.task_archive_path = materialized.archive_path;
