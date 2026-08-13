@@ -24,8 +24,11 @@ export function createConfiguredWebBridge(config: TrustedConfig, bridgeDirectory
       token: async () => await readRelayToken(credentialsDirectory, env),
     });
   }
-  // Advanced web_native_mcp and offline manual_file deliberately share the
-  // same local durable mailbox. Native mode exposes it through the official
-  // Secure MCP Tunnel; normal users use managed_actions instead.
+
+  // web_native_mcp is the local-authority default. ChatGPT reaches this exact
+  // durable mailbox only through the OpenAI Secure MCP Tunnel process running
+  // on the user's machine. There is no WCO-hosted service, public workstation
+  // ingress or third-party relay in this path. manual_file intentionally reuses
+  // the same store as an offline/debug transport.
   return new ManualFileWebBridge(new RelayFileStore(bridgeDirectory));
 }
