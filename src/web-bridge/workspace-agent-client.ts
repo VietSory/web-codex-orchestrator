@@ -1,32 +1,27 @@
-import { WebBridgeError } from "./contracts.js";
+import { contentDigest, WebBridgeError } from "./contracts.js";
 import type { NativeOpenAiCredential } from "./native-openai-credential.js";
 
 const API = "https://api.chatgpt.com/v1/workspace_agents";
-const RUN_ID = /^apirun_[A-Za-z0-9_-]{3,128}$/;
 
 export interface WorkspaceAgentTriggerReceipt {
-  conversation_url: string;
+  accepted: true;
+  /**
+   * Local deterministic receipt identity. OpenAI's current Workspace Agent
+   * trigger API intentionally returns 202 with no response body and no run id.
+   */
   agent_trigger_run_id: string;
-}
-
-export interface WorkspaceAgentRunStatus {
-  id: string;
-  status: "queued" | "in_progress" | "suspended" | "completed" | "failed";
+  /** ChatGPT does not currently return a conversation URL from the trigger API. */
   conversation_url: string;
-  error: { code?: string; message?: string } | null;
-}
-
-function cleanHttps(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.length > 4096) throw new WebBridgeError("WEB_NATIVE_PROVIDER_RESPONSE_INVALID", `${label} is invalid.`);
-  const url = new URL(value);
-  if (url.protocol !== "https:" || url.username || url.password || url.hash) throw new WebBridgeError("WEB_NATIVE_PROVIDER_RESPONSE_INVALID", `${label} is unsafe.`);
-  return url.href;
+  request_sha256: string;
 }
 
 async function providerError(response: Response, operation: string): Promise<never> {
   const text = (await response.text()).slice(0, 4096);
   if ([401, 403, 404, 409].includes(response.status)) {
-    throw new WebBridgeError("OPENAI_CAPABILITY_BLOCKED", `${operation} is unavailable for this OpenAI workspace (${response.status}). Verify Workspace Agents/full MCP permissions in ChatGPT; WCO will not substitute third-party hosting automatically.`);
+    throw new WebBridgeError(
+      "OPENAI_CAPABILITY_BLOCKED",
+      `${operation} is unavailable for this OpenAI workspace (${response.status}). Verify Workspace Agents/full MCP permissions in ChatGPT; WCO will not substitute third-party hosting automatically.`,
+    );
   }
   throw new WebBridgeError("WEB_NATIVE_PROVIDER_FAILED", `${operation} failed with HTTP ${response.status}${text ? `: ${text}` : ""}`);
 }
@@ -38,8 +33,19 @@ export async function triggerWorkspaceAgent(options: {
   idempotencyKey: string;
   fetchImpl?: typeof fetch;
 }): Promise<WorkspaceAgentTriggerReceipt> {
-  if (!options.input || options.input.length > 65_536 || /\0/.test(options.input)) throw new WebBridgeError("WEB_NATIVE_TRIGGER_INVALID", "Workspace Agent trigger input is invalid.");
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(options.conversationKey) || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(options.idempotencyKey)) throw new WebBridgeError("WEB_NATIVE_TRIGGER_INVALID", "Workspace Agent trigger identity is invalid.");
+  if (!options.input || options.input.length > 65_536 || /\0/.test(options.input)) {
+    throw new WebBridgeError("WEB_NATIVE_TRIGGER_INVALID", "Workspace Agent trigger input is invalid.");
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(options.conversationKey) || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(options.idempotencyKey)) {
+    throw new WebBridgeError("WEB_NATIVE_TRIGGER_INVALID", "Workspace Agent trigger identity is invalid.");
+  }
+
+  const body = { conversation_key: options.conversationKey, input: options.input };
+  const requestSha256 = contentDigest({
+    trigger_id: options.credential.workspace_agent_trigger_id,
+    idempotency_key: options.idempotencyKey,
+    ...body,
+  });
   const response = await (options.fetchImpl ?? fetch)(`${API}/${encodeURIComponent(options.credential.workspace_agent_trigger_id)}/trigger`, {
     method: "POST",
     headers: {
@@ -48,32 +54,19 @@ export async function triggerWorkspaceAgent(options: {
       "OpenAI-Beta": "workspace_agent_runs=v1",
       "Idempotency-Key": options.idempotencyKey,
     },
-    body: JSON.stringify({ conversation_key: options.conversationKey, input: options.input }),
+    body: JSON.stringify(body),
   });
   if (response.status !== 202) return await providerError(response, "Workspace Agent trigger");
-  const value = await response.json() as Record<string, unknown>;
-  const runId = value.agent_trigger_run_id;
-  if (typeof runId !== "string" || !RUN_ID.test(runId)) throw new WebBridgeError("WEB_NATIVE_PROVIDER_RESPONSE_INVALID", "Workspace Agent trigger did not return a valid run id.");
-  return { conversation_url: cleanHttps(value.conversation_url, "conversation_url"), agent_trigger_run_id: runId };
-}
 
-export async function readWorkspaceAgentRun(options: {
-  credential: NativeOpenAiCredential;
-  runId: string;
-  fetchImpl?: typeof fetch;
-}): Promise<WorkspaceAgentRunStatus> {
-  if (!RUN_ID.test(options.runId)) throw new WebBridgeError("WEB_NATIVE_TRIGGER_INVALID", "Workspace Agent run id is invalid.");
-  const response = await (options.fetchImpl ?? fetch)(`${API}/${encodeURIComponent(options.credential.workspace_agent_trigger_id)}/runs/${encodeURIComponent(options.runId)}`, {
-    headers: { Authorization: `Bearer ${options.credential.workspace_agent_access_token}` },
-  });
-  if (!response.ok) return await providerError(response, "Workspace Agent run status");
-  const value = await response.json() as Record<string, unknown>;
-  const status = value.status;
-  if (!RUN_ID.test(String(value.id)) || !["queued", "in_progress", "suspended", "completed", "failed"].includes(String(status))) throw new WebBridgeError("WEB_NATIVE_PROVIDER_RESPONSE_INVALID", "Workspace Agent run status payload is invalid.");
-  const rawError = value.error;
-  const error = rawError && typeof rawError === "object" && !Array.isArray(rawError) ? {
-    ...(typeof (rawError as Record<string, unknown>).code === "string" ? { code: (rawError as Record<string, unknown>).code as string } : {}),
-    ...(typeof (rawError as Record<string, unknown>).message === "string" ? { message: (rawError as Record<string, unknown>).message as string } : {}),
-  } : null;
-  return { id: String(value.id), status: status as WorkspaceAgentRunStatus["status"], conversation_url: cleanHttps(value.conversation_url, "conversation_url"), error };
+  // Current official contract: 202 Accepted, no response body, no provider run
+  // id and no API-readable agent result. The authoritative completion signal is
+  // therefore the exact semantic envelope submitted through WCO's local MCP
+  // tools/mailbox. Keep a deterministic local trigger receipt only for retry
+  // identity and evidence; never invent provider state.
+  return {
+    accepted: true,
+    agent_trigger_run_id: `accepted_${requestSha256.slice(0, 48)}`,
+    conversation_url: "https://chatgpt.com/",
+    request_sha256: requestSha256,
+  };
 }
