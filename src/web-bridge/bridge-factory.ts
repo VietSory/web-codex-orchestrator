@@ -12,7 +12,9 @@ import type { WebBridge } from "./web-bridge.js";
 
 export function createConfiguredWebBridge(config: TrustedConfig, bridgeDirectory: string, env: NodeJS.ProcessEnv = process.env): WebBridge {
   const credentialsDirectory = path.join(path.dirname(path.resolve(bridgeDirectory)), "credentials");
-  const mode = config.web_bridge?.mode ?? "manual_file";
+  // Zero-config normal user path. Explicit web_bridge profiles are advanced
+  // compatibility overrides; absence never falls back to a manual mailbox.
+  const mode = config.web_bridge?.mode ?? "chatgpt_codex";
 
   if (mode === "chatgpt_codex") {
     return new ChatGptCodexWebBridge(config, bridgeDirectory);
