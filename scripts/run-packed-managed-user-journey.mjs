@@ -63,16 +63,26 @@ try {
   assert.equal(config.web_bridge?.relay_url, undefined);
   assert.equal(config.web_bridge?.gpt_url, undefined);
 
-  // Until the maintainer deploys the release service, the packed candidate must
-  // fail as an OPERATOR/RELEASE boundary, never by asking this end user to
-  // provision a tunnel, relay, key, endpoint or browser automation fallback.
+  // Before the single authorization decision, status must require only the
+  // one-link managed connect flow. It must not expose any operator/provider
+  // provisioning controls to this end user.
   const status = await run(bin, ["web", "status"], { cwd: repo, env });
   assert.equal(status.signal, null);
-  assert.equal(status.code, 1, `undeployed managed service must fail closed\n${status.stdout}\n${status.stderr}`);
+  assert.equal(status.code, 1, `unlinked managed status must fail closed\n${status.stdout}\n${status.stderr}`);
   const statusText = `${status.stdout}\n${status.stderr}`;
-  assert.match(statusText, /WEB_MANAGED_DEPLOYMENT_REQUIRED|service owner/i);
+  assert.match(statusText, /WEB_MANAGED_RECONNECT_REQUIRED|not linked/i);
+  assert.match(statusText, /Next: wco web connect/i);
   assert.doesNotMatch(statusText, /Personal relay HTTPS URL|tunnel ID|runtime API key|Workspace Agent access token|Cloudflare|ngrok|VPS/i);
-  assert.match(statusText, /Next: wco web status|Next: wco web connect/i);
+
+  // This source candidate deliberately ships no real production managed URL.
+  // Trying to connect must therefore identify an OPERATOR/RELEASE deployment
+  // boundary, not ask the end user to provision anything themselves.
+  const connect = await run(bin, ["web", "connect"], { cwd: repo, env });
+  assert.equal(connect.signal, null);
+  assert.equal(connect.code, 1, `undeployed managed service must fail closed\n${connect.stdout}\n${connect.stderr}`);
+  const connectText = `${connect.stdout}\n${connect.stderr}`;
+  assert.match(connectText, /WEB_MANAGED_DEPLOYMENT_REQUIRED|managed WCO Web service|service owner/i);
+  assert.doesNotMatch(connectText, /Personal relay HTTPS URL|tunnel ID|runtime API key|Workspace Agent access token|Cloudflare|ngrok|VPS/i);
 
   const contract = await readFile(path.join(prefix, "lib", "node_modules", "web-codex-orchestrator", "docs", "user-experience-contract.md"), "utf8");
   assert.match(contract, /exactly one HTTPS authorization link/i);
