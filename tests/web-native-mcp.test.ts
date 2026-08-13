@@ -18,7 +18,7 @@ const credential: NativeOpenAiCredential = {
   schema_version: "1.0",
   tunnel_id: `tunnel_${"a".repeat(32)}`,
   control_plane_api_key: `sk-${"c".repeat(40)}`,
-  workspace_agent_trigger_id: "agtch_example123",
+  workspace_agent_trigger_id: "agtch_example1234567890",
   workspace_agent_access_token: `wsa_${"d".repeat(40)}`,
 };
 
@@ -98,7 +98,7 @@ test("Workspace Agent trigger uses official beta run receipt and stable idempote
   assert.equal(receipt.agent_trigger_run_id, "apirun_test123");
   assert.equal(receipt.conversation_url, "https://chatgpt.com/c/wco");
   assert.equal(requests.length, 1);
-  assert.match(requests[0]!.url, /\/workspace_agents\/agtch_example123\/trigger$/);
+  assert.match(requests[0]!.url, /\/workspace_agents\/agtch_example1234567890\/trigger$/);
   const headers = new Headers(requests[0]!.init?.headers);
   assert.equal(headers.get("OpenAI-Beta"), "workspace_agent_runs=v1");
   assert.equal(headers.get("Idempotency-Key"), "wco-call-1");
