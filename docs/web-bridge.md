@@ -1,112 +1,98 @@
 # ChatGPT Web bridge
 
-WCO integrates ChatGPT Web through an explicit `WebBridge` profile while keeping all repository mutation authority local.
+WCO integrates ChatGPT Web through an explicit `WebBridge` profile while keeping repository state, semantic mailbox, evidence and all mutation authority on the user's machine.
 
-## Default: `managed_actions`
+## Default: `web_native_mcp`
 
-The normal user path is a maintainer-operated WCO Web service with exactly one browser authorization:
-
-```text
-first run
-  wco
-   |
-   | device id + nonce + PKCE S256 challenge
-   v
-managed WCO service
-   |
-   | one verification_uri_complete
-   v
-browser: Authorize once
-   |
-   v
-WCO stores scoped refreshable device credential
-
-then every task
-  user prompt
-   |
-   v
-WCO managed relay
-   |
-   v
-maintainer-configured ChatGPT Web / Workspace Agent
-   |
-   v
-bounded semantic output
-   |
-   v
-WCO Harness
-```
-
-The normal path does not require Cloudflare, ngrok, a VPS, a custom domain, DNS, AWS, public localhost, a user-hosted OAuth service, or any user-entered relay secret.
-
-It also does not ask the end user for a tunnel ID, API key, Workspace Agent trigger ID/token, relay/GPT URL, schema, MCP App, Custom GPT or Agent creation. The maintainer/service owner provisions those provider/infrastructure concerns once globally.
-
-`wco web connect` is the normal connection command. It opens exactly one clean HTTPS verification URL returned by the managed service, polls the PKCE/device exchange and stores only the scoped access/refresh credential in owner-protected WCO credential storage. Returning sessions refresh silently.
-
-There is no per-task browser action. Creating an authoring job automatically starts Web-A. Supplying exact review evidence automatically starts an independent Web-B or resumes original Web-A for final intent review. If automatic triggering is unavailable, suspended or incomplete, WCO fails closed as an operator/service defect instead of asking the end user to open ChatGPT manually.
-
-## Managed automatic-agent contract
-
-The local managed client uses two additional bounded control-plane operations:
+The normal user path is the official OpenAI Secure MCP Tunnel connected to WCO's local MCP server:
 
 ```text
-POST /v1/managed/agent/trigger
-GET  /v1/managed/agent/runs/{run_id}
+USER MACHINE
+  project / worktree
+  WCO CLI/TUI
+  local state + receipts + context cache
+  local semantic mailbox
+  local MCP server
+  local tunnel-client
+  Harness + verifier
+          |
+          | outbound-only HTTPS
+          v
+       OpenAI
+          |
+          v
+ ChatGPT App / Workspace Agent
 ```
 
-The trigger is authenticated by the user's scoped WCO device credential and idempotency-bound. Its purpose is one of:
+There is no WCO-hosted control plane, database, mailbox, relay, SaaS backend or public workstation endpoint in the normal path.
+
+The first OpenAI setup is provider-capability driven. Current Secure MCP Tunnel requires a provisioned tunnel ID and runtime API key, and automatic Web turns require the ChatGPT connector/Workspace Agent configuration supported by the user's account/workspace. WCO guides that setup, validates it, stores resulting credentials only in owner-protected local WCO storage, and starts/reuses the local tunnel runtime afterwards.
+
+`wco web connect` is the normal connection command. `wco web connect --native` remains a compatibility alias for the same local-native setup.
+
+After successful first setup there is no per-task browser action. Creating an authoring job automatically triggers Web-A; pending PAIR review triggers an independent Web-B; final review resumes the original Web-A identity. If the current OpenAI account lacks the necessary capability, WCO fails closed with an `OPENAI_CAPABILITY_BLOCKED`-class status rather than silently enabling a third-party relay.
+
+## Local semantic authority contract
+
+The local MCP surface is intentionally narrow:
+
+- discover the exact pending author/review job;
+- request bounded exact repository summary/tree/search/file or byte-region context;
+- submit a sealed semantic contract;
+- submit bounded implementation authority;
+- submit a bounded review verdict/repair authority.
+
+MCP submit tools do **not** write repository files, run shell/Git, publish, merge, deploy or release. Harness remains the only repository mutation authority.
+
+The local mailbox is durable and owner-local. OpenAI receives only the bounded semantic/context traffic necessary for the selected Web turn; WCO's canonical state and recovery receipts do not move to a WCO-operated server.
+
+## Automatic Web turns
+
+When configured, WCO uses the official Workspace Agent trigger/run surface to start semantic turns without browser interaction for each task. Trigger identity is idempotency-bound and separated by purpose:
 
 - `author`;
 - `independent_code_review`;
 - `final_intent_review`.
 
-The managed service owns the provider-side Workspace Agent credential. It must map final-intent review back to the original Web-A conversation/intent and create an independent conversation for Web-B. Provider credentials are never sent to local repository context or stored in a project.
+Independent Web-B uses a separate conversation identity. Final intent review binds back to the original Web-A task identity. A suspended/failed/completed-without-required-output run fails closed; WCO never treats provider status as mutation authority.
 
-Managed transport never receives filesystem, shell, Git, verifier, publication, merge, deploy or release authority. It only moves bounded semantic envelopes. Harness remains the only repository mutation authority.
+## Exact repository context and performance
 
-## Operator readiness boundary
+Local WCO reads only Git objects at the sealed base commit for Web authoring. Tree/search/file/byte-region responses have count, byte and time limits; `.env`, keys, credentials, secrets and Git metadata are denied.
 
-Before a release can advertise the one-link normal path, the maintainer-operated service must report all of these as configured:
+Immutable content is content-addressed. Callers may send known digests to avoid retransmitting unchanged bytes. The cache is disposable performance state and can never authorize mutation. Every exact read creates local provenance/coverage evidence, and replacement/deletion authority still requires a full exact read receipt and locally derived preimage.
 
-- ChatGPT/account authorization backend;
-- Senior Architect/App/Agent integration;
-- automatic semantic Agent trigger.
-
-If any are absent, WCO reports `WEB_MANAGED_OPERATOR_NOT_READY`. That is a maintainer/release blocker. The end user must not be instructed to deploy infrastructure or copy provider credentials.
-
-## Advanced `web_native_mcp`
-
-Official Secure MCP Tunnel remains supported for advanced/operator use via:
+Context delivery remains progressive:
 
 ```text
-wco web connect --native
+goal/finding
+  -> summary/tree/search
+  -> focused exact file/region reads
+  -> digest reuse for unchanged content
+  -> diff/result deltas
 ```
 
-It is not the normal default because current provider setup exposes tunnel IDs, runtime API credentials, MCP/App configuration and Workspace Agent credentials that violate the one-link end-user contract. WCO never auto-switches a normal user into this profile.
-
-The advanced native path remains outbound-only and keeps the MCP semantic surface narrow; it still cannot mutate repositories directly.
-
-## Exact repository context
-
-Local WCO reads only Git objects at the sealed base commit for Web authoring. Tree/search/file/byte-region responses have count, byte and time limits; `.env`, keys, credentials, secrets and Git metadata are denied. Immutable blob/range content is cached by digest and a caller may send a known digest to avoid retransmission. The cache is disposable performance state. Every read creates a local receipt, and replacement/deletion authority still requires a full exact read receipt and locally derived preimage.
+Full-repository transmission is not the normal path.
 
 ## Optional compatibility profiles
 
-These remain supported only after explicit advanced selection:
+These remain supported only after explicit selection:
 
-- `web_native_mcp`: official Secure MCP Tunnel / local MCP for advanced users/operators;
-- `personal_actions`: Custom GPT Action + Bearer/RelayProtocol deployment; the Cloudflare Worker is only a reference adapter;
-- `actions_relay`: legacy advanced self-hosted Bearer profile;
+- `managed_actions`: optional hosted/team integration;
+- `personal_actions`: optional Custom GPT Action + Bearer/RelayProtocol deployment;
+- `actions_relay`: legacy optional self-hosted Bearer profile;
 - `manual_file`: offline/manual compatibility path.
 
-`managed_actions` is the normal default. `web/managed-service.json` is release/operator metadata compiled into the package; end users do not edit it. WCO never auto-switches profiles after a managed service/auth failure.
+The Cloudflare Worker is only a reference adapter for an optional relay profile. It is never required, recommended, or auto-selected for a normal local-native installation.
+
+WCO never silently switches from `web_native_mcp` to a hosted/relay/manual profile after an OpenAI capability or authentication failure.
 
 ## Doctor behavior
 
 `wco doctor` is mode- and transport-aware:
 
-- `managed_actions`: checks maintainer service readiness plus the scoped local device credential; it must not ask the user for provider credentials;
-- `web_native_mcp`: checks advanced owner-local native credentials;
+- `web_native_mcp`: validates owner-local OpenAI/tunnel credentials and the local-native Web prerequisites; no third-party relay or managed device/account is required;
+- `managed_actions`: probes only when explicitly selected;
 - `personal_actions` / `actions_relay`: probes only the explicitly selected optional bearer relay;
 - `manual_file`: performs no network bridge requirement;
 - PAIR never probes Codex runtime/auth;
