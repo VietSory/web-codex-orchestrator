@@ -63,6 +63,10 @@ human remains the only merge/release authority
 
 The local transport should reuse official persisted/resumable semantic threads, independent thread forks, context compaction, structured output, read-only sandbox controls and live web search instead of implementing a browser session manager. The existing TypeScript SDK is the first implementation surface because WCO already ships and tests it; the WebBridge state remains engine-neutral so a later app-server adapter can reuse the same authority protocol.
 
+## Provider boundary
+
+The dedicated mode name is `chatgpt_codex`. Provider structured output is intentionally a shallow closed envelope with protocol version, action kind and an opaque JSON payload string. WCO must parse the payload again through the existing closed repository-command, contract, implementation or verdict validator before it becomes semantic authority. This keeps provider/runtime evolution separate from WCO authority validation.
+
 ## Why not automate chatgpt.com as the release default?
 
 Browser-agent projects provide useful engineering ideas such as persistent-session recovery, accessibility-tree targeting, deterministic action caching, fail-closed selector drift and evidence capture. WCO may reuse those general resilience patterns where appropriate.
