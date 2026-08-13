@@ -23,7 +23,7 @@ async function fixture() {
     schema_version: "1.0",
     tunnel_id: `tunnel_${"a".repeat(32)}`,
     control_plane_api_key: `sk-${"b".repeat(40)}`,
-    workspace_agent_trigger_id: "agtch_native_doctor",
+    workspace_agent_trigger_id: "agtch_native_doctor_fixture",
     workspace_agent_access_token: `wsa_${"c".repeat(40)}`,
   });
   return { root, state, config, restore: () => { if (oldHome === undefined) delete process.env.WCO_HOME; else process.env.WCO_HOME = oldHome; } };
@@ -33,7 +33,7 @@ function args(stateDirectory: string, configPath: string, doctorMode: "PAIR" | "
   return { stateDirectory, configPath, json: false, doctorMode, maxTransitions: 8 };
 }
 
-test("PAIR native Doctor skips Codex, third-party relay and managed device/account requirements", async () => {
+test("PAIR advanced-native Doctor skips Codex, third-party relay and managed device/account requirements", async () => {
   const item = await fixture();
   try {
     const probes = productionDoctorProbes(args(item.state, item.config, "PAIR"));
@@ -51,7 +51,7 @@ test("PAIR native Doctor skips Codex, third-party relay and managed device/accou
   } finally { item.restore(); }
 });
 
-test("AUTOPILOT native Doctor adds only reviewer runtime/auth probes on top of native Web probes", async () => {
+test("AUTOPILOT advanced-native Doctor adds only reviewer runtime/auth probes on top of native Web probes", async () => {
   const item = await fixture();
   try {
     const ids = productionDoctorProbes(args(item.state, item.config, "AUTOPILOT")).map((probe) => probe.id);
