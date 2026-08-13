@@ -1,37 +1,45 @@
 import { WebBridgeError } from "./contracts.js";
 import type { NativeOpenAiCredential } from "./native-openai-credential.js";
-import { readWorkspaceAgentRun, type WorkspaceAgentRunStatus } from "./workspace-agent-client.js";
 
+/**
+ * Local completion guard for an accepted Workspace Agent trigger.
+ *
+ * OpenAI's current trigger API returns 202 without a provider run id and does
+ * not expose an API for retrieving the run result. WCO therefore never polls
+ * invented provider state. Completion authority comes only from an exact
+ * semantic envelope arriving through the local WCO MCP mailbox. This guard
+ * merely bounds how long the local orchestrator will wait for that evidence.
+ */
 export class NativeAgentRunGuard {
-  constructor(
-    private readonly credential: NativeOpenAiCredential,
-    readonly run_id: string,
-    private readonly fetchImpl: typeof fetch = fetch,
-  ) {}
+  private readonly startedAt: number;
 
-  async status(): Promise<WorkspaceAgentRunStatus> {
-    return await readWorkspaceAgentRun({ credential: this.credential, runId: this.run_id, fetchImpl: this.fetchImpl });
+  constructor(
+    _credential: NativeOpenAiCredential,
+    readonly run_id: string,
+    _fetchImpl: typeof fetch = fetch,
+    private readonly now: () => number = () => Date.now(),
+    private readonly timeoutMs = 15 * 60 * 1_000,
+  ) {
+    if (!/^accepted_[a-f0-9]{48}$/.test(run_id)) {
+      throw new WebBridgeError("WEB_NATIVE_TRIGGER_INVALID", "Local Workspace Agent trigger receipt id is invalid.");
+    }
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 86_400_000) {
+      throw new WebBridgeError("WEB_NATIVE_TRIGGER_INVALID", "Workspace Agent evidence timeout is invalid.");
+    }
+    this.startedAt = this.now();
   }
 
-  /**
-   * Fail closed if the official Workspace Agent can no longer deliver the
-   * semantic envelope WCO is waiting for. A suspended write confirmation is a
-   * one-time ChatGPT Agent/App configuration issue, not permission for WCO to
-   * silently fall back to an external relay or browser automation.
-   */
-  async assertCanStillComplete(): Promise<"running" | "completed"> {
-    const value = await this.status();
-    if (value.status === "queued" || value.status === "in_progress") return "running";
-    if (value.status === "completed") return "completed";
-    if (value.status === "suspended") {
+  async status(): Promise<"running" | "completed"> {
+    if (this.now() - this.startedAt >= this.timeoutMs) {
       throw new WebBridgeError(
-        "WEB_NATIVE_INTERACTION_REQUIRED",
-        "The official Workspace Agent run is suspended waiting for ChatGPT interaction. In the one-time WCO Agent/App setup, allow WCO's non-destructive semantic submit tools without per-run confirmation when your workspace policy permits it, then retry. WCO did not enable a third-party relay or mutate the repository.",
+        "WEB_NATIVE_AGENT_TIMEOUT",
+        "The accepted ChatGPT Workspace Agent turn did not submit the required semantic envelope to the local WCO MCP mailbox before the bounded wait expired. WCO did not retry through a third-party relay and no repository authority was advanced.",
       );
     }
-    throw new WebBridgeError(
-      "WEB_NATIVE_AGENT_FAILED",
-      `The official Workspace Agent run failed${value.error?.code ? ` (${value.error.code})` : ""}${value.error?.message ? `: ${value.error.message}` : "."}`,
-    );
+    return "running";
+  }
+
+  async assertCanStillComplete(): Promise<"running" | "completed"> {
+    return await this.status();
   }
 }
