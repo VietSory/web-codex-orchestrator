@@ -29,7 +29,11 @@ WCO remains single-user and local-first. Repository state, exact-read receipts, 
 
 Use WCO's pinned bundled official Codex runtime as the normal ChatGPT-authenticated semantic transport.
 
+The preferred onboarding surface is the official app-server ChatGPT managed browser flow: WCO requests `account/login/start` with ChatGPT auth, opens the returned authorization URL, waits for the matching login-completed/account-updated state and then relies on Codex-managed persistence/refresh. WCO does not read or copy the runtime's stored tokens. The device-code flow is a provider-owned compatibility/recovery surface, not an additional normal-user setup step.
+
 The runtime owns `Sign in with ChatGPT`, browser OAuth handoff, credential persistence and refresh. WCO does not implement ChatGPT cookie/session extraction and does not require an OpenAI API key for the normal path.
+
+If provider authorization completes but the runtime remains unusable because of an upstream account/scope/provider fault, WCO fails closed with a provider-auth diagnostic and offers only the same official ChatGPT reauthorization path. It must not redirect the normal user to API-key, tunnel, relay, hosted-service or manual-token configuration.
 
 Architect/reviewer turns execute through the official Codex SDK/runtime with WCO-controlled structured output. Repository access remains mediated by the existing `WebBridge` semantic protocol and exact bounded WCO reads rather than granting the semantic agent repository mutation authority.
 
@@ -62,6 +66,8 @@ human remains the only merge/release authority
 ## Official runtime capabilities to reuse
 
 The local transport should reuse official persisted/resumable semantic threads, independent thread forks, context compaction, structured output, read-only sandbox controls and live web search instead of implementing a browser session manager. The existing TypeScript SDK is the first implementation surface because WCO already ships and tests it; the WebBridge state remains engine-neutral so a later app-server adapter can reuse the same authority protocol.
+
+App-server command-execution primitives are outside the semantic surface. In particular WCO must never use or expose the user-initiated unsandboxed shell-command RPC as part of this transport; Harness remains the command boundary.
 
 ## Provider boundary
 
@@ -97,6 +103,8 @@ No failure in the normal local transport may silently fall back to tunnel, relay
 Semantic thread IDs and their WCO role/bindings may be stored in owner-protected local WCO state. They are not mutation authority.
 
 A crash/restart must not require a new user configuration step. WCO must resume or deterministically reconstruct author/reviewer context from sealed local evidence. If the official runtime reports the ChatGPT credential revoked/expired beyond silent refresh, WCO may request the same single browser authorization again.
+
+Provider lifecycle is not trusted blindly: semantic turns need explicit timeout budgets, exact response/thread/turn bindings and fail-closed handling when notifications disagree with the initiating response or when a model/reasoning combination is not known to be supported.
 
 ## Release gate
 
