@@ -36,7 +36,10 @@ export function buildFirstRunConfig(repository: RepositoryDiscovery, project: Pr
     ...(githubAuth ? { github_pull_request: { provider: "github.com" as const, authentication: githubAuth } } : {}),
     result_bundle: { github_attestation: githubAuth ? "required" : "optional" },
     ui: { interactive: true },
-    web_bridge: { mode: "web_native_mcp", poll_interval_ms: 1_000, job_ttl_seconds: 86_400 },
+    // Normal users authorize the maintainer-operated WCO Web service once.
+    // Secure MCP Tunnel remains available as an explicit advanced/operator profile,
+    // because OpenAI currently requires per-user tunnel IDs/runtime keys/app setup.
+    web_bridge: { mode: "managed_actions", poll_interval_ms: 1_000, job_ttl_seconds: 86_400 },
   };
 }
 
