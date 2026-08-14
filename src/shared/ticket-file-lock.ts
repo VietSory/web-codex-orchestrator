@@ -99,7 +99,9 @@ async function allocateTicket(directory: string): Promise<{ path: string; sequen
     try {
       handle = await open(ticketPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);
       await handle.writeFile(`${JSON.stringify(body)}\n`, "utf8");
-      await handle.sync();
+      // Ticket files coordinate live processes only; they intentionally do not
+      // need crash-persistent fsync durability. The durable relay record still
+      // fsyncs separately before authority can advance.
       await handle.close();
       const observed = await readTicketIfPresent(ticketPath);
       if (!observed || observed.pid !== body.pid || observed.nonce !== body.nonce) throw new TicketFileLockError("TICKET_LOCK_INVALID", "Ticket lock changed during allocation.");
