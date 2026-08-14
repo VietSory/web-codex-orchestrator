@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { publishedResumeDigestIsAllowed } from "../src/executor/resume-source.js";
 
 /**
- * Regression lock for the post-publish repair crash window. Full executor
- * behavior is exercised by the Phase 10 integration suite; these assertions
- * make the authority choice explicit so a later cleanup cannot silently fall
- * back to trusting observed HEAD or the repaired-but-unpublished digest.
+ * Regression lock for post-publish repair crash windows. Keep the immutable
+ * publication identity checks visible, but assert change-set generation policy
+ * behaviorally rather than pinning an obsolete implementation expression.
  */
-test("post-publish Harness resume is receipt-bound and repair-source aware", async () => {
+test("post-publish Harness resume is receipt-bound and accepts only exact current/source generations", async () => {
   const source = await readFile(new URL("../src/executor/resume-source.ts", import.meta.url), "utf8");
   assert.match(source, /readGitPublishReceipt/);
   assert.match(source, /publish\.state !== "PUSHED"/);
@@ -18,6 +18,14 @@ test("post-publish Harness resume is receipt-bound and repair-source aware", asy
   assert.match(source, /publish\.remote_name !== options\.remoteName/);
   assert.match(source, /publish\.allowed_remote_url !== options\.remoteUrl/);
   assert.match(source, /publish\.remote_branch_sha !== publish\.commit_sha/);
-  assert.match(source, /executor\.repair\?\.source_change_set_digest \?\? executor\.change_set_digest/);
   assert.doesNotMatch(source, /expectedWorktreeHead\s*=\s*head/);
+
+  const sourceDigest = "1".repeat(64);
+  const currentDigest = "2".repeat(64);
+  const unrelatedDigest = "3".repeat(64);
+  assert.equal(publishedResumeDigestIsAllowed(currentDigest, undefined, currentDigest), true);
+  assert.equal(publishedResumeDigestIsAllowed(currentDigest, undefined, sourceDigest), false);
+  assert.equal(publishedResumeDigestIsAllowed(currentDigest, sourceDigest, sourceDigest), true, "repair-before-republish may still bind the exact source generation");
+  assert.equal(publishedResumeDigestIsAllowed(currentDigest, sourceDigest, currentDigest), true, "after republish the exact repaired/current generation is authoritative");
+  assert.equal(publishedResumeDigestIsAllowed(currentDigest, sourceDigest, unrelatedDigest), false, "a third generation can never authorize resume");
 });
