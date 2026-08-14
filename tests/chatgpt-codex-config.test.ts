@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
+import { validateTrustedConfig } from "../src/config/config-loader.js";
 import { validateConfig } from "../src/config/config-validator.js";
 
 function baseConfig() {
@@ -23,18 +24,22 @@ function baseConfig() {
   };
 }
 
-test("explicit chatgpt_codex profile is accepted by the same runtime validator as its TypeScript contract", () => {
-  const report = validateConfig({
+test("explicit chatgpt_codex identity validates structurally and canonicalizes to the zero-config local form", () => {
+  const input = {
     ...baseConfig(),
     web_bridge: {
       mode: "chatgpt_codex",
       poll_interval_ms: 1_000,
       job_ttl_seconds: 86_400,
     },
-  });
+  };
+  const structural = validateConfig(input);
+  assert.equal(structural.ok, true, JSON.stringify(structural.issues));
+  assert.equal(structural.config?.web_bridge?.mode, "chatgpt_codex");
 
-  assert.equal(report.ok, true, JSON.stringify(report.issues));
-  assert.equal(report.config?.web_bridge?.mode, "chatgpt_codex");
+  const trusted = validateTrustedConfig(input);
+  assert.equal(trusted.ok, true, JSON.stringify(trusted.issues));
+  assert.equal(trusted.config?.web_bridge, undefined, "all product routing must see the canonical local zero-config form");
 });
 
 test("chatgpt_codex cannot smuggle relay or GPT endpoints into trusted config", () => {
@@ -42,7 +47,7 @@ test("chatgpt_codex cannot smuggle relay or GPT endpoints into trusted config", 
     { relay_url: "https://relay.example.com" },
     { gpt_url: "https://chatgpt.com/g/example" },
   ]) {
-    const report = validateConfig({
+    const input = {
       ...baseConfig(),
       web_bridge: {
         mode: "chatgpt_codex",
@@ -50,9 +55,12 @@ test("chatgpt_codex cannot smuggle relay or GPT endpoints into trusted config", 
         job_ttl_seconds: 86_400,
         ...forbidden,
       },
-    });
+    };
+    const structural = validateConfig(input);
+    assert.equal(structural.ok, false);
+    assert.match(structural.issues.map((issue) => issue.message).join("\n"), /chatgpt_codex.*relay_url and gpt_url are forbidden/i);
 
-    assert.equal(report.ok, false);
-    assert.match(report.issues.map((issue) => issue.message).join("\n"), /chatgpt_codex.*relay_url and gpt_url are forbidden/i);
+    const trusted = validateTrustedConfig(input);
+    assert.equal(trusted.ok, false);
   }
 });
