@@ -6,6 +6,7 @@ import { ensureChatGptLogin } from "../runtime/chatgpt-login.js";
 import { resolveWcoPaths } from "../setup/default-paths.js";
 import { writeTrustedConfigAtomic } from "../setup/config-writer.js";
 import { createConfiguredWebBridge } from "./bridge-factory.js";
+import { CHATGPT_CODEX_AUTH_REQUIRED_ACCOUNT } from "./chatgpt-codex-bridge.js";
 import { configureManagedWebBridgeConnection, configureWebBridgeConnection, disconnectManagedWebBridgeConnection, disconnectWebBridgeConnection } from "./connection-setup.js";
 import { PersonalBearerAuthenticator } from "./relay/auth.js";
 import { RelayFileStore } from "./relay/file-store.js";
@@ -234,27 +235,24 @@ export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = d
       if (selfHosted) {
         const values = await promptSelfHostedConnection(io, config);
         if (!values) return 1;
-        const connected = await configureWebBridgeConnection({ configPath: paths.config, credentialsDirectory: paths.credentials, relayUrl: values.relayUrl, gptUrl: values.gptUrl, token: values.token });
-        config = connected.config;
-        io.write("Advanced self-hosted Web bridge connected. Credential stored in WCO-owned credentials.\n");
+        const result = await configureWebBridgeConnection({ configPath: paths.config, credentialsDirectory: paths.credentials, relayUrl: values.relayUrl, gptUrl: values.gptUrl, token: values.token, mode: "actions_relay" });
+        config = result.config;
+        io.write("Advanced self-hosted Web bridge connected.\n");
         return 0;
       }
       if (managedConnect) {
-        const metadata = resolveManagedWebService();
-        io.write("Opening optional managed Web authorization...\n");
-        const connected = await configureManagedWebBridgeConnection({ configPath: paths.config, credentialsDirectory: paths.credentials, metadata, openAuthorization: openUrl });
-        config = connected.config;
-        io.write("Optional managed Web authorization connected.\n");
+        const managed = resolveManagedWebService();
+        const result = await configureManagedWebBridgeConnection({ configPath: paths.config, credentialsDirectory: paths.credentials, metadata: managed, openUrl });
+        config = result.config;
+        io.write("Optional managed Web authorization complete.\n");
         return 0;
       }
       if (nativeConnect) {
         const credential = await promptNativeConnection(io, openUrl);
-        if (!credential) { io.error("WEB_NATIVE_SETUP_CANCELLED: advanced native-MCP setup was not completed.\n"); return 1; }
+        if (!credential) return 1;
         const credentialPath = await writeNativeOpenAiCredential(paths.credentials, credential);
         try {
-          await probeNativeOpenAiSetup({ cacheDirectory: paths.cache, credential });
-          const written = await writeTrustedConfigAtomic(paths.config, { ...config, web_bridge: { mode: "web_native_mcp", poll_interval_ms: config.web_bridge?.poll_interval_ms ?? 1_000, job_ttl_seconds: config.web_bridge?.job_ttl_seconds ?? 86_400 } }, { overwrite: true });
-          config = written.config;
+          await probeNativeOpenAiSetup(config, credential, paths.state);
         } catch (error) {
           await removeNativeOpenAiCredential(paths.credentials).catch(() => undefined);
           throw error;
@@ -300,8 +298,9 @@ export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = d
     if (!config.web_bridge) {
       const bridge = createConfiguredWebBridge(config, paths.bridge);
       const status = await bridge.getConnectionStatus();
-      io.write(`Mode                  local ChatGPT/Codex\nWCO authority/state   local only\nChatGPT authorization ${status.connected ? "ready" : "required"}\nPer-task browser      not required\nPending author task   ${status.pending_author_job ? "yes" : "none"}\nPending final review  ${status.pending_final_review ? "yes" : "none"}\n`);
-      return status.connected ? 0 : 1;
+      const authorizationReady = status.connected && status.account !== CHATGPT_CODEX_AUTH_REQUIRED_ACCOUNT;
+      io.write(`Mode                  local ChatGPT/Codex\nWCO authority/state   local only\nChatGPT authorization ${authorizationReady ? "ready" : "required"}\nPer-task browser      not required\nPending author task   ${status.pending_author_job ? "yes" : "none"}\nPending final review  ${status.pending_final_review ? "yes" : "none"}\n`);
+      return authorizationReady ? 0 : 1;
     }
     if (config.web_bridge.mode === "web_native_mcp") {
       await readNativeOpenAiCredential(paths.credentials);
