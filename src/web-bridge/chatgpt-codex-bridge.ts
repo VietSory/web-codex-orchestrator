@@ -186,6 +186,22 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
   }
 
   async bindPreparedRun(jobId: string, runId: string, idempotencyKey: string): Promise<void> {
+    const record = await this.store.get(jobId, OWNER);
+    if (record.kind !== "authoring") throw new WebBridgeError("WEB_JOB_KIND_INVALID", "Prepared run binding is valid only for an authoring job.");
+    const sealed = record.events.slice().reverse().find((event) => event.type === "contract_sealed");
+    if (!sealed) throw new WebBridgeError("WEB_CHATGPT_CODEX_PHASE_INVALID", "Prepared run binding requires a sealed semantic contract.");
+    const envelope = parseWebContractEnvelope((sealed.payload as { envelope?: unknown }).envelope ?? sealed.payload);
+    if (envelope.job_id !== jobId) throw new WebBridgeError("WEB_CHATGPT_CODEX_BINDING_MISMATCH", "Prepared run contract is bound to another authoring job.");
+    const separator = runId.lastIndexOf(":");
+    const taskId = separator > 0 ? runId.slice(0, separator) : "";
+    const archiveSha256 = separator > 0 ? runId.slice(separator + 1) : "";
+    const expectedTaskId = `TASK-${contentDigest(envelope).slice(0, 32).toUpperCase()}`;
+    if (taskId !== expectedTaskId || !/^[a-f0-9]{64}$/.test(archiveSha256)) throw new WebBridgeError("WEB_CHATGPT_CODEX_BINDING_MISMATCH", "Prepared run identity does not derive from the exact sealed contract.");
+    const existing = preparedRunId(record.events);
+    if (existing) {
+      if (existing !== runId) throw new WebBridgeError("WEB_CHATGPT_CODEX_BINDING_MISMATCH", "Authoring job is already bound to a different canonical prepared run.");
+      return;
+    }
     await this.store.append(jobId, OWNER, "chatgpt_codex_prepared_run", { run_id: runId }, idempotencyKey);
   }
 
