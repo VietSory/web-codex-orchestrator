@@ -36,7 +36,7 @@ test("relay credential persists only under WCO credentials and can be removed", 
   await assert.rejects(readRelayToken(credentials, {}), /not configured|AUTH_UNAVAILABLE/i);
 });
 
-test("one-time advanced relay connect verifies relay before persisting actions_relay config", async () => {
+test("one-time advanced relay connect verifies relay and explicit disconnect restores zero-config local mode", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-v03-connect-"));
   const repo = path.join(root, "repo"), configPath = path.join(root, "home", "config.json"), credentials = path.join(root, "home", "credentials"), relayRoot = path.join(root, "relay");
   await mkdir(repo, { recursive: true });
@@ -54,7 +54,8 @@ test("one-time advanced relay connect verifies relay before persisting actions_r
     assert.equal(saved.web_bridge?.gpt_url, "https://chatgpt.com/g/example-wco");
     assert.equal(await readRelayToken(credentials, {}), token);
     const disconnected = await disconnectWebBridgeConnection({ configPath, credentialsDirectory: credentials });
-    assert.equal(disconnected.web_bridge?.mode, "manual_file");
+    assert.equal(disconnected.web_bridge, undefined);
+    assert.equal((await loadTrustedConfig(configPath)).web_bridge, undefined);
     await assert.rejects(readRelayToken(credentials, {}), /not configured|AUTH_UNAVAILABLE/i);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
