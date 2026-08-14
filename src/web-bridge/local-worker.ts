@@ -144,13 +144,30 @@ export async function startLocalAuthoring(options: {
   };
   await save(options.stateDirectory, session);
 
-  const identity = await options.bridge.createAuthoringJob({
-    owner: options.owner ?? "local",
-    repository: options.repository,
-    user_intent: options.goal,
-    ttl_seconds: 86_400,
-    orchestration_mode: mode,
-  }, `author-${session.session_id}`);
+  let identity;
+  try {
+    identity = await options.bridge.createAuthoringJob({
+      owner: options.owner ?? "local",
+      repository: options.repository,
+      user_intent: options.goal,
+      ttl_seconds: 86_400,
+      orchestration_mode: mode,
+    }, `author-${session.session_id}`);
+  } catch (error) {
+    // Keep the pre-external-call CREATING receipt as a crash-recovery anchor,
+    // but never leave it looking active after a known bridge/auth failure.
+    // BLOCKED is intentionally replaceable by the next normal goal.
+    session.state = "BLOCKED";
+    try {
+      await save(options.stateDirectory, session);
+    } catch (saveError) {
+      throw new WebBridgeError(
+        "WEB_SESSION_RECOVERY_FAILED",
+        `Authoring job creation failed and WCO could not persist the blocked recovery state: ${saveError instanceof Error ? saveError.message : String(saveError)}`,
+      );
+    }
+    throw error;
+  }
   session.job_id = identity.job_id;
   session.state = "AUTHORING";
   await save(options.stateDirectory, session);
