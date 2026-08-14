@@ -1,4 +1,5 @@
 import type { FinalReviewRequest } from "./contracts.js";
+import { CHATGPT_CODEX_AUTHOR_PHASE_MARKER, CHATGPT_CODEX_REVIEW_PHASE_MARKER } from "./chatgpt-codex-semantic-client.js";
 import type { AuthoringJobRequest } from "./web-bridge.js";
 
 function boundedJson(value: unknown, maximum = 512_000): string {
@@ -9,6 +10,7 @@ function boundedJson(value: unknown, maximum = 512_000): string {
 
 export function chatGptCodexAuthorPrompt(request: AuthoringJobRequest): string {
   return [
+    CHATGPT_CODEX_AUTHOR_PHASE_MARKER,
     "You are WCO's semantic architect. You have no repository mutation authority.",
     "Return exactly one structured provider envelope matching the supplied output schema.",
     "Allowed author actions are repository_command or contract_sealed only. Never return implementation_sealed or web_verdict during authoring.",
@@ -23,14 +25,16 @@ export function chatGptCodexAuthorPrompt(request: AuthoringJobRequest): string {
 
 export function chatGptCodexRepositoryResultPrompt(result: unknown): string {
   return [
+    CHATGPT_CODEX_AUTHOR_PHASE_MARKER,
     "WCO executed your exact bounded repository request. Treat this result as authoritative only for the requested repository evidence.",
     boundedJson(result),
-    "Return the next repository_command if more exact context is required; otherwise return contract_sealed. Never return implementation_sealed.",
+    "Return the next repository_command if more exact context is required; otherwise return contract_sealed. Never return implementation_sealed or web_verdict.",
   ].join("\n");
 }
 
 export function chatGptCodexReviewPrompt(request: FinalReviewRequest, evidence: Record<string, unknown>): string {
   return [
+    CHATGPT_CODEX_REVIEW_PHASE_MARKER,
     "You are WCO's independent final semantic reviewer. You have no mutation, shell, Git, publish, or merge authority.",
     "Review only the exact bounded evidence below and return exactly one web_verdict provider envelope.",
     "APPROVE only when the final Draft PR evidence satisfies the sealed intent and verification. REVISE/BLOCK must contain concrete bounded findings.",
