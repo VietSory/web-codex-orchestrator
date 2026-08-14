@@ -1,7 +1,8 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
-import type { TrustedConfig } from "../config/contracts.js";
+import type { AgentLimits, TrustedConfig } from "../config/contracts.js";
+import { defaultAgentLimits } from "../execution/budget.js";
 import { readPreparationForExecution } from "../execution/execution-store.js";
 import { ensureChatGptLogin } from "../runtime/chatgpt-login.js";
 import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
@@ -16,9 +17,11 @@ import { toAuthoringEvent } from "./relay/protocol.js";
 import type { AuthoringJobRequest, WebBridge } from "./web-bridge.js";
 
 const OWNER = "local-chatgpt-codex";
+const PROVIDER_USAGE_EVENT = "chatgpt_codex_provider_usage";
 export const CHATGPT_CODEX_AUTH_REQUIRED_ACCOUNT = "ChatGPT authorization required";
 
 type RelayEvents = Awaited<ReturnType<RelayFileStore["events"]>>;
+type ProviderUsage = { input_tokens: number; cached_input_tokens: number; output_tokens: number };
 
 function threadId(events: RelayEvents): string | undefined {
   const event = events.slice().reverse().find((value) => value.type === "chatgpt_codex_thread");
@@ -42,6 +45,41 @@ function errorCode(error: unknown): string | null {
   return error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : null;
 }
 
+function safeTokenCount(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) throw new WebBridgeError("WEB_CHATGPT_CODEX_USAGE_INVALID", `Durable provider ${label} usage is invalid.`);
+  return value as number;
+}
+
+function addSafe(left: number, right: number): number {
+  const value = left + right;
+  if (!Number.isSafeInteger(value)) throw new WebBridgeError("WEB_CHATGPT_CODEX_BUDGET_EXHAUSTED", "Provider usage exceeded safe integer accounting bounds.");
+  return value;
+}
+
+function accumulatedProviderUsage(events: RelayEvents): { turns: number; input_tokens: number; cached_input_tokens: number; output_tokens: number } {
+  let turns = 0, input = 0, cached = 0, output = 0;
+  for (const event of events) {
+    if (event.type !== PROVIDER_USAGE_EVENT) continue;
+    const payload = event.payload;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new WebBridgeError("WEB_CHATGPT_CODEX_USAGE_INVALID", "Durable provider usage event is invalid.");
+    const item = payload as Record<string, unknown>;
+    if (!(["author", "implementation", "review"] as const).includes(item.phase as "author" | "implementation" | "review")) throw new WebBridgeError("WEB_CHATGPT_CODEX_USAGE_INVALID", "Durable provider usage phase is invalid.");
+    input = addSafe(input, safeTokenCount(item.input_tokens, "input-token"));
+    cached = addSafe(cached, safeTokenCount(item.cached_input_tokens, "cached-input-token"));
+    output = addSafe(output, safeTokenCount(item.output_tokens, "output-token"));
+    turns += 1;
+  }
+  return { turns, input_tokens: input, cached_input_tokens: cached, output_tokens: output };
+}
+
+function assertProviderBudget(events: RelayEvents, limits: AgentLimits, beforeTurn: boolean): void {
+  const usage = accumulatedProviderUsage(events);
+  const combinedInput = addSafe(usage.input_tokens, usage.cached_input_tokens);
+  if ((beforeTurn && usage.turns >= limits.maximum_total_agent_turns) || combinedInput > limits.maximum_total_input_tokens || usage.output_tokens > limits.maximum_total_output_tokens) {
+    throw new WebBridgeError("WEB_CHATGPT_CODEX_BUDGET_EXHAUSTED", "Configured local ChatGPT/Codex provider budget is exhausted.");
+  }
+}
+
 export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBridge {
   private readonly store: RelayFileStore;
   private readonly stateDirectory: string;
@@ -57,6 +95,8 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
     this.authorityDirectory = path.join(bridgeDirectory, "chatgpt-codex-runtime", "authority");
   }
 
+  private limits(): AgentLimits { return this.config.agents?.limits ?? defaultAgentLimits(); }
+
   private async rawAgent(): Promise<CodexSdkAgentClient> {
     const runtime = await resolveCodexRuntime(this.config.runtime, this.stateDirectory);
     return new CodexSdkAgentClient(runtime);
@@ -64,32 +104,29 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
 
   private async client(): Promise<ChatGptCodexSemanticClient> {
     if (this.semantic) return this.semantic;
-    this.semantic = new ChatGptCodexSemanticClient(await this.rawAgent());
+    this.semantic = new ChatGptCodexSemanticClient(await this.rawAgent(), this.limits().maximum_turn_seconds);
     return this.semantic;
   }
 
   private async implementationClient(): Promise<ChatGptCodexImplementationClient> {
     if (this.implementation) return this.implementation;
-    this.implementation = new ChatGptCodexImplementationClient(await this.rawAgent());
+    this.implementation = new ChatGptCodexImplementationClient(await this.rawAgent(), this.limits().maximum_turn_seconds);
     return this.implementation;
   }
 
   private async ensureAuthorizedForProviderTurn(): Promise<void> {
     const authorized = await ensureChatGptLogin({ config: this.config, stateDirectory: this.stateDirectory });
-    if (!authorized) {
-      throw new WebBridgeError("CODEX_AUTH_UNAVAILABLE", "ChatGPT authorization is required. Run `wco web connect` in an interactive terminal.");
-    }
+    if (!authorized) throw new WebBridgeError("CODEX_AUTH_UNAVAILABLE", "ChatGPT authorization is required. Run `wco web connect` in an interactive terminal.");
   }
 
-  private async turn(
-    prompt: string,
-    existingThreadId?: string,
-    signal?: AbortSignal,
-    reserve?: () => Promise<void>,
-  ): Promise<{ thread_id: string; output: unknown }> {
-    // All deterministic/local preflight must complete before the durable
-    // at-most-once reservation. Once reserved, the next call is the provider
-    // boundary and a crash/failure is intentionally treated as ambiguous.
+  private async recordProviderUsage(jobId: string, phase: "author" | "implementation" | "review", key: string, usage: ProviderUsage): Promise<void> {
+    const payload = { phase, input_tokens: safeTokenCount(usage.input_tokens, "input-token"), cached_input_tokens: safeTokenCount(usage.cached_input_tokens, "cached-input-token"), output_tokens: safeTokenCount(usage.output_tokens, "output-token") };
+    await this.store.append(jobId, OWNER, PROVIDER_USAGE_EVENT, payload, `usage-${phase}-${key.slice(0, 96)}`);
+    const latest = await this.store.events(jobId, OWNER, 0);
+    assertProviderBudget(latest, this.limits(), false);
+  }
+
+  private async turn(prompt: string, existingThreadId?: string, signal?: AbortSignal, reserve?: () => Promise<void>): Promise<{ thread_id: string; output: unknown; usage: ProviderUsage }> {
     await this.ensureAuthorizedForProviderTurn();
     await mkdir(this.scratchDirectory, { recursive: true, mode: 0o700 });
     await mkdir(this.authorityDirectory, { recursive: true, mode: 0o700 });
@@ -100,37 +137,25 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
     return await client.turn({ profile, prompt, scratchDirectory: this.scratchDirectory, authorityDirectory: this.authorityDirectory, ...(existingThreadId ? { threadId: existingThreadId } : {}), ...(signal ? { signal } : {}) });
   }
 
-  async createAuthoringJob(request: AuthoringJobRequest, idempotencyKey: string): Promise<BridgeJobIdentity> {
-    return await this.store.create("authoring", OWNER, request, idempotencyKey, request.ttl_seconds);
-  }
+  async createAuthoringJob(request: AuthoringJobRequest, idempotencyKey: string): Promise<BridgeJobIdentity> { return await this.store.create("authoring", OWNER, request, idempotencyKey, request.ttl_seconds); }
 
   async waitForAuthoringEvent(jobId: string, afterSequence: number, signal?: AbortSignal): Promise<AuthoringEvent | null> {
     const record = await this.store.get(jobId, OWNER);
     if (record.kind !== "authoring") throw new WebBridgeError("WEB_JOB_KIND_INVALID", "Requested job is not an authoring job.");
-    for (const event of record.events.filter((value) => value.sequence > afterSequence)) {
-      const authoring = toAuthoringEvent(event);
-      if (authoring) return authoring;
-    }
+    for (const event of record.events.filter((value) => value.sequence > afterSequence)) { const authoring = toAuthoringEvent(event); if (authoring) return authoring; }
     if (record.events.some((event) => event.type === "contract_sealed")) return null;
-    if (hasUnresolvedReservation(record.events, "chatgpt_codex_authoring_reserved", ["repository_command", "contract_sealed"])) {
-      throw new WebBridgeError("WEB_CHATGPT_CODEX_AMBIGUOUS_AUTHORING", "A prior semantic author turn may have completed without durable authority; WCO refuses to replay an ambiguous contract/repository decision.");
-    }
+    if (hasUnresolvedReservation(record.events, "chatgpt_codex_authoring_reserved", ["repository_command", "contract_sealed"])) throw new WebBridgeError("WEB_CHATGPT_CODEX_AMBIGUOUS_AUTHORING", "A prior semantic author turn may have completed without durable authority; WCO refuses to replay an ambiguous contract/repository decision.");
     const lastAuthority = record.events.slice().reverse().find((event) => ["repository_command", "contract_sealed"].includes(event.type));
     const latestResult = record.events.slice().reverse().find((event) => event.type === "repository_command_result" && (!lastAuthority || event.sequence > lastAuthority.sequence));
     const latestClarification = record.events.slice().reverse().find((event) => event.type === "user_clarification" && (!lastAuthority || event.sequence > lastAuthority.sequence));
     if (lastAuthority?.type === "repository_command" && !latestResult && !latestClarification) return null;
+    assertProviderBudget(record.events, this.limits(), true);
     const request = record.request as AuthoringJobRequest;
     const prompt = latestResult ? chatGptCodexRepositoryResultPrompt(latestResult.payload) : latestClarification ? `${chatGptCodexAuthorPrompt(request)}\nUser clarification: ${JSON.stringify(latestClarification.payload)}` : chatGptCodexAuthorPrompt(request);
     const existingThread = threadId(record.events);
     const inputSha256 = contentDigest({ prompt, thread_id: existingThread ?? null });
-    const result = await this.turn(
-      prompt,
-      existingThread,
-      signal,
-      async () => {
-        await this.store.append(jobId, OWNER, "chatgpt_codex_authoring_reserved", { input_sha256: inputSha256, thread_id: existingThread ?? null }, `author-reserve-${inputSha256}`);
-      },
-    );
+    const result = await this.turn(prompt, existingThread, signal, async () => { await this.store.append(jobId, OWNER, "chatgpt_codex_authoring_reserved", { input_sha256: inputSha256, thread_id: existingThread ?? null }, `author-reserve-${inputSha256}`); });
+    await this.recordProviderUsage(jobId, "author", inputSha256, result.usage);
     await this.store.append(jobId, OWNER, "chatgpt_codex_thread", { thread_id: result.thread_id }, `thread-${contentDigest({ jobId, inputSha256, thread: result.thread_id })}`);
     const authority = parseChatGptCodexAuthority(result.output);
     if (authority.kind === "repository_command") {
@@ -162,27 +187,19 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
     const runId = preparedRunId(record.events);
     if (!runId) return null;
     if (!record.events.some((event) => event.type === "contract_sealed")) throw new WebBridgeError("WEB_CHATGPT_CODEX_PHASE_INVALID", "Implementation proposal requires a sealed semantic contract.");
-    const reservation = record.events.slice().reverse().find((event) => event.type === "chatgpt_codex_implementation_reserved");
-    if (reservation) throw new WebBridgeError("WEB_CHATGPT_CODEX_AMBIGUOUS_IMPLEMENTATION", "A prior implementation provider turn may have started without a durable result; WCO refuses to replay an ambiguous mutation proposal.");
-
-    // Auth, exact preparation identity, profile and client construction are all
-    // deterministic preflight. Do them before reserving the at-most-once model
-    // boundary so a recoverable auth/config failure cannot poison the job.
+    if (record.events.some((event) => event.type === "chatgpt_codex_implementation_reserved")) throw new WebBridgeError("WEB_CHATGPT_CODEX_AMBIGUOUS_IMPLEMENTATION", "A prior implementation provider turn may have started without a durable result; WCO refuses to replay an ambiguous mutation proposal.");
+    assertProviderBudget(record.events, this.limits(), true);
     await this.ensureAuthorizedForProviderTurn();
     const preparation = await readPreparationForExecution(this.stateDirectory, runId);
     const profile = this.config.agents?.implementer;
     if (!profile) throw new WebBridgeError("WEB_CHATGPT_CODEX_CONFIG_INVALID", "Harness implementer profile is missing.");
     const client = await this.implementationClient();
-    await this.store.append(jobId, OWNER, "chatgpt_codex_implementation_reserved", { run_id: runId }, `implementation-reserve-${contentDigest({ jobId, runId })}`);
-    const submission = await client.propose({
-      profile,
-      jobId,
-      runId,
-      workspacePath: preparation.receipt.worktree_path,
-      acceptedBundlePath: preparation.receipt.accepted_bundle_path,
-    });
-    await this.store.append(jobId, OWNER, "implementation_sealed", { submission }, `implementation-${contentDigest(submission)}`);
-    return submission;
+    const usageKey = contentDigest({ jobId, runId });
+    await this.store.append(jobId, OWNER, "chatgpt_codex_implementation_reserved", { run_id: runId }, `implementation-reserve-${usageKey}`);
+    const proposal = await client.propose({ profile, jobId, runId, workspacePath: preparation.receipt.worktree_path, acceptedBundlePath: preparation.receipt.accepted_bundle_path });
+    await this.recordProviderUsage(jobId, "implementation", usageKey, proposal.usage);
+    await this.store.append(jobId, OWNER, "implementation_sealed", { submission: proposal.submission }, `implementation-${contentDigest(proposal.submission)}`);
+    return proposal.submission;
   }
 
   async bindPreparedRun(jobId: string, runId: string, idempotencyKey: string): Promise<void> {
@@ -198,10 +215,7 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
     const expectedTaskId = `TASK-${contentDigest(envelope).slice(0, 32).toUpperCase()}`;
     if (taskId !== expectedTaskId || !/^[a-f0-9]{64}$/.test(archiveSha256)) throw new WebBridgeError("WEB_CHATGPT_CODEX_BINDING_MISMATCH", "Prepared run identity does not derive from the exact sealed contract.");
     const existing = preparedRunId(record.events);
-    if (existing) {
-      if (existing !== runId) throw new WebBridgeError("WEB_CHATGPT_CODEX_BINDING_MISMATCH", "Authoring job is already bound to a different canonical prepared run.");
-      return;
-    }
+    if (existing) { if (existing !== runId) throw new WebBridgeError("WEB_CHATGPT_CODEX_BINDING_MISMATCH", "Authoring job is already bound to a different canonical prepared run."); return; }
     await this.store.append(jobId, OWNER, "chatgpt_codex_prepared_run", { run_id: runId }, idempotencyKey);
   }
 
@@ -215,20 +229,13 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
     if (existing) return parseWebVerdictEnvelope((existing.payload as { verdict?: unknown }).verdict ?? existing.payload);
     const evidence = record.events.slice().reverse().find((value) => value.type === "final_review_evidence");
     if (!evidence) return null;
-    if (hasUnresolvedReservation(record.events, "chatgpt_codex_review_reserved", ["web_verdict"])) {
-      throw new WebBridgeError("WEB_CHATGPT_CODEX_AMBIGUOUS_REVIEW", "A prior semantic review turn may have completed without a durable verdict; WCO refuses to replay an ambiguous authority-bearing review.");
-    }
+    if (hasUnresolvedReservation(record.events, "chatgpt_codex_review_reserved", ["web_verdict"])) throw new WebBridgeError("WEB_CHATGPT_CODEX_AMBIGUOUS_REVIEW", "A prior semantic review turn may have completed without a durable verdict; WCO refuses to replay an ambiguous authority-bearing review.");
+    assertProviderBudget(record.events, this.limits(), true);
     const request = record.request as FinalReviewRequest;
     const prompt = chatGptCodexReviewPrompt(request, evidence.payload as Record<string, unknown>);
     const inputSha256 = contentDigest({ reviewId, prompt });
-    const result = await this.turn(
-      prompt,
-      undefined,
-      signal,
-      async () => {
-        await this.store.append(reviewId, OWNER, "chatgpt_codex_review_reserved", { input_sha256: inputSha256 }, `review-reserve-${inputSha256}`);
-      },
-    );
+    const result = await this.turn(prompt, undefined, signal, async () => { await this.store.append(reviewId, OWNER, "chatgpt_codex_review_reserved", { input_sha256: inputSha256 }, `review-reserve-${inputSha256}`); });
+    await this.recordProviderUsage(reviewId, "review", inputSha256, result.usage);
     await this.store.append(reviewId, OWNER, "chatgpt_codex_review_thread", { thread_id: result.thread_id }, `review-thread-${contentDigest({ reviewId, inputSha256, thread: result.thread_id })}`);
     const authority = parseChatGptCodexAuthority(result.output);
     if (authority.kind !== "web_verdict") throw new WebBridgeError("WEB_CHATGPT_CODEX_PHASE_INVALID", "Final review must return a Web verdict.");
@@ -238,17 +245,7 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
   }
 
   async getConnectionStatus(): Promise<BridgeConnectionStatus> {
-    try {
-      await (await this.client()).checkAvailability();
-      return { configured: true, connected: true, account: "ChatGPT via bundled Codex" };
-    } catch (error) {
-      if (errorCode(error) === "CODEX_AUTH_UNAVAILABLE") {
-        // `connected` here means the local bridge/runtime is reachable. The
-        // account sentinel lets status surfaces remain truthful while TUI
-        // routing never falls through to an unrelated compatibility setup.
-        return { configured: true, connected: true, account: CHATGPT_CODEX_AUTH_REQUIRED_ACCOUNT };
-      }
-      return { configured: true, connected: false };
-    }
+    try { await (await this.client()).checkAvailability(); return { configured: true, connected: true, account: "ChatGPT via bundled Codex" }; }
+    catch (error) { if (errorCode(error) === "CODEX_AUTH_UNAVAILABLE") return { configured: true, connected: true, account: CHATGPT_CODEX_AUTH_REQUIRED_ACCOUNT }; return { configured: true, connected: false }; }
   }
 }
