@@ -33,12 +33,12 @@ export class BudgetTracker {
     const input = this.measuredToken(inputTokens, "input-token");
     const cached = this.measuredToken(cachedInputTokens, "cached-input-token");
     const output = this.measuredToken(outputTokens, "output-token");
-    if (cached > input) throw new ExecutionError("BUDGET_EXHAUSTED", "Provider cached-input usage exceeds total input usage; token accounting cannot continue safely.");
     this.usage.inputTokens = this.addTokenUsage(this.usage.inputTokens, input);
     this.usage.cachedInputTokens = this.addTokenUsage(this.usage.cachedInputTokens, cached);
     this.usage.outputTokens = this.addTokenUsage(this.usage.outputTokens, output);
-    // Codex reports cached_input_tokens as a subset of input_tokens. Preserve the
-    // cached counter for observability, but never add it to input a second time.
+    // Current Codex usage reports cached input as part of total input. Preserve
+    // cached usage independently for observability and persisted compatibility,
+    // but never charge it a second time against the total-input budget.
     if (this.usage.inputTokens > this.limits.maximum_total_input_tokens || this.usage.outputTokens > this.limits.maximum_total_output_tokens) throw new ExecutionError("BUDGET_EXHAUSTED", "Configured token budget is exhausted.");
   }
 }
