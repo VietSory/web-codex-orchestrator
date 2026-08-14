@@ -126,9 +126,12 @@ export async function acquireTicketFileLock(directory: string, options: { timeou
 
   const release = async (): Promise<void> => {
     if (released) return;
-    released = true;
     const current = await readTicketIfPresent(own.path);
-    if (current && current.pid === own.body.pid && current.nonce === own.body.nonce) await unlink(own.path);
+    if (!current) { released = true; return; }
+    if (current.pid !== own.body.pid || current.nonce !== own.body.nonce) throw new TicketFileLockError("TICKET_LOCK_INVALID", "Ticket lock ownership changed before release.");
+    try { await unlink(own.path); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    released = true;
   };
 
   try {
@@ -150,7 +153,7 @@ export async function acquireTicketFileLock(directory: string, options: { timeou
       await new Promise((resolve) => setTimeout(resolve, pollMs));
     }
   } catch (error) {
-    await release();
+    await release().catch(() => undefined);
     throw error;
   }
 }
