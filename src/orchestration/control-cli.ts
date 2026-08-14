@@ -156,6 +156,10 @@ function lazyPromise<T>(factory: () => Promise<T>): () => Promise<T> {
 export function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
   const loadConfig = lazyPromise(() => loadTrustedConfig(args.configPath!));
   const webPaths = resolveWcoPaths({ configPath: args.configPath!, stateDirectory: args.stateDirectory });
+  const webFailure = (label: string, error: unknown) => ({ severity: "WARN" as const, summary: `${label} FAIL - ${error instanceof Error ? error.message : String(error)}` });
+  const webMode = lazyPromise(() => loadConfig().then((config) => config.web_bridge?.mode ?? "chatgpt_codex"));
+  const loadRuntime = lazyPromise(() => loadConfig().then((config) => resolveCodexRuntime(config.runtime, args.stateDirectory)));
+  const codexRequired = async (): Promise<boolean> => (await webMode()) === "chatgpt_codex" || args.doctorMode === "AUTOPILOT";
   const loadManagedService = lazyPromise(() => loadConfig().then(async (config) => {
     if (config.web_bridge?.mode !== "managed_actions") throw new Error("managed Web mode is not configured");
     const metadata = resolveManagedWebService();
@@ -163,13 +167,15 @@ export function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
     const service = await client.probeServiceStatus();
     return { config, client, service };
   }));
-  const loadWebConnection = lazyPromise(() => loadManagedService().then(async ({ config, client, service }) => {
+  const loadManagedConnection = lazyPromise(() => loadManagedService().then(async ({ config, client, service }) => {
     await client.accessToken();
     const connection = await createConfiguredWebBridge(config, webPaths.bridge).getConnectionStatus();
     return { service, connection };
   }));
-  const webFailure = (label: string, error: unknown) => ({ severity: "WARN" as const, summary: `${label} FAIL - ${error instanceof Error ? error.message : String(error)}` });
-  const webMode = lazyPromise(() => loadConfig().then((config) => config.web_bridge?.mode ?? "manual_file"));
+  const loadLocalConnection = lazyPromise(() => loadConfig().then(async (config) => {
+    if ((config.web_bridge?.mode ?? "chatgpt_codex") !== "chatgpt_codex") throw new Error("local ChatGPT/Codex mode is not configured");
+    return await createConfiguredWebBridge(config, webPaths.bridge).getConnectionStatus();
+  }));
   const loadPersonalConnection = lazyPromise(() => loadConfig().then(async (config) => {
     if (config.web_bridge?.mode !== "personal_actions" && config.web_bridge?.mode !== "actions_relay") throw new Error("personal Web mode is not configured");
     await readRelayToken(webPaths.credentials);
@@ -201,8 +207,27 @@ export function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
       return { severity: "OK" as const, summary: result.stdout.trim() };
     } },
     { id: "verification-sandbox", async run() { await new BubblewrapVerificationSandbox().checkAvailability(); return { severity: "OK" as const, summary: "Bubblewrap verification sandbox available with isolated filesystem/network namespaces" }; } },
+    { id: "codex-runtime", async run() {
+      if (!await codexRequired()) return { severity: "OK" as const, summary: "explicit advanced PAIR profile does not require the local Codex runtime" };
+      const runtime = await loadRuntime();
+      const result = await spawnBounded({ executable: runtime.executable, args: codexCliArgs(runtime, ["--version"]), cwd: path.dirname(runtime.launcher_path), environment: minimalCodexEnvironment(runtime), timeoutMs: 4_000, stdoutMaxBytes: 16_384, stderrMaxBytes: 16_384, shell: false });
+      if (result.exitCode !== 0 || result.timedOut || result.spawnError) return { severity: "FAIL" as const, summary: processFailureSummary(result, "pinned Codex runtime unavailable") };
+      const version = assertCompatibleCodexCliVersion(`${result.stdout}\n${result.stderr}`);
+      return { severity: "OK" as const, summary: `pinned Codex ${version}` };
+    } },
+    { id: "codex-auth", async run() {
+      const mode = await webMode();
+      if (mode !== "chatgpt_codex" && args.doctorMode !== "AUTOPILOT") return { severity: "OK" as const, summary: "explicit advanced PAIR profile does not require local Codex authentication" };
+      const runtime = await loadRuntime();
+      const result = await spawnBounded({ executable: runtime.executable, args: codexCliArgs(runtime, ["login", "status"]), cwd: path.dirname(runtime.launcher_path), environment: minimalCodexEnvironment(runtime), timeoutMs: 4_000, stdoutMaxBytes: 16_384, stderrMaxBytes: 16_384, shell: false });
+      if (result.exitCode !== 0 || result.timedOut || result.spawnError) {
+        return { severity: "FAIL" as const, summary: mode === "chatgpt_codex" ? "ChatGPT authorization unavailable for the local Codex transport; run `wco web connect`" : "Codex authentication unavailable before AUTOPILOT model review" };
+      }
+      return { severity: "OK" as const, summary: mode === "chatgpt_codex" ? "ChatGPT authorization available through the pinned Codex runtime" : "Codex authentication available for AUTOPILOT review" };
+    } },
     { id: "wco-relay-service", async run() {
       const mode = await webMode();
+      if (mode === "chatgpt_codex") return { severity: "OK" as const, summary: "local ChatGPT/Codex transport; no relay or hosted service required" };
       if (mode === "manual_file") return { severity: "OK" as const, summary: "offline manual_file profile; no relay probe required" };
       if (mode === "web_native_mcp") { try { await loadNativeCredential(); return { severity: "OK" as const, summary: "official OpenAI Secure MCP Tunnel profile; no third-party relay required" }; } catch (error) { return { severity: "FAIL" as const, summary: `OpenAI Web-native setup incomplete - ${error instanceof Error ? error.message : String(error)}` }; } }
       if (mode === "personal_actions" || mode === "actions_relay") { try { const status = await loadPersonalConnection(); return status.connected ? { severity: "OK" as const, summary: "PASS - personal bearer relay reachable" } : { severity: "WARN" as const, summary: "personal relay offline" }; } catch (error) { return webFailure("Personal WCO Relay", error); } }
@@ -215,13 +240,24 @@ export function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
     } },
     { id: "chatgpt-web", async run() {
       const mode = await webMode();
+      if (mode === "chatgpt_codex") {
+        try {
+          const status = await loadLocalConnection();
+          return status.configured && status.connected
+            ? { severity: "OK" as const, summary: "local ChatGPT/Codex semantic transport reachable; authorization is checked separately" }
+            : { severity: "FAIL" as const, summary: "local ChatGPT/Codex semantic transport unavailable" };
+        } catch (error) {
+          return { severity: "FAIL" as const, summary: `local ChatGPT/Codex semantic transport unavailable - ${error instanceof Error ? error.message : String(error)}` };
+        }
+      }
       if (mode === "manual_file") return { severity: "OK" as const, summary: "offline manual_file profile" };
       if (mode === "web_native_mcp") { try { await loadNativeCredential(); return { severity: "OK" as const, summary: "official ChatGPT Web-native MCP credential configured" }; } catch (error) { return { severity: "FAIL" as const, summary: `Web-native authorization missing - ${error instanceof Error ? error.message : String(error)}` }; } }
       if (mode === "personal_actions" || mode === "actions_relay") { try { return (await loadPersonalConnection()).connected ? { severity: "OK" as const, summary: "personal Action relay linked" } : { severity: "WARN" as const, summary: "personal Action relay not linked" }; } catch { return { severity: "WARN" as const, summary: "personal Action relay not linked" }; } }
-      try { const value = await loadWebConnection(); return value.service.chatgpt_oauth_configured && value.connection.connected ? { severity: "OK" as const, summary: "managed OAuth linked" } : { severity: "WARN" as const, summary: "managed OAuth not linked" }; } catch { return { severity: "WARN" as const, summary: "managed OAuth not linked" }; }
+      try { const value = await loadManagedConnection(); return value.service.chatgpt_oauth_configured && value.connection.connected ? { severity: "OK" as const, summary: "managed OAuth linked" } : { severity: "WARN" as const, summary: "managed OAuth not linked" }; } catch { return { severity: "WARN" as const, summary: "managed OAuth not linked" }; }
     } },
     { id: "senior-architect-gpt", async run() {
-      const config = await loadConfig(), mode = config.web_bridge?.mode ?? "manual_file";
+      const config = await loadConfig(), mode = config.web_bridge?.mode ?? "chatgpt_codex";
+      if (mode === "chatgpt_codex") return { severity: "OK" as const, summary: "local ChatGPT/Codex transport has no Custom GPT or Workspace Agent requirement" };
       if (mode === "manual_file") return { severity: "OK" as const, summary: "not required for offline manual_file profile" };
       if (mode === "web_native_mcp") { try { await loadNativeCredential(); return { severity: "OK" as const, summary: "private WCO Workspace Agent trigger configured" }; } catch { return { severity: "FAIL" as const, summary: "private WCO Workspace Agent trigger not configured; run `wco web connect`" }; } }
       if (mode === "personal_actions" || mode === "actions_relay") return config.web_bridge?.gpt_url ? { severity: "OK" as const, summary: "personal GPT metadata configured" } : { severity: "WARN" as const, summary: "personal GPT one-time editor setup not yet recorded" };
@@ -229,24 +265,6 @@ export function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
     } },
   ];
 
-  if (args.doctorMode === "AUTOPILOT") {
-    const loadRuntime = lazyPromise(() => loadConfig().then((config) => resolveCodexRuntime(config.runtime, args.stateDirectory)));
-    probes.splice(6, 0,
-      { id: "codex-runtime", async run() {
-        const runtime = await loadRuntime();
-        const result = await spawnBounded({ executable: runtime.executable, args: codexCliArgs(runtime, ["--version"]), cwd: path.dirname(runtime.launcher_path), environment: minimalCodexEnvironment(runtime), timeoutMs: 4_000, stdoutMaxBytes: 16_384, stderrMaxBytes: 16_384, shell: false });
-        if (result.exitCode !== 0 || result.timedOut || result.spawnError) return { severity: "FAIL" as const, summary: processFailureSummary(result, "pinned Codex runtime unavailable") };
-        const version = assertCompatibleCodexCliVersion(`${result.stdout}\n${result.stderr}`);
-        return { severity: "OK" as const, summary: `pinned Codex ${version}` };
-      } },
-      { id: "codex-auth", async run() {
-        const runtime = await loadRuntime();
-        const result = await spawnBounded({ executable: runtime.executable, args: codexCliArgs(runtime, ["login", "status"]), cwd: path.dirname(runtime.launcher_path), environment: minimalCodexEnvironment(runtime), timeoutMs: 4_000, stdoutMaxBytes: 16_384, stderrMaxBytes: 16_384, shell: false });
-        if (result.exitCode !== 0 || result.timedOut || result.spawnError) return { severity: "FAIL" as const, summary: "Codex authentication unavailable; authenticate the pinned CLI before AUTOPILOT model review" };
-        return { severity: "OK" as const, summary: "Codex authentication available for AUTOPILOT review" };
-      } },
-    );
-  }
   return probes;
 }
 
