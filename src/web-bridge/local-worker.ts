@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
-import { mkdir, readFile } from "node:fs/promises";
+import { constants as fsConstants, type Stats } from "node:fs";
+import { lstat, mkdir, open, realpath } from "node:fs/promises";
 import path from "node:path";
 import { DEFAULT_REVIEWER, type ReviewerSelection } from "../agent/reviewer-selection.js";
 import { freezeRunReviewMode, readReviewMode } from "../agent/reviewer-mode-store.js";
@@ -7,7 +8,7 @@ import type { TrustedConfig } from "../config/contracts.js";
 import type { JobMode } from "../orchestration/job-mode.js";
 import { atomicWriteJson } from "../run/run-store.js";
 import { prepareTask } from "../run/preparation-service.js";
-import { contentDigest, WebBridgeError, type RepositoryBinding, type WebContractEnvelope } from "./contracts.js";
+import { contentDigest, parseWebContractEnvelope, WebBridgeError, type RepositoryBinding, type WebContractEnvelope } from "./contracts.js";
 import type { WebBridge } from "./web-bridge.js";
 import { ExactRepositoryReadService } from "./repo-read-service.js";
 import { ReadCoverageStore } from "./read-coverage-store.js";
@@ -15,6 +16,10 @@ import { materializeTaskBundle } from "./task-contract-materializer.js";
 import { materializeWebImplementationPack } from "./web-pack-materializer.js";
 import { ContentAddressedContextCache } from "./context-cache.js";
 import { isPreparedRunAwareWebBridge } from "./prepared-run-aware.js";
+
+const SESSION_MAX_BYTES = 2 * 1024 * 1024;
+const SESSION_STATES = new Set(["CREATING", "AUTHORING", "CONTRACT_SEALED", "PREPARED", "IMPLEMENTATION_REGISTERED", "COMPLETED", "BLOCKED"]);
+const JOB_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 export interface LocalWorkerSession {
   schema_version: "1.0";
@@ -40,18 +45,61 @@ function sessionPath(stateDirectory: string, repositoryId: string): string {
   return path.join(stateDirectory, "bridge", "sessions", `${repositoryId}.json`);
 }
 
+function sameIdentity(left: Stats, right: Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
+}
+
+function validateSession(value: unknown, repositoryId: string): LocalWorkerSession {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new WebBridgeError("WEB_SESSION_INVALID", "Local worker session must be an object.");
+  const session = value as LocalWorkerSession;
+  if (session.schema_version !== "1.0" || typeof session.session_id !== "string" || !/^[0-9a-f-]{36}$/i.test(session.session_id) || !session.repository || session.repository.repository_id !== repositoryId || !/^[a-f0-9]{40}$/.test(session.repository.base_commit) || typeof session.repository.base_branch !== "string" || !session.repository.base_branch || typeof session.goal !== "string" || !session.goal || session.goal.length > 65_536 || !Number.isSafeInteger(session.last_event_sequence) || session.last_event_sequence < 0 || typeof session.sealed !== "boolean" || !SESSION_STATES.has(session.state) || !Number.isFinite(Date.parse(session.created_at)) || !Number.isFinite(Date.parse(session.updated_at))) {
+    throw new WebBridgeError("WEB_SESSION_INVALID", "Local worker session failed durable schema/identity validation.");
+  }
+  if (session.job_mode !== undefined && session.job_mode !== "PAIR" && session.job_mode !== "AUTOPILOT") throw new WebBridgeError("WEB_SESSION_INVALID", "Local worker session has an invalid orchestration mode.");
+  if (session.job_id !== null && (typeof session.job_id !== "string" || !JOB_ID.test(session.job_id))) throw new WebBridgeError("WEB_SESSION_INVALID", "Local worker session has an invalid authoring job identity.");
+  for (const field of [session.task_archive_path, session.web_pack_path]) if (field !== null && (typeof field !== "string" || !path.isAbsolute(field))) throw new WebBridgeError("WEB_SESSION_INVALID", "Local worker session contains a non-absolute artifact path.");
+  if (session.run_id !== null && (typeof session.run_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}:[a-f0-9]{64}$/.test(session.run_id))) throw new WebBridgeError("WEB_SESSION_INVALID", "Local worker session has an invalid canonical run identity.");
+  if (session.contract !== null) {
+    const contract = parseWebContractEnvelope(session.contract);
+    if (session.job_id === null || contract.job_id !== session.job_id || contract.user_intent !== session.goal || contentDigest(contract.repository) !== contentDigest(session.repository)) throw new WebBridgeError("WEB_SESSION_INVALID", "Local worker session contract does not bind its original job, intent, and repository.");
+    session.contract = contract;
+  }
+  if (session.sealed && !session.contract) throw new WebBridgeError("WEB_SESSION_INVALID", "Sealed local worker session is missing its exact contract.");
+  if (["PREPARED", "IMPLEMENTATION_REGISTERED", "COMPLETED"].includes(session.state) && (!session.sealed || !session.run_id || !session.task_archive_path)) throw new WebBridgeError("WEB_SESSION_INVALID", "Prepared local worker session is missing canonical authority.");
+  if (session.state === "IMPLEMENTATION_REGISTERED" && !session.web_pack_path) throw new WebBridgeError("WEB_SESSION_INVALID", "Implementation-registered session is missing its exact Web pack.");
+  return session;
+}
+
 export function localWorkerJobMode(session: Pick<LocalWorkerSession, "job_mode">): JobMode {
   return session.job_mode ?? "PAIR";
 }
 
 export async function readLocalWorkerSession(stateDirectory: string, repositoryId: string): Promise<LocalWorkerSession | null> {
-  try { return JSON.parse(await readFile(sessionPath(stateDirectory, repositoryId), "utf8")) as LocalWorkerSession; }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+  const target = sessionPath(stateDirectory, repositoryId);
+  const pathStat = await lstat(target).catch((error: unknown) => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; });
+  if (!pathStat) return null;
+  if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.size > SESSION_MAX_BYTES || await realpath(target) !== target) throw new WebBridgeError("WEB_SESSION_INVALID", "Local worker session path is unsafe or exceeds its bound.");
+  const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+  const handle = await open(target, fsConstants.O_RDONLY | noFollow).catch((error) => { throw new WebBridgeError("WEB_SESSION_INVALID", `Local worker session could not be opened safely: ${error instanceof Error ? error.message : String(error)}`); });
+  try {
+    const before = await handle.stat();
+    if (!before.isFile() || !sameIdentity(pathStat, before) || before.size > SESSION_MAX_BYTES) throw new WebBridgeError("WEB_SESSION_INVALID", "Local worker session changed before stable open.");
+    const bytes = Buffer.alloc(before.size); let offset = 0;
+    while (offset < bytes.length) { const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset); if (bytesRead === 0) throw new WebBridgeError("WEB_SESSION_INVALID", "Local worker session truncated during read."); offset += bytesRead; }
+    if ((await handle.read(Buffer.alloc(1), 0, 1, offset)).bytesRead !== 0) throw new WebBridgeError("WEB_SESSION_INVALID", "Local worker session grew during read.");
+    const [afterHandle, afterPath] = await Promise.all([handle.stat(), lstat(target)]);
+    if (!afterPath.isFile() || afterPath.isSymbolicLink() || !sameIdentity(before, afterHandle) || !sameIdentity(before, afterPath)) throw new WebBridgeError("WEB_SESSION_INVALID", "Local worker session changed during read.");
+    let parsed: unknown;
+    try { parsed = JSON.parse(bytes.toString("utf8")) as unknown; }
+    catch { throw new WebBridgeError("WEB_SESSION_INVALID", "Local worker session is not valid JSON."); }
+    return validateSession(parsed, repositoryId);
+  } finally { await handle.close(); }
 }
 
 async function save(stateDirectory: string, value: LocalWorkerSession): Promise<void> {
   await mkdir(path.dirname(sessionPath(stateDirectory, value.repository.repository_id)), { recursive: true, mode: 0o700 });
   value.updated_at = new Date().toISOString();
+  validateSession(value, value.repository.repository_id);
   await atomicWriteJson(sessionPath(stateDirectory, value.repository.repository_id), value);
 }
 
@@ -148,6 +196,7 @@ export async function advanceLocalWorker(options: {
       const result = await reader.execute(session.job_id, event.request_id, event.command);
       await options.bridge.submitRepositoryCommandResult(session.job_id, { request_id: event.request_id, result }, `repo-result-${event.request_id}`);
     } else if (event.type === "contract_sealed") {
+      if (event.envelope.job_id !== session.job_id || event.envelope.user_intent !== session.goal || contentDigest(event.envelope.repository) !== contentDigest(session.repository)) throw new WebBridgeError("WEB_CONTRACT_BINDING_MISMATCH", "Sealed Web contract does not bind the original authoring job, user intent, and exact repository.");
       const materialized = await materializeTaskBundle({ envelope: event.envelope, repository: session.repository, config: options.config, stateDirectory: options.stateDirectory });
       const prepared = await prepareTask({ archivePath: materialized.archive_path, stateDirectory: options.stateDirectory, configPath: options.configPath });
       if (isPreparedRunAwareWebBridge(options.bridge)) {
@@ -165,7 +214,7 @@ export async function advanceLocalWorker(options: {
       session.state = "PREPARED";
     } else {
       if (!session.contract || !session.run_id) throw new WebBridgeError("WEB_IMPLEMENTATION_OUT_OF_ORDER", "Web implementation arrived before canonical contract preparation.");
-      if (event.submission.run_id !== session.run_id) throw new WebBridgeError("WEB_PACK_BINDING_MISMATCH", "Web implementation run identity is stale.");
+      if (event.submission.job_id !== session.job_id || event.submission.run_id !== session.run_id) throw new WebBridgeError("WEB_PACK_BINDING_MISMATCH", "Web implementation identity is stale or bound to another authoring job.");
       const pack = await materializeWebImplementationPack({ submission: event.submission, envelope: session.contract, stateDirectory: options.stateDirectory, configPath: options.configPath, coverageStore: coverage });
       session.web_pack_path = pack.archive_path;
       session.state = "IMPLEMENTATION_REGISTERED";
