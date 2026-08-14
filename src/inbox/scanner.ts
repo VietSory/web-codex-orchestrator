@@ -90,6 +90,7 @@ export async function scanInbox(options: ScannerOptions): Promise<ScanSummary> {
   const index = await readInboxIndex(options.stateDirectory);
   const resultByName = new Map<string, ScanCandidateResult>();
   const candidates: CandidateObservationState[] = [];
+  const presentCanonicalPaths = new Set<string>();
   let skipped = 0;
 
   // First observation is cheap and sequential so result ordering and index
@@ -100,6 +101,7 @@ export async function scanInbox(options: ScannerOptions): Promise<ScanSummary> {
     const info = await lstat(candidatePath);
     if (info.isSymbolicLink() || !info.isFile()) continue;
     const canonical = await realpath(candidatePath);
+    presentCanonicalPaths.add(canonical);
     const existing = index.entries[canonical];
     if (existing && existing.size === info.size && existing.mtime_ms === info.mtimeMs && (existing.latest_result === "ready_for_codex" || existing.latest_result === "rejected")) {
       skipped += 1;
@@ -118,6 +120,13 @@ export async function scanInbox(options: ScannerOptions): Promise<ScanSummary> {
       observation: tracker.observe(canonical, info.size, info.mtimeMs, now().getTime()),
       invalidated: false,
     });
+  }
+
+  // The index is a skip cache for files that are currently in the inbox, not a
+  // historical ledger. Removing stale paths keeps persistent state bounded by
+  // maximum_candidates_per_scan while preserving all active skip semantics.
+  for (const canonical of Object.keys(index.entries)) {
+    if (!presentCanonicalPaths.has(canonical)) delete index.entries[canonical];
   }
 
   await stabilizeCandidates(candidates, tracker, config.stable_observations, config.poll_interval_ms, sleep, now);
