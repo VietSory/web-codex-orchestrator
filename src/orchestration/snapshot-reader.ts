@@ -14,6 +14,8 @@ import type { RevisionReceipt } from "../revision/contracts.js";
 import { getRevisionStatus } from "../revision/revision-service.js";
 import type { WebReviewReceipt } from "../web-review/contracts.js";
 import { getWebReviewStatus } from "../web-review/web-review-service.js";
+import { assertCodeReviewApprovedForCurrentResult, readWebCodeReviewReceipt, type WebCodeReviewState } from "../web-bridge/code-review-service.js";
+import { WebBridgeError } from "../web-bridge/contracts.js";
 import { readSelectedArtifact } from "./artifact-binding.js";
 import type { LifecycleSnapshot } from "./planner.js";
 import { OrchestrationError } from "./contracts.js";
@@ -100,20 +102,35 @@ export function webReviewBoundToCurrentResult(review: WebReviewReceipt | null, r
   );
 }
 
+async function currentPairCodeReviewState(stateDirectory: string, runId: string, executor: ExecutorReceipt | null): Promise<WebCodeReviewState | null> {
+  if (executor?.review_strategy !== "web") return null;
+  const receipt = await readWebCodeReviewReceipt(stateDirectory, runId);
+  if (!receipt) return null;
+  if (receipt.state !== "APPROVED") return receipt.state;
+  try {
+    await assertCodeReviewApprovedForCurrentResult(stateDirectory, runId);
+    return "APPROVED";
+  } catch (error) {
+    if (error instanceof WebBridgeError && (error.code === "WEB_CODE_REVIEW_REQUIRED" || error.code === "WEB_CODE_REVIEW_STALE")) return null;
+    throw error;
+  }
+}
+
 export async function readLifecycleSnapshot(stateDirectory: string, runId: string): Promise<LifecycleSnapshot> {
   const selected = await readSelectedArtifact(stateDirectory, runId);
-  if (!selected) return { registered_artifact_sha256: null, executor_state: null, publish_state: null, draft_pr_state: null, result_bundle_ready: false, web_review_state: null, revision_state: null, revision_result_ready: false };
+  if (!selected) return { registered_artifact_sha256: null, executor_state: null, publish_state: null, draft_pr_state: null, result_bundle_ready: false, web_code_review_state: null, web_review_state: null, revision_state: null, revision_result_ready: false };
   const id = splitRunId(runId);
   const executor = await readExecutorReceipt(stateDirectory, id.taskId, id.taskBundleSha256, selected.artifact_sha256);
   const directory = executorPaths(stateDirectory, id.taskId, id.taskBundleSha256, selected.artifact_sha256).directory;
   const publishDirectory = path.join(directory, "publish");
   const resultPaths = resultBundlePaths(stateDirectory, id.taskId, id.taskBundleSha256);
-  const [publishSnapshot, draftSnapshot, result, review, revision] = await Promise.all([
+  const [publishSnapshot, draftSnapshot, result, review, revision, codeReviewState] = await Promise.all([
     readGitPublishReceiptSnapshot(path.join(publishDirectory, "git-publish.json")),
     readDraftPullRequestReceiptSnapshot(path.join(publishDirectory, "github-draft-pr.json")),
     readResultBundleReceipt(resultPaths.receiptPath),
     getWebReviewStatus({ runId, stateDirectory }),
     getRevisionStatus(stateDirectory, runId),
+    currentPairCodeReviewState(stateDirectory, runId, executor),
   ]);
   const publish = publishSnapshot?.receipt ?? null;
   const draft = draftSnapshot?.receipt ?? null;
@@ -131,6 +148,7 @@ export async function readLifecycleSnapshot(stateDirectory: string, runId: strin
     publish_state: publishCurrent ? publish?.state ?? null : null,
     draft_pr_state: draftCurrent ? draft?.state ?? null : null,
     result_bundle_ready: initialResultCurrent,
+    web_code_review_state: codeReviewState,
     web_review_state: webReviewState,
     revision_state: relevantRevision?.state ?? null,
     revision_result_ready: revisionResultReadyForWebReview(runId, review, revision),
