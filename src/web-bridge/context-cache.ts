@@ -33,6 +33,23 @@ async function safeDirectory(root: string): Promise<string> {
 export class ContentAddressedContextCache {
   constructor(private readonly root: string, private readonly maximumEntryBytes = 1_048_576) {}
 
+  private async target(key: string): Promise<string> {
+    return path.join(await safeDirectory(this.root), `${digest(key)}.json`);
+  }
+
+  async evict(key: string): Promise<void> {
+    const target = await this.target(key);
+    const info = await lstat(target).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    });
+    if (!info) return;
+    if (!info.isFile() || info.isSymbolicLink() || await realpath(target) !== target) {
+      throw new WebBridgeError("WEB_CONTEXT_CACHE_ENTRY_INVALID", "Context cache eviction target is not a canonical regular file.");
+    }
+    await unlink(target);
+  }
+
   async get(key: string): Promise<Buffer | null> {
     const root = await safeDirectory(this.root);
     const keySha = digest(key);
