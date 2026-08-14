@@ -1,12 +1,17 @@
 import type { AgentClient } from "../agent/contracts.js";
 import type { AgentProfile } from "../config/contracts.js";
-import { CHATGPT_CODEX_OUTPUT_SCHEMA } from "./chatgpt-codex-output-schema.js";
+import { CHATGPT_CODEX_AUTHOR_OUTPUT_SCHEMA, CHATGPT_CODEX_REVIEW_OUTPUT_SCHEMA } from "./chatgpt-codex-output-schema.js";
 
 /**
  * Thin adapter over WCO's already-hardened Codex SDK client. It intentionally
  * requests read-only/no-approval/no-network execution and returns semantic
  * output only. Nested WCO payloads are validated by the WebBridge layer before
  * they can become repository or review authority.
+ *
+ * The provider-facing structured-output schema is phase-specific. Author turns
+ * cannot syntactically produce review authority, and review turns cannot
+ * syntactically produce repository/contract authority. This prevents a valid-
+ * schema but wrong-phase response from consuming an at-most-once provider turn.
  */
 export class ChatGptCodexSemanticClient {
   constructor(private readonly agent: AgentClient) {}
@@ -16,6 +21,7 @@ export class ChatGptCodexSemanticClient {
   }
 
   async turn(options: {
+    phase: "author" | "review";
     profile: AgentProfile;
     prompt: string;
     scratchDirectory: string;
@@ -29,7 +35,7 @@ export class ChatGptCodexSemanticClient {
       reasoning_effort: options.profile.reasoning_effort,
       ...(options.threadId ? { thread_id: options.threadId } : {}),
       prompt: options.prompt,
-      output_schema: CHATGPT_CODEX_OUTPUT_SCHEMA as unknown as Record<string, unknown>,
+      output_schema: (options.phase === "author" ? CHATGPT_CODEX_AUTHOR_OUTPUT_SCHEMA : CHATGPT_CODEX_REVIEW_OUTPUT_SCHEMA) as unknown as Record<string, unknown>,
       read_only: true,
       approval_policy: "never",
       sandbox_mode: "read-only",
