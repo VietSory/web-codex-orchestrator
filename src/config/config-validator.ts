@@ -269,7 +269,8 @@ export function validateConfig(value: unknown): ConfigValidationReport {
     else {
       for (const key of unknownFields(webBridge, WEB_BRIDGE_FIELDS)) add(issues, `Unknown web_bridge field: ${key}`);
       const mode = webBridge.mode;
-      if (mode !== "web_native_mcp" && mode !== "personal_actions" && mode !== "managed_actions" && mode !== "actions_relay" && mode !== "manual_file") add(issues, "web_bridge.mode is invalid.");
+      if (mode !== "chatgpt_codex" && mode !== "web_native_mcp" && mode !== "personal_actions" && mode !== "managed_actions" && mode !== "actions_relay" && mode !== "manual_file") add(issues, "web_bridge.mode is invalid.");
+      if (mode === "chatgpt_codex" && (webBridge.relay_url !== undefined || webBridge.gpt_url !== undefined)) add(issues, "chatgpt_codex is a local official-runtime transport; relay_url and gpt_url are forbidden.");
       if (mode === "web_native_mcp" && (webBridge.relay_url !== undefined || webBridge.gpt_url !== undefined)) add(issues, "web_native_mcp uses official OpenAI transport credentials outside trusted config; relay_url and gpt_url are forbidden.");
       if (mode === "actions_relay" && !safeWebUrl(webBridge.relay_url)) add(issues, "web_bridge.relay_url must be HTTPS or an HTTP loopback URL.");
       if (mode === "actions_relay" && !safeWebUrl(webBridge.gpt_url, true)) add(issues, "web_bridge.gpt_url is required for self-hosted relay mode.");
