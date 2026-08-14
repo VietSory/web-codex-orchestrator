@@ -7,12 +7,14 @@ import type { LocalWorkerSession } from "./local-worker.js";
 const HISTORY_ENTRY_MAX_BYTES = 2 * 1024 * 1024;
 const HISTORY_MAX_FILES = 512;
 const HISTORY_SCAN_HARD_LIMIT = 4_096;
-const HISTORY_NAME = /^[0-9a-f-]{36}\.json$/i;
+const SAFE_HISTORY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const CURRENT_SESSION_ID = /^[0-9a-f-]{36}$/i;
+const HISTORY_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json$/;
 
 function validSession(value: unknown): value is LocalWorkerSession {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const item = value as Partial<LocalWorkerSession>;
-  return item.schema_version === "1.0" && typeof item.session_id === "string" && /^[0-9a-f-]{36}$/i.test(item.session_id) && typeof item.goal === "string" && typeof item.updated_at === "string" && Boolean(item.repository && typeof item.repository.repository_id === "string");
+  return item.schema_version === "1.0" && typeof item.session_id === "string" && SAFE_HISTORY_ID.test(item.session_id) && typeof item.goal === "string" && typeof item.updated_at === "string" && Number.isFinite(Date.parse(item.updated_at)) && Boolean(item.repository && typeof item.repository.repository_id === "string");
 }
 
 function historyDirectory(stateDirectory: string): string {
@@ -47,7 +49,9 @@ async function pruneForInsert(history: string): Promise<void> {
 }
 
 export async function archiveLocalTaskHistory(stateDirectory: string, session: LocalWorkerSession): Promise<void> {
-  if (!/^[0-9a-f-]{36}$/i.test(session.session_id)) throw new Error("WEB_SESSION_ID_INVALID: session identity is invalid.");
+  // New sessions are always UUIDs. The reader remains compatible with safe
+  // legacy IDs because history is non-authoritative convenience state.
+  if (!CURRENT_SESSION_ID.test(session.session_id)) throw new Error("WEB_SESSION_ID_INVALID: session identity is invalid.");
   const serializedBytes = Buffer.byteLength(JSON.stringify(session), "utf8");
   if (serializedBytes > HISTORY_ENTRY_MAX_BYTES) throw new Error("WEB_HISTORY_LIMIT: session history entry exceeds its safe bound.");
   const history = historyDirectory(stateDirectory);
@@ -68,7 +72,7 @@ export async function listLocalTaskHistory(stateDirectory: string, repositoryId:
     try {
       const { bytes } = await readStableFile(path.join(history, name), HISTORY_ENTRY_MAX_BYTES);
       const parsed = JSON.parse(bytes.toString("utf8")) as unknown;
-      if (validSession(parsed) && parsed.repository.repository_id === repositoryId) values.push(parsed);
+      if (validSession(parsed) && parsed.repository.repository_id === repositoryId && `${parsed.session_id}.json` === name) values.push(parsed);
     } catch (error) {
       // History cannot advance workflow authority. A stale/corrupt convenience
       // record is ignored rather than making the active task unusable.
