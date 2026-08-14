@@ -46,11 +46,24 @@ export class RelayFileStore {
     this.queue = new Promise<void>((resolve) => { releaseLocal = resolve; });
     await previous;
     let writer: TicketFileLockHandle | null = null;
+    let operationError: unknown;
+    let result: T | undefined;
     try {
       writer = await this.acquireWriterLock();
-      return await operation();
+      try { result = await operation(); }
+      catch (error) { operationError = error; }
+
+      try { await writer.release(); }
+      catch (releaseError) {
+        if (operationError === undefined) {
+          operationError = new WebBridgeError("RELAY_STORE_LOCK_RELEASE_FAILED", `Relay mutation committed but writer lock could not be released safely: ${releaseError instanceof Error ? releaseError.message : String(releaseError)}`);
+        }
+      }
+      writer = null;
+      if (operationError !== undefined) throw operationError;
+      return result as T;
     } finally {
-      await writer?.release().catch(() => undefined);
+      if (writer) await writer.release().catch(() => undefined);
       releaseLocal();
     }
   }
