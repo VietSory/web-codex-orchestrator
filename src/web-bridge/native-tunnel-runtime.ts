@@ -1,9 +1,10 @@
 import crypto from "node:crypto";
-import { chmod, lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import yauzl from "yauzl";
+import { hashStableFile, readStableFile } from "../shared/stable-file.js";
 import { WebBridgeError } from "./contracts.js";
 import type { NativeOpenAiCredential } from "./native-openai-credential.js";
 
@@ -14,6 +15,8 @@ const ASSETS: Record<string, { name: string; sha256: string }> = {
 };
 const MAX_ARCHIVE = 40 * 1024 * 1024;
 const MAX_BINARY = 96 * 1024 * 1024;
+const MAX_MANIFEST = 4 * 1024;
+const MAX_HEALTH_URL = 2 * 1024;
 
 interface TunnelManifest { schema_version: "1.0"; release: string; asset: string; archive_sha256: string; binary_sha256: string; }
 export interface NativeTunnelProcess { child: ChildProcess; health_url: string; stop(): Promise<void>; }
@@ -35,6 +38,30 @@ async function safeCache(directory: string): Promise<string> {
   return root;
 }
 
+async function readResponseBounded(response: Response, maximumBytes: number): Promise<Buffer> {
+  const body = response.body;
+  if (!body) throw new WebBridgeError("WEB_NATIVE_TUNNEL_DOWNLOAD_FAILED", "Official tunnel-client response has no body.");
+  const reader = body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      const chunk = Buffer.from(next.value);
+      total += chunk.byteLength;
+      if (total > maximumBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new WebBridgeError("WEB_NATIVE_TUNNEL_ARCHIVE_INVALID", "Tunnel-client archive exceeds the streaming download bound.");
+      }
+      chunks.push(chunk);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, total);
+}
+
 async function extractBinary(archive: Buffer): Promise<Buffer> {
   return await new Promise<Buffer>((resolve, reject) => {
     yauzl.fromBuffer(archive, { lazyEntries: true, validateEntrySizes: true, strictFileNames: true }, (error, zip) => {
@@ -50,7 +77,7 @@ async function extractBinary(archive: Buffer): Promise<Buffer> {
           const chunks: Buffer[] = []; let total = 0;
           stream.on("data", (chunk: Buffer) => { total += chunk.byteLength; if (total > MAX_BINARY) { stream.destroy(new Error("binary limit")); return; } chunks.push(chunk); });
           stream.on("error", reject);
-          stream.on("end", () => resolve(Buffer.concat(chunks)));
+          stream.on("end", () => resolve(Buffer.concat(chunks, total)));
         });
       });
       zip.on("end", () => { if (!found) reject(new WebBridgeError("WEB_NATIVE_TUNNEL_ARCHIVE_INVALID", "Tunnel-client binary is missing from the official archive.")); });
@@ -62,18 +89,28 @@ async function extractBinary(archive: Buffer): Promise<Buffer> {
 export async function ensureOfficialTunnelClient(cacheDirectory: string, fetchImpl: typeof fetch = fetch): Promise<string> {
   const root = await safeCache(cacheDirectory), binaryPath = path.join(root, "tunnel-client"), manifestPath = path.join(root, "manifest.json"), selected = asset();
   try {
-    const [binary, rawManifest, info] = await Promise.all([readFile(binaryPath), readFile(manifestPath, "utf8"), lstat(binaryPath)]);
-    const manifest = JSON.parse(rawManifest) as TunnelManifest;
-    if (info.isFile() && !info.isSymbolicLink() && manifest.schema_version === "1.0" && manifest.release === RELEASE && manifest.asset === selected.name && manifest.archive_sha256 === selected.sha256 && manifest.binary_sha256 === hash(binary)) return binaryPath;
+    const [binaryHash, manifestSnapshot, info] = await Promise.all([
+      hashStableFile(binaryPath, { maximumBytes: MAX_BINARY }),
+      readStableFile(manifestPath, MAX_MANIFEST),
+      lstat(binaryPath),
+    ]);
+    const manifest = JSON.parse(manifestSnapshot.bytes.toString("utf8")) as TunnelManifest;
+    if (info.isFile() && !info.isSymbolicLink() && manifest.schema_version === "1.0" && manifest.release === RELEASE && manifest.asset === selected.name && manifest.archive_sha256 === selected.sha256 && manifest.binary_sha256 === binaryHash.sha256) {
+      await chmod(binaryPath, 0o700).catch(() => undefined);
+      return binaryPath;
+    }
   } catch { /* disposable cache is rebuilt below */ }
   await rm(root, { recursive: true, force: true }); await mkdir(root, { recursive: true, mode: 0o700 });
   const url = `https://github.com/openai/tunnel-client/releases/download/${RELEASE}/${selected.name}`;
   const response = await fetchImpl(url, { redirect: "follow" });
   if (!response.ok) throw new WebBridgeError("WEB_NATIVE_TUNNEL_DOWNLOAD_FAILED", `Official tunnel-client download failed with HTTP ${response.status}.`);
-  const length = Number(response.headers.get("content-length") ?? "0");
-  if (Number.isFinite(length) && length > MAX_ARCHIVE) throw new WebBridgeError("WEB_NATIVE_TUNNEL_ARCHIVE_INVALID", "Tunnel-client archive exceeds the download bound.");
-  const archive = Buffer.from(await response.arrayBuffer());
-  if (archive.byteLength > MAX_ARCHIVE || hash(archive) !== selected.sha256) throw new WebBridgeError("WEB_NATIVE_TUNNEL_DIGEST_MISMATCH", "Official tunnel-client archive digest does not match WCO's pinned release manifest.");
+  const lengthHeader = response.headers.get("content-length");
+  if (lengthHeader !== null) {
+    const length = Number(lengthHeader);
+    if (!Number.isSafeInteger(length) || length < 0 || length > MAX_ARCHIVE) throw new WebBridgeError("WEB_NATIVE_TUNNEL_ARCHIVE_INVALID", "Tunnel-client archive has an invalid or oversized Content-Length.");
+  }
+  const archive = await readResponseBounded(response, MAX_ARCHIVE);
+  if (hash(archive) !== selected.sha256) throw new WebBridgeError("WEB_NATIVE_TUNNEL_DIGEST_MISMATCH", "Official tunnel-client archive digest does not match WCO's pinned release manifest.");
   const binary = await extractBinary(archive), binarySha = hash(binary), temporary = `${binaryPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
   await writeFile(temporary, binary, { mode: 0o700, flag: "wx" }); await chmod(temporary, 0o700); await rename(temporary, binaryPath);
   await writeFile(manifestPath, `${JSON.stringify({ schema_version: "1.0", release: RELEASE, asset: selected.name, archive_sha256: selected.sha256, binary_sha256: binarySha } satisfies TunnelManifest)}\n`, { mode: 0o600 });
@@ -94,9 +131,9 @@ export async function startNativeTunnel(options: { cacheDirectory: string; crede
   try {
     while (Date.now() < deadline) {
       if (child.exitCode !== null) throw new Error(`tunnel-client exited ${child.exitCode}: ${stderr.trim()}`);
-      try { health = (await readFile(healthFile, "utf8")).trim(); } catch { /* not ready yet */ }
+      try { health = (await readStableFile(healthFile, MAX_HEALTH_URL)).bytes.toString("utf8").trim(); } catch { /* not ready yet */ }
       if (health) {
-        const url = new URL(health); if (url.hostname !== "127.0.0.1" && url.hostname !== "localhost") throw new Error("unexpected health endpoint");
+        const url = new URL(health); if ((url.hostname !== "127.0.0.1" && url.hostname !== "localhost") || url.protocol !== "http:" || url.username || url.password || url.hash) throw new Error("unexpected health endpoint");
         const ready = await (options.fetchImpl ?? fetch)(new URL("/readyz", url)).catch(() => null);
         if (ready?.ok) break;
       }
