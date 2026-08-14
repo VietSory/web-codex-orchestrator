@@ -10,6 +10,7 @@ function readySnapshot(overrides: Partial<LifecycleSnapshot> = {}): LifecycleSna
     publish_state: "PUSHED",
     draft_pr_state: "OPEN",
     result_bundle_ready: true,
+    web_code_review_state: "APPROVED",
     web_review_state: "APPROVED",
     revision_state: null,
     revision_result_ready: false,
@@ -19,6 +20,11 @@ function readySnapshot(overrides: Partial<LifecycleSnapshot> = {}): LifecycleSna
 
 test("V04-UX-007 PAIR completes only after selected code review, exact Draft PR result, and Web final APPROVE", () => {
   assert.equal(pairSessionCanComplete(readySnapshot()), true);
+  assert.equal(pairSessionCanComplete(readySnapshot({ web_code_review_state: undefined })), false);
+  assert.equal(pairSessionCanComplete(readySnapshot({ web_code_review_state: null })), false);
+  assert.equal(pairSessionCanComplete(readySnapshot({ web_code_review_state: "PENDING" })), false);
+  assert.equal(pairSessionCanComplete(readySnapshot({ web_code_review_state: "REVISION_REQUESTED" })), false);
+  assert.equal(pairSessionCanComplete(readySnapshot({ web_code_review_state: "ESCALATED" })), false);
   assert.equal(pairSessionCanComplete(readySnapshot({ web_review_state: null })), false);
   assert.equal(pairSessionCanComplete(readySnapshot({ web_review_state: "PENDING" })), false);
   assert.equal(pairSessionCanComplete(readySnapshot({ web_review_state: "REVISION_REQUESTED" })), false);
