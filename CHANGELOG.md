@@ -13,6 +13,7 @@ The format is based on Keep a Changelog, and the project intends to follow Seman
 - A separate read-only Harness-side Codex implementation planner whose proposal is bound to the canonical job/run before WCO/Harness may apply repository mutations.
 - Deterministic zero-config daily-user contract coverage plus an actual packed npm clean-install/compiled-CLI smoke gate.
 - Advanced bridge compatibility CI that protects explicitly selected compatibility profiles without making them normal-user fallbacks.
+- Hostile end-user journey regression coverage for fresh bare `wco`, returning launch, interactive ChatGPT re-authorization, and retry after authoring-job creation failure.
 
 ### Changed
 
@@ -27,6 +28,8 @@ The format is based on Keep a Changelog, and the project intends to follow Seman
 - Canonical prepared `run_id` is bound back to the local Web bridge before workflow state advances; failed binding cannot leave a false `PREPARED` state.
 - The `chatgpt_codex` transport cannot silently fall through to `ManualFileWebBridge`.
 - Local Web status distinguishes a healthy runtime from a missing/expired ChatGPT authorization.
+- Interactive local authoring completes or refreshes official ChatGPT authorization before the bridge persists a durable authoring job, so a cancelled login cannot leave an orphan bridge task.
+- If authoring-job creation fails after the local crash-recovery anchor is written, that local session is atomically moved to `BLOCKED`; the next normal goal can retry without being trapped behind a false active task.
 - Exact repository-context cache hits are re-attested against the Git blob before use; cache reads are stable/bounded and the disposable cache has a global entry-count ceiling.
 - Relay/local semantic durable state validates event journals and idempotency indexes, compacts expired records before capacity checks, and serializes mutations across WCO processes with a crash-recoverable ticket lock so concurrent terminals cannot lose events.
 - Local task history uses stable bounded reads and bounded retention; safe legacy history identifiers remain readable while new history writes keep the current UUID format.
@@ -57,7 +60,7 @@ The format is based on Keep a Changelog, and the project intends to follow Seman
 ### Validation
 
 - Main exact-head CI validates dependency/lock/runtime identity, Task Bundle templates, strict TypeScript, deterministic unit/integration tests, context benchmark, E2E, build, compiled CLI integration, package surface, clean packed install and zero-config daily-user contract.
-- Regression coverage includes exact Git-cache authority, durable-store corruption, expired-state compaction, concurrent relay mutation serialization, bounded context/history/inbox retention, provider budgets, repair/resume authority and current PAIR review re-attestation.
+- Regression coverage includes exact Git-cache authority, durable-store corruption, expired-state compaction, concurrent relay mutation serialization, bounded context/history/inbox retention, provider budgets, repair/resume authority, current PAIR review re-attestation, fresh bare-`wco` launch, and interactive auth-cancellation recovery.
 - A real local ChatGPT authorization + goal-to-reviewed-Draft-PR + restart/recovery acceptance remains required before normal-user release qualification.
 
 ## [0.3.0] - 2026-08-10
@@ -66,7 +69,6 @@ The format is based on Keep a Changelog, and the project intends to follow Seman
 
 - First-run setup and a plain-terminal interactive `wco` shell with the user-facing slash palette.
 - Authenticated ChatGPT Web bridge abstraction, bounded reference relay, exact-base repository reads, and durable read receipts.
-- Deterministic local materializers for Task Bundle 1.3, Web Implementation Pack v2, and canonical Web verdict submission.
 - `gh_cli` credential mode, `/web` connection controls, and conservative WCO-owned resource uninstall.
 
 ### Security
@@ -78,46 +80,3 @@ The format is based on Keep a Changelog, and the project intends to follow Seman
 ### Planned
 
 - Public release artifacts, SBOM, checksums, and provenance/attestation after native release validation.
-
-## [0.2.0] - 2026-08-09
-
-### Added
-
-- `wco preview <task-bundle.zip>` for secure, no-worktree/no-network task inspection before repository mutation.
-- `wco run <task-bundle.zip>` as the primary bounded durable workflow entry point.
-- Human-readable workflow progress and WCO-owned model/token accounting in `wco status`.
-- Codex verification-sandbox readiness to `wco doctor`; failed sandbox preflight never falls back to unrestricted verification.
-- Deterministic least-privilege Smart Context for Terra/Sol review, derived only from already-bound Web read coverage/project-map/prohibition evidence.
-- Repeatable offline Smart Context selector benchmark and an opt-in real Codex A/B benchmark harness for provider-reported tokens, latency, and exact-digest approval rate.
-
-### Changed
-
-- Draft PR descriptions now present exact verified head/change-set/review evidence instead of internal phase labels.
-- `wco resume` is documented and presented as clearing an explicit operator pause; recovery/re-attestation executes on the next workflow transition, not inside `resume` itself.
-- Initial Terra/Sol review usage is durably propagated into executor/orchestration accounting and adopted exactly once during safe recovery.
-- Review prompts JSON-quote repository paths and escape Unicode line/bidi controls so filenames remain data rather than prompt instructions.
-
-### Security
-
-- Executor review turns are durably reserved before provider calls; model-turn and wall-clock budgets can stop a call before it starts.
-- Provider-reported token usage is persisted after responses and can stop later calls; missing/malformed usage fails closed. This is intentionally not advertised as a strict current-call provider billing cap.
-- Interrupted executor Terra/Sol calls with no sealed verdict fail closed instead of being replayed automatically.
-- Revision checkpoints that may span an unsealed provider-backed turn fail closed as ambiguous recovery instead of replaying a model call.
-- Smart Context cannot expand the read surface from project-map-only nodes and excludes registered prohibited paths plus hard-sensitive Git/.env paths.
-- Preview re-reads accepted authority through bounded stable non-symlink reads to close pathname replacement/TOCTOU gaps.
-
-### Validation
-
-- Exact-head CI validates templates, strict TypeScript, deterministic/unit tests, the offline context benchmark, E2E workflow, build, compiled CLI integration, and `npm pack --dry-run`.
-- Real Codex A/B benchmarking is opt-in and intentionally excluded from CI; WCO does not fabricate provider cost/quality claims without an authenticated native run.
-
-## [0.1.0] - 2026-08-09
-
-### Added
-
-- Secure Task Bundle intake and isolated Git worktree preparation.
-- Web implementation authority registration with content-addressed bindings.
-- Deterministic apply, verification, Terra review, and Sol review.
-- Exact Git publication and Draft pull-request delivery with no force-push or automatic merge.
-- Result Bundle packaging, explicit Web verdict handling, and bounded same-PR revision orchestration.
-- Durable run ledger, crash recovery, bounded retry/circuit behavior, and exact-head CI.
