@@ -16,6 +16,7 @@ import { materializeTaskBundle } from "./task-contract-materializer.js";
 import { materializeWebImplementationPack } from "./web-pack-materializer.js";
 import { ContentAddressedContextCache } from "./context-cache.js";
 import { isPreparedRunAwareWebBridge } from "./prepared-run-aware.js";
+import { archiveLocalTaskHistory } from "./session-history.js";
 
 const SESSION_MAX_BYTES = 2 * 1024 * 1024;
 const SESSION_STATES = new Set(["CREATING", "AUTHORING", "CONTRACT_SEALED", "PREPARED", "IMPLEMENTATION_REGISTERED", "COMPLETED", "BLOCKED"]);
@@ -118,11 +119,7 @@ export async function startLocalAuthoring(options: {
   if (existing && existing.state !== "BLOCKED" && existing.state !== "COMPLETED" && !options.replaceExplicit) {
     throw new WebBridgeError("WEB_TASK_ALREADY_ACTIVE", "A task is already active for this repository. Use explicit /new or /auto to replace the local task focus; existing durable runs remain preserved.");
   }
-  if (existing) {
-    const historyPath = path.join(options.stateDirectory, "bridge", "sessions", "history", `${existing.session_id}.json`);
-    await mkdir(path.dirname(historyPath), { recursive: true, mode: 0o700 });
-    await atomicWriteJson(historyPath, existing);
-  }
+  if (existing) await archiveLocalTaskHistory(options.stateDirectory, existing);
 
   const now = options.now?.() ?? new Date();
   const mode = options.mode ?? "PAIR";
