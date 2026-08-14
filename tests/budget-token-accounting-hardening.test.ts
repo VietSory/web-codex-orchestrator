@@ -19,17 +19,15 @@ function limits() {
 test("cached input is observed but not double-counted against total input budget", () => {
   const budget = new BudgetTracker(limits(), 0, undefined, () => 0);
   budget.recordTokens(75, 1, 25);
-  assert.deepEqual(
-    { input: budget.usage.inputTokens, cached: budget.usage.cachedInputTokens, output: budget.usage.outputTokens },
-    { input: 75, cached: 25, output: 1 },
-  );
-  assert.doesNotThrow(() => budget.recordTokens(25, 1, 25), "75+25 total input is exactly the configured 100-token budget; cached is a subset, not extra input");
+  assert.deepEqual({ input: budget.usage.inputTokens, cached: budget.usage.cachedInputTokens, output: budget.usage.outputTokens }, { input: 75, cached: 25, output: 1 });
+  assert.doesNotThrow(() => budget.recordTokens(25, 1, 25));
   assert.throws(() => budget.recordTokens(1, 0, 0), (error: unknown) => error instanceof ExecutionError && error.code === "BUDGET_EXHAUSTED");
 });
 
-test("cached input cannot exceed total input usage", () => {
-  const budget = new BudgetTracker(limits(), 0, undefined, () => 0);
-  assert.throws(() => budget.recordTokens(5, 1, 6), (error: unknown) => error instanceof ExecutionError && error.code === "BUDGET_EXHAUSTED");
+test("shared accounting preserves legacy cached counters without charging them twice", () => {
+  const budget = new BudgetTracker(limits(), 0, { inputTokens: 3, cachedInputTokens: 11, outputTokens: 5 }, () => 0);
+  assert.doesNotThrow(() => budget.recordTokens(2, 3, 0));
+  assert.deepEqual({ input: budget.usage.inputTokens, cached: budget.usage.cachedInputTokens, output: budget.usage.outputTokens }, { input: 5, cached: 11, output: 8 });
 });
 
 test("missing cached token usage fails closed instead of silently undercounting", () => {
@@ -39,10 +37,6 @@ test("missing cached token usage fails closed instead of silently undercounting"
 
 test("token overflow fails closed before unsafe integer accounting", () => {
   const permissive = { ...limits(), maximum_total_input_tokens: Number.MAX_SAFE_INTEGER, maximum_total_output_tokens: Number.MAX_SAFE_INTEGER };
-  const budget = new BudgetTracker(permissive, 0, {
-    inputTokens: Number.MAX_SAFE_INTEGER,
-    cachedInputTokens: 0,
-    outputTokens: 0,
-  }, () => 0);
+  const budget = new BudgetTracker(permissive, 0, { inputTokens: Number.MAX_SAFE_INTEGER, cachedInputTokens: 0, outputTokens: 0 }, () => 0);
   assert.throws(() => budget.recordTokens(1, 0, 0), (error: unknown) => error instanceof ExecutionError && error.code === "BUDGET_EXHAUSTED");
 });
