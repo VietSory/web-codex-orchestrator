@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
-import { chmod, lstat, mkdir, open, readFile, realpath, rename, unlink } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
+import { readStableFile } from "../shared/stable-file.js";
 import { WebBridgeError } from "./contracts.js";
 
 interface CacheRecord {
@@ -37,6 +38,10 @@ export class ContentAddressedContextCache {
     return path.join(await safeDirectory(this.root), `${digest(key)}.json`);
   }
 
+  private maximumRecordBytes(): number {
+    return Math.ceil(this.maximumEntryBytes * 1.4) + 1024;
+  }
+
   async evict(key: string): Promise<void> {
     const target = await this.target(key);
     const info = await lstat(target).catch((error: unknown) => {
@@ -54,12 +59,17 @@ export class ContentAddressedContextCache {
     const root = await safeDirectory(this.root);
     const keySha = digest(key);
     const target = path.join(root, `${keySha}.json`);
+    const initial = await lstat(target).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    });
+    if (!initial) return null;
     try {
-      const stat = await lstat(target);
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > Math.ceil(this.maximumEntryBytes * 1.4) + 1024 || await realpath(target) !== target) {
+      if (!initial.isFile() || initial.isSymbolicLink() || initial.size > this.maximumRecordBytes() || await realpath(target) !== target) {
         throw new WebBridgeError("WEB_CONTEXT_CACHE_ENTRY_INVALID", "Context cache entry is unsafe or exceeds its bound.");
       }
-      const parsed = JSON.parse(await readFile(target, "utf8")) as Partial<CacheRecord>;
+      const { bytes } = await readStableFile(target, this.maximumRecordBytes());
+      const parsed = JSON.parse(bytes.toString("utf8")) as Partial<CacheRecord>;
       if (parsed.schema_version !== "1.0" || parsed.key_sha256 !== keySha || typeof parsed.content_sha256 !== "string" || !/^[a-f0-9]{64}$/.test(parsed.content_sha256) || typeof parsed.content_base64 !== "string") {
         throw new WebBridgeError("WEB_CONTEXT_CACHE_ENTRY_INVALID", "Context cache entry failed schema validation.");
       }
@@ -69,8 +79,7 @@ export class ContentAddressedContextCache {
       }
       return content;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-      if (error instanceof WebBridgeError && error.code === "WEB_CONTEXT_CACHE_ENTRY_INVALID") {
+      if (error instanceof SyntaxError || error instanceof WebBridgeError && error.code === "WEB_CONTEXT_CACHE_ENTRY_INVALID" || error instanceof Error && error.name === "StableFileError") {
         // Cache bytes are disposable and never authority. Remove only the exact
         // digest-named entry; the caller must rebuild from canonical Git/evidence.
         await unlink(target).catch(() => undefined);
