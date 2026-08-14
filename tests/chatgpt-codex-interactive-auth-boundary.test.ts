@@ -11,8 +11,8 @@ function forceInteractiveTty(): () => void {
   Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
   Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
   return () => {
-    if (stdinDescriptor) Object.defineProperty(process.stdin, "isTTY", stdinDescriptor); else delete (process.stdin as NodeJS.ReadStream & { isTTY?: boolean }).isTTY;
-    if (stdoutDescriptor) Object.defineProperty(process.stdout, "isTTY", stdoutDescriptor); else delete (process.stdout as NodeJS.WriteStream & { isTTY?: boolean }).isTTY;
+    if (stdinDescriptor) Object.defineProperty(process.stdin, "isTTY", stdinDescriptor); else Reflect.deleteProperty(process.stdin, "isTTY");
+    if (stdoutDescriptor) Object.defineProperty(process.stdout, "isTTY", stdoutDescriptor); else Reflect.deleteProperty(process.stdout, "isTTY");
   };
 }
 
