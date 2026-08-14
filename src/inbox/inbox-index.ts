@@ -1,7 +1,7 @@
 import { lstat } from "node:fs/promises";
 import path from "node:path";
 import type { InboxIndex, InboxIndexEntry } from "./contracts.js";
-import { atomicWriteJson } from "../run/run-store.js";
+import { atomicWriteText } from "../run/run-store.js";
 import { readStableFile } from "../shared/stable-file.js";
 
 const MAX_INDEX_BYTES = 64 * 1024 * 1024;
@@ -63,7 +63,8 @@ export async function writeInboxIndex(stateDirectory: string, index: InboxIndex)
   const entries = Object.entries(index.entries);
   if (index.index_version !== "1.0" || entries.length > MAX_ACTIVE_INDEX_ENTRIES) throw new Error(`Inbox index exceeds its ${MAX_ACTIVE_INDEX_ENTRIES}-entry active bound.`);
   for (const [key, entry] of entries) if (!validEntry(key, entry)) throw new Error(`Inbox index entry is invalid: ${key.slice(0, 256)}`);
-  const encodedBytes = Buffer.byteLength(`${JSON.stringify(index)}\n`, "utf8");
+  const serialized = `${JSON.stringify(index, null, 2)}\n`;
+  const encodedBytes = Buffer.byteLength(serialized, "utf8");
   if (encodedBytes > MAX_INDEX_BYTES) throw new Error(`Inbox index exceeds ${MAX_INDEX_BYTES} bytes.`);
   try {
     const info = await lstat(inboxIndexPath(stateDirectory));
@@ -71,5 +72,5 @@ export async function writeInboxIndex(stateDirectory: string, index: InboxIndex)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  await atomicWriteJson(inboxIndexPath(stateDirectory), index);
+  await atomicWriteText(inboxIndexPath(stateDirectory), serialized);
 }
