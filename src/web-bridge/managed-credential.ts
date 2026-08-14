@@ -1,11 +1,13 @@
-import { chmod, lstat, mkdir, readFile, realpath, unlink } from "node:fs/promises";
+import { lstat, mkdir, realpath, unlink, chmod } from "node:fs/promises";
 import path from "node:path";
 import { atomicWriteJson } from "../run/run-store.js";
+import { readStableFile } from "../shared/stable-file.js";
 import { WebBridgeError } from "./contracts.js";
 
 const CREDENTIAL_FILE = "managed-device.json";
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const TOKEN_CONTROL = /[\r\n\0]/;
+const MAX_CREDENTIAL_BYTES = 16_384;
 
 export interface ManagedDeviceCredential {
   schema_version: "1.0";
@@ -62,13 +64,17 @@ export function managedCredentialPath(credentialsDirectory: string): string { re
 
 export async function readManagedDeviceCredential(credentialsDirectory: string): Promise<ManagedDeviceCredential> {
   const target = path.join(await safeCredentialDirectory(credentialsDirectory), CREDENTIAL_FILE);
-  let stat;
-  try { stat = await lstat(target); } catch (error) {
+  const pathStat = await lstat(target).catch((error) => {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new WebBridgeError("WEB_MANAGED_RECONNECT_REQUIRED", "WCO device authorization is not linked.");
     throw error;
-  }
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16_384 || await realpath(target) !== target || process.platform !== "win32" && (stat.mode & 0o077) !== 0) throw new WebBridgeError("WEB_MANAGED_CREDENTIAL_PATH_UNSAFE", "Managed credential file is unsafe or has permissive permissions.");
-  try { return parseManagedDeviceCredential(JSON.parse(await readFile(target, "utf8"))); }
+  });
+  if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.size > MAX_CREDENTIAL_BYTES || await realpath(target) !== target || process.platform !== "win32" && (pathStat.mode & 0o077) !== 0) throw new WebBridgeError("WEB_MANAGED_CREDENTIAL_PATH_UNSAFE", "Managed credential file is unsafe or has permissive permissions.");
+  let snapshot;
+  try { snapshot = await readStableFile(target, MAX_CREDENTIAL_BYTES); }
+  catch (error) { throw new WebBridgeError("WEB_MANAGED_CREDENTIAL_PATH_UNSAFE", `Managed credential could not be read as stable local state: ${error instanceof Error ? error.message : String(error)}`); }
+  const after = await lstat(target);
+  if (process.platform !== "win32" && (after.mode & 0o077) !== 0) throw new WebBridgeError("WEB_MANAGED_CREDENTIAL_PATH_UNSAFE", "Managed credential permissions became permissive during read.");
+  try { return parseManagedDeviceCredential(JSON.parse(snapshot.bytes.toString("utf8"))); }
   catch (error) { if (error instanceof WebBridgeError) throw error; throw new WebBridgeError("WEB_MANAGED_CREDENTIAL_INVALID", "Managed credential JSON is invalid."); }
 }
 
