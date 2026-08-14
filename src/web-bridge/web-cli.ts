@@ -285,15 +285,16 @@ export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = d
         io.write("Zero-config WCO stores no Web credential to remove. ChatGPT authorization is owned by the bundled official Codex runtime.\n");
       } else if (config.web_bridge.mode === "web_native_mcp") {
         await removeNativeOpenAiCredential(paths.credentials);
-        io.write("Advanced native-MCP credential removed.\n");
+        await disconnectWebBridgeConnection({ configPath: paths.config, credentialsDirectory: paths.credentials });
+        io.write("Advanced native-MCP credential and override removed. Zero-config local ChatGPT/Codex mode restored.\n");
       } else if (config.web_bridge.mode === "managed_actions") {
         let metadata;
         try { metadata = resolveManagedWebService(); } catch { /* local removal must still succeed if optional managed service is unavailable */ }
         await disconnectManagedWebBridgeConnection({ configPath: paths.config, credentialsDirectory: paths.credentials, ...(metadata ? { metadata } : {}) });
-        io.write("Optional managed Web authorization removed. Your repositories/PRs were not changed.\n");
+        io.write("Optional managed Web authorization and override removed. Zero-config local ChatGPT/Codex mode restored. Your repositories/PRs were not changed.\n");
       } else {
         await disconnectWebBridgeConnection({ configPath: paths.config, credentialsDirectory: paths.credentials });
-        io.write("Optional relay Web bridge disconnected locally.\n");
+        io.write("Optional relay/manual Web bridge disconnected. Zero-config local ChatGPT/Codex mode restored.\n");
       }
       return 0;
     }
