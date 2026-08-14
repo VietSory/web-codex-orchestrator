@@ -128,6 +128,13 @@ async function readStableConfigSource(configPath: string, initialInfo: Stats): P
 }
 
 /**
+ * The normal local ChatGPT/Codex transport is represented canonically by an
+ * absent `web_bridge` field. Accept the internal `chatgpt_codex` identity when
+ * encountered in a trusted config, but normalize it back to absence before the
+ * rest of the product sees it. This prevents TUI/Doctor/status routing from
+ * treating the local transport as an advanced profile while preserving a
+ * swappable internal transport identity.
+ *
  * `web_native_mcp` deliberately adds no trusted URL or secret fields. Reuse the
  * mature manual-file structural validator for the rest of the config while the
  * native profile remains a local durable mailbox whose transport credentials
@@ -137,6 +144,12 @@ export function validateTrustedConfig(value: unknown): ConfigValidationReport {
   if (!value || typeof value !== "object" || Array.isArray(value)) return validateConfig(value);
   const root = value as Record<string, unknown>;
   const web = root.web_bridge;
+  if (web && typeof web === "object" && !Array.isArray(web) && (web as Record<string, unknown>).mode === "chatgpt_codex") {
+    const report = validateConfig(value);
+    if (!report.ok || !report.config) return report;
+    const { web_bridge: _internalTransportIdentity, ...canonical } = report.config;
+    return { ok: true, issues: [], config: canonical as TrustedConfig };
+  }
   if (!web || typeof web !== "object" || Array.isArray(web) || (web as Record<string, unknown>).mode !== "web_native_mcp") return validateConfig(value);
   const item = web as Record<string, unknown>;
   const fields = Object.keys(item);
