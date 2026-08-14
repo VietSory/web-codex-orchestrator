@@ -10,7 +10,7 @@ const REVIEW_INPUT: Record<Exclude<ManagedAgentPurpose, "author">, string> = {
 };
 
 /**
- * Normal-user managed Web bridge.
+ * Optional managed Web bridge.
  *
  * Relay transport and semantic-agent execution are deliberately separate. The
  * local client owns no Workspace Agent/OpenAI operator credential: it holds only
@@ -37,6 +37,14 @@ export class ManagedAutoWebBridge implements WebBridge {
     this.runs.set(identity, receipt);
   }
 
+  private async ensureAuthorRun(jobId: string): Promise<void> {
+    if (this.runs.has(jobId)) return;
+    // The local map is disposable. After restart, replay exactly the same
+    // managed idempotency key so the service adopts the original semantic run
+    // instead of requiring a browser/manual fallback or creating new authority.
+    await this.trigger("author", jobId, AUTHOR_INPUT);
+  }
+
   private async assertCanStillComplete(identity: string, expected: "implementation" | "verdict"): Promise<void> {
     const tracked = this.runs.get(identity);
     if (!tracked) throw new WebBridgeError("WEB_MANAGED_AGENT_NOT_TRIGGERED", `Managed service did not register the required ${expected} semantic turn.`);
@@ -53,12 +61,13 @@ export class ManagedAutoWebBridge implements WebBridge {
 
   async createAuthoringJob(request: AuthoringJobRequest, idempotencyKey: string): Promise<BridgeJobIdentity> {
     const identity = await this.relay.createAuthoringJob(request, idempotencyKey);
-    await this.trigger("author", identity.job_id, AUTHOR_INPUT);
+    await this.ensureAuthorRun(identity.job_id);
     return identity;
   }
 
   async waitForAuthoringEvent(jobId: string, afterSequence: number, signal?: AbortSignal): Promise<AuthoringEvent | null> {
     if (signal?.aborted) throw signal.reason ?? new Error("Operation aborted.");
+    await this.ensureAuthorRun(jobId);
     const event = await this.relay.waitForAuthoringEvent(jobId, afterSequence);
     if (!event) await this.assertCanStillComplete(jobId, "implementation");
     return event;
