@@ -64,3 +64,29 @@ test("durable bridge store prunes expired records before capacity blocks a new s
   const records = (await readdir(root)).filter((name) => name.endsWith(".json"));
   assert.deepEqual(records, [`${fresh.job_id}.json`]);
 });
+
+test("separate relay store instances serialize concurrent mutations without lost events", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-relay-concurrent-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const first = new RelayFileStore(root);
+  const second = new RelayFileStore(root);
+  const request = {
+    owner: "owner",
+    repository: { repository_id: "repo", base_branch: "main", base_commit: "a".repeat(40) },
+    user_intent: "change app",
+    ttl_seconds: 86_400,
+  };
+  const identity = await first.create("authoring", "owner", request, "concurrent-create", 86_400);
+
+  const count = 24;
+  await Promise.all(Array.from({ length: count }, (_, index) => {
+    const store = index % 2 === 0 ? first : second;
+    return store.append(identity.job_id, "owner", "user_clarification", { index }, `concurrent-event-${index}`);
+  }));
+
+  const record = await first.get(identity.job_id, "owner");
+  assert.equal(record.events.length, count);
+  assert.deepEqual(record.events.map((event) => event.sequence), Array.from({ length: count }, (_, index) => index + 1));
+  assert.deepEqual(new Set(record.events.map((event) => (event.payload as { index: number }).index)).size, count);
+  assert.equal((await readdir(path.join(root, ".writer-locks"))).length, 0, "successful mutations leave no writer tickets behind");
+});
