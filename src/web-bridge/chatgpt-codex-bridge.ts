@@ -64,9 +64,13 @@ function accumulatedProviderUsage(events: RelayEvents): { turns: number; input_t
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new WebBridgeError("WEB_CHATGPT_CODEX_USAGE_INVALID", "Durable provider usage event is invalid.");
     const item = payload as Record<string, unknown>;
     if (!(["author", "implementation", "review"] as const).includes(item.phase as "author" | "implementation" | "review")) throw new WebBridgeError("WEB_CHATGPT_CODEX_USAGE_INVALID", "Durable provider usage phase is invalid.");
-    input = addSafe(input, safeTokenCount(item.input_tokens, "input-token"));
-    cached = addSafe(cached, safeTokenCount(item.cached_input_tokens, "cached-input-token"));
-    output = addSafe(output, safeTokenCount(item.output_tokens, "output-token"));
+    const turnInput = safeTokenCount(item.input_tokens, "input-token");
+    const turnCached = safeTokenCount(item.cached_input_tokens, "cached-input-token");
+    const turnOutput = safeTokenCount(item.output_tokens, "output-token");
+    if (turnCached > turnInput) throw new WebBridgeError("WEB_CHATGPT_CODEX_USAGE_INVALID", "Durable cached-input usage exceeds total input usage.");
+    input = addSafe(input, turnInput);
+    cached = addSafe(cached, turnCached);
+    output = addSafe(output, turnOutput);
     turns += 1;
   }
   return { turns, input_tokens: input, cached_input_tokens: cached, output_tokens: output };
@@ -74,8 +78,9 @@ function accumulatedProviderUsage(events: RelayEvents): { turns: number; input_t
 
 function assertProviderBudget(events: RelayEvents, limits: AgentLimits, beforeTurn: boolean): void {
   const usage = accumulatedProviderUsage(events);
-  const combinedInput = addSafe(usage.input_tokens, usage.cached_input_tokens);
-  if ((beforeTurn && usage.turns >= limits.maximum_total_agent_turns) || combinedInput > limits.maximum_total_input_tokens || usage.output_tokens > limits.maximum_total_output_tokens) {
+  // Codex reports cached_input_tokens as a subset of input_tokens. Keep cached
+  // usage for observability, but never charge it twice against total input.
+  if ((beforeTurn && usage.turns >= limits.maximum_total_agent_turns) || usage.input_tokens > limits.maximum_total_input_tokens || usage.output_tokens > limits.maximum_total_output_tokens) {
     throw new WebBridgeError("WEB_CHATGPT_CODEX_BUDGET_EXHAUSTED", "Configured local ChatGPT/Codex provider budget is exhausted.");
   }
 }
@@ -120,7 +125,11 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
   }
 
   private async recordProviderUsage(jobId: string, phase: "author" | "implementation" | "review", key: string, usage: ProviderUsage): Promise<void> {
-    const payload = { phase, input_tokens: safeTokenCount(usage.input_tokens, "input-token"), cached_input_tokens: safeTokenCount(usage.cached_input_tokens, "cached-input-token"), output_tokens: safeTokenCount(usage.output_tokens, "output-token") };
+    const input = safeTokenCount(usage.input_tokens, "input-token");
+    const cached = safeTokenCount(usage.cached_input_tokens, "cached-input-token");
+    const output = safeTokenCount(usage.output_tokens, "output-token");
+    if (cached > input) throw new WebBridgeError("WEB_CHATGPT_CODEX_USAGE_INVALID", "Provider cached-input usage exceeds total input usage.");
+    const payload = { phase, input_tokens: input, cached_input_tokens: cached, output_tokens: output };
     await this.store.append(jobId, OWNER, PROVIDER_USAGE_EVENT, payload, `usage-${phase}-${key.slice(0, 96)}`);
     const latest = await this.store.events(jobId, OWNER, 0);
     assertProviderBudget(latest, this.limits(), false);
