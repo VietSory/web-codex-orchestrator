@@ -13,6 +13,7 @@ import { materializeTaskBundle } from "../src/web-bridge/task-contract-materiali
 
 const run = promisify(execFile);
 const PROVIDER_PROTOCOL = "wco-chatgpt-codex-v1";
+const PROVIDER_USAGE = { input_tokens: 10, cached_input_tokens: 2, output_tokens: 3 };
 
 function providerEnvelope(kind: "repository_command" | "contract_sealed" | "web_verdict", payload: unknown) {
   return { protocol_version: PROVIDER_PROTOCOL, kind, payload_json: JSON.stringify(payload) };
@@ -34,7 +35,7 @@ function injectProviderFakes(
         options.counters.semantic += 1;
         const next = options.semanticTurns!.shift();
         assert.ok(next, `unexpected semantic provider turn: ${JSON.stringify(turnOptions)}`);
-        return next;
+        return { ...next, usage: PROVIDER_USAGE };
       },
       async checkAvailability() { return undefined; },
     };
@@ -45,7 +46,7 @@ function injectProviderFakes(
         options.counters.implementation += 1;
         assert.equal(proposeOptions.jobId, options.implementation!.job_id);
         assert.equal(proposeOptions.runId, options.implementation!.run_id);
-        return options.implementation;
+        return { submission: options.implementation, usage: PROVIDER_USAGE };
       },
     };
   }
@@ -89,13 +90,7 @@ async function fixture(mode: "PAIR" | "AUTOPILOT") {
   await writeFile(configPath, JSON.stringify(config));
 
   const bridge = new ChatGptCodexWebBridge(config, bridgeDirectory);
-  const identity = await bridge.createAuthoringJob({
-    owner: "local-user",
-    repository: { repository_id: "repo", base_branch: "main", base_commit: base },
-    user_intent: "replace app content",
-    ttl_seconds: 86_400,
-    orchestration_mode: mode,
-  }, `create-${mode}`);
+  const identity = await bridge.createAuthoringJob({ owner: "local-user", repository: { repository_id: "repo", base_branch: "main", base_commit: base }, user_intent: "replace app content", ttl_seconds: 86_400, orchestration_mode: mode }, `create-${mode}`);
 
   const contract: WebContractEnvelope = {
     protocol_version: WEB_BRIDGE_PROTOCOL_VERSION,
@@ -116,30 +111,17 @@ async function fixture(mode: "PAIR" | "AUTOPILOT") {
     implementation_strategy: ["Replace the exact file"],
     project_map_hints: ["app.txt"],
   };
-
   return { root, repo, remote, state, bridgeDirectory, configPath, config, bridge, identity, contract };
 }
 
 function implementationFor(jobId: string, runId: string, sources: WebContractEnvelope["sources"]): WebImplementationSubmission {
   const bytes = Buffer.from("after\n");
-  return {
-    protocol_version: WEB_BRIDGE_PROTOCOL_VERSION,
-    job_id: jobId,
-    run_id: runId,
-    contract_only: false,
-    summary: "Replace app.txt",
-    operations: [{ kind: "replace", path: "app.txt", content_base64: bytes.toString("base64"), content_sha256: createHash("sha256").update(bytes).digest("hex") }],
-    project_map: [{ path: "app.txt", purpose: "Requested change" }],
-    sources,
-  };
+  return { protocol_version: WEB_BRIDGE_PROTOCOL_VERSION, job_id: jobId, run_id: runId, contract_only: false, summary: "Replace app.txt", operations: [{ kind: "replace", path: "app.txt", content_base64: bytes.toString("base64"), content_sha256: createHash("sha256").update(bytes).digest("hex") }], project_map: [{ path: "app.txt", purpose: "Requested change" }], sources };
 }
 
 async function sealContractAndPrepare(item: Awaited<ReturnType<typeof fixture>>, suffix: string) {
   const counters = { auth: 0, semantic: 0, implementation: 0 };
-  injectProviderFakes(item.bridge, {
-    counters,
-    semanticTurns: [{ thread_id: `${suffix}-author-thread`, output: providerEnvelope("contract_sealed", item.contract) }],
-  });
+  injectProviderFakes(item.bridge, { counters, semanticTurns: [{ thread_id: `${suffix}-author-thread`, output: providerEnvelope("contract_sealed", item.contract) }] });
   const contractEvent = await item.bridge.waitForAuthoringEvent(item.identity.job_id, 0);
   assert.equal(contractEvent?.type, "contract_sealed");
   const task = await materializeTaskBundle({ envelope: item.contract, repository: item.contract.repository, config: item.config, stateDirectory: item.state });
@@ -152,32 +134,21 @@ for (const mode of ["PAIR", "AUTOPILOT"] as const) {
   test(`chatgpt_codex ${mode} authoring, prepared-run binding, implementation and final verdict survive restart`, async () => {
     const item = await fixture(mode);
     const counters = { auth: 0, semantic: 0, implementation: 0 };
-    injectProviderFakes(item.bridge, {
-      counters,
-      semanticTurns: [
-        { thread_id: `${mode.toLowerCase()}-author-thread`, output: providerEnvelope("repository_command", { operation: "summary" }) },
-        { thread_id: `${mode.toLowerCase()}-author-thread`, output: providerEnvelope("contract_sealed", item.contract) },
-      ],
-    });
-
+    injectProviderFakes(item.bridge, { counters, semanticTurns: [
+      { thread_id: `${mode.toLowerCase()}-author-thread`, output: providerEnvelope("repository_command", { operation: "summary" }) },
+      { thread_id: `${mode.toLowerCase()}-author-thread`, output: providerEnvelope("contract_sealed", item.contract) },
+    ] });
     const repositoryEvent = await item.bridge.waitForAuthoringEvent(item.identity.job_id, 0);
     assert.equal(repositoryEvent?.type, "repository_command");
     assert.deepEqual(repositoryEvent?.type === "repository_command" ? repositoryEvent.command : null, { operation: "summary" });
-    await item.bridge.submitRepositoryCommandResult(item.identity.job_id, {
-      request_id: repositoryEvent!.type === "repository_command" ? repositoryEvent!.request_id : "invalid",
-      result: { repository_id: "repo", base_commit: item.contract.repository.base_commit, paths: ["app.txt", "package.json"] },
-    }, `repo-result-${mode}`);
-
+    await item.bridge.submitRepositoryCommandResult(item.identity.job_id, { request_id: repositoryEvent!.type === "repository_command" ? repositoryEvent!.request_id : "invalid", result: { repository_id: "repo", base_commit: item.contract.repository.base_commit, paths: ["app.txt", "package.json"] } }, `repo-result-${mode}`);
     const contractEvent = await item.bridge.waitForAuthoringEvent(item.identity.job_id, repositoryEvent!.sequence);
     assert.equal(contractEvent?.type, "contract_sealed");
     assert.deepEqual(await item.bridge.receiveSealedContract(item.identity.job_id), item.contract);
-    assert.equal(counters.semantic, 2, "authoring should use exactly two deterministic semantic turns in this fixture");
+    assert.equal(counters.semantic, 2);
 
     const task = await materializeTaskBundle({ envelope: item.contract, repository: item.contract.repository, config: item.config, stateDirectory: item.state });
     const prepared = await prepareTask({ archivePath: task.archive_path, stateDirectory: item.state, configPath: item.configPath });
-
-    // Simulate process loss after preparation. A fresh bridge instance must bind
-    // and consume the same canonical run using only durable local state.
     const resumed = new ChatGptCodexWebBridge(item.config, item.bridgeDirectory);
     await resumed.bindPreparedRun(item.identity.job_id, prepared.run_id, `bind-${mode}`);
     const submission = implementationFor(item.identity.job_id, prepared.run_id, item.contract.sources);
@@ -185,43 +156,38 @@ for (const mode of ["PAIR", "AUTOPILOT"] as const) {
     assert.deepEqual(await resumed.receiveWebImplementation(item.identity.job_id), submission);
     assert.equal(counters.implementation, 1);
 
-    // A second restart must adopt the sealed implementation, never replay the
-    // provider boundary that could otherwise duplicate or diverge a proposal.
     const adopted = new ChatGptCodexWebBridge(item.config, item.bridgeDirectory);
     assert.deepEqual(await adopted.receiveWebImplementation(item.identity.job_id), submission);
-    assert.equal(counters.implementation, 1, "sealed implementation must be replay-free after restart");
+    assert.equal(counters.implementation, 1);
 
     const resultBundleSha = "b".repeat(64);
-    const review = await adopted.createFinalReviewJob({
-      run_id: prepared.run_id,
-      result_bundle_sha256: resultBundleSha,
-      published_commit_sha: item.contract.repository.base_commit,
-      pull_request_url: "https://github.com/example/repo/pull/1",
-      review_round: 1,
-    }, `review-${mode}`);
+    const review = await adopted.createFinalReviewJob({ run_id: prepared.run_id, result_bundle_sha256: resultBundleSha, published_commit_sha: item.contract.repository.base_commit, pull_request_url: "https://github.com/example/repo/pull/1", review_round: 1 }, `review-${mode}`);
     await adopted.submitFinalReviewEvidence(review.job_id, { exact_result: true, run_id: prepared.run_id }, `evidence-${mode}`);
-    const verdict: WebVerdictEnvelope = {
-      protocol_version: WEB_BRIDGE_PROTOCOL_VERSION,
-      review_id: review.job_id,
-      run_id: prepared.run_id,
-      result_bundle_sha256: resultBundleSha,
-      verdict: "APPROVE",
-      summary: "Exact durable evidence satisfies the frozen contract.",
-      findings: [],
-    };
-    injectProviderFakes(adopted, {
-      counters,
-      semanticTurns: [{ thread_id: `${mode.toLowerCase()}-review-thread`, output: providerEnvelope("web_verdict", verdict) }],
-    });
+    const verdict: WebVerdictEnvelope = { protocol_version: WEB_BRIDGE_PROTOCOL_VERSION, review_id: review.job_id, run_id: prepared.run_id, result_bundle_sha256: resultBundleSha, verdict: "APPROVE", summary: "Exact durable evidence satisfies the frozen contract.", findings: [] };
+    injectProviderFakes(adopted, { counters, semanticTurns: [{ thread_id: `${mode.toLowerCase()}-review-thread`, output: providerEnvelope("web_verdict", verdict) }] });
     assert.deepEqual(await adopted.waitForVerdict(review.job_id), verdict);
-
     const semanticAfterVerdict = counters.semantic;
     const finalRestart = new ChatGptCodexWebBridge(item.config, item.bridgeDirectory);
     assert.deepEqual(await finalRestart.waitForVerdict(review.job_id), verdict);
-    assert.equal(counters.semantic, semanticAfterVerdict, "sealed final verdict must be replay-free after restart");
-    assert.equal(counters.auth, 4, "only actual provider turns should cross the authorization boundary");
+    assert.equal(counters.semantic, semanticAfterVerdict);
+    assert.equal(counters.auth, 4);
   });
 }
+
+test("durable provider turn budget prevents unbounded semantic repository-read loops", async () => {
+  const item = await fixture("PAIR");
+  item.config.agents.limits.maximum_total_agent_turns = 1;
+  const counters = { auth: 0, semantic: 0, implementation: 0 };
+  injectProviderFakes(item.bridge, { counters, semanticTurns: [
+    { thread_id: "budget-thread", output: providerEnvelope("repository_command", { operation: "summary" }) },
+    { thread_id: "budget-thread", output: providerEnvelope("contract_sealed", item.contract) },
+  ] });
+  const repositoryEvent = await item.bridge.waitForAuthoringEvent(item.identity.job_id, 0);
+  assert.equal(repositoryEvent?.type, "repository_command");
+  await item.bridge.submitRepositoryCommandResult(item.identity.job_id, { request_id: repositoryEvent!.type === "repository_command" ? repositoryEvent.request_id : "invalid", result: { exact: true } }, "budget-result");
+  await assert.rejects(item.bridge.waitForAuthoringEvent(item.identity.job_id, repositoryEvent!.sequence), (error: any) => error?.code === "WEB_CHATGPT_CODEX_BUDGET_EXHAUSTED");
+  assert.equal(counters.semantic, 1, "budget exhaustion must happen before a second provider turn");
+});
 
 test("implementation auth/preflight failure does not persist an ambiguous provider reservation", async () => {
   const item = await fixture("PAIR");
@@ -230,83 +196,39 @@ test("implementation auth/preflight failure does not persist an ambiguous provid
   const submission = implementationFor(item.identity.job_id, prepared.run_id, item.contract.sources);
   const target = resumed as any;
   target.ensureAuthorizedForProviderTurn = async () => { throw new Error("auth unavailable before provider boundary"); };
-  target.implementation = {
-    async propose() {
-      counters.implementation += 1;
-      return submission;
-    },
-  };
-
+  target.implementation = { async propose() { counters.implementation += 1; return { submission, usage: PROVIDER_USAGE }; } };
   await assert.rejects(() => resumed.receiveWebImplementation(item.identity.job_id), /auth unavailable before provider boundary/);
-  assert.equal(counters.implementation, 0, "provider implementation must not start before authorization succeeds");
-
+  assert.equal(counters.implementation, 0);
   injectProviderFakes(resumed, { counters, implementation: submission });
   assert.deepEqual(await resumed.receiveWebImplementation(item.identity.job_id), submission);
-  assert.equal(counters.implementation, 1, "retry after preflight auth repair must remain usable");
+  assert.equal(counters.implementation, 1);
 });
 
 test("authoring provider failure after reservation is fail-closed and never replayed blindly", async () => {
-  const item = await fixture("PAIR");
-  let providerTurns = 0;
-  const target = item.bridge as any;
+  const item = await fixture("PAIR"); let providerTurns = 0; const target = item.bridge as any;
   target.ensureAuthorizedForProviderTurn = async () => undefined;
-  target.semantic = {
-    async checkAvailability() { return undefined; },
-    async turn() {
-      providerTurns += 1;
-      throw new Error("author provider interrupted after reservation");
-    },
-  };
-
+  target.semantic = { async checkAvailability() {}, async turn() { providerTurns += 1; throw new Error("author provider interrupted after reservation"); } };
   await assert.rejects(() => item.bridge.waitForAuthoringEvent(item.identity.job_id, 0), /author provider interrupted after reservation/);
   await assert.rejects(() => item.bridge.waitForAuthoringEvent(item.identity.job_id, 0), /WEB_CHATGPT_CODEX_AMBIGUOUS_AUTHORING|ambiguous contract\/repository decision/i);
-  assert.equal(providerTurns, 1, "ambiguous authoring provider boundary must not be replayed");
+  assert.equal(providerTurns, 1);
 });
 
 test("implementation provider failure after reservation is fail-closed and never replayed blindly", async () => {
-  const item = await fixture("PAIR");
-  const { prepared } = await sealContractAndPrepare(item, "implementation-provider-crash");
-  const resumed = new ChatGptCodexWebBridge(item.config, item.bridgeDirectory);
-  let providerTurns = 0;
-  const target = resumed as any;
+  const item = await fixture("PAIR"); const { prepared } = await sealContractAndPrepare(item, "implementation-provider-crash"); const resumed = new ChatGptCodexWebBridge(item.config, item.bridgeDirectory); let providerTurns = 0; const target = resumed as any;
   target.ensureAuthorizedForProviderTurn = async () => undefined;
-  target.implementation = {
-    async propose() {
-      providerTurns += 1;
-      throw new Error("implementation provider interrupted after reservation");
-    },
-  };
-
+  target.implementation = { async propose() { providerTurns += 1; throw new Error("implementation provider interrupted after reservation"); } };
   await assert.rejects(() => resumed.receiveWebImplementation(item.identity.job_id), /implementation provider interrupted after reservation/);
   await assert.rejects(() => resumed.receiveWebImplementation(item.identity.job_id), /WEB_CHATGPT_CODEX_AMBIGUOUS_IMPLEMENTATION|ambiguous mutation proposal/i);
-  assert.equal(providerTurns, 1, "ambiguous implementation provider boundary must not be replayed");
-  assert.equal(prepared.run_id.length > 64, true);
+  assert.equal(providerTurns, 1); assert.equal(prepared.run_id.length > 64, true);
 });
 
 test("final-review provider failure after reservation is fail-closed and never replayed blindly", async () => {
-  const item = await fixture("PAIR");
-  const runId = `FINAL-REVIEW:${"a".repeat(64)}`;
-  const review = await item.bridge.createFinalReviewJob({
-    run_id: runId,
-    result_bundle_sha256: "b".repeat(64),
-    published_commit_sha: item.contract.repository.base_commit,
-    pull_request_url: "https://github.com/example/repo/pull/1",
-    review_round: 1,
-  }, "review-provider-crash");
+  const item = await fixture("PAIR"); const runId = `FINAL-REVIEW:${"a".repeat(64)}`;
+  const review = await item.bridge.createFinalReviewJob({ run_id: runId, result_bundle_sha256: "b".repeat(64), published_commit_sha: item.contract.repository.base_commit, pull_request_url: "https://github.com/example/repo/pull/1", review_round: 1 }, "review-provider-crash");
   await item.bridge.submitFinalReviewEvidence(review.job_id, { exact_result: true, run_id: runId }, "review-provider-crash-evidence");
-
-  let providerTurns = 0;
-  const target = item.bridge as any;
-  target.ensureAuthorizedForProviderTurn = async () => undefined;
-  target.semantic = {
-    async checkAvailability() { return undefined; },
-    async turn() {
-      providerTurns += 1;
-      throw new Error("review provider interrupted after reservation");
-    },
-  };
-
+  let providerTurns = 0; const target = item.bridge as any; target.ensureAuthorizedForProviderTurn = async () => undefined;
+  target.semantic = { async checkAvailability() {}, async turn() { providerTurns += 1; throw new Error("review provider interrupted after reservation"); } };
   await assert.rejects(() => item.bridge.waitForVerdict(review.job_id), /review provider interrupted after reservation/);
   await assert.rejects(() => item.bridge.waitForVerdict(review.job_id), /WEB_CHATGPT_CODEX_AMBIGUOUS_REVIEW|ambiguous authority-bearing review/i);
-  assert.equal(providerTurns, 1, "ambiguous final-review provider boundary must not be replayed");
+  assert.equal(providerTurns, 1);
 });
