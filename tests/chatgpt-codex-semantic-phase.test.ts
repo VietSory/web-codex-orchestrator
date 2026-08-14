@@ -1,10 +1,24 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { ChatGptCodexImplementationClient } from "../src/web-bridge/chatgpt-codex-implementation-client.js";
 import { chatGptCodexAuthorPrompt, chatGptCodexReviewPrompt } from "../src/web-bridge/chatgpt-codex-prompts.js";
 import { ChatGptCodexSemanticClient } from "../src/web-bridge/chatgpt-codex-semantic-client.js";
 
 const profile: any = { model: "gpt-5.6-sol", reasoning_effort: "high" };
 const dirs = { scratchDirectory: "/tmp/wco-semantic-scratch", authorityDirectory: "/tmp/wco-semantic-authority" };
+
+function abortingAgent() {
+  return {
+    async checkAvailability() {},
+    async turn(request: any) {
+      await new Promise<void>((_resolve, reject) => {
+        if (request.signal?.aborted) { reject(new Error("aborted")); return; }
+        request.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+      throw new Error("unreachable");
+    },
+  } as any;
+}
 
 test("semantic SDK turn exposes only the authority kind valid for its closed WCO phase", async () => {
   const requests: any[] = [];
@@ -32,4 +46,34 @@ test("unknown semantic prompt fails before provider invocation", async () => {
   const client = new ChatGptCodexSemanticClient({ async checkAvailability() {}, async turn() { calls += 1; throw new Error("must not run"); } } as any);
   await assert.rejects(client.turn({ profile, ...dirs, prompt: "unmarked prompt" }), /missing a closed WCO phase marker/i);
   assert.equal(calls, 0);
+});
+
+test("semantic provider turn has a hard local deadline", async () => {
+  const client = new ChatGptCodexSemanticClient(abortingAgent(), 0.002);
+  await assert.rejects(
+    client.turn({ profile, ...dirs, prompt: chatGptCodexAuthorPrompt({ owner: "local", repository: { repository_id: "repo", base_branch: "main", base_commit: "a".repeat(40) }, user_intent: "change app", ttl_seconds: 60 }) }),
+    (error: any) => error?.code === "WEB_CHATGPT_CODEX_TURN_TIMEOUT",
+  );
+});
+
+test("implementation planner turn has the same hard local deadline", async () => {
+  const client = new ChatGptCodexImplementationClient(abortingAgent(), 0.002);
+  await assert.rejects(
+    client.propose({
+      profile: { model: "gpt-5.6-terra", reasoning_effort: "high" } as any,
+      jobId: "job-1",
+      runId: `TASK:${"b".repeat(64)}`,
+      workspacePath: "/tmp/wco-implementation-workspace",
+      acceptedBundlePath: "/tmp/wco-implementation-bundle",
+    }),
+    (error: any) => error?.code === "WEB_CHATGPT_CODEX_TURN_TIMEOUT",
+  );
+});
+
+test("external cancellation is not mislabeled as an internal timeout", async () => {
+  const controller = new AbortController();
+  const client = new ChatGptCodexSemanticClient(abortingAgent(), 1);
+  const promise = client.turn({ profile, ...dirs, prompt: chatGptCodexAuthorPrompt({ owner: "local", repository: { repository_id: "repo", base_branch: "main", base_commit: "a".repeat(40) }, user_intent: "change app", ttl_seconds: 60 }), signal: controller.signal });
+  controller.abort();
+  await assert.rejects(promise, (error: any) => error?.code !== "WEB_CHATGPT_CODEX_TURN_TIMEOUT");
 });
