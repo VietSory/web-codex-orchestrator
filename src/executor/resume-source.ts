@@ -19,6 +19,15 @@ function splitRunId(runId: string): { taskId: string; taskBundleSha256: string }
   return { taskId: runId.slice(0, split), taskBundleSha256: runId.slice(split + 1) };
 }
 
+export function publishedResumeDigestIsAllowed(
+  currentDigest: string,
+  repairSourceDigest: string | undefined,
+  publishedDigest: string,
+): boolean {
+  return publishedDigest === currentDigest ||
+    (repairSourceDigest !== undefined && publishedDigest === repairSourceDigest);
+}
+
 /**
  * A Harness run normally resumes at the immutable base commit. After the exact
  * approved snapshot has been published, however, bounded Web/model repair must
@@ -59,11 +68,11 @@ async function exactPublishedResumeHead(options: {
   );
   const publish = await readGitPublishReceipt(publishPath);
   if (!publish) return undefined;
-  const currentDigest = executor.change_set_digest;
-  const repairSourceDigest = executor.repair?.source_change_set_digest;
-  const publicationBindsAllowedGeneration =
-    publish.change_set_sha256 === currentDigest ||
-    (repairSourceDigest !== undefined && publish.change_set_sha256 === repairSourceDigest);
+  const publicationBindsAllowedGeneration = publishedResumeDigestIsAllowed(
+    executor.change_set_digest,
+    executor.repair?.source_change_set_digest,
+    publish.change_set_sha256,
+  );
   if (
     publish.state !== "PUSHED" ||
     publish.run_id !== options.runId ||
