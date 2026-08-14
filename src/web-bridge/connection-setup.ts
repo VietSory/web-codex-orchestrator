@@ -17,6 +17,14 @@ function requireGptUrl(value: string | undefined): string | undefined {
   return parsed.href;
 }
 
+/** Removing an explicitly selected advanced transport restores the canonical
+ * zero-config local ChatGPT/Codex transport. This happens only in response to
+ * an explicit disconnect request; runtime failures never call this helper. */
+export function withoutWebBridgeOverride(config: TrustedConfig): TrustedConfig {
+  const { web_bridge: _removed, ...local } = config;
+  return local;
+}
+
 export async function configureWebBridgeConnection(options: {
   configPath: string;
   credentialsDirectory: string;
@@ -80,16 +88,8 @@ export async function configureManagedWebBridgeConnection(options: {
 
 export async function disconnectWebBridgeConnection(options: { configPath: string; credentialsDirectory: string }): Promise<TrustedConfig> {
   const current = await loadTrustedConfig(options.configPath);
-  const next: TrustedConfig = {
-    ...current,
-    web_bridge: {
-      mode: "manual_file",
-      poll_interval_ms: current.web_bridge?.poll_interval_ms ?? 1_000,
-      job_ttl_seconds: current.web_bridge?.job_ttl_seconds ?? 86_400,
-    },
-  };
-  const written = await writeTrustedConfigAtomic(options.configPath, next, { overwrite: true });
-  await removeRelayToken(options.credentialsDirectory);
+  const written = await writeTrustedConfigAtomic(options.configPath, withoutWebBridgeOverride(current), { overwrite: true });
+  await removeRelayToken(options.credentialsDirectory).catch(() => undefined);
   return written.config;
 }
 
@@ -99,13 +99,6 @@ export async function disconnectManagedWebBridgeConnection(options: { configPath
     const managed = new ManagedWebOnboardingClient({ metadata: options.metadata, credentialsDirectory: options.credentialsDirectory, ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}) });
     await managed.revokeBestEffort();
   } else await removeManagedDeviceCredential(options.credentialsDirectory).catch(() => undefined);
-  const written = await writeTrustedConfigAtomic(options.configPath, {
-    ...current,
-    web_bridge: {
-      mode: "managed_actions",
-      poll_interval_ms: current.web_bridge?.poll_interval_ms ?? 1_000,
-      job_ttl_seconds: current.web_bridge?.job_ttl_seconds ?? 86_400,
-    },
-  }, { overwrite: true });
+  const written = await writeTrustedConfigAtomic(options.configPath, withoutWebBridgeOverride(current), { overwrite: true });
   return written.config;
 }
