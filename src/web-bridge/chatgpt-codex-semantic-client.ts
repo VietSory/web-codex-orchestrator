@@ -6,6 +6,7 @@ export const CHATGPT_CODEX_AUTHOR_PHASE_MARKER = "WCO_SEMANTIC_PHASE:AUTHOR";
 export const CHATGPT_CODEX_REVIEW_PHASE_MARKER = "WCO_SEMANTIC_PHASE:REVIEW";
 const DEFAULT_PROVIDER_TURN_SECONDS = 900;
 const MAX_PROVIDER_TURN_SECONDS = 3600;
+type MeasuredProviderUsage = { input_tokens: number; cached_input_tokens: number; output_tokens: number };
 
 function schemaForPrompt(prompt: string): Record<string, unknown> {
   if (prompt.startsWith(`${CHATGPT_CODEX_AUTHOR_PHASE_MARKER}\n`)) return CHATGPT_CODEX_AUTHOR_OUTPUT_SCHEMA as unknown as Record<string, unknown>;
@@ -17,9 +18,10 @@ function timeoutError(): Error & { code: string } {
   return Object.assign(new Error("Local ChatGPT/Codex semantic provider turn exceeded its bounded deadline."), { code: "WEB_CHATGPT_CODEX_TURN_TIMEOUT" });
 }
 
-function measuredUsage(usage: AgentTurnResponse["usage"]): NonNullable<AgentTurnResponse["usage"]> {
-  if (!usage || ![usage.input_tokens, usage.cached_input_tokens, usage.output_tokens].every((value) => Number.isSafeInteger(value) && value >= 0)) throw Object.assign(new Error("Local ChatGPT/Codex semantic provider did not return valid token usage."), { code: "WEB_CHATGPT_CODEX_USAGE_UNAVAILABLE" });
-  return usage;
+function measuredUsage(usage: AgentTurnResponse["usage"]): MeasuredProviderUsage {
+  const input = usage?.input_tokens, cached = usage?.cached_input_tokens, output = usage?.output_tokens;
+  if (![input, cached, output].every((value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0)) throw Object.assign(new Error("Local ChatGPT/Codex semantic provider did not return valid token usage."), { code: "WEB_CHATGPT_CODEX_USAGE_UNAVAILABLE" });
+  return { input_tokens: input as number, cached_input_tokens: cached as number, output_tokens: output as number };
 }
 
 /** Read-only/no-network semantic provider adapter with closed phase schema,
@@ -31,35 +33,12 @@ export class ChatGptCodexSemanticClient {
 
   async checkAvailability(): Promise<void> { await this.agent.checkAvailability(); }
 
-  async turn(options: {
-    profile: AgentProfile;
-    prompt: string;
-    scratchDirectory: string;
-    authorityDirectory: string;
-    threadId?: string;
-    signal?: AbortSignal;
-  }): Promise<{ thread_id: string; output: unknown; usage: NonNullable<AgentTurnResponse["usage"]> }> {
+  async turn(options: { profile: AgentProfile; prompt: string; scratchDirectory: string; authorityDirectory: string; threadId?: string; signal?: AbortSignal }): Promise<{ thread_id: string; output: unknown; usage: MeasuredProviderUsage }> {
     const outputSchema = schemaForPrompt(options.prompt);
     const timeout = AbortSignal.timeout(Math.max(1, Math.floor(this.maximumTurnSeconds * 1_000)));
     const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
     try {
-      const result = await this.agent.turn({
-        role: "final_reviewer",
-        model: options.profile.model,
-        reasoning_effort: options.profile.reasoning_effort,
-        ...(options.threadId ? { thread_id: options.threadId } : {}),
-        prompt: options.prompt,
-        output_schema: outputSchema,
-        read_only: true,
-        approval_policy: "never",
-        sandbox_mode: "read-only",
-        network_access: false,
-        live_web_search: false,
-        cached_web_search: false,
-        workspace_path: options.scratchDirectory,
-        accepted_bundle_path: options.authorityDirectory,
-        signal,
-      });
+      const result = await this.agent.turn({ role: "final_reviewer", model: options.profile.model, reasoning_effort: options.profile.reasoning_effort, ...(options.threadId ? { thread_id: options.threadId } : {}), prompt: options.prompt, output_schema: outputSchema, read_only: true, approval_policy: "never", sandbox_mode: "read-only", network_access: false, live_web_search: false, cached_web_search: false, workspace_path: options.scratchDirectory, accepted_bundle_path: options.authorityDirectory, signal });
       return { thread_id: result.thread_id, output: result.output, usage: measuredUsage(result.usage) };
     } catch (error) {
       if (timeout.aborted && !options.signal?.aborted) throw timeoutError();
