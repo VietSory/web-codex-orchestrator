@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -41,4 +41,26 @@ test("durable bridge store rejects symlink record substitution", async (t) => {
   await rm(target);
   await symlink(outside, target);
   await assert.rejects(store.get(identity.job_id, "owner"), /path is unsafe|could not be opened safely/i);
+});
+
+test("durable bridge store prunes expired records before capacity blocks a new session", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-relay-prune-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let now = new Date("2026-01-01T00:00:00.000Z");
+  const store = new RelayFileStore(root, { maximum_record_files: 2 }, () => now);
+  const request = {
+    owner: "owner",
+    repository: { repository_id: "repo", base_branch: "main", base_commit: "a".repeat(40) },
+    user_intent: "change app",
+    ttl_seconds: 60,
+  };
+
+  await store.create("authoring", "owner", request, "session-1", 60);
+  await store.create("authoring", "owner", request, "session-2", 60);
+  assert.equal((await readdir(root)).filter((name) => name.endsWith(".json")).length, 2);
+
+  now = new Date("2026-01-01T00:02:00.000Z");
+  const fresh = await store.create("authoring", "owner", request, "session-3", 60);
+  const records = (await readdir(root)).filter((name) => name.endsWith(".json"));
+  assert.deepEqual(records, [`${fresh.job_id}.json`]);
 });
