@@ -33,13 +33,17 @@ function args(stateDirectory: string, configPath: string, doctorMode: "PAIR" | "
   return { stateDirectory, configPath, json: false, doctorMode, maxTransitions: 8 };
 }
 
-test("PAIR advanced-native Doctor skips Codex, third-party relay and managed device/account requirements", async () => {
+test("PAIR advanced-native Doctor does not require Codex, third-party relay or managed device/account capabilities", async () => {
   const item = await fixture();
   try {
     const probes = productionDoctorProbes(args(item.state, item.config, "PAIR"));
-    const ids = probes.map((probe) => probe.id);
-    assert.equal(ids.includes("codex-runtime"), false);
-    assert.equal(ids.includes("codex-auth"), false);
+    for (const id of ["codex-runtime", "codex-auth"] as const) {
+      const probe = probes.find((candidate) => candidate.id === id);
+      assert.ok(probe, `missing ${id}`);
+      const result = await probe.run();
+      assert.equal(result.severity, "OK", `${id}: ${result.summary}`);
+      assert.match(result.summary, /does not require/i);
+    }
     for (const id of ["wco-relay-service", "wco-device-account", "chatgpt-web", "senior-architect-gpt"]) {
       const probe = probes.find((candidate) => candidate.id === id);
       assert.ok(probe, `missing ${id}`);
@@ -51,13 +55,19 @@ test("PAIR advanced-native Doctor skips Codex, third-party relay and managed dev
   } finally { item.restore(); }
 });
 
-test("AUTOPILOT advanced-native Doctor adds only reviewer runtime/auth probes on top of native Web probes", async () => {
+test("AUTOPILOT advanced-native Doctor requires reviewer runtime/auth in addition to native Web probes", async () => {
   const item = await fixture();
   try {
-    const ids = productionDoctorProbes(args(item.state, item.config, "AUTOPILOT")).map((probe) => probe.id);
+    const probes = productionDoctorProbes(args(item.state, item.config, "AUTOPILOT"));
+    const ids = probes.map((probe) => probe.id);
     assert.ok(ids.includes("codex-runtime"));
     assert.ok(ids.includes("codex-auth"));
     assert.ok(ids.includes("wco-relay-service"));
     assert.ok(ids.includes("wco-device-account"));
+
+    for (const id of ["codex-runtime", "codex-auth"] as const) {
+      const probe = probes.find((candidate) => candidate.id === id)!;
+      await assert.rejects(() => probe.run(), /runtime source must be "bundled"/);
+    }
   } finally { item.restore(); }
 });
