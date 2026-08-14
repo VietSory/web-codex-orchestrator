@@ -2,6 +2,7 @@ import type { AgentClient } from "../agent/contracts.js";
 import type { AgentProfile } from "../config/contracts.js";
 import { parseWebImplementationSubmission, type WebImplementationSubmission } from "./contracts.js";
 
+const DEFAULT_PROVIDER_TURN_SECONDS = 900;
 const implementationOperation = {
   anyOf: [
     {
@@ -72,8 +73,14 @@ export const CHATGPT_CODEX_IMPLEMENTATION_OUTPUT_SCHEMA = {
   required: ["protocol_version", "job_id", "run_id", "contract_only", "summary", "operations", "project_map", "sources"],
 } as const;
 
+function timeoutError(): Error & { code: string } {
+  return Object.assign(new Error("Local ChatGPT/Codex implementation planner turn exceeded its bounded deadline."), { code: "WEB_CHATGPT_CODEX_TURN_TIMEOUT" });
+}
+
 export class ChatGptCodexImplementationClient {
-  constructor(private readonly agent: AgentClient) {}
+  constructor(private readonly agent: AgentClient, private readonly maximumTurnSeconds = DEFAULT_PROVIDER_TURN_SECONDS) {
+    if (!Number.isFinite(maximumTurnSeconds) || maximumTurnSeconds <= 0 || maximumTurnSeconds > DEFAULT_PROVIDER_TURN_SECONDS) throw new Error("WEB_CHATGPT_CODEX_CONFIG_INVALID: implementation turn timeout is outside the supported bound.");
+  }
 
   async propose(options: {
     profile: AgentProfile;
@@ -95,24 +102,31 @@ export class ChatGptCodexImplementationClient {
       "Required protocol_version: wco-web-bridge-v1",
       "Required contract_only: false",
     ].join("\n");
-    const result = await this.agent.turn({
-      role: "implementer",
-      model: options.profile.model,
-      reasoning_effort: options.profile.reasoning_effort,
-      prompt,
-      output_schema: CHATGPT_CODEX_IMPLEMENTATION_OUTPUT_SCHEMA as unknown as Record<string, unknown>,
-      read_only: true,
-      approval_policy: "never",
-      sandbox_mode: "read-only",
-      network_access: false,
-      live_web_search: false,
-      cached_web_search: false,
-      workspace_path: options.workspacePath,
-      accepted_bundle_path: options.acceptedBundlePath,
-      ...(options.signal ? { signal: options.signal } : {}),
-    });
-    const submission = parseWebImplementationSubmission(result.output);
-    if (submission.job_id !== options.jobId || submission.run_id !== options.runId || submission.contract_only) throw new Error("WEB_CHATGPT_CODEX_IMPLEMENTATION_BINDING_MISMATCH: implementation proposal is stale or bound to another canonical run.");
-    return submission;
+    const timeout = AbortSignal.timeout(Math.max(1, Math.floor(this.maximumTurnSeconds * 1_000)));
+    const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+    try {
+      const result = await this.agent.turn({
+        role: "implementer",
+        model: options.profile.model,
+        reasoning_effort: options.profile.reasoning_effort,
+        prompt,
+        output_schema: CHATGPT_CODEX_IMPLEMENTATION_OUTPUT_SCHEMA as unknown as Record<string, unknown>,
+        read_only: true,
+        approval_policy: "never",
+        sandbox_mode: "read-only",
+        network_access: false,
+        live_web_search: false,
+        cached_web_search: false,
+        workspace_path: options.workspacePath,
+        accepted_bundle_path: options.acceptedBundlePath,
+        signal,
+      });
+      const submission = parseWebImplementationSubmission(result.output);
+      if (submission.job_id !== options.jobId || submission.run_id !== options.runId || submission.contract_only) throw new Error("WEB_CHATGPT_CODEX_IMPLEMENTATION_BINDING_MISMATCH: implementation proposal is stale or bound to another canonical run.");
+      return submission;
+    } catch (error) {
+      if (timeout.aborted && !options.signal?.aborted) throw timeoutError();
+      throw error;
+    }
   }
 }
