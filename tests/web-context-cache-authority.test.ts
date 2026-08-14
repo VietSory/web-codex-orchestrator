@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -13,8 +13,9 @@ import { ExactRepositoryReadService } from "../src/web-bridge/repo-read-service.
 const run = promisify(execFile);
 const sha256 = (value: Buffer | string): string => crypto.createHash("sha256").update(value).digest("hex");
 
-test("context cache cannot replace exact Git blob authority with self-consistent tampered bytes", async () => {
+test("context cache cannot replace exact Git blob authority with self-consistent tampered bytes", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-context-authority-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
   const repo = path.join(root, "repo");
   const cacheRoot = path.join(root, "cache");
   await mkdir(repo);
@@ -51,4 +52,17 @@ test("context cache cannot replace exact Git blob authority with self-consistent
 
   const repairedRecord = JSON.parse(await readFile(cachePath, "utf8"));
   assert.equal(Buffer.from(repairedRecord.content_base64, "base64").toString("utf8"), "canonical\n");
+});
+
+test("context cache has a hard global entry-count bound and keeps the newly inserted content", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-context-capacity-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const cache = new ContentAddressedContextCache(root, 1024, 2);
+  await cache.put("key-a", Buffer.from("a"));
+  await cache.put("key-b", Buffer.from("b"));
+  await cache.put("key-c", Buffer.from("c"));
+
+  const records = (await readdir(root)).filter((name) => /^[a-f0-9]{64}\.json$/.test(name));
+  assert.equal(records.length, 2);
+  assert.equal((await cache.get("key-c"))?.toString("utf8"), "c");
 });
