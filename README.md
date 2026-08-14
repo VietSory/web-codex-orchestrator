@@ -112,7 +112,7 @@ npm ci
 npm run check
 npm run pack:check
 npm run pack:smoke
-npm run test:user:packed
+npm run test:user:contract
 ```
 
 A release is not normal-user ready until the exact packaged zero-config journey passes and a real local acceptance confirms first authorization, complete goal-to-Draft-PR execution, final review and restart/recovery behavior.
