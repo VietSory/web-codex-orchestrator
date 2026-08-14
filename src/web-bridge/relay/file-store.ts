@@ -3,6 +3,7 @@ import { constants as fsConstants, type Stats } from "node:fs";
 import { chmod, lstat, mkdir, open, readdir, realpath, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import { canonicalJsonBuffer } from "../../result-bundle/canonical-json.js";
+import { acquireTicketFileLock, TicketFileLockError, type TicketFileLockHandle } from "../../shared/ticket-file-lock.js";
 import { WebBridgeError, WEB_BRIDGE_PROTOCOL_VERSION, contentDigest, type BridgeJobIdentity } from "../contracts.js";
 import type { AuthoringJobRequest } from "../web-bridge.js";
 import type { FinalReviewRequest } from "../contracts.js";
@@ -30,12 +31,28 @@ export class RelayFileStore {
     return absolute;
   }
 
+  private async acquireWriterLock(): Promise<TicketFileLockHandle> {
+    const root = await this.safeRoot();
+    try { return await acquireTicketFileLock(path.join(root, ".writer-locks"), { timeoutMs: 10_000, pollMs: 25 }); }
+    catch (error) {
+      if (error instanceof TicketFileLockError) throw new WebBridgeError(error.code === "TICKET_LOCKED" ? "RELAY_STORE_LOCKED" : "RELAY_STORE_LOCK_INVALID", error.message);
+      throw error;
+    }
+  }
+
   private async locked<T>(operation: () => Promise<T>): Promise<T> {
     const previous = this.queue;
-    let release!: () => void;
-    this.queue = new Promise<void>((resolve) => { release = resolve; });
+    let releaseLocal!: () => void;
+    this.queue = new Promise<void>((resolve) => { releaseLocal = resolve; });
     await previous;
-    try { return await operation(); } finally { release(); }
+    let writer: TicketFileLockHandle | null = null;
+    try {
+      writer = await this.acquireWriterLock();
+      return await operation();
+    } finally {
+      await writer?.release().catch(() => undefined);
+      releaseLocal();
+    }
   }
 
   private validate(record: unknown, jobId: string): RelayJobRecord {
@@ -106,9 +123,7 @@ export class RelayFileStore {
     } finally { await handle.close(); }
   }
 
-  private async read(jobId: string): Promise<RelayJobRecord> {
-    return await this.readAtRoot(await this.safeRoot(), jobId);
-  }
+  private async read(jobId: string): Promise<RelayJobRecord> { return await this.readAtRoot(await this.safeRoot(), jobId); }
 
   private async scan(): Promise<{ root: string; records: RelayJobRecord[] }> {
     const root = await this.safeRoot();
@@ -125,10 +140,7 @@ export class RelayFileStore {
     for (const record of records) {
       if (Date.parse(record.identity.expires_at) > nowMs) continue;
       const target = path.join(root, `${record.identity.job_id}.json`);
-      const info = await lstat(target).catch((error: unknown) => {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-        throw error;
-      });
+      const info = await lstat(target).catch((error: unknown) => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; });
       if (!info) continue;
       if (!info.isFile() || info.isSymbolicLink() || await realpath(target) !== target) throw new WebBridgeError("RELAY_RECORD_INVALID", "Expired relay record target is unsafe.");
       await unlink(target);
@@ -206,10 +218,6 @@ export class RelayFileStore {
 
   async get(jobId: string, owner: string): Promise<RelayJobRecord> { const record = await this.read(jobId); this.authorize(record, owner); return record; }
   async events(jobId: string, owner: string, afterSequence: number): Promise<RelayStoredEvent[]> { if (!Number.isSafeInteger(afterSequence) || afterSequence < 0) throw new WebBridgeError("RELAY_RECORD_INVALID", "Relay event cursor is invalid."); const record = await this.get(jobId, owner); return record.events.filter((event) => event.sequence > afterSequence); }
-  async list(owner: string): Promise<RelayJobRecord[]> {
-    safeId(owner);
-    const { records } = await this.scan();
-    return records.filter((record) => record.identity.owner === owner);
-  }
+  async list(owner: string): Promise<RelayJobRecord[]> { safeId(owner); const { records } = await this.scan(); return records.filter((record) => record.identity.owner === owner); }
   private authorize(record: RelayJobRecord, owner: string): void { if (record.identity.owner !== owner) throw new WebBridgeError("RELAY_FORBIDDEN", "Relay job ownership check failed."); if (Date.parse(record.identity.expires_at) <= this.now().getTime()) throw new WebBridgeError("RELAY_JOB_EXPIRED", "Relay job has expired."); }
 }
