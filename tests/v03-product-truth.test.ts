@@ -31,7 +31,7 @@ test("public documentation freezes install + one authorization + prompt-only dai
 
   assert.match(operations, /## Normal interactive workflow/);
   assert.match(operations, /## Multiple repositories/);
-  assert.match(operations, /Exactly one Web authorization link/i);
+  assert.match(operations, /one provider-owned ChatGPT authorization interaction/i);
   assert.match(operations, /per-task browser interactions = 0/i);
   assert.match(operations, /web_native_mcp.*advanced|Advanced `web_native_mcp`/is);
 });
