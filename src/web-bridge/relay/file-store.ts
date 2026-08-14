@@ -79,9 +79,8 @@ export class RelayFileStore {
     return root as unknown as RelayJobRecord;
   }
 
-  private async read(jobId: string): Promise<RelayJobRecord> {
+  private async readAtRoot(root: string, jobId: string): Promise<RelayJobRecord> {
     safeId(jobId);
-    const root = await this.safeRoot();
     const target = path.join(root, `${jobId}.json`);
     const pathStat = await lstat(target);
     if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.size > this.limits.maximum_record_bytes || await realpath(target) !== target) throw new WebBridgeError("RELAY_RECORD_INVALID", "Relay record path is unsafe or exceeds its bound.");
@@ -107,6 +106,37 @@ export class RelayFileStore {
     } finally { await handle.close(); }
   }
 
+  private async read(jobId: string): Promise<RelayJobRecord> {
+    return await this.readAtRoot(await this.safeRoot(), jobId);
+  }
+
+  private async scan(): Promise<{ root: string; records: RelayJobRecord[] }> {
+    const root = await this.safeRoot();
+    const names = (await readdir(root)).filter((name) => /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\.json$/.test(name));
+    if (names.length > this.limits.maximum_record_files) throw new WebBridgeError("RELAY_RECORD_LIMIT", "Relay store record count exceeds its independent storage bound.");
+    const records: RelayJobRecord[] = [];
+    for (const name of names) records.push(await this.readAtRoot(root, name.slice(0, -5)));
+    records.sort((a, b) => a.identity.created_at.localeCompare(b.identity.created_at));
+    return { root, records };
+  }
+
+  private async pruneExpired(root: string, records: readonly RelayJobRecord[], nowMs: number): Promise<number> {
+    let removed = 0;
+    for (const record of records) {
+      if (Date.parse(record.identity.expires_at) > nowMs) continue;
+      const target = path.join(root, `${record.identity.job_id}.json`);
+      const info = await lstat(target).catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error;
+      });
+      if (!info) continue;
+      if (!info.isFile() || info.isSymbolicLink() || await realpath(target) !== target) throw new WebBridgeError("RELAY_RECORD_INVALID", "Expired relay record target is unsafe.");
+      await unlink(target);
+      removed += 1;
+    }
+    return removed;
+  }
+
   private async write(record: RelayJobRecord): Promise<void> {
     const bytes = canonicalJsonBuffer(record);
     if (bytes.byteLength > this.limits.maximum_record_bytes) throw new WebBridgeError("RELAY_RECORD_LIMIT", "Relay record exceeds its bound.");
@@ -130,14 +160,18 @@ export class RelayFileStore {
     if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > this.limits.maximum_ttl_seconds) throw new WebBridgeError("RELAY_TTL_INVALID", "Relay TTL is outside its bound.");
     return await this.locked(async () => {
       const requestDigest = contentDigest({ kind, owner, request });
-      const existing = await this.findByIdempotency(owner, idempotencyKey);
+      const { root, records } = await this.scan();
+      const ownerRecords = records.filter((record) => record.identity.owner === owner);
+      const existing = ownerRecords.find((record) => `create:${idempotencyKey}` in record.idempotency);
+      const nowMs = this.now().getTime();
       if (existing) {
         if (existing.identity.content_sha256 !== requestDigest) throw new WebBridgeError("RELAY_IDEMPOTENCY_CONFLICT", "Conflicting relay creation replay was rejected.");
-        if (Date.parse(existing.identity.expires_at) <= this.now().getTime()) throw new WebBridgeError("RELAY_JOB_EXPIRED", "The idempotent relay job has expired; create a new local session.");
+        if (Date.parse(existing.identity.expires_at) <= nowMs) throw new WebBridgeError("RELAY_JOB_EXPIRED", "The idempotent relay job has expired; create a new local session.");
         return existing.identity;
       }
-      const active = await this.list(owner);
-      if (active.filter((item) => isRelayJobPending(item, this.now().getTime())).length >= this.limits.maximum_active_jobs_per_owner) throw new WebBridgeError("RELAY_ACTIVE_JOB_LIMIT", "Active relay job limit reached.");
+      const removed = await this.pruneExpired(root, records, nowMs);
+      if (records.length - removed >= this.limits.maximum_record_files) throw new WebBridgeError("RELAY_RECORD_LIMIT", "Relay store record count reached its independent storage bound.");
+      if (ownerRecords.filter((item) => isRelayJobPending(item, nowMs)).length >= this.limits.maximum_active_jobs_per_owner) throw new WebBridgeError("RELAY_ACTIVE_JOB_LIMIT", "Active relay job limit reached.");
       const created = this.now();
       const jobId = `${kind === "authoring" ? "job" : "review"}-${contentDigest({ owner, idempotencyKey, request }).slice(0, 24)}`;
       const identity: BridgeJobIdentity = { protocol_version: WEB_BRIDGE_PROTOCOL_VERSION, job_id: jobId, owner, created_at: created.toISOString(), expires_at: new Date(created.getTime() + ttlSeconds * 1000).toISOString(), content_sha256: requestDigest };
@@ -174,13 +208,8 @@ export class RelayFileStore {
   async events(jobId: string, owner: string, afterSequence: number): Promise<RelayStoredEvent[]> { if (!Number.isSafeInteger(afterSequence) || afterSequence < 0) throw new WebBridgeError("RELAY_RECORD_INVALID", "Relay event cursor is invalid."); const record = await this.get(jobId, owner); return record.events.filter((event) => event.sequence > afterSequence); }
   async list(owner: string): Promise<RelayJobRecord[]> {
     safeId(owner);
-    const root = await this.safeRoot();
-    const names = (await readdir(root)).filter((name) => /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\.json$/.test(name));
-    if (names.length > this.limits.maximum_record_files) throw new WebBridgeError("RELAY_RECORD_LIMIT", "Relay store record count exceeds its independent storage bound.");
-    const values: RelayJobRecord[] = [];
-    for (const name of names) { const record = await this.read(name.slice(0, -5)); if (record.identity.owner === owner) values.push(record); }
-    return values.sort((a, b) => a.identity.created_at.localeCompare(b.identity.created_at));
+    const { records } = await this.scan();
+    return records.filter((record) => record.identity.owner === owner);
   }
-  private async findByIdempotency(owner: string, key: string): Promise<RelayJobRecord | undefined> { return (await this.list(owner)).find((record) => `create:${key}` in record.idempotency); }
   private authorize(record: RelayJobRecord, owner: string): void { if (record.identity.owner !== owner) throw new WebBridgeError("RELAY_FORBIDDEN", "Relay job ownership check failed."); if (Date.parse(record.identity.expires_at) <= this.now().getTime()) throw new WebBridgeError("RELAY_JOB_EXPIRED", "Relay job has expired."); }
 }
