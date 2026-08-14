@@ -15,6 +15,10 @@ const SENSITIVE = [/(^|\/)\.env($|\.)/i, /(^|\/)[^/]*\.(pem|key)$/i, /(^|\/)id_r
 function denySensitive(value: string): void { assertRepositoryRelativePath(value); if (SENSITIVE.some((pattern) => pattern.test(value))) throw new WebBridgeError("WEB_REPOSITORY_PATH_SENSITIVE", `Repository path '${value}' is denied by sensitive-path policy.`); }
 function environment(): Record<string, string> { const result: Record<string, string> = { GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" }; for (const key of ["PATH", "Path", "PATHEXT", "SYSTEMROOT", "SystemRoot"]) if (process.env[key]) result[key] = process.env[key]!; return result; }
 function failed(result: { exitCode: number | null; timedOut: boolean; cancelled: boolean; stdoutTruncated: boolean; stderrTruncated: boolean; spawnError?: unknown }): boolean { return Boolean(result.spawnError || result.timedOut || result.cancelled || result.stdoutTruncated || result.stderrTruncated || result.exitCode !== 0); }
+function gitBlobObjectId(content: Buffer): string {
+  const header = Buffer.from(`blob ${content.byteLength}\0`, "utf8");
+  return crypto.createHash("sha1").update(header).update(content).digest("hex");
+}
 
 export class ExactRepositoryReadService {
   private readonly limits: RepoReadLimits;
@@ -44,12 +48,20 @@ export class ExactRepositoryReadService {
       const known = knownContent[referenceKey];
       if (known !== undefined && !/^[a-f0-9]{64}$/.test(known)) throw new WebBridgeError("WEB_REPOSITORY_CONTEXT_REFERENCE_INVALID", "Known content digest is invalid.");
       const blob_sha = (await this.text(["rev-parse", `${this.binding.base_commit}:${item}`], 128)).trim();
+      if (!/^[a-f0-9]{40}$/.test(blob_sha)) throw new WebBridgeError("WEB_REPOSITORY_BINDING_DRIFT", "Exact Git blob identity is invalid.");
       const cacheKey = `${this.binding.base_commit}\0${blob_sha}\0full`;
       let content = this.cache ? await this.cache.get(cacheKey) : null;
+      if (content && gitBlobObjectId(content) !== blob_sha) {
+        // Cache is performance state, never repository authority. A self-consistent
+        // but stale/tampered record is discarded and rebuilt from the exact Git object.
+        await this.cache?.evict(cacheKey);
+        content = null;
+      }
       if (content) metrics.cache_hits += 1;
       else {
         metrics.cache_misses += 1;
         content = await this.binary(["show", `${this.binding.base_commit}:${item}`], this.limits.maximum_file_bytes + 1);
+        if (gitBlobObjectId(content) !== blob_sha) throw new WebBridgeError("WEB_REPOSITORY_BINDING_DRIFT", "Git object bytes do not match the exact blob identity.");
         await this.cache?.put(cacheKey, content);
       }
       if (content.byteLength > this.limits.maximum_file_bytes) throw new WebBridgeError("WEB_REPOSITORY_READ_LIMIT", "File read response exceeds byte bounds.");
