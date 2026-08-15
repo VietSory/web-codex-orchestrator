@@ -52,7 +52,9 @@ try {
   const project = path.join(temp, "project");
   const remote = path.join(temp, "remote.git");
   const wcoHome = path.join(temp, "wco-home");
+  const userHome = path.join(temp, "user-home");
   mkdirSync(project, { recursive: true });
+  mkdirSync(userHome, { recursive: true });
   run(git, ["init", "--bare", remote], { cwd: temp, capture: true });
   run(git, ["init", "-b", "main"], { cwd: project, capture: true });
   run(git, ["config", "user.name", "WCO Packed Smoke"], { cwd: project, capture: true });
@@ -63,7 +65,7 @@ try {
   run(git, ["remote", "add", "origin", remote], { cwd: project, capture: true });
   run(git, ["push", "-u", "origin", "main"], { cwd: project, capture: true });
 
-  const isolatedEnv = { ...process.env, WCO_HOME: wcoHome, CI: "true" };
+  const isolatedEnv = { ...process.env, HOME: userHome, USERPROFILE: userHome, WCO_HOME: wcoHome, CI: "true" };
   delete isolatedEnv.WCO_CONFIG;
   delete isolatedEnv.WCO_STATE_DIR;
 

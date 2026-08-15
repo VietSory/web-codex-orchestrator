@@ -163,6 +163,11 @@ export class CodexSdkAgentClient implements AgentClient {
         model: request.model,
         modelReasoningEffort: request.reasoning_effort,
         workingDirectory: request.workspace_path,
+        // WCO semantic turns intentionally run in a controlled scratch root,
+        // not in the user repository. Repository context is supplied only by
+        // the exact-read protocol, so the SDK's generic Git-repository check
+        // does not apply to this authority-separated workspace.
+        skipGitRepoCheck: true,
         sandboxMode: request.sandbox_mode,
         approvalPolicy: "never",
         networkAccessEnabled: false,

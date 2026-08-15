@@ -105,6 +105,7 @@ test("implementer restrictions and exact SDK thread options are enforced", async
     model: "trusted-model",
     modelReasoningEffort: "high",
     workingDirectory: "/tmp/wco-worktree",
+    skipGitRepoCheck: true,
     sandboxMode: "workspace-write",
     approvalPolicy: "never",
     networkAccessEnabled: false,
@@ -122,6 +123,7 @@ test("reviewer restrictions, schema, and cancellation signal are passed to the S
   const signal = new AbortController().signal;
   await new CodexSdkAgentClient(fakeResolvedCodexRuntime(), factory).turn(request({ role: "internal_reviewer", output_schema: REVIEW_OUTPUT_SCHEMA, read_only: true, sandbox_mode: "read-only", signal }));
   assert.equal(state.startOptions?.sandboxMode, "read-only");
+  assert.equal(state.startOptions?.skipGitRepoCheck, true);
   assert.equal(state.startOptions?.approvalPolicy, "never");
   assert.equal(state.startOptions?.networkAccessEnabled, false);
   assert.equal(state.startOptions?.webSearchMode, "disabled");
