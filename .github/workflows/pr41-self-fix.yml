@@ -55,13 +55,12 @@ jobs:
           }
 
           async function runInteractiveShortcut(first: string, args: string[]): Promise<boolean> {
-            if (first !== "--continue" && first !== "--resume") return false;
-            if (!process.stdin.isTTY || !process.stdout.isTTY) {
-              process.stderr.write("Interactive WCO shortcuts require a TTY. Run `wco` inside a terminal.\n");
-              process.exitCode = 2;
-              return true;
-            }
             if (first === "--continue") {
+              if (!process.stdin.isTTY || !process.stdout.isTTY) {
+                process.stderr.write("Interactive WCO shortcuts require a TTY. Run `wco` inside a terminal.\n");
+                process.exitCode = 2;
+                return true;
+              }
               if (args.length !== 1) {
                 process.stderr.write("Usage: wco --continue\n");
                 process.exitCode = 2;
@@ -70,14 +69,22 @@ jobs:
               process.exitCode = await runInteractiveApp(startupInteractiveIo("/continue"));
               return true;
             }
-            if (args.length > 2 || args[1] !== undefined && !/^\d+$/u.test(args[1])) {
-              process.stderr.write("Usage: wco --resume [history-number]\n");
-              process.exitCode = 2;
+            if (first === "--resume") {
+              if (!process.stdin.isTTY || !process.stdout.isTTY) {
+                process.stderr.write("Interactive WCO shortcuts require a TTY. Run `wco` inside a terminal.\n");
+                process.exitCode = 2;
+                return true;
+              }
+              if (args.length > 2 || args[1] !== undefined && !/^\d+$/u.test(args[1])) {
+                process.stderr.write("Usage: wco --resume [history-number]\n");
+                process.exitCode = 2;
+                return true;
+              }
+              const startupCommand = args[1] ? `/resume ${args[1]}` : "/resume";
+              process.exitCode = await runInteractiveApp(startupInteractiveIo(startupCommand));
               return true;
             }
-            const startupCommand = args[1] ? `/resume ${args[1]}` : "/resume";
-            process.exitCode = await runInteractiveApp(startupInteractiveIo(startupCommand));
-            return true;
+            return false;
           }
 
           '''
