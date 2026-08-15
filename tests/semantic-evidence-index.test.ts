@@ -196,5 +196,5 @@ test("result objects and transfer metrics are closed and internally consistent",
   const impossible: any = structuredClone(read.result);
   impossible.metrics.context_bytes_transmitted = 7;
   impossible.metrics.context_bytes_prepared = 6;
-  assert.throws(() => buildSemanticEvidenceIndex({ repository, observations: [observation(0, "req-metric", read.command, impossible)] }), /transmitted bytes exceed prepared bytes/i);
+  assert.throws(() => buildSemanticEvidenceIndex({ repository, observations: [observation(0, "req-metric", read.command, impossible)] }), /context_bytes_transmitted does not match normalized read evidence/i);
 });
