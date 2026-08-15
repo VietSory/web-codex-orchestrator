@@ -13,7 +13,7 @@ type Keypress = { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean
 type CompletionKind = "enter" | "tab";
 type ExternalComposerWriter = (value: string) => void;
 type ComposerSignal = "interrupt" | "exit" | null;
-interface ComposerOptions { allowedCommands?: ReadonlySet<string>; }
+interface ComposerOptions { allowedCommands?: ReadonlySet<string> | undefined; }
 
 function promptColumn(prompt: string): number {
   const newline = prompt.lastIndexOf("\n");
@@ -482,7 +482,7 @@ export function terminalIo(): InteractiveIo {
 }
 
 export interface InteractiveHandlers {
-  state(): Promise<{ active: boolean; sealed: boolean; summary: string; availableCommands?: readonly string[] }>;
+  state(): Promise<{ active: boolean; sealed: boolean; summary: string; availableCommands?: readonly string[] | undefined }>;
   newTask(goal: string): Promise<string>;
   clarify(value: string): Promise<string>;
   command(command: string, args: string): Promise<{ message: string; quit?: boolean }>;
