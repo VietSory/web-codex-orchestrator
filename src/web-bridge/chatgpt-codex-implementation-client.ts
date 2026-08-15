@@ -7,9 +7,9 @@ const MAX_PROVIDER_TURN_SECONDS = 3600;
 type MeasuredProviderUsage = { input_tokens: number; cached_input_tokens: number; output_tokens: number };
 const implementationOperation = {
   anyOf: [
-    { type: "object", additionalProperties: false, properties: { kind: { const: "create" }, path: { type: "string", maxLength: 4096 }, content_base64: { type: "string", maxLength: 700_000 }, content_sha256: { type: "string", pattern: "^[0-9a-f]{64}$", minLength: 64, maxLength: 64 } }, required: ["kind", "path", "content_base64", "content_sha256"] },
-    { type: "object", additionalProperties: false, properties: { kind: { const: "replace" }, path: { type: "string", maxLength: 4096 }, content_base64: { type: "string", maxLength: 700_000 }, content_sha256: { type: "string", pattern: "^[0-9a-f]{64}$", minLength: 64, maxLength: 64 } }, required: ["kind", "path", "content_base64", "content_sha256"] },
-    { type: "object", additionalProperties: false, properties: { kind: { const: "delete" }, path: { type: "string", maxLength: 4096 } }, required: ["kind", "path"] },
+    { type: "object", additionalProperties: false, properties: { kind: { type: "string", const: "create" }, path: { type: "string", maxLength: 4096 }, content_base64: { type: "string", maxLength: 700_000 }, content_sha256: { type: "string", pattern: "^[0-9a-f]{64}$", minLength: 64, maxLength: 64 } }, required: ["kind", "path", "content_base64", "content_sha256"] },
+    { type: "object", additionalProperties: false, properties: { kind: { type: "string", const: "replace" }, path: { type: "string", maxLength: 4096 }, content_base64: { type: "string", maxLength: 700_000 }, content_sha256: { type: "string", pattern: "^[0-9a-f]{64}$", minLength: 64, maxLength: 64 } }, required: ["kind", "path", "content_base64", "content_sha256"] },
+    { type: "object", additionalProperties: false, properties: { kind: { type: "string", const: "delete" }, path: { type: "string", maxLength: 4096 } }, required: ["kind", "path"] },
   ],
 } as const;
 const sourceReceipt = { type: "object", additionalProperties: false, properties: { url: { type: "string", maxLength: 2048 }, title: { type: "string", maxLength: 512 }, accessed_at: { type: "string", maxLength: 64 }, relevance: { type: "string", maxLength: 4096 } }, required: ["url", "title", "accessed_at", "relevance"] } as const;
@@ -17,7 +17,7 @@ const sourceReceipt = { type: "object", additionalProperties: false, properties:
 export const CHATGPT_CODEX_IMPLEMENTATION_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false,
   properties: {
-    protocol_version: { const: "wco-web-bridge-v1" }, job_id: { type: "string", maxLength: 128 }, run_id: { type: "string", maxLength: 256 }, contract_only: { const: false }, summary: { type: "string", maxLength: 16_384 },
+    protocol_version: { type: "string", const: "wco-web-bridge-v1" }, job_id: { type: "string", maxLength: 128 }, run_id: { type: "string", maxLength: 256 }, contract_only: { type: "boolean", const: false }, summary: { type: "string", maxLength: 16_384 },
     operations: { type: "array", maxItems: 128, items: implementationOperation },
     project_map: { type: "array", maxItems: 2_000, items: { type: "object", additionalProperties: false, properties: { path: { type: "string", maxLength: 4096 }, purpose: { type: "string", maxLength: 4096 } }, required: ["path", "purpose"] } },
     sources: { type: "array", maxItems: 128, items: sourceReceipt },

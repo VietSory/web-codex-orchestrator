@@ -6,8 +6,8 @@ function providerSchema(kinds: readonly string[]) {
     additionalProperties: false,
     required: ["protocol_version", "kind", "payload_json"],
     properties: {
-      protocol_version: { const: CHATGPT_CODEX_PROTOCOL_VERSION },
-      kind: { enum: kinds },
+      protocol_version: { type: "string", const: CHATGPT_CODEX_PROTOCOL_VERSION },
+      kind: { type: "string", enum: kinds },
       payload_json: { type: "string" },
     },
   } as const;
