@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { SLASH_COMMANDS, commandPalette, parseInteractiveInput, slashCommandSuggestions } from "../src/tui/slash-commands.js";
-import { composerCursorGeometry, resolveEnterSelection, resolveSlashCompletion, restoreComposerInput, runInteractiveSession, splitComposerPrompt } from "../src/tui/session.js";
+import { composerCursorGeometry, findReverseHistoryMatch, resolveEnterSelection, resolveSlashCompletion, restoreComposerInput, runInteractiveSession, splitComposerPrompt } from "../src/tui/session.js";
 
 test("live slash suggestions prioritize normal-user commands and hide legacy/advanced noise", () => {
   assert.equal(slashCommandSuggestions("/").length, SLASH_COMMANDS.length);
@@ -26,6 +26,16 @@ test("live slash suggestions prioritize normal-user commands and hide legacy/adv
   assert.match(palette, /\/auth connect/);
   assert.match(palette, /\/status/);
   assert.match(palette, /what you need to do/);
+});
+
+test("command discovery can be restricted to commands valid for the current live context", () => {
+  const allowed = new Set(["/status", "/review", "/pause", "/help", "/quit"]);
+  assert.deepEqual(slashCommandSuggestions("/", allowed).map((item) => item.command), ["/status", "/review", "/pause", "/help", "/quit"]);
+  assert.equal(slashCommandSuggestions("/cont", allowed).length, 0);
+  const palette = commandPalette(allowed);
+  assert.match(palette, /\/status/);
+  assert.match(palette, /\/review/);
+  assert.doesNotMatch(palette, /\/continue|\/resume|\/new|\/auto/);
 });
 
 test("user-facing auth aliases reuse the existing Web command handler", () => {
@@ -61,6 +71,14 @@ test("live composer geometry supports wrapping and real multiline input", () => 
 
   const multiline = composerCursorGeometry("> ", "first\nsecond", 12, 24);
   assert.deepEqual(multiline, { cursorRow: 1, endRow: 1, cursorColumn: 6 });
+});
+
+test("reverse prompt history search is bounded, case-insensitive, and cycles older matches", () => {
+  const history = ["/status", "Add rate limiting", "Fix LOGIN redirect", "/review"];
+  assert.deepEqual(findReverseHistoryMatch(history, "login"), { index: 2, value: "Fix LOGIN redirect" });
+  assert.deepEqual(findReverseHistoryMatch(history, "/", -1), { index: 0, value: "/status" });
+  assert.deepEqual(findReverseHistoryMatch(history, "/", 0), { index: 3, value: "/review" });
+  assert.equal(findReverseHistoryMatch(history, "missing"), null);
 });
 
 test("composer cleanup restores raw mode and releases stdin when WCO owns it", () => {
@@ -108,6 +126,24 @@ test("interactive session prefers the live composer when one is available", asyn
   assert.match(output.join(""), /Web Codex Orchestrator/);
   assert.match(output.join(""), /Type a goal to start/);
   assert.match(output.join(""), /bye/);
+});
+
+test("interactive session passes state-aware command availability to the live composer", async () => {
+  let receivedAllowed: ReadonlySet<string> | undefined;
+  await runInteractiveSession({
+    input: process.stdin,
+    output: process.stdout,
+    write: () => undefined,
+    question: async () => "unused",
+    composer: async (_prompt, options) => { receivedAllowed = options?.allowedCommands; return "/quit"; },
+    close: () => undefined,
+  }, {
+    state: async () => ({ active: true, sealed: true, summary: "RUNNING", availableCommands: ["/status", "/quit"] }),
+    newTask: async () => "unused",
+    clarify: async () => "unused",
+    command: async () => ({ message: "bye", quit: true }),
+  });
+  assert.deepEqual([...receivedAllowed ?? []], ["/status", "/quit"]);
 });
 
 test("unchanged task summary is not reprinted after every command", async () => {
