@@ -9,11 +9,11 @@ test("continue never silently leaves a blocked current task for older history", 
   const end = source.indexOf("const currentTaskIsPaused", start);
   const block = source.slice(start, end);
   assert.ok(start >= 0 && end > start);
-  const blocked = block.indexOf('latest?.state === "BLOCKED"');
-  const history = block.indexOf("recentTaskHistory()", blocked);
-  assert.ok(blocked >= 0 && history > blocked);
+  assert.match(block, /latest\?\.state === "BLOCKED"/);
   assert.match(block, /current task needs your attention/i);
   assert.match(block, /Use \/resume only if you intentionally want to switch/i);
+  assert.doesNotMatch(block, /recentTaskHistory\(\)|resumeHistoryItem\(/,
+    "`/continue` must never change focus by selecting historical work implicitly");
 });
 
 test("blocked tasks are unfinished for replacement and resume-switch confirmation", () => {

@@ -270,7 +270,7 @@ cd /path/to/project
 wco
 ```
 
-Then give WCO a goal. If you already have saved work, use `/continue` to continue the current task. When there is no current unfinished task, `/continue` can return to the most recent safely resumable task. Use `/resume` when you want to deliberately choose a different saved task; `/resume <number>` selects the matching `/history` item.
+Then give WCO a goal. If you already have an unfinished current task, use `/continue` to continue that exact task. If there is no current task, or the current task is already complete, `/continue` does not change focus: type a new follow-up goal, or use `/resume` when you intentionally want to choose a different saved task. `/resume <number>` selects the matching `/history` item after durable re-attestation.
 
 WCO does not trust history display data as workflow authority. Before a historical task becomes current again, WCO re-attests its canonical run receipt, exact durable run ledger, repository/base binding, and bounded WCO-owned task/implementation artifacts. Completed tasks stay completed and should receive a new follow-up goal instead of reopening old authority. Authoring-only, stale, corrupt, mismatched, redirected, or symlinked history stays reference-only.
 
@@ -287,7 +287,7 @@ Inside the interactive WCO CLI, the normal command-discovery surface is intentio
 ```text
 /new <goal>             start a collaborative PAIR task
 /auto <goal>            start an end-to-end AUTOPILOT task
-/continue               continue current saved work or the latest safely resumable task
+/continue               continue only the current unfinished saved task
 /resume                  choose a saved task to resume
 /resume <number>         resume one history item after durable re-attestation
 /status                  show current progress and Your action
