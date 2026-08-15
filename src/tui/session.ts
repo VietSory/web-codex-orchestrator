@@ -6,10 +6,13 @@ import { commandPalette, parseInteractiveInput, slashCommandSuggestions } from "
 const MAX_VISIBLE_SUGGESTIONS = 8;
 const MAX_SESSION_HISTORY = 100;
 const ARGUMENT_COMMANDS = new Set(["/new", "/auto", "/mode"]);
+const COMPOSER_INTERRUPT = "WCO_COMPOSER_INTERRUPT";
+const COMPOSER_EXIT = "WCO_COMPOSER_EXIT";
 
 type Keypress = { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean; sequence?: string };
 type CompletionKind = "enter" | "tab";
 type ExternalComposerWriter = (value: string) => void;
+type ComposerSignal = "interrupt" | "exit" | null;
 
 function promptColumn(prompt: string): number {
   const newline = prompt.lastIndexOf("\n");
@@ -27,7 +30,14 @@ function fitLine(value: string, columns: number): string {
 }
 
 function normalizeInlineInput(value: string): string {
-  return value.replace(/[\r\n]+/gu, " ");
+  return value.replace(/\r\n?/gu, "\n");
+}
+
+function composerSignal(error: unknown): ComposerSignal {
+  const code = error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code) : "";
+  if (code === COMPOSER_INTERRUPT) return "interrupt";
+  if (code === COMPOSER_EXIT) return "exit";
+  return null;
 }
 
 function isReadlineClosed(error: unknown): boolean {
@@ -36,9 +46,35 @@ function isReadlineClosed(error: unknown): boolean {
   return code === "ERR_USE_AFTER_CLOSE" || /readline was closed/i.test(message);
 }
 
+function composerSignalError(signal: Exclude<ComposerSignal, null>): Error & { code: string } {
+  const error = new Error(signal === "interrupt" ? "interactive input interrupted" : "interactive input closed") as Error & { code: string };
+  error.code = signal === "interrupt" ? COMPOSER_INTERRUPT : COMPOSER_EXIT;
+  return error;
+}
+
 export function splitComposerPrompt(value: string): { prefix: string; prompt: string } {
   const prompt = value.replace(/^[\r\n]+/u, "");
   return { prefix: value.slice(0, value.length - prompt.length), prompt };
+}
+
+function displayPosition(prompt: string, value: string, offset: number, columns: number): { row: number; column: number } {
+  const safeColumns = Math.max(1, Math.trunc(columns));
+  const bounded = Math.max(0, Math.min(value.length, offset));
+  let row = 0;
+  let column = promptColumn(prompt);
+  for (const char of value.slice(0, bounded)) {
+    if (char === "\n") {
+      row += 1;
+      column = 0;
+      continue;
+    }
+    column += 1;
+    if (column >= safeColumns) {
+      row += 1;
+      column = 0;
+    }
+  }
+  return { row, column };
 }
 
 export function composerCursorGeometry(
@@ -47,15 +83,10 @@ export function composerCursorGeometry(
   cursor: number,
   columns: number,
 ): { cursorRow: number; endRow: number; cursorColumn: number } {
-  const safeColumns = Math.max(1, Math.trunc(columns));
   const boundedCursor = Math.max(0, Math.min(value.length, cursor));
-  const absoluteCursor = promptColumn(prompt) + boundedCursor;
-  const absoluteEnd = promptColumn(prompt) + value.length;
-  return {
-    cursorRow: Math.floor(absoluteCursor / safeColumns),
-    endRow: Math.floor(absoluteEnd / safeColumns),
-    cursorColumn: absoluteCursor % safeColumns,
-  };
+  const atCursor = displayPosition(prompt, value, boundedCursor, columns);
+  const atEnd = displayPosition(prompt, value, value.length, columns);
+  return { cursorRow: atCursor.row, endRow: atEnd.row, cursorColumn: atCursor.column };
 }
 
 export function restoreComposerInput(
@@ -187,15 +218,13 @@ async function liveSlashComposer(
       resolve(answer);
     };
 
-    const abort = (): void => {
+    const abort = (signal: Exclude<ComposerSignal, null>): void => {
       if (settled) return;
       settled = true;
       clearRenderedBlock();
       output.write("\n");
       cleanup();
-      const error = new Error("readline was closed") as Error & { code?: string };
-      error.code = "ERR_USE_AFTER_CLOSE";
-      reject(error);
+      reject(composerSignalError(signal));
     };
 
     const changed = (): void => {
@@ -212,6 +241,12 @@ async function liveSlashComposer(
       selected = 0;
       paletteSuppressed = false;
       render();
+    };
+
+    const insertText = (text: string): void => {
+      value = value.slice(0, cursor) + text + value.slice(cursor);
+      cursor += text.length;
+      changed();
     };
 
     const acceptSelected = (kind: CompletionKind): boolean => {
@@ -247,13 +282,25 @@ async function liveSlashComposer(
     };
 
     const onKeypress = (text: string | undefined, key: Keypress): void => {
-      if (key.ctrl && key.name === "c") { abort(); return; }
+      if (key.ctrl && key.name === "c") {
+        if (value.length > 0) setValue("");
+        else abort("interrupt");
+        return;
+      }
       if (key.ctrl && key.name === "d") {
-        if (value.length === 0) { abort(); return; }
+        if (value.length === 0) { abort("exit"); return; }
         if (cursor < value.length) {
           value = value.slice(0, cursor) + value.slice(cursor + 1);
           changed();
         }
+        return;
+      }
+      if ((key.ctrl && key.name === "j") || ((key.name === "return" || key.name === "enter") && key.shift)) {
+        insertText("\n");
+        return;
+      }
+      if (key.ctrl && key.name === "l") {
+        render();
         return;
       }
 
@@ -337,9 +384,7 @@ async function liveSlashComposer(
       if (key.ctrl || key.meta || !text) return;
       const inserted = normalizeInlineInput(text);
       if (!inserted) return;
-      value = value.slice(0, cursor) + inserted + value.slice(cursor);
-      cursor += inserted.length;
-      changed();
+      insertText(inserted);
     };
 
     input.on("keypress", onKeypress);
@@ -396,6 +441,7 @@ export interface InteractiveHandlers {
   newTask(goal: string): Promise<string>;
   clarify(value: string): Promise<string>;
   command(command: string, args: string): Promise<{ message: string; quit?: boolean }>;
+  interruptRequest?(): Promise<{ message?: string }>;
   exitRequest?(): Promise<{ message?: string; quit: boolean }>;
 }
 
@@ -415,7 +461,13 @@ export async function runInteractiveSession(io: InteractiveIo, handlers: Interac
       try {
         raw = io.composer ? await io.composer("\n> ") : await io.question("\n> ");
       } catch (error) {
-        if (!isReadlineClosed(error)) throw error;
+        const signal = composerSignal(error);
+        if (signal === "interrupt") {
+          const interrupted = handlers.interruptRequest ? await handlers.interruptRequest() : { message: "Input cancelled." };
+          if (interrupted.message) io.write(`${interrupted.message}\n`);
+          continue;
+        }
+        if (signal !== "exit" && !isReadlineClosed(error)) throw error;
         const exit = handlers.exitRequest ? await handlers.exitRequest() : { quit: true };
         if (exit.message) io.write(`${exit.message}\n`);
         if (exit.quit) return;
