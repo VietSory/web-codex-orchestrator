@@ -218,7 +218,7 @@ Both modes preserve local mutation authority, deterministic verification, recove
 
 Neither mode automatically merges or releases your code.
 
-While a local task is running, the interactive prompt remains available for safe read/control commands such as `/status`, `/review`, and `/pause`. Status and review output explicitly show **Your action**. If WCO owns the next step, the action is `None — WCO ...`; if WCO needs a decision or the final merge, it tells you exactly what to do.
+While a local task is running, the interactive prompt remains available for safe read/control commands such as `/status`, `/review`, and `/pause`. The slash palette becomes context-aware and shows only commands that are valid while the background worker owns mutation. Runtime guards still enforce the same single-owner rule even if an unavailable command is typed manually. Status and review output explicitly show **Your action**. If WCO owns the next step, the action is `None — WCO ...`; if WCO needs a decision or the final merge, it tells you exactly what to do.
 
 ## What WCO does with a goal
 
@@ -272,7 +272,7 @@ wco
 
 Then give WCO a goal. If you already have saved work, use `/continue` to continue the current task. When there is no current unfinished task, `/continue` can return to the most recent safely resumable task. Use `/resume` when you want to deliberately choose a different saved task; `/resume <number>` selects the matching `/history` item.
 
-WCO does not trust history display data as workflow authority. Before a historical task becomes current again, WCO re-attests its exact durable run ledger and bounded WCO-owned task/implementation artifacts. Completed tasks stay completed and should receive a new follow-up goal instead of reopening old authority. Authoring-only, stale, corrupt, redirected, or symlinked history stays reference-only.
+WCO does not trust history display data as workflow authority. Before a historical task becomes current again, WCO re-attests its canonical run receipt, exact durable run ledger, repository/base binding, and bounded WCO-owned task/implementation artifacts. Completed tasks stay completed and should receive a new follow-up goal instead of reopening old authority. Authoring-only, stale, corrupt, mismatched, redirected, or symlinked history stays reference-only.
 
 A blocked current task is still the current task: `/continue` will not silently jump to some older history item. Use `/status`, `/review`, and `/doctor` to resolve the blocker, or use `/resume` explicitly if you intentionally want to switch saved tasks. Switching away from any unfinished current task asks for confirmation first.
 
@@ -316,6 +316,7 @@ Ctrl+D              request a safe exit
 Ctrl+J              insert a newline
 Shift+Enter         insert a newline when the terminal reports the modified Enter key
 Up/Down, Ctrl+P/N   browse bounded prompt history for this WCO session
+Ctrl+R              search backward through bounded prompt history
 Ctrl+L              redraw the current composer
 ```
 
