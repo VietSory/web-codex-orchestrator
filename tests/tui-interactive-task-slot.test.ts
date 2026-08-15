@@ -72,7 +72,35 @@ test("pauseAndWait never leaves the background owner running", async () => {
     },
   });
 
-  await slot.pauseAndWait();
+  const result = await slot.pauseAndWait();
+  assert.equal(result.safe_to_exit, true);
   assert.equal(finished, true);
+  assert.equal(slot.isActive(), false);
+});
+
+test("failed safe-boundary pause does not abort or permit process exit", async () => {
+  const gate = deferred<string>();
+  let observedAbort = false;
+  const slot = new InteractiveTaskSlot(() => undefined);
+
+  slot.start({
+    mode: "PAIR",
+    goal: "must stay owned",
+    pauseAtSafeBoundary: async () => { throw new Error("lock unavailable"); },
+    run: async (signal) => {
+      signal.addEventListener("abort", () => { observedAbort = true; }, { once: true });
+      return await gate.promise;
+    },
+  });
+
+  const result = await slot.pauseAndWait();
+  assert.equal(result.safe_to_exit, false);
+  assert.match(result.message, /could not be recorded safely/i);
+  assert.equal(observedAbort, false);
+  assert.equal(slot.isActive(), true);
+  assert.deepEqual(slot.snapshot(), { mode: "PAIR", goal: "must stay owned", pause_requested: false });
+
+  gate.resolve("finished normally");
+  await slot.waitForIdle();
   assert.equal(slot.isActive(), false);
 });
