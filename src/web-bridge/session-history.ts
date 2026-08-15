@@ -29,11 +29,12 @@ function currentSessionPath(stateDirectory: string, repositoryId: string): strin
 
 async function assertBoundedStateArtifact(stateDirectory: string, target: string, label: string): Promise<void> {
   if (!path.isAbsolute(target)) throw new Error(`WEB_HISTORY_NOT_RESUMABLE: ${label} is not an absolute WCO artifact path.`);
+  const pathInfo = await lstat(target).catch(() => null);
+  if (!pathInfo || !pathInfo.isFile() || pathInfo.isSymbolicLink()) throw new Error(`WEB_HISTORY_NOT_RESUMABLE: ${label} is not a regular non-symlink WCO artifact.`);
   const [root, resolved] = await Promise.all([realpath(path.resolve(stateDirectory)), realpath(target)]);
+  if (resolved !== path.resolve(target)) throw new Error(`WEB_HISTORY_NOT_RESUMABLE: ${label} uses a redirected path and cannot be trusted for resume.`);
   const relative = path.relative(root, resolved);
   if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error(`WEB_HISTORY_NOT_RESUMABLE: ${label} is outside the WCO state root.`);
-  const info = await lstat(resolved);
-  if (!info.isFile() || info.isSymbolicLink()) throw new Error(`WEB_HISTORY_NOT_RESUMABLE: ${label} is not a regular WCO artifact.`);
 }
 
 async function pruneForInsert(history: string): Promise<void> {
