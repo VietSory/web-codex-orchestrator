@@ -3,6 +3,7 @@ import path from "node:path";
 import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
 import { calculateChangeSet } from "../execution/change-set.js";
 import { readExecutorReceipt } from "../executor/store.js";
+import { executorPaths } from "../executor/paths.js";
 import { loadPhase4Config } from "../execution/execution-config.js";
 import { GitRunner } from "../git/git-runner.js";
 import { preparePublishGitSecurity } from "../publish/publish-auth.js";
@@ -22,6 +23,7 @@ import { readSelectedArtifact } from "./artifact-binding.js";
 import { openDraftPullRequestForExecutorSnapshot } from "./draft-pr.js";
 import { publishReadyExecutorSnapshot } from "./p10-publish.js";
 import { OrchestrationError } from "./contracts.js";
+import { readExactVerificationCommands } from "./verification-evidence.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const GIT_SHA = /^[a-f0-9]{40}$/;
@@ -207,6 +209,13 @@ async function tryHarnessWebRevision(options: {
       return receipt;
     }
   } else {
+    const verificationCommands = await readExactVerificationCommands({
+      executorDirectory: executorPaths(options.stateDirectory, taskId, archiveSha, selected.artifact_sha256).directory,
+      round: executor.verification.rounds,
+      evidenceSha256: executor.verification.evidence_sha256,
+      changeSetSha256: executor.change_set_digest,
+      requiredCommandsPassed: executor.verification.passed,
+    });
     // Write-ahead checkpoint: seal the exact dirty repaired delta before the
     // first Git publication side effect. Recovery never has to reconstruct
     // this authority from a worktree whose HEAD may already have advanced.
@@ -242,7 +251,7 @@ async function tryHarnessWebRevision(options: {
       worktree_path: executor.worktree_path,
       initial_refs_sha256: delta.refs_sha256,
       implementer: { model: "web-bounded-repair", reasoning_effort: "minimal", thread_id: null, iterations: 0 },
-      verification: { rounds: executor.verification.rounds, required_commands_passed: true, verified_change_set_sha256: executor.change_set_digest, commands: [] },
+      verification: { rounds: executor.verification.rounds, required_commands_passed: true, verified_change_set_sha256: executor.change_set_digest, commands: verificationCommands },
       terra_review: { ...noReview },
       sol_review: { ...noReview },
       usage: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_turns: 0, implementation_iterations: 0, internal_review_rounds: 0, sol_review_rounds: 0, started_at: nowIso },

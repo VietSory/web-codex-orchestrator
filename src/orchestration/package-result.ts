@@ -15,6 +15,7 @@ import { resolveGitHubToken } from "../setup/credential-provider.js";
 import { attestReadyExecutorSnapshot } from "./executor-ready.js";
 import { prepareOrchestrationDirectory } from "./ledger.js";
 import { retireStaleResultGeneration } from "./result-generation.js";
+import { readExactVerificationCommands } from "./verification-evidence.js";
 
 const MAX_EXECUTOR_RECEIPT_BYTES = 2 * 1024 * 1024;
 const MAX_EXECUTOR_EVIDENCE_BYTES = 512 * 1024;
@@ -101,9 +102,10 @@ export async function packageResultForRun(options: { runId: string; stateDirecto
     baseCommit: run.base_commit,
   });
 
-  const [terraUsage, solUsage] = await Promise.all([
+  const [terraUsage, solUsage, verificationCommands] = await Promise.all([
     readReviewUsage({ executorDirectory: ready.executorDirectory, reviewer: "terra", round: executor.terra_review.rounds, evidenceSha256: executor.terra_review.evidence_sha256 }),
     readReviewUsage({ executorDirectory: ready.executorDirectory, reviewer: "sol", round: executor.sol_review.rounds, evidenceSha256: executor.sol_review.evidence_sha256 }),
+    readExactVerificationCommands({ executorDirectory: ready.executorDirectory, round: executor.verification.rounds, evidenceSha256: executor.verification.evidence_sha256, changeSetSha256: ready.changeSetDigest, requiredCommandsPassed: executor.verification.passed }),
   ]);
 
   const executionEvidence: Record<string, unknown> = {
@@ -120,7 +122,7 @@ export async function packageResultForRun(options: { runId: string; stateDirecto
     reviewer_selection: executor.reviewer_selection ?? null,
     internal_reviewer: { model: config.agents.internal_reviewer.model, reasoning_effort: config.agents.internal_reviewer.reasoning_effort, rounds: executor.terra_review.rounds, latest_thread_id: null, verdict: executor.terra_review.verdict, reviewed_change_set_sha256: executor.terra_review.change_set_digest },
     final_reviewer: { model: config.agents.final_reviewer.model, reasoning_effort: config.agents.final_reviewer.reasoning_effort, rounds: executor.sol_review.rounds, latest_thread_id: null, verdict: executor.sol_review.verdict, reviewed_change_set_sha256: executor.sol_review.change_set_digest },
-    verification: { rounds: executor.verification.rounds, required_commands_passed: executor.verification.passed, verified_change_set_sha256: executor.verification.change_set_digest, commands: [] },
+    verification: { rounds: executor.verification.rounds, required_commands_passed: executor.verification.passed, verified_change_set_sha256: executor.verification.change_set_digest, commands: verificationCommands },
     repair: executor.repair ?? null,
     errors: executor.errors,
     usage: { input_tokens: terraUsage.input_tokens + solUsage.input_tokens, cached_input_tokens: terraUsage.cached_input_tokens + solUsage.cached_input_tokens, output_tokens: terraUsage.output_tokens + solUsage.output_tokens },

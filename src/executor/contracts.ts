@@ -23,6 +23,18 @@ export interface ExecutorRepairReceipt {
 }
 export interface ExecutorRepairHistoryEntry { generation: number; reviewer: ExecutorRepairAuthority; source_change_set_digest: string; source_review_evidence_sha256: string; operations_sha256: string; operation_count: number; final_change_set_digest: string; verified_at: string; }
 export interface ExecutorUsage { model_turns: number; input_tokens: number; output_tokens: number; }
+export interface ExecutorVerificationCommandEvidence {
+  command_id: string;
+  required: boolean;
+  status: "PASS" | "FAIL" | "TIMEOUT" | "DENIED" | "MUTATED";
+  exit_code: number | null;
+  timed_out: boolean;
+  duration_ms: number;
+  stdout_truncated: boolean;
+  stderr_truncated: boolean;
+  stdout_tail: string;
+  stderr_tail: string;
+}
 
 export interface ExecutorReceipt {
   executor_version: "1.0";

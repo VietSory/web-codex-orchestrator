@@ -1,5 +1,6 @@
 import type { ReasoningEffort } from "../config/contracts.js";
 import type { VerificationCommandResult, ReviewVerdict } from "../execution/contracts.js";
+import type { ExecutorVerificationCommandEvidence } from "../executor/contracts.js";
 
 export const REVISION_STATES = [
   "READY_TO_REVISE","IMPLEMENTING","POLICY_CHECKING","VERIFYING","TERRA_REVIEWING","SOL_REVIEWING",
@@ -88,7 +89,7 @@ export interface RevisionReceipt {
   worktree_path: string;
   initial_refs_sha256: string;
   implementer: { model: string; reasoning_effort: ReasoningEffort; thread_id: string | null; iterations: number };
-  verification: { rounds: number; required_commands_passed: boolean; verified_change_set_sha256: string | null; commands: VerificationCommandResult[] };
+  verification: { rounds: number; required_commands_passed: boolean; verified_change_set_sha256: string | null; commands: Array<VerificationCommandResult | ExecutorVerificationCommandEvidence> };
   terra_review: RevisionReviewEvidence;
   sol_review: RevisionReviewEvidence;
   usage: RevisionUsage;
