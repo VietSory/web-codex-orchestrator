@@ -28,7 +28,7 @@ export function derivePairStage(snapshot: LifecycleSnapshot): UserStage {
   if (snapshot.draft_pr_state !== "OPEN") return "DRAFT_PR";
   if (!snapshot.result_bundle_ready) return "RESULT_BUNDLE";
 
-  if (snapshot.web_code_review_state === "ESCALATED" || snapshot.web_code_review_state === "BLOCKED") return "BLOCKED";
+  if (snapshot.web_code_review_state === "ESCALATED") return "BLOCKED";
   if (snapshot.web_code_review_state !== "APPROVED") return "TERRA_REVIEW";
 
   if (snapshot.web_review_state === "ESCALATED") return "BLOCKED";
@@ -49,7 +49,7 @@ function checksLabel(snapshot: LifecycleSnapshot): string {
 function codeReviewLabel(snapshot: LifecycleSnapshot): string {
   if (!snapshot.result_bundle_ready) return "not started";
   if (snapshot.web_code_review_state === "APPROVED") return "approved";
-  if (snapshot.web_code_review_state === "ESCALATED" || snapshot.web_code_review_state === "BLOCKED") return "needs attention";
+  if (snapshot.web_code_review_state === "ESCALATED") return "needs attention";
   return "in progress";
 }
 
