@@ -21,14 +21,35 @@ export const SLASH_COMMANDS = [
   ["/help", "Command help"],
   ["/quit", "Exit WCO"],
 ] as const;
+
 export type SlashCommandName = typeof SLASH_COMMANDS[number][0];
-export function canonicalSlashCommand(value: string): string { const trimmed = value.trim(); return trimmed === "/unitsall" || trimmed.startsWith("/unitsall ") ? `/uninstall${trimmed.slice(9)}` : trimmed; }
+export interface SlashCommandSuggestion { command: SlashCommandName; description: string; }
+
+export function canonicalSlashCommand(value: string): string {
+  const trimmed = value.trim();
+  return trimmed === "/unitsall" || trimmed.startsWith("/unitsall ") ? `/uninstall${trimmed.slice(9)}` : trimmed;
+}
+
+export function slashCommandSuggestions(value: string): SlashCommandSuggestion[] {
+  const input = value.trimStart().toLowerCase();
+  if (!input.startsWith("/")) return [];
+  return SLASH_COMMANDS
+    .filter(([command]) => command.toLowerCase().startsWith(input))
+    .map(([command, description]) => ({ command, description }));
+}
+
 export function parseInteractiveInput(value: string, state: { active: boolean; sealed: boolean }): { kind: "empty" | "command" | "new" | "clarification" | "sealed_block"; command?: string; args?: string; goal?: string } {
   const input = canonicalSlashCommand(value);
   if (!input) return { kind: "empty" };
-  if (input.startsWith("/")) { const space = input.indexOf(" "); return { kind: "command", command: space < 0 ? input : input.slice(0, space), args: space < 0 ? "" : input.slice(space + 1).trim() }; }
+  if (input.startsWith("/")) {
+    const space = input.indexOf(" ");
+    return { kind: "command", command: space < 0 ? input : input.slice(0, space), args: space < 0 ? "" : input.slice(space + 1).trim() };
+  }
   if (!state.active) return { kind: "new", goal: input };
   if (!state.sealed) return { kind: "clarification", goal: input };
   return { kind: "sealed_block", goal: input };
 }
-export function commandPalette(): string { return SLASH_COMMANDS.map(([command, description]) => `${command.padEnd(12)} ${description}`).join("\n"); }
+
+export function commandPalette(): string {
+  return SLASH_COMMANDS.map(([command, description]) => `${command.padEnd(16)} ${description}`).join("\n");
+}
