@@ -80,7 +80,16 @@ jobs:
         run: npm run pack:check
 
       - name: Clean-install packed CLI without dev dependencies
-        run: npm run pack:smoke
+        run: node ./scripts/capture-packed-cli-metrics.mjs
+
+      - name: Upload packed CLI process metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: packed-cli-process-metrics
+          path: artifacts/packed-cli-process-metrics.json
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Zero-config daily-user contract
         run: npm run test:user:contract
