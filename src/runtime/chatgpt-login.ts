@@ -28,10 +28,20 @@ async function loggedIn(runtime: ResolvedCodexRuntime, execute: ChatGptLoginRunn
   catch { return false; }
 }
 
+/** The official login flow may inherit stdin only when no raw-mode UI owns it. */
+export function chatGptLoginCanOwnTerminal(
+  input: Pick<NodeJS.ReadStream, "isTTY" | "isRaw"> = process.stdin,
+  output: Pick<NodeJS.WriteStream, "isTTY"> = process.stdout,
+): boolean {
+  return Boolean(input.isTTY && output.isTTY && input.isRaw !== true);
+}
+
 /**
  * WCO never reads or stores ChatGPT OAuth credentials. The bundled official
  * Codex runtime owns the browser callback, token storage and refresh lifecycle.
  * Non-interactive callers never start a browser flow and simply observe false.
+ * A raw-mode parent TUI also counts as non-interactive so two terminal readers
+ * can never compete for stdin.
  */
 export async function ensureChatGptLogin(options: {
   config: TrustedConfig;
@@ -43,7 +53,7 @@ export async function ensureChatGptLogin(options: {
   const runtime = await resolveCodexRuntime(options.config.runtime, options.stateDirectory);
   const execute = options.runCommand ?? run;
   if (await loggedIn(runtime, execute)) return true;
-  const interactive = options.interactive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  const interactive = options.interactive ?? chatGptLoginCanOwnTerminal();
   if (!interactive || process.env.CI === "true") return false;
   const exitCode = await execute(runtime, ["login"], "inherit");
   return exitCode === 0 && await loggedIn(runtime, execute);
