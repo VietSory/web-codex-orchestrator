@@ -1,7 +1,12 @@
+import crypto from "node:crypto";
 import { ExecutionError } from "../execution/errors.js";
-import type { AgentAssessment, AgentImplementationResult, ReviewFinding, ReviewResult } from "../execution/contracts.js";
-import { lstat, readFile } from "node:fs/promises";
+import type { AgentAssessment, AgentImplementationResult, ReviewFinding, ReviewResult, ReviewerRepairOperation } from "../execution/contracts.js";
 import path from "node:path";
+import { assertSeniorReviewFindingLocations } from "./reviewer-policy.js";
+
+const MAX_REPAIR_OPERATIONS = 16;
+const MAX_REPAIR_PAYLOAD_BYTES = 256 * 1024;
+const SHA256 = /^[0-9a-f]{64}$/;
 
 function record(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean { const allowed = new Set(keys); return Object.keys(value).every((key) => allowed.has(key)); }
@@ -11,6 +16,24 @@ function safeEvidence(value: string): boolean {
   if (value.includes("\u0000") || value.includes("\\") || path.posix.isAbsolute(value) || path.win32.isAbsolute(value) || /^[A-Za-z]:/.test(value)) return false;
   const location = value.split(/[:#]/, 1)[0]?.trim() ?? "";
   return !location.split("/").includes("..");
+}
+
+function validateRepairOperation(value: unknown): value is ReviewerRepairOperation {
+  if (!record(value) || !exactKeys(value, ["op_id", "kind", "path", "preimage_sha256", "postimage_base64", "postimage_sha256"])) return false;
+  if (typeof value.op_id !== "string" || value.op_id.length < 1 || value.op_id.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(value.op_id)) return false;
+  if (!["create_file", "replace_file", "delete_file"].includes(String(value.kind)) || typeof value.path !== "string" || !safeRelative(value.path)) return false;
+  if (!(value.preimage_sha256 === null || typeof value.preimage_sha256 === "string" && SHA256.test(value.preimage_sha256))) return false;
+  if (!(value.postimage_sha256 === null || typeof value.postimage_sha256 === "string" && SHA256.test(value.postimage_sha256))) return false;
+  if (!(value.postimage_base64 === null || typeof value.postimage_base64 === "string" && value.postimage_base64.length <= 350_000)) return false;
+
+  if (value.kind === "create_file" && value.preimage_sha256 !== null) return false;
+  if (value.kind !== "create_file" && value.preimage_sha256 === null) return false;
+  if (value.kind === "delete_file") return value.postimage_base64 === null && value.postimage_sha256 === null;
+  if (typeof value.postimage_base64 !== "string" || typeof value.postimage_sha256 !== "string") return false;
+  const bytes = Buffer.from(value.postimage_base64, "base64");
+  return bytes.byteLength <= MAX_REPAIR_PAYLOAD_BYTES
+    && bytes.toString("base64") === value.postimage_base64
+    && crypto.createHash("sha256").update(bytes).digest("hex") === value.postimage_sha256;
 }
 
 export function parseAgentJson(output: unknown): unknown {
@@ -40,23 +63,32 @@ function finding(value: unknown): value is ReviewFinding {
 
 export function validateReview(output: unknown): ReviewResult {
   const value = parseAgentJson(output);
-  if (!record(value) || !exactKeys(value, ["verdict", "reviewed_change_set_sha256", "summary", "acceptance_results", "blocking_findings", "non_blocking_findings", "scope_violations", "unverified_acceptance", "human_action"]) || !["APPROVE", "REVISE", "REPLAN", "ESCALATE"].includes(String(value.verdict)) || typeof value.reviewed_change_set_sha256 !== "string" || !/^[0-9a-f]{64}$/.test(value.reviewed_change_set_sha256) || typeof value.summary !== "string" || value.summary.length > 16_384 || !Array.isArray(value.acceptance_results) || value.acceptance_results.length > 512 || !Array.isArray(value.blocking_findings) || value.blocking_findings.length > 256 || !value.blocking_findings.every(finding) || !Array.isArray(value.non_blocking_findings) || value.non_blocking_findings.length > 256 || !value.non_blocking_findings.every(finding) || !stringArray(value.scope_violations) || !stringArray(value.unverified_acceptance) || !(value.human_action === null || record(value.human_action))) throw new ExecutionError("REVIEW_OUTPUT_INVALID", "Invalid reviewer output.");
+  if (!record(value) || !exactKeys(value, ["verdict", "reviewed_change_set_sha256", "summary", "acceptance_results", "blocking_findings", "non_blocking_findings", "scope_violations", "unverified_acceptance", "human_action", "repair_operations"]) || !["APPROVE", "REVISE", "REPLAN", "ESCALATE"].includes(String(value.verdict)) || typeof value.reviewed_change_set_sha256 !== "string" || !SHA256.test(value.reviewed_change_set_sha256) || typeof value.summary !== "string" || value.summary.length > 16_384 || !Array.isArray(value.acceptance_results) || value.acceptance_results.length > 512 || !Array.isArray(value.blocking_findings) || value.blocking_findings.length > 256 || !value.blocking_findings.every(finding) || !Array.isArray(value.non_blocking_findings) || value.non_blocking_findings.length > 256 || !value.non_blocking_findings.every(finding) || !stringArray(value.scope_violations) || !stringArray(value.unverified_acceptance) || !(value.human_action === null || record(value.human_action))) throw new ExecutionError("REVIEW_OUTPUT_INVALID", "Invalid reviewer output.");
   if (value.human_action !== null && (!exactKeys(value.human_action, ["category", "description", "requested_capability"]) || !["credential", "network", "destructive", "production", "ambiguous_requirement", "paid_resource", "other"].includes(String(value.human_action.category)) || typeof value.human_action.description !== "string" || typeof value.human_action.requested_capability !== "string")) throw new ExecutionError("REVIEW_OUTPUT_INVALID", "Invalid reviewer human action.");
   const acceptanceIds = new Set<string>();
   for (const item of value.acceptance_results) if (!record(item) || !exactKeys(item, ["acceptance_id", "status", "evidence"]) || typeof item.acceptance_id !== "string" || item.acceptance_id.length > 256 || acceptanceIds.has(item.acceptance_id) || !["PASS", "FAIL", "UNVERIFIED"].includes(String(item.status)) || !stringArray(item.evidence, 64, 4_096)) throw new ExecutionError("REVIEW_OUTPUT_INVALID", "Invalid acceptance result."); else acceptanceIds.add(item.acceptance_id);
-  return value as unknown as ReviewResult;
+
+  const operationsValue = value.repair_operations ?? [];
+  if (!Array.isArray(operationsValue) || operationsValue.length > MAX_REPAIR_OPERATIONS || !operationsValue.every(validateRepairOperation)) throw new ExecutionError("REVIEW_OUTPUT_INVALID", "Reviewer repair operations are invalid or exceed bounded authority.");
+  const operations = operationsValue as ReviewerRepairOperation[];
+  const ids = new Set<string>(); const paths = new Set<string>(); let totalPayload = 0;
+  for (const operation of operations) {
+    if (ids.has(operation.op_id) || paths.has(operation.path)) throw new ExecutionError("REVIEW_OUTPUT_INVALID", "Reviewer repair operations contain duplicate ids or paths.");
+    ids.add(operation.op_id); paths.add(operation.path);
+    if (operation.postimage_base64 !== null) totalPayload += Buffer.from(operation.postimage_base64, "base64").byteLength;
+  }
+  if (totalPayload > MAX_REPAIR_PAYLOAD_BYTES) throw new ExecutionError("REVIEW_OUTPUT_INVALID", "Reviewer repair payload exceeds the total adaptive-repair byte budget.");
+  // A review-only legacy caller may return REVISE without mutation authority.
+  // Harness-first adaptive review tightens this at its trust boundary by
+  // requiring a non-empty bounded proposal before it will apply a repair.
+  if (value.verdict !== "REVISE" && operations.length !== 0) throw new ExecutionError("REVIEW_OUTPUT_INVALID", "Only REVISE may carry repair operations.");
+  return { ...(value as unknown as ReviewResult), repair_operations: operations };
 }
 
-export async function validateReviewFindings(review: ReviewResult, worktreePath: string, code: "TERRA_REVIEW_OUTPUT_INVALID" | "REVIEW_OUTPUT_INVALID" = "REVIEW_OUTPUT_INVALID"): Promise<void> {
-  for (const finding of [...review.blocking_findings, ...review.non_blocking_findings]) {
-    if (!finding.file || path.posix.isAbsolute(finding.file) || finding.file.split("/").includes("..") || finding.file.includes("\\")) throw new ExecutionError(code, "Review finding path is unsafe.");
-    const target = path.resolve(worktreePath, finding.file); const root = `${path.resolve(worktreePath)}${path.sep}`;
-    if (!target.startsWith(root) && target !== path.resolve(worktreePath)) throw new ExecutionError(code, "Review finding path escapes the worktree.");
-    const info = await lstat(target).catch(() => undefined);
-    if (!info || info.isSymbolicLink() || !info.isFile()) throw new ExecutionError(code, "Review finding points to a file that does not exist.");
-    let source: string;
-    try { source = await readFile(target, "utf8"); } catch { throw new ExecutionError(code, "Review finding file could not be read safely."); }
-    const lines = source.split(/\r?\n/).length;
-    if (!Number.isInteger(finding.line_start) || !Number.isInteger(finding.line_end) || finding.line_start < 1 || finding.line_end < finding.line_start || finding.line_end > Math.max(1, lines)) throw new ExecutionError(code, "Review finding line range is invalid.");
+export async function validateReviewFindings(review: ReviewResult, worktreePath: string, code: "TERRA_REVIEW_OUTPUT_INVALID" | "REVIEW_OUTPUT_INVALID" = "REVIEW_OUTPUT_INVALID", deletedPaths: readonly string[] = []): Promise<void> {
+  try {
+    await assertSeniorReviewFindingLocations(review, worktreePath, deletedPaths);
+  } catch (error) {
+    throw new ExecutionError(code, error instanceof Error ? error.message : "Review finding location is invalid.");
   }
 }

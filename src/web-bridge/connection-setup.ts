@@ -4,8 +4,12 @@ import { writeTrustedConfigAtomic } from "../setup/config-writer.js";
 import { ActionRelayWebBridge } from "./action-relay-client.js";
 import { removeRelayToken, writeRelayToken } from "./relay-credential.js";
 import type { BridgeConnectionStatus } from "./contracts.js";
+import { ManagedWebOnboardingClient } from "./managed-onboarding.js";
+import type { ManagedWebServiceMetadata } from "./managed-service.js";
+import { removeManagedDeviceCredential } from "./managed-credential.js";
 
-function requireGptUrl(value: string): string {
+function requireGptUrl(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
   const parsed = new URL(value);
   if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.hash || value !== value.trim()) {
     throw new Error("WEB_GPT_URL_UNSAFE: GPT URL must be a clean HTTPS URL.");
@@ -13,12 +17,21 @@ function requireGptUrl(value: string): string {
   return parsed.href;
 }
 
+/** Removing an explicitly selected advanced transport restores the canonical
+ * zero-config local ChatGPT/Codex transport. This happens only in response to
+ * an explicit disconnect request; runtime failures never call this helper. */
+export function withoutWebBridgeOverride(config: TrustedConfig): TrustedConfig {
+  const { web_bridge: _removed, ...local } = config;
+  return local;
+}
+
 export async function configureWebBridgeConnection(options: {
   configPath: string;
   credentialsDirectory: string;
   relayUrl: string;
-  gptUrl: string;
+  gptUrl?: string;
   token: string;
+  mode?: "personal_actions" | "actions_relay";
   env?: NodeJS.ProcessEnv;
 }): Promise<{ config: TrustedConfig; status: BridgeConnectionStatus; backup_path: string | null }> {
   const current = await loadTrustedConfig(options.configPath);
@@ -30,9 +43,9 @@ export async function configureWebBridgeConnection(options: {
   const next: TrustedConfig = {
     ...current,
     web_bridge: {
-      mode: "actions_relay",
+      mode: options.mode ?? "actions_relay",
       relay_url: options.relayUrl,
-      gpt_url: gptUrl,
+      ...(gptUrl ? { gpt_url: gptUrl } : {}),
       poll_interval_ms: current.web_bridge?.poll_interval_ms ?? 1_000,
       job_ttl_seconds: current.web_bridge?.job_ttl_seconds ?? 86_400,
     },
@@ -46,17 +59,46 @@ export async function configureWebBridgeConnection(options: {
   }
 }
 
-export async function disconnectWebBridgeConnection(options: { configPath: string; credentialsDirectory: string }): Promise<TrustedConfig> {
+export async function configureManagedWebBridgeConnection(options: {
+  configPath: string;
+  credentialsDirectory: string;
+  metadata: ManagedWebServiceMetadata;
+  openAuthorization: (url: string) => Promise<boolean>;
+  fetchImpl?: typeof fetch;
+}): Promise<{ config: TrustedConfig; status: BridgeConnectionStatus; gpt_url: string; gpt_opened: boolean; backup_path: string | null }> {
   const current = await loadTrustedConfig(options.configPath);
+  const managed = new ManagedWebOnboardingClient({ metadata: options.metadata, credentialsDirectory: options.credentialsDirectory, ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}) });
+  const connected = await managed.connect(options.openAuthorization);
   const next: TrustedConfig = {
     ...current,
     web_bridge: {
-      mode: "manual_file",
+      mode: "managed_actions",
       poll_interval_ms: current.web_bridge?.poll_interval_ms ?? 1_000,
       job_ttl_seconds: current.web_bridge?.job_ttl_seconds ?? 86_400,
     },
   };
-  const written = await writeTrustedConfigAtomic(options.configPath, next, { overwrite: true });
-  await removeRelayToken(options.credentialsDirectory);
+  try {
+    const written = await writeTrustedConfigAtomic(options.configPath, next, { overwrite: true });
+    return { config: written.config, status: connected.status, gpt_url: connected.gpt_url, gpt_opened: connected.gpt_opened, backup_path: written.backup_path };
+  } catch (error) {
+    await removeManagedDeviceCredential(options.credentialsDirectory).catch(() => undefined);
+    throw error;
+  }
+}
+
+export async function disconnectWebBridgeConnection(options: { configPath: string; credentialsDirectory: string }): Promise<TrustedConfig> {
+  const current = await loadTrustedConfig(options.configPath);
+  const written = await writeTrustedConfigAtomic(options.configPath, withoutWebBridgeOverride(current), { overwrite: true });
+  await removeRelayToken(options.credentialsDirectory).catch(() => undefined);
+  return written.config;
+}
+
+export async function disconnectManagedWebBridgeConnection(options: { configPath: string; credentialsDirectory: string; metadata?: ManagedWebServiceMetadata; fetchImpl?: typeof fetch }): Promise<TrustedConfig> {
+  const current = await loadTrustedConfig(options.configPath);
+  if (options.metadata) {
+    const managed = new ManagedWebOnboardingClient({ metadata: options.metadata, credentialsDirectory: options.credentialsDirectory, ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}) });
+    await managed.revokeBestEffort();
+  } else await removeManagedDeviceCredential(options.credentialsDirectory).catch(() => undefined);
+  const written = await writeTrustedConfigAtomic(options.configPath, withoutWebBridgeOverride(current), { overwrite: true });
   return written.config;
 }

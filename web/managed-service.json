@@ -1,0 +1,7 @@
+{
+  "schema_version": "1.0",
+  "deployment_status": "required",
+  "protocol_version": "wco-web-bridge-v1",
+  "relay_url": null,
+  "gpt_url": null
+}

@@ -11,12 +11,15 @@ import { resolveGitHubToken } from "../src/setup/credential-provider.js";
 import { RelayFileStore } from "../src/web-bridge/relay/file-store.js";
 import { purgeWcoHome } from "../src/uninstall/purge.js";
 
-test("v0.3 slash palette supports idle goals, sealed safety, and /unitsall", () => {
-  assert.match(commandPalette(), /\/new\s+Start a new task/);
-  assert.match(commandPalette(), /\/web status\s+Show Web Architect connection/);
-  assert.match(commandPalette(), /\/web connect\s+Verify and save/);
-  assert.match(commandPalette(), /\/config web\s+Configure/);
-  assert.match(commandPalette(), /\/unitsall\s+Alias for \/uninstall/);
+test("v0.3 slash palette keeps the normal path local ChatGPT/Codex and /unitsall", () => {
+  const palette = commandPalette();
+  assert.match(palette, /\/new\s+Start a new task/);
+  assert.match(palette, /\/web status\s+Show local ChatGPT authorization/);
+  assert.match(palette, /\/web connect\s+Authorize\/reconnect local ChatGPT via bundled Codex/);
+  assert.match(palette, /\/config web\s+Authorize\/reconnect the local ChatGPT transport/);
+  assert.match(palette, /\/web open\s+Show Web transport status \(no per-task browser step\)/);
+  assert.doesNotMatch(palette, /default managed|one-link managed|Cloudflare|ngrok|VPS|tunnel ID|API key|Workspace Agent token/i);
+  assert.match(palette, /\/unitsall\s+Alias for \/uninstall/);
   assert.equal(canonicalSlashCommand("/unitsall"), "/uninstall");
   assert.deepEqual(parseInteractiveInput("build it", { active: false, sealed: false }), { kind: "new", goal: "build it" });
   assert.equal(parseInteractiveInput("change scope", { active: true, sealed: true }).kind, "sealed_block");
@@ -62,6 +65,33 @@ test("gh_cli credential resolver verifies status and returns token only in proce
   const calls: string[][] = [];
   const token = await resolveGitHubToken({ mode: "gh_cli" }, {}, async (args) => { calls.push(args); return { exitCode: 0, signal: null, stdout: args[1] === "token" ? "secret-token\n" : "ok", stderr: "", stdoutBytes: 1, stderrBytes: 0, stdoutTruncated: false, stderrTruncated: false, timedOut: false, cancelled: false, durationMs: 1 }; });
   assert.equal(token, "secret-token"); assert.deepEqual(calls.map((item) => item.slice(0, 2)), [["auth", "status"], ["auth", "token"]]);
+});
+
+test("gh_cli credential resolver supports authenticated gh versions without auth token", async () => {
+  const calls: string[][] = [];
+  const token = await resolveGitHubToken({ mode: "gh_cli" }, {}, async (args) => {
+    calls.push(args);
+    const modernTokenCommand = args[0] === "auth" && args[1] === "token";
+    return {
+      exitCode: modernTokenCommand ? 1 : 0,
+      signal: null,
+      stdout: args[0] === "config" ? "legacy-secret-token\n" : "",
+      stderr: modernTokenCommand ? "unknown command token" : "",
+      stdoutBytes: 1,
+      stderrBytes: 0,
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      timedOut: false,
+      cancelled: false,
+      durationMs: 1,
+    };
+  });
+  assert.equal(token, "legacy-secret-token");
+  assert.deepEqual(calls, [
+    ["auth", "status", "--hostname", "github.com"],
+    ["auth", "token", "--hostname", "github.com"],
+    ["config", "get", "oauth_token", "--host", "github.com"],
+  ]);
 });
 
 test("relay file store is idempotent, rejects conflicts, enforces TTL", async () => {

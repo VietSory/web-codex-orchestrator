@@ -163,11 +163,19 @@ export class CodexSdkAgentClient implements AgentClient {
         model: request.model,
         modelReasoningEffort: request.reasoning_effort,
         workingDirectory: request.workspace_path,
+        // WCO semantic turns intentionally run in a controlled scratch root,
+        // not in the user repository. Repository context is supplied only by
+        // the exact-read protocol, so the SDK's generic Git-repository check
+        // does not apply to this authority-separated workspace.
+        skipGitRepoCheck: true,
         sandboxMode: request.sandbox_mode,
         approvalPolicy: "never",
         networkAccessEnabled: false,
         webSearchMode: "disabled",
-        additionalDirectories: [],
+        // The accepted Task Bundle is immutable authority. Expose it only to
+        // read-only turns; adding it to a workspace-write turn would widen the
+        // SDK sandbox's writable roots and violate that authority boundary.
+        additionalDirectories: request.read_only ? [path.resolve(request.accepted_bundle_path)] : [],
       };
       const thread = request.thread_id
         ? codex.resumeThread(request.thread_id, threadOptions)

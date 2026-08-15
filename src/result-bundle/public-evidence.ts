@@ -125,20 +125,23 @@ export function projectVerificationEvidence(
 ): object {
   const commands = Array.isArray(receipt.commands)
     ? (receipt.commands as Record<string, unknown>[]).map((cmd) => {
-        const rawStdout = String(cmd.stdout ?? cmd.output ?? "");
-        const rawStderr = String(cmd.stderr ?? "");
+        const rawStdout = String(cmd.stdout ?? cmd.output ?? cmd.stdout_tail ?? "");
+        const rawStderr = String(cmd.stderr ?? cmd.stderr_tail ?? "");
         const { text: stdout, truncated: stdoutTruncated } = redactVerificationOutput(rawStdout, maxOutputBytes);
         const { text: stderr, truncated: stderrTruncated } = redactVerificationOutput(rawStderr, maxOutputBytes);
         return {
-          executable: cmd.executable,
-          args: cmd.args,
+          ...(cmd.command_id !== undefined ? { command_id: String(cmd.command_id) } : {}),
+          ...(cmd.required !== undefined ? { required: Boolean(cmd.required) } : {}),
+          ...(cmd.executable !== undefined ? { executable: cmd.executable } : {}),
+          ...(cmd.args !== undefined ? { args: cmd.args } : {}),
           exit_code: cmd.exit_code,
           status: cmd.status,
+          ...(cmd.timed_out !== undefined ? { timed_out: Boolean(cmd.timed_out) } : {}),
           duration_ms: cmd.duration_ms,
           stdout_bytes: Buffer.byteLength(rawStdout, "utf8"),
           stderr_bytes: Buffer.byteLength(rawStderr, "utf8"),
-          stdout_truncated: stdoutTruncated,
-          stderr_truncated: stderrTruncated,
+          stdout_truncated: Boolean(cmd.stdout_truncated) || stdoutTruncated,
+          stderr_truncated: Boolean(cmd.stderr_truncated) || stderrTruncated,
           stdout,
           stderr,
           generated_paths: cmd.generated_paths ?? [],

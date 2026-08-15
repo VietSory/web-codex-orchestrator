@@ -19,50 +19,34 @@ async function cleanupPublishAuth(auth: PreparedPublishGitSecurity): Promise<voi
   await unlink(auth.askpassScriptPath).catch(() => undefined);
 }
 
-export async function openDraftPullRequestForExecutorSnapshot(options: {
-  runId: string;
-  artifactSha256: string;
-  stateDirectory: string;
-  configPath: string;
-  now?: () => Date;
-}): Promise<DraftPullRequestReceipt> {
+export async function openDraftPullRequestForExecutorSnapshot(options: { runId: string; artifactSha256: string; stateDirectory: string; configPath: string; now?: () => Date }): Promise<DraftPullRequestReceipt> {
   const ready = await attestReadyExecutorSnapshot(options);
   const run = ready.source.trusted.runReceipt;
   const publishPath = path.join(ready.executorDirectory, "publish", "git-publish.json");
   const publish = await readGitPublishReceipt(publishPath);
-  if (
-    !publish || publish.state !== "PUSHED" || publish.run_id !== options.runId ||
-    publish.base_commit !== run.base_commit || publish.branch_name !== run.branch_name ||
-    publish.remote_name !== run.remote || publish.allowed_remote_url !== run.remote_url ||
-    publish.change_set_sha256 !== ready.changeSetDigest || publish.commit_sha === null ||
-    publish.remote_branch_sha === null || publish.commit_sha !== publish.remote_branch_sha
-  ) {
+  if (!publish || publish.state !== "PUSHED" || publish.run_id !== options.runId || publish.base_commit !== run.base_commit || publish.branch_name !== run.branch_name || publish.remote_name !== run.remote || publish.allowed_remote_url !== run.remote_url || publish.change_set_sha256 !== ready.changeSetDigest || publish.commit_sha === null || publish.remote_branch_sha === null || publish.commit_sha !== publish.remote_branch_sha) {
     throw new OrchestrationError("ORCHESTRATION_DRAFT_PR_AUTHORITY_DRIFT", "Draft PR creation requires the exact attested PUSHED Phase 10 snapshot.");
   }
 
   const config = await loadPhase4Config(options.configPath);
-  if (!config.github_pull_request || config.github_pull_request.provider !== "github.com" || !config.publish?.identity) {
-    throw new OrchestrationError("ORCHESTRATION_DRAFT_PR_CONFIG_INVALID", "Trusted GitHub Draft PR and publish identity configuration are required.");
-  }
+  if (!config.github_pull_request || config.github_pull_request.provider !== "github.com" || !config.publish?.identity) throw new OrchestrationError("ORCHESTRATION_DRAFT_PR_CONFIG_INVALID", "Trusted GitHub Draft PR and publish identity configuration are required.");
   let token: string;
-  try {
-    token = await resolveGitHubToken(config.github_pull_request.authentication);
-  } catch {
-    throw new OrchestrationError("ORCHESTRATION_DRAFT_PR_AUTH_UNAVAILABLE", "GitHub credentials are unavailable.");
-  }
+  try { token = await resolveGitHubToken(config.github_pull_request.authentication); }
+  catch { throw new OrchestrationError("ORCHESTRATION_DRAFT_PR_AUTH_UNAVAILABLE", "GitHub credentials are unavailable."); }
 
   const repo = parseGitHubRepositoryRemote(publish.allowed_remote_url);
   const runtimeDirectory = path.join(ready.executorDirectory, "publish", "git-runtime");
   const auth = await preparePublishGitSecurity(config.publish, publish.allowed_remote_url, runtimeDirectory, process.env);
   try {
-    const gitRunner = new GitRunner(process.env, runtimeDirectory, {
-      identity: config.publish.identity,
-      auth,
-      allowedRemoteUrl: publish.allowed_remote_url,
-    });
+    const gitRunner = new GitRunner(process.env, runtimeDirectory, { identity: config.publish.identity, auth, allowedRemoteUrl: publish.allowed_remote_url });
     const client = new GitHubRestPullRequestClient(token);
     const receiptPath = path.join(ready.executorDirectory, "publish", "github-draft-pr.json");
-    const existingReceipt = await readDraftPullRequestReceipt(receiptPath);
+    const previous = await readDraftPullRequestReceipt(receiptPath);
+    const publishReceiptSha256 = canonicalGitPublishReceiptDigest(publish);
+    // A repair advances the same branch/PR head. Do not feed a stale immutable
+    // request receipt into the state machine: force bounded rediscovery by head
+    // branch, which adopts the existing Draft PR only if its new head is exact.
+    const existingReceipt = previous?.expected_head_sha === publish.remote_branch_sha && previous.git_publish_receipt_sha256 === publishReceiptSha256 ? previous : null;
     const receipt = await createPreparedDraftPullRequest({
       runId: options.runId,
       taskId: run.task_id,
@@ -72,7 +56,7 @@ export async function openDraftPullRequestForExecutorSnapshot(options: {
       headBranch: publish.branch_name,
       expectedHeadSha: publish.remote_branch_sha,
       changeSetSha256: ready.changeSetDigest,
-      gitPublishReceiptSha256: canonicalGitPublishReceiptDigest(publish),
+      gitPublishReceiptSha256: publishReceiptSha256,
       client,
       existingReceipt,
       stateDirectory: ready.executorDirectory,
@@ -81,13 +65,10 @@ export async function openDraftPullRequestForExecutorSnapshot(options: {
       remoteUrl: publish.allowed_remote_url,
       ...(options.now ? { now: options.now } : {}),
     });
-    if (
-      receipt.state !== "OPEN" || receipt.observed_draft !== true ||
-      receipt.observed_state !== "open" || receipt.observed_head_sha !== publish.remote_branch_sha ||
-      receipt.expected_head_sha !== publish.remote_branch_sha
-    ) {
+    if (receipt.state !== "OPEN" || receipt.observed_draft !== true || receipt.observed_state !== "open" || receipt.observed_head_sha !== publish.remote_branch_sha || receipt.expected_head_sha !== publish.remote_branch_sha) {
       throw new OrchestrationError("ORCHESTRATION_DRAFT_PR_INCOMPLETE", "Draft PR operation did not end at the exact open Draft PR head.");
     }
+    if (previous?.pull_number && receipt.pull_number !== previous.pull_number) throw new OrchestrationError("ORCHESTRATION_DRAFT_PR_AUTHORITY_DRIFT", "Harness repair must preserve the existing Draft PR identity; a different PR was discovered.");
     return receipt;
   } finally {
     await cleanupPublishAuth(auth);

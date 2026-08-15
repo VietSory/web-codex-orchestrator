@@ -36,7 +36,10 @@ export class BudgetTracker {
     this.usage.inputTokens = this.addTokenUsage(this.usage.inputTokens, input);
     this.usage.cachedInputTokens = this.addTokenUsage(this.usage.cachedInputTokens, cached);
     this.usage.outputTokens = this.addTokenUsage(this.usage.outputTokens, output);
-    if (this.usage.inputTokens + this.usage.cachedInputTokens > this.limits.maximum_total_input_tokens || this.usage.outputTokens > this.limits.maximum_total_output_tokens) throw new ExecutionError("BUDGET_EXHAUSTED", "Configured token budget is exhausted.");
+    // Current Codex usage reports cached input as part of total input. Preserve
+    // cached usage independently for observability and persisted compatibility,
+    // but never charge it a second time against the total-input budget.
+    if (this.usage.inputTokens > this.limits.maximum_total_input_tokens || this.usage.outputTokens > this.limits.maximum_total_output_tokens) throw new ExecutionError("BUDGET_EXHAUSTED", "Configured token budget is exhausted.");
   }
 }
 

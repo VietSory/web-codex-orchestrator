@@ -68,7 +68,7 @@ export class DraftPullRequestStateMachine {
     const title = `WCO: ${input.taskId}`;
     const body = `## Verified Draft PR
 
-WCO prepared this Draft PR from the exact approved change set for \`${input.taskId}\`.
+WCO prepared this Draft PR from the exact Harness-verified change set for \`${input.taskId}\`.
 
 ### Delivery evidence
 
@@ -82,9 +82,8 @@ WCO prepared this Draft PR from the exact approved change set for \`${input.task
 ### Verification gates
 
 - Deterministic verification: **PASS**
-- Independent Terra review: **PASS**
-- Independent Sol review: **PASS**
-- Remote branch head re-attested to the verified commit before this PR was accepted.
+- Remote branch head: **re-attested to the exact verified commit** before this Draft PR was accepted.
+- Review gates: tracked separately by mode-specific durable WCO receipts; this Draft PR body does not pre-claim Web, Sol, or Terra approval.
 
 ### Human boundary
 

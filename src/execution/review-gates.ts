@@ -21,6 +21,24 @@ export function assertSolCanStart(receipt: ExecutionReceipt, terraReview: Review
   if (receipt.final_reviewer.latest_thread_id && (receipt.final_reviewer.latest_thread_id === receipt.implementer.thread_id || (receipt.internal_reviewer.thread_ids ?? [receipt.internal_reviewer.latest_thread_id]).includes(receipt.final_reviewer.latest_thread_id))) throw new ExecutionError("SOL_REVIEW_NOT_ALLOWED", "Sol review must use a thread independent of Terra.");
 }
 
+export function assertSingleReviewerCanStart(receipt: ExecutionReceipt, reviewer: "terra" | "sol"): void {
+  if (!receipt.verification.required_commands_passed || receipt.verification.verified_change_set_sha256 !== receipt.change_set_sha256) {
+    throw new ExecutionError(reviewer === "terra" ? "TERRA_REVIEW_REQUIRED" : "SOL_REVIEW_NOT_ALLOWED", `${reviewer === "terra" ? "Terra" : "Sol"} review requires deterministic verification PASS for the current digest.`);
+  }
+  const slot = reviewer === "terra" ? receipt.internal_reviewer : receipt.final_reviewer;
+  if (slot.latest_thread_id && slot.latest_thread_id === receipt.implementer.thread_id) {
+    throw new ExecutionError(reviewer === "terra" ? "TERRA_REVIEW_REQUIRED" : "SOL_REVIEW_NOT_ALLOWED", "Selected reviewer must use an independent thread from the implementer.");
+  }
+}
+
+export function assertSingleReviewerReady(receipt: ExecutionReceipt, review: ReviewResult | null, reviewer: "terra" | "sol", requiredAcceptanceIds: string[] = []): void {
+  const digest = receipt.change_set_sha256;
+  if (!digest || receipt.verification.verified_change_set_sha256 !== digest || !receipt.verification.required_commands_passed) throw new ExecutionError("VERIFICATION_FAILED", "Required verification is not passing for the final digest.");
+  if (!approvalValid(review, digest, requiredAcceptanceIds)) throw new ExecutionError(reviewer === "terra" ? "TERRA_REVIEW_REQUIRED" : "SOL_REVIEW_NOT_ALLOWED", `${reviewer === "terra" ? "Terra" : "Sol"} has not approved the final digest.`);
+  const slot = reviewer === "terra" ? receipt.internal_reviewer : receipt.final_reviewer;
+  if (!slot.latest_thread_id || slot.latest_thread_id === receipt.implementer.thread_id) throw new ExecutionError(reviewer === "terra" ? "TERRA_REVIEW_REQUIRED" : "SOL_REVIEW_NOT_ALLOWED", "Selected reviewer must use an independent thread.");
+}
+
 export function assertReadyForPublish(receipt: ExecutionReceipt, terraReview: ReviewResult | null, solReview: ReviewResult | null, requiredAcceptanceIds: string[] = []): void {
   const digest = receipt.change_set_sha256;
   if (!digest || receipt.verification.verified_change_set_sha256 !== digest || !receipt.verification.required_commands_passed) throw new ExecutionError("VERIFICATION_FAILED", "Required verification is not passing for the final digest.");

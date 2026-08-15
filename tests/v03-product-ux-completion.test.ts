@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { EventEmitter } from "node:events";
 import { writeTrustedConfigAtomic } from "../src/setup/config-writer.js";
 import { loadTrustedConfig } from "../src/config/config-loader.js";
 import { writeRelayToken, readRelayToken, removeRelayToken } from "../src/web-bridge/relay-credential.js";
@@ -12,7 +13,8 @@ import { PersonalBearerAuthenticator } from "../src/web-bridge/relay/auth.js";
 import { createRelayServer } from "../src/web-bridge/relay/server.js";
 import { planSelfUninstall } from "../src/uninstall/self-uninstall.js";
 import { listLocalTaskHistory } from "../src/web-bridge/session-history.js";
-import { runWebCommand } from "../src/web-bridge/web-cli.js";
+import { openBrowser, runWebCommand } from "../src/web-bridge/web-cli.js";
+import { initialWorkflowContinueArguments } from "../src/tui/interactive-app.js";
 
 function minimalConfig(repoPath: string): any {
   return {
@@ -34,7 +36,7 @@ test("relay credential persists only under WCO credentials and can be removed", 
   await assert.rejects(readRelayToken(credentials, {}), /not configured|AUTH_UNAVAILABLE/i);
 });
 
-test("one-time Web connect verifies relay before persisting actions_relay config", async () => {
+test("one-time advanced relay connect verifies relay and explicit disconnect restores zero-config local mode", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-v03-connect-"));
   const repo = path.join(root, "repo"), configPath = path.join(root, "home", "config.json"), credentials = path.join(root, "home", "credentials"), relayRoot = path.join(root, "relay");
   await mkdir(repo, { recursive: true });
@@ -52,7 +54,8 @@ test("one-time Web connect verifies relay before persisting actions_relay config
     assert.equal(saved.web_bridge?.gpt_url, "https://chatgpt.com/g/example-wco");
     assert.equal(await readRelayToken(credentials, {}), token);
     const disconnected = await disconnectWebBridgeConnection({ configPath, credentialsDirectory: credentials });
-    assert.equal(disconnected.web_bridge?.mode, "manual_file");
+    assert.equal(disconnected.web_bridge, undefined);
+    assert.equal((await loadTrustedConfig(configPath)).web_bridge, undefined);
     await assert.rejects(readRelayToken(credentials, {}), /not configured|AUTH_UNAVAILABLE/i);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -76,19 +79,72 @@ test("disconnected manual bridge status never claims the relay is connected", as
   }
 });
 
-test("Web CLI preserves stable structured error codes for unsafe relay input", async () => {
+test("managed Web status directs a missing device credential to reconnect instead of retrying status", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-v03-managed-reconnect-hint-"));
+  const old = process.env.WCO_HOME;
+  process.env.WCO_HOME = root;
+  try {
+    await writeTrustedConfigAtomic(path.join(root, "config.json"), {
+      ...minimalConfig(path.join(root, "repo")),
+      web_bridge: { mode: "managed_actions", poll_interval_ms: 1_000, job_ttl_seconds: 86_400 },
+    });
+    const stderr: string[] = [];
+    const code = await runWebCommand(["status"], { write: () => undefined, error: (value) => stderr.push(value) });
+    assert.equal(code, 1);
+    assert.match(stderr.join(""), /^WEB_MANAGED_RECONNECT_REQUIRED:/);
+    assert.match(stderr.join(""), /Next: wco web connect/);
+    assert.doesNotMatch(stderr.join(""), /Try: wco web status/);
+  } finally {
+    if (old === undefined) delete process.env.WCO_HOME; else process.env.WCO_HOME = old;
+  }
+});
+
+test("advanced self-hosted Web CLI preserves stable structured error codes for unsafe relay input", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-v03-web-error-code-"));
   const old = process.env.WCO_HOME;
   process.env.WCO_HOME = root;
   try {
     await writeTrustedConfigAtomic(path.join(root, "config.json"), minimalConfig(path.join(root, "repo")));
-    const answers = ["http://example.com/relay", "https://chatgpt.com/g/test", "x".repeat(40)];
+    const answers = ["http://example.com/relay", "https://chatgpt.com/g/test"];
+    const relayToken = "x".repeat(40);
     const stderr: string[] = [];
-    const code = await runWebCommand(["connect"], { write: () => undefined, error: (value) => stderr.push(value), question: async () => answers.shift()! });
+    const code = await runWebCommand(["connect", "--self-hosted"], {
+      write: () => undefined,
+      error: (value) => stderr.push(value),
+      question: async () => answers.shift()!,
+      secret: async () => relayToken,
+    });
     assert.equal(code, 1);
     assert.match(stderr.join(""), /^WEB_RELAY_URL_UNSAFE:/);
     assert.doesNotMatch(stderr.join(""), /x{16,}/);
     await assert.rejects(readRelayToken(path.join(root, "credentials"), {}), /not configured|AUTH_UNAVAILABLE/i);
+  } finally {
+    if (old === undefined) delete process.env.WCO_HOME; else process.env.WCO_HOME = old;
+  }
+});
+
+test("missing desktop URL opener fails cleanly for explicit advanced GPT open instead of throwing", async () => {
+  const child = new EventEmitter() as EventEmitter & { unref(): void };
+  child.unref = () => undefined;
+  const opened = openBrowser("https://chatgpt.com/g/example-wco", () => {
+    queueMicrotask(() => child.emit("error", Object.assign(new Error("spawn xdg-open ENOENT"), { code: "ENOENT" })));
+    return child as any;
+  });
+  assert.equal(await opened, false);
+
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-v03-browser-fallback-"));
+  const old = process.env.WCO_HOME;
+  process.env.WCO_HOME = root;
+  try {
+    await writeTrustedConfigAtomic(path.join(root, "config.json"), {
+      ...minimalConfig(path.join(root, "repo")),
+      web_bridge: { mode: "manual_file", poll_interval_ms: 1_000, job_ttl_seconds: 86_400, gpt_url: "https://chatgpt.com/g/example-wco" },
+    });
+    const stdout: string[] = [];
+    const code = await runWebCommand(["open"], { write: (value) => stdout.push(value), error: () => undefined }, async () => false);
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), /Could not open the configured advanced GPT automatically/);
+    assert.doesNotMatch(stdout.join(""), /Cloudflare|tunnel ID|runtime API key|Workspace Agent access token/i);
   } finally {
     if (old === undefined) delete process.env.WCO_HOME; else process.env.WCO_HOME = old;
   }
@@ -125,4 +181,17 @@ test("Senior Architect instructions ship positive and negative behavioral exampl
   assert.match(source, /Positive authoring example/);
   assert.match(source, /Negative prompt-injection example/);
   assert.match(source, /untrusted data/);
+});
+
+test("TUI hands the exact durable Web pack to the first orchestration continue", () => {
+  const runId = `TASK-EXAMPLE:${"a".repeat(64)}`;
+  const webPack = "/tmp/wco/state/bridge/artifacts/job/web-implementation-pack.zip";
+  assert.deepEqual(initialWorkflowContinueArguments({ run_id: runId, state: "IMPLEMENTATION_REGISTERED", web_pack_path: webPack }, "/tmp/wco/state", "/tmp/wco/config.json"), [
+    "--run-id", runId,
+    "--state-dir", "/tmp/wco/state",
+    "--config", "/tmp/wco/config.json",
+    "--web-pack", webPack,
+    "--max-transitions", "8",
+  ]);
+  assert.throws(() => initialWorkflowContinueArguments({ run_id: runId, state: "IMPLEMENTATION_REGISTERED", web_pack_path: null }, "/tmp/wco/state", "/tmp/wco/config.json"), /WEB_PACK_NOT_REGISTERED/);
 });

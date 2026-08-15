@@ -49,7 +49,7 @@ async function fixture() {
   const operations: WebImplementationOperation[] = [
     { op_id: "OP-REPLACE", kind: "replace_file", path: "replace.txt", preimage_sha256: sha("old replace\n"), payload_entry: "payload/replace.bin", payload_sha256: sha(replacePayload) },
     { op_id: "OP-DELETE", kind: "delete_file", path: "delete.txt", preimage_sha256: sha("old delete\n") },
-    { op_id: "OP-CREATE", kind: "create_file", path: "create.txt", preimage_sha256: null, payload_entry: "payload/create.bin", payload_sha256: sha(createPayload) },
+    { op_id: "OP-CREATE", kind: "create_file", path: "src/nested/create.txt", preimage_sha256: null, payload_entry: "payload/create.bin", payload_sha256: sha(createPayload) },
   ];
   return { root, state, worktree, operations, pack: pack(operations, { "payload/replace.bin": replacePayload, "payload/create.bin": createPayload }) };
 }
@@ -78,12 +78,12 @@ test("P10-APPLY-001 all preimages are proven before first write, then exact repl
   assert.equal(receipt.state, "PREPARED");
   assert.equal(await fs.readFile(path.join(f.worktree, "replace.txt"), "utf8"), "old replace\n");
   assert.equal(await fs.readFile(path.join(f.worktree, "delete.txt"), "utf8"), "old delete\n");
-  await assert.rejects(() => fs.readFile(path.join(f.worktree, "create.txt")));
+  await assert.rejects(() => fs.readFile(path.join(f.worktree, "src/nested/create.txt")));
   const applied = await applyExecutorTransaction({ stateDirectory: f.state, receipt, pack: f.pack });
   assert.equal(applied.state, "APPLIED");
   assert.equal(await fs.readFile(path.join(f.worktree, "replace.txt"), "utf8"), "new replace\n");
   await assert.rejects(() => fs.readFile(path.join(f.worktree, "delete.txt")));
-  assert.equal(await fs.readFile(path.join(f.worktree, "create.txt"), "utf8"), "new create\n");
+  assert.equal(await fs.readFile(path.join(f.worktree, "src/nested/create.txt"), "utf8"), "new create\n");
 });
 
 test("P10-APPLY-002 stale later preimage prevents every write", async (t) => {
@@ -91,7 +91,7 @@ test("P10-APPLY-002 stale later preimage prevents every write", async (t) => {
   await fs.writeFile(path.join(f.worktree, "delete.txt"), "external drift\n");
   await assert.rejects(() => prepareExecutorTransaction(prepareOptions(f)), (error: unknown) => error instanceof ExecutorError && error.code === "EXECUTOR_PREIMAGE_STALE");
   assert.equal(await fs.readFile(path.join(f.worktree, "replace.txt"), "utf8"), "old replace\n");
-  await assert.rejects(() => fs.readFile(path.join(f.worktree, "create.txt")));
+  await assert.rejects(() => fs.readFile(path.join(f.worktree, "src/nested/create.txt")));
 });
 
 test("P10-APPLY-003 crash recovery adopts registered postimage and continues remaining operations", async (t) => {
@@ -102,7 +102,7 @@ test("P10-APPLY-003 crash recovery adopts registered postimage and continues rem
   const applied = await applyExecutorTransaction({ stateDirectory: f.state, receipt, pack: f.pack });
   assert.equal(applied.state, "APPLIED");
   assert.ok(applied.operations.every((operation) => operation.applied));
-  assert.equal(await fs.readFile(path.join(f.worktree, "create.txt"), "utf8"), "new create\n");
+  assert.equal(await fs.readFile(path.join(f.worktree, "src/nested/create.txt"), "utf8"), "new create\n");
 });
 
 test("P10-APPLY-004 ambiguous recovery bytes escalate instead of guessing", async (t) => {
@@ -127,13 +127,14 @@ test("P10-APPLY-005 later post-prepare drift rolls back earlier exact mutations"
   assert.ok(receipt.operations.every((operation) => operation.applied === false));
   assert.equal(await fs.readFile(path.join(f.worktree, "replace.txt"), "utf8"), "old replace\n");
   assert.equal(await fs.readFile(path.join(f.worktree, "delete.txt"), "utf8"), "external drift after prepare\n");
-  await assert.rejects(() => fs.readFile(path.join(f.worktree, "create.txt")));
+  await assert.rejects(() => fs.readFile(path.join(f.worktree, "src/nested/create.txt")));
 });
 
 test("P10-APPLY-006 failure after delete restores all exact preimages in reverse order", async (t) => {
   const f = await fixture(); t.after(async () => fs.rm(f.root, { recursive: true, force: true }));
   const receipt = await prepareExecutorTransaction(prepareOptions(f));
-  await fs.writeFile(path.join(f.worktree, "create.txt"), "external create drift\n");
+  await fs.mkdir(path.join(f.worktree, "src/nested"), { recursive: true });
+  await fs.writeFile(path.join(f.worktree, "src/nested/create.txt"), "external create drift\n");
 
   await assert.rejects(
     () => applyExecutorTransaction({ stateDirectory: f.state, receipt, pack: f.pack }),
@@ -144,7 +145,7 @@ test("P10-APPLY-006 failure after delete restores all exact preimages in reverse
   assert.ok(receipt.operations.every((operation) => operation.applied === false));
   assert.equal(await fs.readFile(path.join(f.worktree, "replace.txt"), "utf8"), "old replace\n");
   assert.equal(await fs.readFile(path.join(f.worktree, "delete.txt"), "utf8"), "old delete\n");
-  assert.equal(await fs.readFile(path.join(f.worktree, "create.txt"), "utf8"), "external create drift\n");
+  assert.equal(await fs.readFile(path.join(f.worktree, "src/nested/create.txt"), "utf8"), "external create drift\n");
 });
 
 test("P10-APPLY-007 rollback continues past an ambiguous applied target and restores independent mutations", async (t) => {
@@ -165,5 +166,5 @@ test("P10-APPLY-007 rollback continues past an ambiguous applied target and rest
   assert.equal(receipt.operations[2]?.applied, false);
   assert.equal(await fs.readFile(path.join(f.worktree, "replace.txt"), "utf8"), "old replace\n");
   assert.equal(await fs.readFile(path.join(f.worktree, "delete.txt"), "utf8"), "external drift after apply\n");
-  await assert.rejects(() => fs.readFile(path.join(f.worktree, "create.txt")));
+  await assert.rejects(() => fs.readFile(path.join(f.worktree, "src/nested/create.txt")));
 });

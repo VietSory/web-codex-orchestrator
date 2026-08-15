@@ -4,8 +4,10 @@ import { ExecutionContractError } from "./errors.js";
 
 const REPOSITORY_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const FULL_COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-const REQUIRED_PUSH_GATES = ["VERIFIER_PASS", "SOL_APPROVE"] as const;
-const KNOWN_PUSH_GATES = new Set<string>(REQUIRED_PUSH_GATES);
+const VERIFIER_GATE = "VERIFIER_PASS" as const;
+const REVIEWER_GATE = "REVIEWER_APPROVE" as const;
+const LEGACY_SOL_GATE = "SOL_APPROVE" as const;
+const KNOWN_PUSH_GATES = new Set<string>([VERIFIER_GATE, REVIEWER_GATE, LEGACY_SOL_GATE]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -68,7 +70,10 @@ function validateCore(manifest: Record<string, unknown>, issues: ExecutionIssue[
       const gates = delivery.push_after;
       if (gates.some((gate) => typeof gate !== "string" || !KNOWN_PUSH_GATES.has(gate))) add(issues, "DELIVERY_CONTRACT_INVALID", "delivery.push_after contains an unknown gate.");
       if (new Set(gates).size !== gates.length) add(issues, "DELIVERY_CONTRACT_INVALID", "delivery.push_after contains duplicate gates.");
-      for (const gate of REQUIRED_PUSH_GATES) if (!gates.includes(gate)) add(issues, "DELIVERY_CONTRACT_INVALID", `delivery.push_after must contain ${gate}.`);
+      if (!gates.includes(VERIFIER_GATE)) add(issues, "DELIVERY_CONTRACT_INVALID", `delivery.push_after must contain ${VERIFIER_GATE}.`);
+      const reviewGates = [REVIEWER_GATE, LEGACY_SOL_GATE].filter((gate) => gates.includes(gate));
+      if (reviewGates.length !== 1) add(issues, "DELIVERY_CONTRACT_INVALID", "delivery.push_after must contain exactly one reviewer approval gate (REVIEWER_APPROVE, or legacy SOL_APPROVE).");
+      if (gates.length !== 2) add(issues, "DELIVERY_CONTRACT_INVALID", "delivery.push_after must contain exactly verifier and reviewer approval gates.");
     }
   }
 

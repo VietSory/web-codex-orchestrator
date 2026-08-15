@@ -43,7 +43,8 @@ export interface ExecutionContract {
     base_branch: string;
     branch_name: string;
     draft: true;
-    push_after: ["VERIFIER_PASS", "SOL_APPROVE"];
+    /** REVIEWER_APPROVE is the normal reviewer-neutral contract. SOL_APPROVE is accepted only for older bundles. */
+    push_after: ["VERIFIER_PASS", "REVIEWER_APPROVE"] | ["VERIFIER_PASS", "SOL_APPROVE"];
     auto_merge: false;
   };
   git_policy: {
@@ -98,6 +99,20 @@ export interface ReviewFinding {
   required_fix: string;
 }
 
+/**
+ * A reviewer may propose a single bounded repair set, but never receives direct
+ * worktree mutation authority. The Harness validates exact preimages and owns
+ * every write. Null postimage fields represent delete_file.
+ */
+export interface ReviewerRepairOperation {
+  op_id: string;
+  kind: "create_file" | "replace_file" | "delete_file";
+  path: string;
+  preimage_sha256: string | null;
+  postimage_base64: string | null;
+  postimage_sha256: string | null;
+}
+
 export interface AgentAssessment {
   status: "COMPATIBLE" | "REPLAN_REQUIRED" | "HUMAN_REQUIRED" | "BLOCKED";
   summary: string;
@@ -127,6 +142,8 @@ export interface ReviewResult {
   scope_violations: string[];
   unverified_acceptance: string[];
   human_action: HumanAction;
+  /** Empty for APPROVE/ESCALATE/REPLAN; bounded and non-empty for an adaptive REVISE. */
+  repair_operations?: ReviewerRepairOperation[];
 }
 
 export interface VerificationCommandResult {
@@ -204,6 +221,8 @@ export interface ExecutionReceipt {
   accepted_bundle_path: string;
   repository_refs_sha256?: string | null;
   implementer: { model: string; reasoning_effort: ReasoningEffort; thread_id: string; iterations: number };
+  /** Present for normal product runs after /mode selection is snapshotted. */
+  reviewer_selection?: { kind: "terra" | "sol"; model: string; reasoning_effort: ReasoningEffort };
   internal_reviewer: { model: string; reasoning_effort: ReasoningEffort; rounds: number; latest_thread_id: string | null; thread_ids?: string[]; verdict: ReviewVerdict | null; reviewed_change_set_sha256: string | null };
   final_reviewer: { model: string; reasoning_effort: ReasoningEffort; rounds: number; latest_thread_id: string | null; thread_ids?: string[]; verdict: ReviewVerdict | null; reviewed_change_set_sha256: string | null };
   verification: { rounds: number; required_commands_passed: boolean; verified_change_set_sha256: string | null; commands: VerificationCommandResult[] };

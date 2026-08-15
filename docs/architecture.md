@@ -1,93 +1,226 @@
 # Architecture
 
-WCO is a durable orchestration layer between untrusted external implementation evidence and a human-owned Git merge decision. Correctness is based on exact identities and durable receipts, not on conversational continuity.
+WCO is a durable local control plane between provider-generated semantic/implementation proposals and a human-owned Git merge decision. Correctness is based on exact identities, closed authority schemas, deterministic verification and durable receipts—not on conversational continuity, provider UI state or a hosted WCO service.
 
-## System boundary
+## Normal system boundary
 
 ```text
-untrusted Task/Web input
-        ↓
-validation + content identity
-        ↓
-WCO-owned isolated state/worktree
-        ↓
-deterministic mutation + verification
-        ↓
-independent read-only model review
-        ↓
-exact Git/GitHub publication evidence
-        ↓
-explicit external verdict
-        ↓
-human merge authority
+user goal
+   ↓
+local ChatGPT/Codex semantic author
+   │  read-only structured output
+   ↓
+WCO bounded exact repository reads
+   │  summary / tree / search / file or byte-region reads
+   ↓
+sealed WCO contract
+   ↓
+canonical prepared run
+   ↓
+Harness-side Codex implementation planner
+   │  read-only bounded proposal, exact job/run binding
+   ↓
+WCO/Harness validation + isolated mutation
+   ↓
+deterministic verification / repair
+   ↓
+mode-specific code review
+   │  PAIR: independent semantic review
+   │  AUTOPILOT: frozen configured Sol/Terra reviewer policy
+   ↓
+exact Git/GitHub publication evidence + Draft PR
+   ↓
+independent/final semantic intent review bound to exact result evidence
+   ↓
+READY_FOR_YOU
+   ↓
+human merge / release
 ```
 
-The browser, ChatGPT/Codex transcripts, model thread history, terminal output, and derived caches are transport or diagnostic surfaces. They never become lifecycle authority.
+Normal WCO state, repository/worktree state, exact-read receipts, semantic mailbox, Task/Result Bundles, mutation authority, verifier state and Git recovery state remain on the user's machine.
 
-## Authority model
+Provider account communication is outbound through the bundled official Codex runtime. WCO does not require a normal-path WCO server, database, relay, public endpoint, tunnel, MCP App or browser automation layer.
 
-From highest to lower authority:
+## Zero-config normal transport
+
+A fresh trusted config intentionally has no `web_bridge` field. Absence selects the local ChatGPT/Codex bridge. The internal transport identity is `chatgpt_codex`; normal users do not type or store that profile name, an endpoint or a transport secret.
+
+First provider use delegates authorization to the bundled official Codex login flow. Codex owns the ChatGPT OAuth/browser handoff and credential lifecycle. WCO checks readiness but does not parse/copy provider tokens or browser state.
+
+After authorization:
+
+```text
+per-task browser interaction = 0
+per-task transport setup     = 0
+per-task credential input    = 0
+```
+
+If authorization expires, `wco web connect` repeats only the official ChatGPT authorization flow. A local runtime/auth failure cannot silently activate a compatibility transport.
+
+## Semantic authoring
+
+The semantic author is deliberately not a filesystem/Git agent. It sees intent/repository identity and can emit only phase-appropriate structured authority:
+
+```text
+repository_command
+  - summary
+  - bounded tree
+  - bounded search
+  - exact full-file/byte-region read
+
+or
+
+contract_sealed
+```
+
+WCO executes repository commands itself against the exact bound repository/base and returns the result to the semantic thread. Sensitive-path, traversal/symlink and read-bound checks remain local.
+
+The current semantic SDK adapter is read-only, approval=`never`, network disabled and provider Web search disabled. External live-Web research is not a release capability of the local transport today. If added later, it must be a separately reviewed semantic-only adapter and must not widen mutation, shell, Git, credential or shipment authority.
+
+## Canonical preparation and implementation proposal
+
+After contract sealing, WCO materializes/accepts canonical task authority and prepares the isolated run. The generated `run_id` is bound back to the bridge before local workflow state may become `PREPARED`.
+
+Only then does a separate Harness-side Codex implementation planner run. It is also read-only/no-network and returns a closed `WebImplementationSubmission` containing bounded create/replace/delete postimages.
+
+The planner itself does **not** write the repository. WCO revalidates:
+
+- protocol/job/run identity;
+- task/contract binding;
+- path policy and forbidden paths;
+- content/postimage SHA-256;
+- exact preimage/read requirements;
+- operation and payload bounds.
+
+Only validated authority reaches Harness/executor mutation machinery.
+
+A durable provider-turn reservation is written before an authority-bearing implementation call. If a crash leaves a reservation without a sealed result, WCO fails closed instead of blindly generating a second conflicting proposal.
+
+## Harness and verifier authority
+
+Harness/executor remains the only component that may mutate the isolated worktree, execute repository validation commands, calculate authoritative change-set digests, create repair checkpoints or perform Git publication steps.
+
+Model/provider output never directly:
+
+- writes files;
+- executes Git mutation;
+- pushes;
+- opens/updates a PR as authority;
+- marks ready or merges;
+- deploys, tags or releases.
+
+Deterministic verification remains mandatory before reviewed/published state can advance. Missing sandbox/isolation never falls back to unrestricted host execution.
+
+## Mode-specific review
+
+### PAIR
+
+PAIR keeps the user-oriented collaboration flow but still uses the same canonical contract, implementation proposal, Harness mutation and deterministic verification boundaries.
+
+After verified code exists, policy may require an independent semantic code-review job. That review is bound to exact change/result evidence and can only return a closed verdict/repair authority. Harness applies and re-verifies any accepted repair.
+
+A final semantic intent review remains required before `READY_FOR_YOU`.
+
+### AUTOPILOT
+
+AUTOPILOT continues through bounded orchestration/recovery policy without routine user intervention. Its configured Sol/Terra reviewer selection is frozen for the active run, review/repair budgets remain bounded, and any repair returns through Harness plus deterministic re-verification.
+
+The final semantic intent review remains mandatory. AUTOPILOT does not acquire merge/release authority.
+
+## Review identity and evidence
+
+Review authority is not inferred from a browser tab or ambient conversation. WCO creates review jobs with exact durable bindings. Provider thread IDs are continuity metadata only.
+
+Final/review verdicts are parsed through closed WCO schemas and checked against exact run/result evidence before lifecycle state changes.
+
+If provider continuity is lost, WCO relies on durable intent/contract/result evidence and allowed thread recovery semantics rather than granting stronger authority to a replacement conversation.
+
+## Context architecture
+
+Repository context is progressive and exact:
+
+```text
+goal
+→ repository identity / summary / bounded tree or search
+→ focused exact file/region reads
+→ content-addressed reuse for unchanged bytes
+→ sealed contract
+→ implementation/result deltas
+```
+
+Disposable local summaries, symbol/reference indexes or ranking caches may improve localization. They are advisory only. Whenever context becomes mutation authority it must resolve back to canonical Git/file content and exact digests/read receipts.
+
+## Durable state and replay
+
+WCO-owned durable state is the recovery authority, subject to re-attestation of stronger evidence.
+
+Examples include:
+
+- author/review job identities;
+- repository-command receipts;
+- sealed contracts;
+- canonical task/run identities;
+- provider-turn reservations and sealed outputs;
+- executor/verifier checkpoints;
+- selected artifacts/change-set digests;
+- Git/GitHub publication evidence;
+- Result Bundle and final verdict bindings.
+
+Already sealed authority can be reused idempotently. Ambiguous authority-bearing provider/network outcomes are not blindly replayed.
+
+## Authority hierarchy
+
+From stronger to weaker authority:
 
 1. trusted WCO configuration and registered repository policy;
-2. canonical accepted Task Bundle and run identity;
-3. exact Git repository/base/tree state;
-4. immutable registered Web artifacts and operation preimages;
-5. deterministic verification and independent reviewer evidence bound to one change-set digest;
-6. durable orchestration receipts that may advance only after re-attesting the stronger evidence above;
-7. logs, UI/session state, caches, and human-readable output.
+2. canonical accepted task/run identity and sealed semantic contract;
+3. exact Git repository/base/tree state and read receipts;
+4. validated implementation/repair authority with exact preimage/postimage identity;
+5. Harness transaction state and deterministic verification bound to exact change-set digests;
+6. mode-specific code-review evidence bound to those digests;
+7. exact Git/GitHub publication, Draft PR and Result Bundle evidence;
+8. final semantic verdict bound to exact durable intent/result evidence;
+9. durable orchestration receipts that advance only after re-attesting stronger evidence;
+10. provider thread/status/log/UI state and disposable caches.
 
-Recovery follows the same hierarchy. A persisted `success` flag cannot overrule changed Git, archive, PR, or receipt identity.
+A provider `success` flag cannot overrule changed Git, archive, PR, Result Bundle, review or digest identity.
 
-## Design principles
+## Advanced compatibility transports
 
-### Fail-safe defaults and complete mediation
+Explicit compatibility/operator profiles may remain:
 
-Ambiguity is a stop condition. Security-sensitive accesses are revalidated at the point where their result becomes authority, including recovery and publication. This follows the classic protection principles described by Saltzer and Schroeder: fail-safe defaults, complete mediation, least privilege, separation of privilege, and psychological acceptability.
+```text
+web_native_mcp
+managed_actions
+personal_actions
+actions_relay
+manual_file
+```
 
-Applied in WCO:
+They are never the fresh default and never an automatic fallback from the zero-config local transport. Their existence does not widen normal-user setup requirements or Harness authority.
 
-- unsupported/malformed authority fails closed instead of guessing;
-- Git/GitHub identities are checked again before an irreversible boundary;
-- model, verifier, Git, and GitHub capabilities are separated;
-- dangerous actions stay outside the autonomous command set.
+## Parallelism and serialization
 
-Reference: https://web.mit.edu/saltzer/www/publications/protection/index.html
+Independent exact reads, context ranking and safe attestations may run concurrently. Authority-bearing transitions—contract adoption, prepared-run binding, implementation adoption, mutation, artifact selection, repair adoption, commit/push and publication promotion—remain serialized/idempotency-bound where required.
 
-### End-to-end correctness
+## Human shipment boundary
 
-Lower layers validate their own work, but the orchestration endpoint still verifies the property that matters to the workflow. This mirrors the end-to-end argument from Saltzer, Reed, and Clark: lower-layer mechanisms can help, but correctness that only the endpoint can establish belongs at the endpoint.
+Neither PAIR nor AUTOPILOT automatically merges, marks a PR ready, enables auto-merge, force-pushes, deploys, tags, publishes npm or creates a release.
 
-Applied in WCO:
+`READY_FOR_YOU` means the exact reviewed Draft PR is ready for the human. It is not shipment authority.
 
-- a successful push is adopted only after the expected remote SHA is observed;
-- a Draft PR is authority only after repository/base/head/draft state are re-attested;
-- a Result Bundle and Web verdict are bound to the exact published head;
-- crash recovery re-attests completed side effects rather than replaying them blindly.
+## Product entry point
 
-Reference: https://web.mit.edu/saltzer/www/publications/endtoend/endtoendA4.pdf
+```text
+npm install -g web-codex-orchestrator
+cd repository
+wco
+→ first provider use: one official ChatGPT authorization when required
+→ goal
+→ local semantic author + Harness implementation/verification/review
+→ reviewed Draft PR
+→ READY_FOR_YOU
+→ human merge/release
+```
 
-### Bounded resources
-
-Every potentially adversarial or long-lived surface needs an explicit bound: archive entries/bytes, JSON receipts, process output, subprocess time, retries, event records, candidate scanning, model turns/tokens, and concurrency. Bounds are part of correctness, not only performance tuning.
-
-### Content-addressed evidence
-
-Stable artifacts are named and compared by hashes or immutable Git identities wherever practical. Derived project maps and caches can accelerate work, but deleting a cache must not change an authorization decision.
-
-### Recovery instead of replay
-
-WCO stores the smallest durable evidence required to resume a transition. Recovery prefers exact receipt adoption over repeating a model turn, commit, push, PR creation, or bundle build. This reduces duplicate side effects, latency, and token cost.
-
-## Secure development and release references
-
-WCO's release engineering should continue to align with established software-supply-chain guidance:
-
-- NIST SSDF SP 800-218: integrate secure-development practices into the lifecycle rather than treating security as a final audit. https://csrc.nist.gov/pubs/sp/800/218/final
-- SLSA: attach verifiable provenance to release artifacts so a consumer can trace where, when, and how they were built. https://slsa.dev/spec/v1.2/provenance
-- The Update Framework (TUF): consider delegated, rollback-resistant update metadata if WCO later gains an automatic updater. It is unnecessary before an update channel exists. https://theupdateframework.io/spec/
-- Command Line Interface Guidelines: keep the CLI human-first, consistent with common conventions, concise by default, and composable through stable machine output. https://clig.dev/
-
-These references guide boundaries and release engineering; they are not compliance claims.
-# v0.3 product entry point
-
-The interactive TUI and Web bridge are adapters over the existing durable controller, not a second state machine. ChatGPT Web submits untrusted semantic envelopes through a transport-only relay. Local materializers bind exact Git objects, accepted artifact hashes and read receipts before invoking the canonical v0.2 intake, preparation, Web authority, execution, publication, Result Bundle and verdict services. See [web-bridge.md](web-bridge.md).
+See [frozen user experience contract](user-experience-contract.md), [web bridge](web-bridge.md), [ADR 0004](adr/0004-chatgpt-codex-local-default.md), [job modes](job-modes.md), [operations](operations.md) and [protocols](protocols.md).

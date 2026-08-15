@@ -18,11 +18,12 @@ async function git(cwd: string, args: string[]): Promise<string> {
   return result.stdout;
 }
 
-export async function attestExecutorResumeAuthority(options: { run: RunReceipt; trustedRepoPath: string; registration: ArtifactRegistrationRecord }): Promise<void> {
+export async function attestExecutorResumeAuthority(options: { run: RunReceipt; trustedRepoPath: string; registration: ArtifactRegistrationRecord; expectedWorktreeHead?: string }): Promise<void> {
   const { run, registration } = options;
   if (run.repository_id !== registration.repository.id || run.base_branch !== registration.repository.base_branch || run.base_commit !== registration.repository.base_commit || run.run_id !== registration.run_id) throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", "Resume registration differs from canonical run identity.");
   const head = (await git(run.worktree_path, ["rev-parse", "HEAD"])).trim();
-  if (head !== run.base_commit) throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", `Resume worktree HEAD '${head}' differs from locked base '${run.base_commit}'.`);
+  const expectedHead = options.expectedWorktreeHead ?? run.base_commit;
+  if (head !== expectedHead) throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", `Resume worktree HEAD '${head}' differs from expected authority '${expectedHead}'.`);
   const tree = (await git(options.trustedRepoPath, ["rev-parse", `${run.base_commit}^{tree}`])).trim();
   if (tree !== registration.repository.tree_sha) throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", "Resume base tree differs from Phase 9 registration.");
   let spec: string;

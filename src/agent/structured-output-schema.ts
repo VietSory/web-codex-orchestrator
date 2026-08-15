@@ -33,6 +33,10 @@ function visitSchema(
 
   seen.add(node);
 
+  if ((Object.hasOwn(node, "const") || Object.hasOwn(node, "enum")) && !Object.hasOwn(node, "type")) {
+    fail(schemaPath, "const and enum schemas must declare an explicit type");
+  }
+
   if (node.type === "object") {
     if (node.additionalProperties !== false) {
       fail(

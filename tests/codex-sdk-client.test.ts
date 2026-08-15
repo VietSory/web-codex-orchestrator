@@ -105,6 +105,7 @@ test("implementer restrictions and exact SDK thread options are enforced", async
     model: "trusted-model",
     modelReasoningEffort: "high",
     workingDirectory: "/tmp/wco-worktree",
+    skipGitRepoCheck: true,
     sandboxMode: "workspace-write",
     approvalPolicy: "never",
     networkAccessEnabled: false,
@@ -122,12 +123,23 @@ test("reviewer restrictions, schema, and cancellation signal are passed to the S
   const signal = new AbortController().signal;
   await new CodexSdkAgentClient(fakeResolvedCodexRuntime(), factory).turn(request({ role: "internal_reviewer", output_schema: REVIEW_OUTPUT_SCHEMA, read_only: true, sandbox_mode: "read-only", signal }));
   assert.equal(state.startOptions?.sandboxMode, "read-only");
+  assert.equal(state.startOptions?.skipGitRepoCheck, true);
   assert.equal(state.startOptions?.approvalPolicy, "never");
   assert.equal(state.startOptions?.networkAccessEnabled, false);
   assert.equal(state.startOptions?.webSearchMode, "disabled");
-  assert.deepEqual(state.startOptions?.additionalDirectories, []);
+  assert.deepEqual(state.startOptions?.additionalDirectories, ["/tmp/wco-bundle"]);
   assert.equal(state.runOptions?.outputSchema, REVIEW_OUTPUT_SCHEMA);
   assert.equal(state.runOptions?.signal, signal);
+});
+
+test("accepted authority is mounted only for read-only turns and never widens a writable implementation sandbox", async () => {
+  const assessment = harness(JSON.stringify({ ok: true }));
+  await new CodexSdkAgentClient(fakeResolvedCodexRuntime(), assessment.factory).turn(request({ read_only: true, sandbox_mode: "read-only" }));
+  assert.deepEqual(assessment.harness.startOptions?.additionalDirectories, ["/tmp/wco-bundle"]);
+
+  const implementation = harness(JSON.stringify({ ok: true }), "assessment-thread");
+  await new CodexSdkAgentClient(fakeResolvedCodexRuntime(), implementation.factory).turn(request({ thread_id: "assessment-thread" }));
+  assert.deepEqual(implementation.harness.resumeOptions?.additionalDirectories, []);
 });
 
 test("invalid JSON and missing thread ID return stable errors", async () => {

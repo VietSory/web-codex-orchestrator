@@ -135,10 +135,12 @@ export async function verifyResultBundleZip(
     const initialArchiveHash = await hashStableArchive(stable.handle, stable.stat);
     const result = await new Promise<VerificationResult>((resolve, reject) => {
       let settled = false;
-      const fail = (error: unknown, zipfile?: yauzl.ZipFile): void => {
+      const fail = (error: unknown): void => {
         if (settled) return;
         settled = true;
-        try { zipfile?.close(); } catch { /* best-effort close; outer handle cleanup is idempotent */ }
+        // The FileHandle is owned by this verifier. yauzl's ZipFile.close()
+        // closes an fd passed through fromFd even with autoClose:false, which
+        // races the single owner cleanup in finally and can surface EBADF.
         reject(error instanceof ResultBundleError ? error : new ResultBundleError(
           "RESULT_ARCHIVE_VERIFY_FAILED",
           `Verification failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -157,11 +159,11 @@ export async function verifyResultBundleZip(
         }
 
         if (zipfile.comment && zipfile.comment.length > 0) {
-          fail(new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", `Archive must have no comment; found comment of length ${zipfile.comment.length}`), zipfile);
+          fail(new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", `Archive must have no comment; found comment of length ${zipfile.comment.length}`));
           return;
         }
         if (zipfile.entryCount > limits.maximum_entries) {
-          fail(new ResultBundleError("RESULT_ARCHIVE_ENTRY_LIMIT", `Archive declares ${zipfile.entryCount} entries, exceeding limit ${limits.maximum_entries}.`), zipfile);
+          fail(new ResultBundleError("RESULT_ARCHIVE_ENTRY_LIMIT", `Archive declares ${zipfile.entryCount} entries, exceeding limit ${limits.maximum_entries}.`));
           return;
         }
 
@@ -180,16 +182,16 @@ export async function verifyResultBundleZip(
           if (settled) return;
           entryCount += 1;
           if (entryCount > limits.maximum_entries) {
-            fail(new ResultBundleError("RESULT_ARCHIVE_ENTRY_LIMIT", `Archive contains more than ${limits.maximum_entries} entries.`), zipfile);
+            fail(new ResultBundleError("RESULT_ARCHIVE_ENTRY_LIMIT", `Archive contains more than ${limits.maximum_entries} entries.`));
             return;
           }
           if (!Number.isSafeInteger(entry.uncompressedSize) || entry.uncompressedSize < 0 || entry.uncompressedSize > limits.maximum_entry_bytes) {
-            fail(new ResultBundleError("RESULT_ARCHIVE_SIZE_LIMIT", `Entry '${entry.fileName}' exceeds the ${limits.maximum_entry_bytes} byte entry limit.`), zipfile);
+            fail(new ResultBundleError("RESULT_ARCHIVE_SIZE_LIMIT", `Entry '${entry.fileName}' exceeds the ${limits.maximum_entry_bytes} byte entry limit.`));
             return;
           }
           declaredUncompressedBytes += entry.uncompressedSize;
           if (!Number.isSafeInteger(declaredUncompressedBytes) || declaredUncompressedBytes > limits.maximum_total_uncompressed_bytes) {
-            fail(new ResultBundleError("RESULT_ARCHIVE_SIZE_LIMIT", `Archive uncompressed size exceeds ${limits.maximum_total_uncompressed_bytes} bytes.`), zipfile);
+            fail(new ResultBundleError("RESULT_ARCHIVE_SIZE_LIMIT", `Archive uncompressed size exceeds ${limits.maximum_total_uncompressed_bytes} bytes.`));
             return;
           }
 
@@ -197,55 +199,55 @@ export async function verifyResultBundleZip(
           try {
             validateEntryPath(entryPath);
           } catch (error) {
-            fail(error, zipfile);
+            fail(error);
             return;
           }
           const normalizedKey = entryPath.normalize("NFC").toLowerCase();
           if (seenNormalized.has(normalizedKey)) {
-            fail(new ResultBundleError("RESULT_ARCHIVE_PATH_COLLISION", `Path collision (case/NFC): '${entryPath}'`), zipfile);
+            fail(new ResultBundleError("RESULT_ARCHIVE_PATH_COLLISION", `Path collision (case/NFC): '${entryPath}'`));
             return;
           }
           seenNormalized.add(normalizedKey);
           if (entryPath.endsWith("/")) {
-            fail(new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", `Unexpected directory entry: '${entryPath}'`), zipfile);
+            fail(new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", `Unexpected directory entry: '${entryPath}'`));
             return;
           }
           if (previousPath && entryPath < previousPath) {
-            fail(new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", `Entries not in lexical order: '${entryPath}' came after '${previousPath}'`), zipfile);
+            fail(new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", `Entries not in lexical order: '${entryPath}' came after '${previousPath}'`));
             return;
           }
           previousPath = entryPath;
           if (seenPaths.has(entryPath)) {
-            fail(new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", `Duplicate entry: '${entryPath}'`), zipfile);
+            fail(new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", `Duplicate entry: '${entryPath}'`));
             return;
           }
           seenPaths.add(entryPath);
 
           if (entry.generalPurposeBitFlag & GPB_ENCRYPTION_BIT) {
-            fail(new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", `Encrypted entry '${entryPath}' is not allowed`), zipfile);
+            fail(new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", `Encrypted entry '${entryPath}' is not allowed`));
             return;
           }
           if (entry.lastModFileDate !== FIXED_DOS_DATE || entry.lastModFileTime !== FIXED_DOS_TIME) {
             fail(new ResultBundleError(
               "RESULT_ARCHIVE_VERIFY_FAILED",
               `Entry '${entryPath}' has non-canonical timestamp (date=0x${entry.lastModFileDate.toString(16).padStart(4, "0")} time=0x${entry.lastModFileTime.toString(16).padStart(4, "0")}), expected date=0x${FIXED_DOS_DATE.toString(16).padStart(4, "0")} time=0x${FIXED_DOS_TIME.toString(16).padStart(4, "0")}`,
-            ), zipfile);
+            ));
             return;
           }
           const entryMode = entry.externalFileAttributes >>> 16;
           if (entryMode !== FIXED_FILE_MODE) {
-            fail(new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", `Entry '${entryPath}' has non-canonical mode 0o${entryMode.toString(8)}, expected 0o${FIXED_FILE_MODE.toString(8)}`), zipfile);
+            fail(new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", `Entry '${entryPath}' has non-canonical mode 0o${entryMode.toString(8)}, expected 0o${FIXED_FILE_MODE.toString(8)}`));
             return;
           }
           if (entry.compressionMethod !== 0 && entry.compressionMethod !== 8) {
-            fail(new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", `Unsupported compression method ${entry.compressionMethod} for '${entryPath}'`), zipfile);
+            fail(new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", `Unsupported compression method ${entry.compressionMethod} for '${entryPath}'`));
             return;
           }
 
           zipfile.openReadStream(entry, (streamErr, readStream) => {
             if (settled) return;
             if (streamErr || !readStream) {
-              fail(new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", `Cannot read entry '${entryPath}': ${streamErr?.message ?? "unknown"}`), zipfile);
+              fail(new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", `Cannot read entry '${entryPath}': ${streamErr?.message ?? "unknown"}`));
               return;
             }
             const hash = crypto.createHash("sha256");
@@ -262,17 +264,17 @@ export async function verifyResultBundleZip(
               if (entryPath === "manifest.json") manifestChunks.push(chunk);
             });
             readStream.on("error", (error: Error) => {
-              fail(error instanceof ResultBundleError ? error : new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", `Read error for '${entryPath}': ${error.message}`), zipfile);
+              fail(error instanceof ResultBundleError ? error : new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", `Read error for '${entryPath}': ${error.message}`));
             });
             readStream.on("end", () => {
               if (settled) return;
               if (actualEntryBytes !== entry.uncompressedSize) {
-                fail(new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", `Entry '${entryPath}' size changed while reading.`), zipfile);
+                fail(new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", `Entry '${entryPath}' size changed while reading.`));
                 return;
               }
               uncompressedBytes += actualEntryBytes;
               if (uncompressedBytes > limits.maximum_total_uncompressed_bytes) {
-                fail(new ResultBundleError("RESULT_ARCHIVE_SIZE_LIMIT", `Archive uncompressed size exceeds ${limits.maximum_total_uncompressed_bytes} bytes.`), zipfile);
+                fail(new ResultBundleError("RESULT_ARCHIVE_SIZE_LIMIT", `Archive uncompressed size exceeds ${limits.maximum_total_uncompressed_bytes} bytes.`));
                 return;
               }
               if (entryPath === "manifest.json") manifestBuffer = Buffer.concat(manifestChunks, actualEntryBytes);
@@ -335,7 +337,7 @@ export async function verifyResultBundleZip(
               reviewedEntrySetSha256: recomputedReviewedEntrySetSha256,
             });
           } catch (error) {
-            fail(error, zipfile);
+            fail(error);
           }
         });
 
@@ -346,10 +348,10 @@ export async function verifyResultBundleZip(
             message.includes("absolute path") ||
             message.includes("invalid characters in filename")
           ) {
-            fail(new ResultBundleError("RESULT_SOURCE_PATH_UNSAFE", `Unsafe ZIP entry path: ${error.message}`), zipfile);
+            fail(new ResultBundleError("RESULT_SOURCE_PATH_UNSAFE", `Unsafe ZIP entry path: ${error.message}`));
             return;
           }
-          fail(new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", `ZIP error: ${error.message}`), zipfile);
+          fail(new ResultBundleError("RESULT_ARCHIVE_VERIFY_FAILED", `ZIP error: ${error.message}`));
         });
       });
     });

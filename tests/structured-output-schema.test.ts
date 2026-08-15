@@ -7,6 +7,8 @@ import {
 } from "../src/agent/output-schemas.js";
 import { assertStructuredOutputSchema } from "../src/agent/structured-output-schema.js";
 import { ExecutionError } from "../src/execution/errors.js";
+import { CHATGPT_CODEX_IMPLEMENTATION_OUTPUT_SCHEMA } from "../src/web-bridge/chatgpt-codex-implementation-client.js";
+import { CHATGPT_CODEX_AUTHOR_OUTPUT_SCHEMA, CHATGPT_CODEX_REVIEW_OUTPUT_SCHEMA } from "../src/web-bridge/chatgpt-codex-output-schema.js";
 
 function expectInvalidSchema(
   action: () => unknown,
@@ -39,6 +41,10 @@ test(
         REVIEW_OUTPUT_SCHEMA,
       ),
     );
+
+    for (const schema of [CHATGPT_CODEX_AUTHOR_OUTPUT_SCHEMA, CHATGPT_CODEX_REVIEW_OUTPUT_SCHEMA, CHATGPT_CODEX_IMPLEMENTATION_OUTPUT_SCHEMA]) {
+      assert.doesNotThrow(() => assertStructuredOutputSchema(schema as unknown as Record<string, unknown>));
+    }
   },
 );
 
@@ -108,3 +114,14 @@ test(
     );
   },
 );
+
+test("provider const and enum leaves require explicit JSON types", () => {
+  for (const leaf of [{ const: "value" }, { enum: ["value"] }]) {
+    expectInvalidSchema(() => assertStructuredOutputSchema({
+      type: "object",
+      additionalProperties: false,
+      properties: { value: leaf },
+      required: ["value"],
+    }));
+  }
+});

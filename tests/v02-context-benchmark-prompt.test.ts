@@ -29,7 +29,7 @@ test("v0.2 A/B baseline prompt removes smart-context hints without weakening cha
   assert.doesNotMatch(baseline, /Deterministic context selection/);
   assert.doesNotMatch(baseline, /src\/helper\.ts/);
   assert.match(baseline, /src\/change\.ts/);
-  assert.match(baseline, /accepted Task Bundle as the requirement\/acceptance source of truth/i);
+  assert.match(baseline, /accepted Task Bundle directory above.*requirement\/acceptance source of truth/i);
   assert.match(baseline, /read-only mode/);
   assert.match(smart, /Deterministic context selection/);
   assert.match(smart, /src\/helper\.ts/);

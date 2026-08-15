@@ -1,12 +1,17 @@
-import { chmod, lstat, mkdir, open, readFile, realpath, rename, unlink } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
+import { readStableFile } from "../shared/stable-file.js";
 import { WebBridgeError } from "./contracts.js";
 
 const RELAY_TOKEN_FILE = "relay-token";
+const MAX_TOKEN_CHARACTERS = 4096;
+// Writer persists one trailing newline; keep the file bound consistent with the
+// maximum valid token rather than making a 4096-character token unreadable.
+const MAX_TOKEN_FILE_BYTES = MAX_TOKEN_CHARACTERS + 1;
 
 function validateToken(value: string): string {
-  if (value.length < 32 || value.length > 4096 || value !== value.trim() || /[\r\n\0]/.test(value)) {
+  if (value.length < 32 || value.length > MAX_TOKEN_CHARACTERS || value !== value.trim() || /[\r\n\0]/.test(value)) {
     throw new WebBridgeError("WEB_RELAY_AUTH_UNAVAILABLE", "Relay credential must be 32-4096 characters without whitespace controls.");
   }
   return value;
@@ -32,16 +37,15 @@ export async function readRelayToken(credentialsDirectory: string, env: NodeJS.P
   if (fromEnvironment) return validateToken(fromEnvironment);
   const directory = await safeCredentialsDirectory(credentialsDirectory);
   const target = path.join(directory, RELAY_TOKEN_FILE);
-  let stat;
-  try { stat = await lstat(target); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new WebBridgeError("WEB_RELAY_AUTH_UNAVAILABLE", "Relay credential is not configured. Run `wco web connect`.");
-    throw error;
+  try {
+    const snapshot = await readStableFile(target, MAX_TOKEN_FILE_BYTES);
+    return validateToken(snapshot.bytes.toString("utf8").trim());
+  } catch (error) {
+    const cause = error instanceof Error && "cause" in error ? (error as Error & { cause?: unknown }).cause : undefined;
+    if ((cause as NodeJS.ErrnoException | undefined)?.code === "ENOENT") throw new WebBridgeError("WEB_RELAY_AUTH_UNAVAILABLE", "Relay credential is not configured. Run `wco web connect --self-hosted` for the advanced relay profile.");
+    if (error instanceof WebBridgeError) throw error;
+    throw new WebBridgeError("WEB_RELAY_CREDENTIAL_PATH_UNSAFE", `Relay credential could not be read as stable local state: ${error instanceof Error ? error.message : String(error)}`);
   }
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 4096 || await realpath(target) !== target) {
-    throw new WebBridgeError("WEB_RELAY_CREDENTIAL_PATH_UNSAFE", "Relay credential file is unsafe.");
-  }
-  return validateToken((await readFile(target, "utf8")).trim());
 }
 
 export async function writeRelayToken(credentialsDirectory: string, token: string): Promise<string> {

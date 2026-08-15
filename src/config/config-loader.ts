@@ -1,7 +1,7 @@
 import type { Stats } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import path from "node:path";
-import type { ConfigErrorCode, TrustedConfig } from "./contracts.js";
+import type { ConfigErrorCode, ConfigValidationReport, TrustedConfig } from "./contracts.js";
 import { validateConfig } from "./config-validator.js";
 
 export const MAXIMUM_TRUSTED_CONFIG_BYTES = 1 * 1024 * 1024;
@@ -127,6 +127,40 @@ async function readStableConfigSource(configPath: string, initialInfo: Stats): P
   }
 }
 
+/**
+ * The normal local ChatGPT/Codex transport is represented canonically by an
+ * absent `web_bridge` field. Accept the internal `chatgpt_codex` identity when
+ * encountered in a trusted config, but normalize it back to absence before the
+ * rest of the product sees it. This prevents TUI/Doctor/status routing from
+ * treating the local transport as an advanced profile while preserving a
+ * swappable internal transport identity.
+ *
+ * `web_native_mcp` deliberately adds no trusted URL or secret fields. Reuse the
+ * mature manual-file structural validator for the rest of the config while the
+ * native profile remains a local durable mailbox whose transport credentials
+ * live only in owner-protected WCO credential storage.
+ */
+export function validateTrustedConfig(value: unknown): ConfigValidationReport {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return validateConfig(value);
+  const root = value as Record<string, unknown>;
+  const web = root.web_bridge;
+  if (web && typeof web === "object" && !Array.isArray(web) && (web as Record<string, unknown>).mode === "chatgpt_codex") {
+    const report = validateConfig(value);
+    if (!report.ok || !report.config) return report;
+    const { web_bridge: _internalTransportIdentity, ...canonical } = report.config;
+    return { ok: true, issues: [], config: canonical as TrustedConfig };
+  }
+  if (!web || typeof web !== "object" || Array.isArray(web) || (web as Record<string, unknown>).mode !== "web_native_mcp") return validateConfig(value);
+  const item = web as Record<string, unknown>;
+  const fields = Object.keys(item);
+  if (fields.some((key) => !["mode", "poll_interval_ms", "job_ttl_seconds"].includes(key))) {
+    return { ok: false, issues: [{ code: "CONFIG_INVALID", message: "web_native_mcp accepts only mode, poll_interval_ms, and job_ttl_seconds; OpenAI tunnel/agent credentials must stay outside trusted config." }] };
+  }
+  const cloned = { ...root, web_bridge: { ...item, mode: "manual_file" } };
+  const report = validateConfig(cloned);
+  return report.ok ? { ok: true, issues: [], config: value as TrustedConfig } : report;
+}
+
 export async function loadTrustedConfig(configPath: string): Promise<TrustedConfig> {
   let info: Stats;
   try {
@@ -155,7 +189,7 @@ export async function loadTrustedConfig(configPath: string): Promise<TrustedConf
     if (error instanceof ConfigError) throw error;
     throw new ConfigError("CONFIG_INVALID", `Config is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const report = validateConfig(parsed);
+  const report = validateTrustedConfig(parsed);
   if (!report.ok || !report.config) throw new ConfigError("CONFIG_INVALID", report.issues.map((issue) => issue.message).join(" "));
   return report.config;
 }

@@ -17,7 +17,7 @@ const input: ExecuteDraftPrInput = {
   verifyRemoteHead: async () => {},
 };
 
-test("v0.2 Draft PR body presents verified evidence instead of internal phase labels", () => {
+test("v0.2 Draft PR body reports only evidence established before review completion", () => {
   const client = {} as GitHubPullRequestClient;
   const machine = new DraftPullRequestStateMachine(client, async () => {});
   const hashes = (machine as unknown as { getHashes(value: ExecuteDraftPrInput): { title: string; body: string } }).getHashes(input);
@@ -25,8 +25,10 @@ test("v0.2 Draft PR body presents verified evidence instead of internal phase la
   assert.equal(hashes.title, "WCO: TASK-PR");
   assert.match(hashes.body, /## Verified Draft PR/);
   assert.match(hashes.body, /Deterministic verification: \*\*PASS\*\*/);
-  assert.match(hashes.body, /Independent Terra review: \*\*PASS\*\*/);
-  assert.match(hashes.body, /Independent Sol review: \*\*PASS\*\*/);
+  assert.match(hashes.body, /Remote branch head: \*\*re-attested to the exact verified commit\*\*/);
+  assert.match(hashes.body, /Review gates: tracked separately by mode-specific durable WCO receipts/);
+  assert.doesNotMatch(hashes.body, /Independent Terra review: \*\*PASS\*\*/);
+  assert.doesNotMatch(hashes.body, /Independent Sol review: \*\*PASS\*\*/);
   assert.match(hashes.body, /Final merge authority remains with a human maintainer/);
   assert.doesNotMatch(hashes.body, /Phase 4/);
   assert.doesNotMatch(hashes.body, /Phase 5A/);

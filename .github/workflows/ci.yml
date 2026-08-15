@@ -82,6 +82,5 @@ jobs:
       - name: Clean-install packed CLI without dev dependencies
         run: npm run pack:smoke
 
-      - name: Packed daily-user journeys
-        run: npm run test:user:packed
-        timeout-minutes: 3
+      - name: Zero-config daily-user contract
+        run: npm run test:user:contract

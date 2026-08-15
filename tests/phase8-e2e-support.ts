@@ -15,6 +15,8 @@ import { loadAndVerifyResultBundle } from "../src/web-review/result-bundle-revie
 import { reviseRun } from "../src/revision/revision-service.js";
 import { FakeAgentClient } from "../src/agent/fake-agent-client.js";
 import type { AgentTurnRequest } from "../src/agent/contracts.js";
+import { DEFAULT_REVIEWER } from "../src/agent/reviewer-selection.js";
+import { freezeRunReviewMode } from "../src/agent/reviewer-mode-store.js";
 import { FakeVerificationSandbox } from "../src/verifier/fake-sandbox.js";
 import { GitRunner } from "../src/git/git-runner.js";
 import { calculateChangeSet } from "../src/execution/change-set.js";
@@ -186,10 +188,11 @@ async function writeInitialReceipts(params: {
     change_set_sha256: params.changeSetSha256,
     repository_refs_sha256: params.refsSha256,
     implementer: { model: "fixture", reasoning_effort: "high", thread_id: "fixture-impl", iterations: 1 },
-    internal_reviewer: { model: "fixture", reasoning_effort: "high", rounds: 1, latest_thread_id: "fixture-terra", verdict: "APPROVE", reviewed_change_set_sha256: params.changeSetSha256 },
-    final_reviewer: { model: "fixture", reasoning_effort: "high", rounds: 1, latest_thread_id: "fixture-sol", verdict: "APPROVE", reviewed_change_set_sha256: params.changeSetSha256 },
+    reviewer_selection: DEFAULT_REVIEWER,
+    internal_reviewer: { model: "gpt-5.6-terra", reasoning_effort: "high", rounds: 0, latest_thread_id: null, verdict: null, reviewed_change_set_sha256: null },
+    final_reviewer: { model: DEFAULT_REVIEWER.model, reasoning_effort: DEFAULT_REVIEWER.reasoning_effort, rounds: 1, latest_thread_id: "fixture-sol", verdict: "APPROVE", reviewed_change_set_sha256: params.changeSetSha256 },
     verification: { rounds: 1, required_commands_passed: true, verified_change_set_sha256: params.changeSetSha256, commands: [] },
-    usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 10, total_turns: 4, started_at: now },
+    usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 10, total_turns: 3, started_at: now },
     errors: [],
     created_at: now,
     updated_at: now,
@@ -323,6 +326,7 @@ test("P8-E2E-001: sealed REVISE becomes a verified same-PR revision bundle and r
     const initialChangeSetSha256 = sha256Hex(`initial-change:${base}:${initialHead}`);
     const initialRefsSha256 = sha256Hex(`initial-refs:${BRANCH}:${initialHead}`);
     await writeInitialReceipts({ state, repo, accepted, base, initialHead, changeSetSha256: initialChangeSetSha256, refsSha256: initialRefsSha256 });
+    await freezeRunReviewMode(state, RUN_ID, DEFAULT_REVIEWER, () => new Date("2026-08-07T12:00:00.000Z"));
 
     const githubClient = new DynamicGitHubClient(repo, base);
     const initialBundle = await packageResultBundle({
@@ -392,7 +396,6 @@ test("P8-E2E-001: sealed REVISE becomes a verified same-PR revision bundle and r
         };
       },
       review,
-      review,
     ]);
     const sandbox = new FakeVerificationSandbox();
 
@@ -413,6 +416,18 @@ test("P8-E2E-001: sealed REVISE becomes a verified same-PR revision bundle and r
     assert.ok(revision.new_published_commit_sha);
     assert.notEqual(revision.new_published_commit_sha, initialHead);
     assert.equal(revision.new_published_commit_sha, revision.remote_branch_sha);
+    const internalReviewerCalls = agent.calls.filter((call) => call.role === "internal_reviewer");
+    const finalReviewerCalls = agent.calls.filter((call) => call.role === "final_reviewer");
+    assert.equal(internalReviewerCalls.length, 0, "Sol-selected Phase 8 must never call Terra reviewer");
+    assert.equal(finalReviewerCalls.length, 1, "Sol-selected Phase 8 must call only the frozen Sol reviewer");
+    assert.equal(finalReviewerCalls[0]?.model, DEFAULT_REVIEWER.model);
+    assert.equal(finalReviewerCalls[0]?.reasoning_effort, DEFAULT_REVIEWER.reasoning_effort);
+    assert.equal(revision.terra_review.rounds, 0);
+    assert.equal(revision.terra_review.verdict, null);
+    assert.equal(revision.terra_review.reviewed_change_set_sha256, null);
+    assert.equal(revision.sol_review.rounds, 1);
+    assert.equal(revision.sol_review.verdict, "APPROVE");
+    assert.equal(revision.sol_review.reviewed_change_set_sha256, revision.verification.verified_change_set_sha256);
     assert.equal(await git(repo, ["rev-list", "--count", `${initialHead}..${revision.new_published_commit_sha}`]), "1");
     assert.equal(await git(repo, ["rev-parse", `${revision.new_published_commit_sha}^`]), initialHead);
     const remoteRow = await git(repo, ["ls-remote", "--heads", "origin", `refs/heads/${BRANCH}`]);
