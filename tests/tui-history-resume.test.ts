@@ -4,6 +4,8 @@ import { mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createRunLedger, writeRunLedger } from "../src/orchestration/ledger.js";
+import type { RunReceipt } from "../src/run/contracts.js";
+import { writeRunReceipt } from "../src/run/run-store.js";
 import { readLocalWorkerSession, type LocalWorkerSession } from "../src/web-bridge/local-worker.js";
 import { restoreLocalTaskHistoryFocus } from "../src/web-bridge/session-history.js";
 
@@ -46,7 +48,42 @@ function durableSession(state: string, taskArchive: string, webPack: string): Lo
   };
 }
 
-test("history resume re-attests the durable ledger and artifacts before changing current focus", async () => {
+function canonicalRun(session: LocalWorkerSession, stateDirectory: string, overrides: Partial<RunReceipt> = {}): RunReceipt {
+  const runId = session.run_id!;
+  const separator = runId.lastIndexOf(":");
+  const taskId = runId.slice(0, separator);
+  const archiveSha256 = runId.slice(separator + 1);
+  return {
+    run_version: "1.0",
+    run_id: runId,
+    status: "READY_FOR_CODEX",
+    task_id: taskId,
+    archive_sha256: archiveSha256,
+    bundle_schema_version: "1.3",
+    repository_id: session.repository.repository_id,
+    repository_path: path.join(stateDirectory, "repository"),
+    remote: "origin",
+    remote_url: "https://github.com/example/repo.git",
+    base_branch: session.repository.base_branch,
+    base_commit: session.repository.base_commit,
+    branch_name: "wco/resume",
+    worktree_path: path.join(stateDirectory, "worktrees", "resume"),
+    accepted_bundle_path: path.join(stateDirectory, "accepted", taskId, archiveSha256),
+    state: "READY_FOR_CODEX",
+    checks: [],
+    errors: [],
+    created_at: "2020-01-01T00:00:00.000Z",
+    updated_at: "2020-01-01T00:01:00.000Z",
+    ...overrides,
+  };
+}
+
+async function writeCanonicalAuthority(state: string, session: LocalWorkerSession, overrides: Partial<RunReceipt> = {}): Promise<void> {
+  await writeRunLedger(state, createRunLedger({ runId: session.run_id! }));
+  await writeRunReceipt(state, canonicalRun(session, state, overrides));
+}
+
+test("history resume re-attests the canonical run receipt, ledger, and artifacts before changing current focus", async () => {
   const state = await mkdtemp(path.join(os.tmpdir(), "wco-history-resume-"));
   const artifacts = path.join(state, "resume-artifacts");
   await mkdir(artifacts, { recursive: true });
@@ -54,7 +91,7 @@ test("history resume re-attests the durable ledger and artifacts before changing
   const webPack = path.join(artifacts, "web-pack.zip");
   await Promise.all([writeFile(taskArchive, "task"), writeFile(webPack, "pack")]);
   const session = durableSession("IMPLEMENTATION_REGISTERED", taskArchive, webPack);
-  await writeRunLedger(state, createRunLedger({ runId: session.run_id! }));
+  await writeCanonicalAuthority(state, session);
 
   const restored = await restoreLocalTaskHistoryFocus(state, "repo", session);
   assert.equal(restored.session_id, session.session_id);
@@ -62,6 +99,20 @@ test("history resume re-attests the durable ledger and artifacts before changing
   const current = await readLocalWorkerSession(state, "repo");
   assert.equal(current?.run_id, session.run_id);
   assert.equal(current?.goal, session.goal);
+});
+
+test("history resume refuses a history record whose repository base no longer matches canonical run authority", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "wco-history-run-mismatch-"));
+  const artifacts = path.join(state, "resume-artifacts");
+  await mkdir(artifacts, { recursive: true });
+  const taskArchive = path.join(artifacts, "task-bundle.zip");
+  const webPack = path.join(artifacts, "web-pack.zip");
+  await Promise.all([writeFile(taskArchive, "task"), writeFile(webPack, "pack")]);
+  const session = durableSession("IMPLEMENTATION_REGISTERED", taskArchive, webPack);
+  await writeCanonicalAuthority(state, session, { base_commit: "c".repeat(40) });
+
+  await assert.rejects(restoreLocalTaskHistoryFocus(state, "repo", session), /canonical run authority|repository base/i);
+  assert.equal(await readLocalWorkerSession(state, "repo"), null);
 });
 
 test("history resume refuses authoring-only history instead of inventing local authority", async () => {
@@ -92,7 +143,7 @@ test("history resume refuses symlinked durable artifacts", { skip: process.platf
   await Promise.all([writeFile(realTask, "task"), writeFile(webPack, "pack")]);
   await symlink(realTask, taskArchive);
   const session = durableSession("IMPLEMENTATION_REGISTERED", taskArchive, webPack);
-  await writeRunLedger(state, createRunLedger({ runId: session.run_id! }));
+  await writeCanonicalAuthority(state, session);
 
   await assert.rejects(restoreLocalTaskHistoryFocus(state, "repo", session), /non-symlink|redirected path/i);
   assert.equal(await readLocalWorkerSession(state, "repo"), null);
