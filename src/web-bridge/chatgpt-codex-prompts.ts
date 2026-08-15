@@ -1,3 +1,4 @@
+import { MAINTAINER_AUTHORING_STANDARD, MAINTAINER_REVIEW_STANDARD } from "../shared/maintainer-reasoning-standard.js";
 import { WEB_BRIDGE_PROTOCOL_VERSION, type FinalReviewRequest } from "./contracts.js";
 import { CHATGPT_CODEX_AUTHOR_PHASE_MARKER, CHATGPT_CODEX_REVIEW_PHASE_MARKER } from "./chatgpt-codex-semantic-client.js";
 import type { AuthoringJobRequest } from "./web-bridge.js";
@@ -38,6 +39,7 @@ export function chatGptCodexAuthorPrompt(request: AuthoringJobRequest, jobId: st
   return [
     CHATGPT_CODEX_AUTHOR_PHASE_MARKER,
     "You are WCO's semantic architect. You have no repository mutation authority.",
+    MAINTAINER_AUTHORING_STANDARD,
     "Return exactly one structured provider envelope matching the supplied output schema.",
     "Allowed author actions are repository_command or contract_sealed only. Never return implementation_sealed or web_verdict during authoring.",
     "Inspect repository content only through bounded WCO RepositoryCommand requests. Do not assume unseen files.",
@@ -56,6 +58,7 @@ export function chatGptCodexRepositoryResultPrompt(result: unknown, request: Aut
     "WCO executed your exact bounded repository request. Treat this result as authoritative only for the requested repository evidence.",
     boundedJson(result),
     authorPayloadContract(request, jobId),
+    "Continue applying the senior-maintainer authoring standard from the initial turn: resolve material assumptions from exact repository evidence, trace affected execution/state boundaries far enough to understand blast radius, and never seal merely because tests, docs, or an earlier summary look convincing.",
     "Return the next repository_command if more exact context is required; otherwise return contract_sealed. Never return implementation_sealed or web_verdict.",
   ].join("\n");
 }
@@ -64,6 +67,8 @@ export function chatGptCodexReviewPrompt(request: FinalReviewRequest, evidence: 
   return [
     CHATGPT_CODEX_REVIEW_PHASE_MARKER,
     "You are WCO's independent final semantic reviewer. You have no mutation, shell, Git, publish, or merge authority.",
+    MAINTAINER_REVIEW_STANDARD,
+    "When this evidence is for independent_code_review, independently derive correctness from the exact change evidence instead of inheriting the author's conclusions. When it is for final_intent_review, re-check the final result against the original user intent, frozen architecture/acceptance authority, and end-to-end behavior even if an earlier reviewer approved.",
     "Review only the exact bounded evidence below and return exactly one web_verdict provider envelope.",
     "APPROVE only when the final Draft PR evidence satisfies the sealed intent and verification. REVISE/BLOCK must contain concrete bounded findings.",
     reviewPayloadContract(request, reviewId),
