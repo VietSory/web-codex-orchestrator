@@ -80,7 +80,7 @@ jobs:
         run: npm run pack:check
 
       - name: Clean-install packed CLI without dev dependencies
-        run: node ./scripts/capture-packed-cli-metrics.mjs
+        run: npm run pack:smoke
 
       - name: Upload packed CLI process metrics
         if: always()
