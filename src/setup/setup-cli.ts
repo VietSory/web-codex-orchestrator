@@ -72,8 +72,8 @@ export async function runSetupCommand(args: string[], cwd = process.cwd(), suppl
     let codex = "authorization pending";
     try { const runtime = await resolveCodexRuntime(result.config.runtime, result.paths.state); await new CodexSdkAgentClient(runtime).checkAvailability(); codex = `ChatGPT authenticated (${runtime.package_version})`; } catch { /* reported below */ }
     let github = "not configured";
-    if (result.config.github_pull_request) { try { await resolveGitHubToken(result.config.github_pull_request.authentication); github = "gh authenticated"; } catch { github = "authentication unavailable"; } }
-    checks.push([github === "authentication unavailable" ? "warn" : "ok", "GitHub", github]);
+    if (result.config.github_pull_request) { try { await resolveGitHubToken(result.config.github_pull_request.authentication); github = "gh authenticated"; } catch { github = "gh missing or not authenticated"; } }
+    checks.push([github === "gh missing or not authenticated" ? "warn" : "ok", "GitHub", github]);
     checks.push([codex === "authorization pending" ? "warn" : "ok", "ChatGPT", codex]);
     const explicitMode = result.config.web_bridge?.mode;
     const transport = explicitMode ? `${explicitMode} (advanced override)` : "local ChatGPT/Codex";
@@ -84,7 +84,7 @@ export async function runSetupCommand(args: string[], cwd = process.cwd(), suppl
     } else if (!explicitMode) {
       suppliedIo.write("\nSetup is complete. Daily use is simply `wco` and a goal.\n");
     }
-    if (github === "authentication unavailable") suppliedIo.write("GitHub authentication needs attention before Draft PR publication. Run `gh auth login`, then `wco doctor`.\n");
+    if (github === "gh missing or not authenticated") suppliedIo.write("GitHub needs attention before WCO can publish a Draft PR. Install GitHub CLI (`gh`) if it is missing, then run `gh auth login` and `wco doctor`.\n");
     return 0;
   } catch (error) {
     suppliedIo.error(`${friendlySetupError(error)}\nYour project files and remote repository were not changed by setup.\n`);
