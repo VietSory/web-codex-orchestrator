@@ -1,5 +1,6 @@
-import { lstat, mkdir, readdir, unlink } from "node:fs/promises";
+import { lstat, mkdir, readdir, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
+import { readRunLedger } from "../orchestration/ledger.js";
 import { atomicWriteJson } from "../run/run-store.js";
 import { readStableFile } from "../shared/stable-file.js";
 import type { LocalWorkerSession } from "./local-worker.js";
@@ -19,6 +20,20 @@ function validSession(value: unknown): value is LocalWorkerSession {
 
 function historyDirectory(stateDirectory: string): string {
   return path.join(stateDirectory, "bridge", "sessions", "history");
+}
+
+function currentSessionPath(stateDirectory: string, repositoryId: string): string {
+  if (!SAFE_HISTORY_ID.test(repositoryId)) throw new Error("WEB_SESSION_ID_INVALID: repository identity is invalid.");
+  return path.join(stateDirectory, "bridge", "sessions", `${repositoryId}.json`);
+}
+
+async function assertBoundedStateArtifact(stateDirectory: string, target: string, label: string): Promise<void> {
+  if (!path.isAbsolute(target)) throw new Error(`WEB_HISTORY_NOT_RESUMABLE: ${label} is not an absolute WCO artifact path.`);
+  const [root, resolved] = await Promise.all([realpath(path.resolve(stateDirectory)), realpath(target)]);
+  const relative = path.relative(root, resolved);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error(`WEB_HISTORY_NOT_RESUMABLE: ${label} is outside the WCO state root.`);
+  const info = await lstat(resolved);
+  if (!info.isFile() || info.isSymbolicLink()) throw new Error(`WEB_HISTORY_NOT_RESUMABLE: ${label} is not a regular WCO artifact.`);
 }
 
 async function pruneForInsert(history: string): Promise<void> {
@@ -60,7 +75,7 @@ export async function archiveLocalTaskHistory(stateDirectory: string, session: L
 }
 
 export async function listLocalTaskHistory(stateDirectory: string, repositoryId: string, limit = 10): Promise<LocalWorkerSession[]> {
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(repositoryId)) throw new Error("WEB_SESSION_ID_INVALID: repository identity is invalid.");
+  if (!SAFE_HISTORY_ID.test(repositoryId)) throw new Error("WEB_SESSION_ID_INVALID: repository identity is invalid.");
   const history = historyDirectory(stateDirectory);
   let names: string[];
   try { names = await readdir(history); }
@@ -81,4 +96,35 @@ export async function listLocalTaskHistory(stateDirectory: string, repositoryId:
     }
   }
   return values.sort((a, b) => b.updated_at.localeCompare(a.updated_at)).slice(0, Math.min(Math.max(1, limit), 100));
+}
+
+/**
+ * Move an already-durable historical task back into current focus without ever
+ * treating the history JSON itself as workflow authority. The selected history
+ * item is accepted only when its exact run ledger and implementation artifacts
+ * can be re-attested under the current WCO state root. Earlier authoring-only
+ * history intentionally remains inspectable but not resumable because its
+ * external authoring job cannot be proven from local durable authority alone.
+ */
+export async function restoreLocalTaskHistoryFocus(
+  stateDirectory: string,
+  repositoryId: string,
+  session: LocalWorkerSession,
+): Promise<LocalWorkerSession> {
+  if (!validSession(session) || session.repository.repository_id !== repositoryId) throw new Error("WEB_HISTORY_NOT_RESUMABLE: history identity does not match this repository.");
+  if (session.state !== "IMPLEMENTATION_REGISTERED" || !session.sealed || !session.run_id || !session.task_archive_path || !session.web_pack_path) {
+    throw new Error("WEB_HISTORY_NOT_RESUMABLE: this task did not reach a locally re-attestable implementation checkpoint. Start a new follow-up task instead.");
+  }
+  const ledger = await readRunLedger(stateDirectory, session.run_id);
+  if (!ledger || ledger.run_id !== session.run_id) throw new Error("WEB_HISTORY_NOT_RESUMABLE: the durable run ledger is missing or no longer matches this task.");
+  await Promise.all([
+    assertBoundedStateArtifact(stateDirectory, session.task_archive_path, "task bundle"),
+    assertBoundedStateArtifact(stateDirectory, session.web_pack_path, "implementation pack"),
+  ]);
+
+  const restored: LocalWorkerSession = { ...session, updated_at: new Date().toISOString() };
+  const target = currentSessionPath(stateDirectory, repositoryId);
+  await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+  await atomicWriteJson(target, restored);
+  return restored;
 }
