@@ -9,6 +9,7 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const MAX_OBSERVATIONS = 128;
 const MAX_INDEXED_PATHS = 256;
 const MAX_INDEX_BYTES = 1_048_576;
+const MAX_PATH_METADATA_BYTES = 4_194_304;
 const MAX_TRANSMITTED_BASE64_CHARS = 100_000;
 const SENSITIVE_PATHS = [
   /(^|\/)\.env($|\.)/i,
@@ -87,6 +88,8 @@ export interface SemanticEvidenceIndex {
   evidence_index_sha256: string;
 }
 
+type ReadExpectation = { path: string; start: number; end: number; reference_key: string };
+
 function digest(value: unknown): string {
   return crypto.createHash("sha256").update(canonicalJsonBuffer(value)).digest("hex");
 }
@@ -142,13 +145,20 @@ function validateRepository(raw: RepositoryBinding): RepositoryBinding {
   const repository_id = boundedText(raw.repository_id, "repository.repository_id", 128);
   if (!SAFE_ID.test(repository_id)) throw new Error("repository.repository_id is invalid.");
   const base_branch = boundedText(raw.base_branch, "repository.base_branch", 256);
+  if (/[\r\n]/.test(base_branch)) throw new Error("repository.base_branch is invalid.");
   const base_commit = gitSha(raw.base_commit, "repository.base_commit");
   return { repository_id, base_branch, base_commit };
 }
 
 function pathArray(value: unknown, label: string, maximum: number): string[] {
   if (!Array.isArray(value) || value.length > maximum) throw new Error(`${label} must be an array with at most ${maximum} paths.`);
-  const paths = value.map((entry, index) => safeRepositoryPath(entry, `${label}[${index}]`));
+  let metadataBytes = 0;
+  const paths = value.map((entry, index) => {
+    const result = safeRepositoryPath(entry, `${label}[${index}]`);
+    metadataBytes += Buffer.byteLength(result, "utf8");
+    if (metadataBytes > MAX_PATH_METADATA_BYTES) throw new Error(`${label} exceeds the semantic path metadata byte bound.`);
+    return result;
+  });
   if (new Set(paths).size !== paths.length) throw new Error(`${label} contains duplicate paths.`);
   return paths;
 }
@@ -190,14 +200,28 @@ function canonicalBase64(value: string, label: string): Buffer {
   return bytes;
 }
 
-function normalizeReadResult(value: unknown, command: RepositoryCommand): SemanticEvidenceResult {
-  if (command.operation !== "read") throw new Error("Internal semantic evidence read normalization mismatch.");
+function readExpectations(command: Extract<RepositoryCommand, { operation: "read" }>): ReadExpectation[] {
+  const expected = command.regions
+    ? command.regions.map((region) => {
+        const filePath = safeRepositoryPath(region.path, "read command region.path");
+        return { path: filePath, start: region.start_byte, end: region.end_byte_exclusive, reference_key: `${filePath}:${region.start_byte}:${region.end_byte_exclusive}` };
+      })
+    : command.paths!.map((entry) => {
+        const filePath = safeRepositoryPath(entry, "read command path");
+        return { path: filePath, start: 0, end: -1, reference_key: filePath };
+      });
+  const exactReferenceKeys = new Set(expected.map((item) => item.reference_key));
+  for (const key of Object.keys(command.known_content_sha256 ?? {})) {
+    if (!exactReferenceKeys.has(key)) throw new Error(`read command known_content_sha256 key '${key}' does not bind an exact requested path/region.`);
+  }
+  return expected;
+}
+
+function normalizeReadResult(value: unknown, command: Extract<RepositoryCommand, { operation: "read" }>): SemanticEvidenceResult {
   const object = objectValue(value, "read result");
   exactKeys(object, ["files", "metrics"], ["files", "metrics"], "read result");
   if (!Array.isArray(object.files) || object.files.length < 1 || object.files.length > 32) throw new Error("read result.files must contain 1-32 exact file regions.");
-  const expected = command.regions
-    ? command.regions.map((region) => ({ path: safeRepositoryPath(region.path, "read command region.path"), start: region.start_byte, end: region.end_byte_exclusive }))
-    : command.paths!.map((item) => ({ path: safeRepositoryPath(item, "read command path"), start: 0, end: -1 }));
+  const expected = readExpectations(command);
   if (object.files.length !== expected.length) throw new Error("read result file count does not match the exact read command.");
 
   const files = object.files.map((raw, index) => {
@@ -218,9 +242,8 @@ function normalizeReadResult(value: unknown, command: RepositoryCommand): Semant
     if (end <= start || end - start !== size || end > total) throw new Error(`read result.files[${index}] byte range/size is inconsistent.`);
 
     const wanted = expected[index]!;
-    if (filePath !== wanted.path || start !== wanted.start || wanted.end === -1 ? end !== total : end !== wanted.end) {
-      throw new Error(`read result.files[${index}] does not bind the exact requested path/region.`);
-    }
+    const endMatches = wanted.end === -1 ? end === total : end === wanted.end;
+    if (filePath !== wanted.path || start !== wanted.start || !endMatches) throw new Error(`read result.files[${index}] does not bind the exact requested path/region.`);
 
     if (typeof item.content_base64 !== "string") throw new Error(`read result.files[${index}].content_base64 must be a string.`);
     const contentBase64 = item.content_base64;
@@ -269,6 +292,14 @@ function normalizeResult(result: unknown, command: RepositoryCommand, repository
   return normalizeReadResult(result, command);
 }
 
+function validateCommandPaths(command: RepositoryCommand, observationIndex: number): void {
+  if (command.operation === "tree" && command.prefix) safeRepositoryPath(command.prefix, `observations[${observationIndex}].command.prefix`);
+  if (command.operation !== "read") return;
+  for (const item of command.paths ?? []) safeRepositoryPath(item, `observations[${observationIndex}].command.path`);
+  for (const region of command.regions ?? []) safeRepositoryPath(region.path, `observations[${observationIndex}].command.region.path`);
+  readExpectations(command);
+}
+
 export function buildSemanticEvidenceIndex(options: { repository: RepositoryBinding; observations: readonly SemanticEvidenceObservationInput[] }): SemanticEvidenceIndex {
   const repository = validateRepository(options.repository);
   if (!Array.isArray(options.observations) || options.observations.length < 1 || options.observations.length > MAX_OBSERVATIONS) throw new Error(`semantic evidence observations must contain 1-${MAX_OBSERVATIONS} items.`);
@@ -283,11 +314,7 @@ export function buildSemanticEvidenceIndex(options: { repository: RepositoryBind
     if (requestIds.has(request_id)) throw new Error(`duplicate semantic evidence request_id '${request_id}'.`);
     requestIds.add(request_id);
     const command = parseRepositoryCommand(input.command);
-    if (command.operation === "tree" && command.prefix) safeRepositoryPath(command.prefix, `observations[${index}].command.prefix`);
-    if (command.operation === "read") {
-      for (const item of command.paths ?? []) safeRepositoryPath(item, `observations[${index}].command.path`);
-      for (const region of command.regions ?? []) safeRepositoryPath(region.path, `observations[${index}].command.region.path`);
-    }
+    validateCommandPaths(command, index);
     const result = normalizeResult(input.result, command, repository);
     const command_sha256 = digest(command);
     const normalized_result_sha256 = digest(result);
