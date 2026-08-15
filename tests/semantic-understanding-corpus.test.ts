@@ -65,6 +65,7 @@ test("select-everything benchmark gaming keeps recall but loses precision and qu
   const corpus = parseSemanticBenchmarkCorpus(await fixtureValue());
   const candidates = new Map(corpus.cases.map((item) => [item.case_id, selectEverythingCandidate(item)]));
   const report = scoreSemanticCorpus(corpus, candidates);
+  process.stdout.write(`SEMANTIC_SANITY select_all_quality=${report.weighted_quality_mean} unnecessary_selection=${report.unnecessary_selection_rate_mean}\n`);
   assert.equal(report.cases_with_critical_miss, 0);
   assert.ok(report.unnecessary_selection_rate_mean > 0);
   assert.ok(report.weighted_quality_mean < 0.95, `select-all quality ${report.weighted_quality_mean} is too forgiving`);
