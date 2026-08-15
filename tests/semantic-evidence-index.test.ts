@@ -49,7 +49,7 @@ function observation(sequence: number, requestId: string, command: unknown, resu
 }
 
 test("evidence index is deterministic, repository-bound, and strips transmitted source bytes", () => {
-  const read = wholeRead("src/secret-name.ts", "TOP_SECRET_SOURCE\n");
+  const read = wholeRead("src/private-name.ts", "TOP_SECRET_SOURCE\n");
   const options = { repository, observations: [observation(0, "req-read", read.command, read.result)] };
   const first = buildSemanticEvidenceIndex(options);
   const second = buildSemanticEvidenceIndex(options);
@@ -62,11 +62,12 @@ test("evidence index is deterministic, repository-bound, and strips transmitted 
   assert.doesNotMatch(serialized, new RegExp(Buffer.from("TOP_SECRET_SOURCE\n").toString("base64")));
   assert.doesNotMatch(serialized, /content_base64/);
 
-  const changed = buildSemanticEvidenceIndex({
+  const changed = wholeRead("src/private-name.ts", "changed\n");
+  const changedIndex = buildSemanticEvidenceIndex({
     repository,
-    observations: [observation(0, "req-read", wholeRead("src/secret-name.ts", "changed\n").command, wholeRead("src/secret-name.ts", "changed\n").result)],
+    observations: [observation(0, "req-read", changed.command, changed.result)],
   });
-  assert.notEqual(changed.evidence_index_sha256, first.evidence_index_sha256);
+  assert.notEqual(changedIndex.evidence_index_sha256, first.evidence_index_sha256);
 });
 
 test("transmitted read bytes are re-hashed and tampering fails closed", () => {
