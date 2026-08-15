@@ -39,6 +39,7 @@ import { contentDigest, WebBridgeError } from "../web-bridge/contracts.js";
 import { formatAutopilotOutcome, formatAutopilotStatus } from "./autopilot-presenter.js";
 import { withFinalReviewNotification } from "./autopilot-web-bridge.js";
 import { pairSessionCanComplete } from "./pair-completion.js";
+import { derivePairStage, formatPairReview, formatPairStatus } from "./pair-presenter.js";
 import { readReviewMode, writeReviewMode } from "./review-mode-store.js";
 import { commandPalette } from "./slash-commands.js";
 import { deriveUserStage, formatUserStage, type UserStage } from "./stages.js";
@@ -82,21 +83,20 @@ async function reviewSummary(runId: string, stateDirectory: string): Promise<str
     readLifecycleSnapshot(stateDirectory, runId),
     readWebCodeReviewReceipt(stateDirectory, runId),
   ]);
-  let codeReview = "pending";
+  let codeReview = "not started";
   if (execution?.review_strategy === "web") codeReview = `independent review · ${readableState(webCodeReview?.state)}`;
   else if (execution?.reviewer_selection) {
     const selected: ReviewerSelection = execution.reviewer_selection;
     const review = selected.kind === "terra" ? execution.terra_review : execution.sol_review;
     codeReview = `${reviewerLabel(selected)} · ${readableState(review.verdict)} · ${review.rounds} round(s)`;
   }
-  return [
-    `Code review     ${codeReview}`,
-    `Checks          ${execution?.verification.passed ? "passed" : "pending"}`,
-    `Review evidence ${result ? "ready" : "pending"}`,
-    `Final review    ${readableState(snapshot.web_review_state)}`,
-    `Git result      ${result?.published_commit_sha ? "verified" : "pending"}`,
-    `Draft PR        ${result?.pull_request?.url ?? "pending"}`,
-  ].join("\n");
+  return formatPairReview({
+    snapshot,
+    checksPassed: execution?.verification.passed === true,
+    codeReview,
+    draftPrUrl: result?.pull_request?.url ?? null,
+    gitVerified: Boolean(result?.published_commit_sha),
+  });
 }
 
 function configSummary(config: TrustedConfig, repositoryId: string, reviewer: ReviewerSelection): string {
@@ -255,8 +255,8 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     if (!bridge) throw new Error("WCO transport is not connected.");
     const poll = Math.max(250, Math.min(config.web_bridge?.poll_interval_ms ?? 1_000, 10_000));
     io.write(isLocal()
-      ? "Understanding your goal and the exact repository state…\n"
-      : "Waiting for the configured authoring profile to prepare the task…\n");
+      ? "● Understanding your goal and the exact repository state…\n"
+      : "● Waiting for the configured authoring profile to prepare the task…\n");
     while (latest.state !== "IMPLEMENTATION_REGISTERED") {
       latest = await advanceLocalWorker({ bridge, session: latest, repositoryPath: repositoryConfig.path, stateDirectory: paths.state, configPath: paths.config, config });
       if (latest.state === "IMPLEMENTATION_REGISTERED") break;
@@ -272,9 +272,11 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     if (!bridge) throw new Error("WCO transport is not connected.");
     const runId = latest.run_id;
     try {
+      io.write("● Implementing, running checks, and preparing the Draft PR…\n");
       await drivePairHarnessToCodeReview({ runId, webPackPath: latest.web_pack_path, stateDirectory: paths.state, configPath: paths.config });
+      io.write("● Implementation and checks complete. Review evidence is ready.\n");
     } catch (error) {
-      return `PAIR stopped safely: ${error instanceof Error ? error.message : String(error)}\nNothing was merged. Use /review for evidence and /doctor if a prerequisite is unavailable.`;
+      return `PAIR · Needs your attention\nReason        ${error instanceof Error ? error.message : String(error)}\nNext          use /review for evidence and /doctor for recovery guidance\nNothing was merged. Saved progress is preserved.`;
     }
     let code = 0;
 
@@ -299,7 +301,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
       const reviewLabel = review.purpose === "independent_code_review" ? "independent code review" : "final intent review";
       if (isNative()) await triggerNativeTurn(review.purpose, review.job_id);
       else if (!isManaged() && !isLocal()) await openWebArchitect();
-      io.write(`Waiting for ${reviewLabel}${round > 0 ? ` · round ${round + 1}` : ""}…\n`);
+      io.write(`● Waiting for ${reviewLabel}${round > 0 ? ` · round ${round + 1}` : ""}…\n`);
       const poll = Math.max(250, Math.min(config.web_bridge?.poll_interval_ms ?? 1_000, 10_000));
       let verdict = await bridge.waitForVerdict(review.job_id);
       while (!verdict) {
@@ -308,7 +310,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
         verdict = await bridge.waitForVerdict(review.job_id);
       }
       const adopted = await materializeAndSubmitWebVerdict({ envelope: verdict, stateDirectory: paths.state, configPath: paths.config });
-      io.write(`${reviewLabel}: ${readableState(adopted.receipt.state)}\n`);
+      io.write(`● ${reviewLabel}: ${readableState(adopted.receipt.state)}\n`);
       code = await runControlCommand("continue", ["--run-id", runId, "--state-dir", paths.state, "--config", paths.config, "--max-transitions", "8"], { stdout: () => undefined, stderr: () => undefined });
       if (code !== 0) return "The workflow stopped safely. Use /review and /doctor for details, then retry /run.";
     }
@@ -345,20 +347,24 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     if (!bridge) throw new Error("WCO transport is not connected.");
     const selectedReviewer = await readReviewMode(paths.state);
     latest = await startLocalAuthoring({ bridge, repository: { repository_id: repositoryId, base_branch: detected.base_branch, base_commit: detected.base_commit }, goal, stateDirectory: paths.state, replaceExplicit, mode });
-    io.write("Goal accepted. WCO is preparing the task safely.\n");
+    io.write("● Goal accepted. WCO is preparing the task safely.\n");
     if (mode === "AUTOPILOT") io.write(`AUTOPILOT reviewer: ${reviewerLabel(selectedReviewer)}\n`);
     if (isNative()) await triggerNativeTurn("author", latest.job_id!);
     else if (isManaged()) io.write("Optional managed ChatGPT Web authoring started automatically.\n");
     else if (!isLocal()) { io.write("Opening advanced WCO Senior Architect...\n"); await openWebArchitect(); }
     await waitForImplementation();
-    io.write("Plan ready. Starting implementation, checks, and review…\n");
+    io.write("● Plan ready. Starting implementation, checks, and review…\n");
     return mode === "AUTOPILOT" ? await driveAutopilotForUser() : await continuePairWorkflow();
   };
 
   const displayUserStatus = async (session: LocalWorkerSession | null): Promise<string> => {
     if (!session) return formatUserStage("READY");
     const stage = deriveUserStage(session);
-    if (localWorkerJobMode(session) !== "AUTOPILOT") return formatUserStage(stage);
+    if (localWorkerJobMode(session) !== "AUTOPILOT") {
+      if (!session.run_id) return formatUserStage(stage === "READY" ? "WEB_RESEARCH" : stage);
+      try { return formatUserStage(derivePairStage(await readLifecycleSnapshot(paths.state, session.run_id))); }
+      catch { return "Needs your attention"; }
+    }
     if (!session.run_id) {
       const visibleStage: UserStage = stage === "READY" ? "WEB_RESEARCH" : stage;
       return `AUTOPILOT · ${formatUserStage(visibleStage)}`;
@@ -424,7 +430,17 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
         }
         if (command === "/status") {
           if (!latest) return { message: "Ready. Type a goal to start a task." };
-          const status = await displayUserStatus(latest); return { message: localWorkerJobMode(latest) === "AUTOPILOT" ? `Status: ${status}\nGoal: ${latest.goal}\nMode: AUTOPILOT\nPlan: ${latest.sealed ? "locked" : "being refined"}` : `Status: ${status}\nGoal: ${latest.goal}\nPlan: ${latest.sealed ? "locked" : "being refined"}` };
+          if (localWorkerJobMode(latest) === "AUTOPILOT") {
+            const status = await displayUserStatus(latest);
+            return { message: `Status: ${status}\nGoal: ${latest.goal}\nMode: AUTOPILOT\nPlan: ${latest.sealed ? "locked" : "being refined"}` };
+          }
+          if (!latest.run_id) return { message: `PAIR · ${await displayUserStatus(latest)}\nGoal          ${latest.goal}\nPlan          ${latest.sealed ? "locked" : "being refined"}\nNext          WCO is preparing the task` };
+          try {
+            const [snapshot, result] = await Promise.all([readLifecycleSnapshot(paths.state, latest.run_id), resultReceipt(latest.run_id, paths.state)]);
+            return { message: formatPairStatus({ goal: latest.goal, planLocked: latest.sealed, snapshot, draftPrUrl: result?.pull_request?.url ?? null }) };
+          } catch {
+            return { message: `PAIR · Needs your attention\nGoal          ${latest.goal}\nNext          use /review for evidence and /doctor for recovery guidance` };
+          }
         }
         if (command === "/review") return { message: latest?.run_id ? await reviewSummary(latest.run_id, paths.state) : "No review is available yet." };
         if (command === "/pause" || command === "/resume") {
