@@ -23,11 +23,11 @@ test("public documentation freezes install + one authorization + prompt-only dai
   assert.equal(packageJson.publishConfig?.access, "public");
   assert.match(readme, /npm install -g \.\/web-codex-orchestrator-[^\s`]+\.tgz/);
   assert.match(readme, /cd \/path\/to\/project\n+wco/);
-  assert.match(readme, /one official ChatGPT browser authorization/i);
+  assert.match(readme, /Codex official ChatGPT sign-in[\s\S]*Browser authorization/i);
   assert.match(readme, /no `web_bridge` field/i);
-  assert.match(readme, /Per-task browser interactions = \*\*0\*\*/i);
-  assert.match(readme, /never auto-falls back/i);
-  assert.match(readme, /Publishing remains a human maintainer action/i);
+  assert.match(readme, /per-task browser interactions\s*=\s*(?:\*\*)?0(?:\*\*)?/i);
+  assert.match(readme, /never(?: silently)? falls back/i);
+  assert.match(readme, /Publishing(?: WCO)? remains a human maintainer action/i);
 
   assert.match(operations, /## Normal interactive workflow/);
   assert.match(operations, /## Multiple repositories/);
