@@ -17,8 +17,9 @@ import { getWebReviewStatus } from "../web-review/web-review-service.js";
 import { assertCodeReviewApprovedForCurrentResult, readWebCodeReviewReceipt, type WebCodeReviewState } from "../web-bridge/code-review-service.js";
 import { WebBridgeError } from "../web-bridge/contracts.js";
 import { readSelectedArtifact } from "./artifact-binding.js";
-import type { LifecycleSnapshot } from "./planner.js";
 import { OrchestrationError } from "./contracts.js";
+import { readRunLedger } from "./ledger.js";
+import type { LifecycleSnapshot } from "./planner.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
 
@@ -117,8 +118,10 @@ async function currentPairCodeReviewState(stateDirectory: string, runId: string,
 }
 
 export async function readLifecycleSnapshot(stateDirectory: string, runId: string): Promise<LifecycleSnapshot> {
+  const ledger = await readRunLedger(stateDirectory, runId);
+  const paused = ledger?.paused === true;
   const selected = await readSelectedArtifact(stateDirectory, runId);
-  if (!selected) return { registered_artifact_sha256: null, executor_state: null, publish_state: null, draft_pr_state: null, result_bundle_ready: false, web_code_review_state: null, web_review_state: null, revision_state: null, revision_result_ready: false };
+  if (!selected) return { registered_artifact_sha256: null, executor_state: null, publish_state: null, draft_pr_state: null, result_bundle_ready: false, web_code_review_state: null, web_review_state: null, revision_state: null, revision_result_ready: false, paused };
   const id = splitRunId(runId);
   const executor = await readExecutorReceipt(stateDirectory, id.taskId, id.taskBundleSha256, selected.artifact_sha256);
   const directory = executorPaths(stateDirectory, id.taskId, id.taskBundleSha256, selected.artifact_sha256).directory;
@@ -152,5 +155,6 @@ export async function readLifecycleSnapshot(stateDirectory: string, runId: strin
     web_review_state: webReviewState,
     revision_state: relevantRevision?.state ?? null,
     revision_result_ready: revisionResultReadyForWebReview(runId, review, revision),
+    paused,
   };
 }

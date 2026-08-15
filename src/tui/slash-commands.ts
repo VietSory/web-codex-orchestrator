@@ -1,21 +1,19 @@
 export const SLASH_COMMANDS = [
-  ["/new", "Start a new PAIR task: /new <goal>"],
-  ["/auto", "Start an AUTOPILOT task: /auto <goal>"],
-  ["/status", "Show current progress and next action"],
-  ["/run", "Continue the current task"],
-  ["/review", "Show checks, review, and Draft PR"],
-  ["/history", "Show recent tasks in this repository"],
+  ["/new", "PAIR: collaborate on a task and add details before the plan locks: /new <goal>"],
+  ["/auto", "AUTOPILOT: run end-to-end unless a decision needs you: /auto <goal>"],
+  ["/status", "Show current progress and what you need to do"],
+  ["/run", "Continue the current saved task"],
+  ["/review", "Show checks, review, and Draft PR evidence"],
+  ["/history", "Show recent tasks; /history <number> shows details"],
   ["/pause", "Pause before the next safe step"],
-  ["/resume", "Resume a paused task"],
+  ["/resume", "Resume a durable paused run"],
   ["/task", "Show the current goal and plan state"],
-  ["/mode", "AUTOPILOT reviewer: /mode <sol|terra> <effort>"],
-  ["/web status", "Show ChatGPT authorization status"],
-  ["/web connect", "Authorize or reconnect ChatGPT"],
-  ["/doctor", "Check local prerequisites and authorization"],
-  ["/config", "Show WCO settings"],
+  ["/auth status", "Show ChatGPT authorization status"],
+  ["/auth connect", "Authorize or reconnect ChatGPT"],
+  ["/doctor", "Check whether WCO is ready to complete the current mode"],
   ["/uninstall", "Remove WCO-owned local resources and WCO"],
-  ["/help", "Show command help"],
-  ["/quit", "Exit WCO"],
+  ["/help", "Show normal workflow commands"],
+  ["/quit", "Exit WCO safely"],
 ] as const;
 
 export type SlashCommandName = typeof SLASH_COMMANDS[number][0];
@@ -28,7 +26,9 @@ export interface SlashCommandSuggestion { command: SlashCommandName; description
  */
 export function canonicalSlashCommand(value: string): string {
   const trimmed = value.trim();
-  return trimmed === "/unitsall" || trimmed.startsWith("/unitsall ") ? `/uninstall${trimmed.slice(9)}` : trimmed;
+  if (trimmed === "/unitsall" || trimmed.startsWith("/unitsall ")) return `/uninstall${trimmed.slice(9)}`;
+  if (trimmed === "/auth" || trimmed.startsWith("/auth ")) return `/web${trimmed.slice(5)}`;
+  return trimmed;
 }
 
 export function slashCommandSuggestions(value: string): SlashCommandSuggestion[] {
