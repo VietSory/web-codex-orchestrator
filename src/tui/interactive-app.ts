@@ -534,7 +534,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
 
   const confirmTaskReplacement = async (mode: JobMode): Promise<boolean> => {
     latest = await readLocalWorkerSession(paths.state, repositoryId);
-    if (!latest || latest.state === "COMPLETED" || latest.state === "BLOCKED") return true;
+    if (!latest || latest.state === "COMPLETED") return true;
     const answer = (await io.question([
       "The current task is still saved:",
       `\"${latest.goal}\"`,
@@ -559,13 +559,14 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     latest = await readLocalWorkerSession(paths.state, repositoryId);
     if (latest?.session_id === item.session_id) {
       if (item.state === "COMPLETED") return `History #${index} is already complete. Start a new follow-up goal instead of reopening completed authority.`;
+      if (item.state === "BLOCKED") return `History #${index} is the current task and needs your attention. Use /status, /review, and /doctor; use /resume only to intentionally choose a different saved task.`;
       await clearPairPauseIfNeeded(item);
       return await launchSavedTask();
     }
     if (item.state === "COMPLETED") return `History #${index} is already complete. Start a new follow-up goal so it receives a new task/run identity.`;
     if (!locallyResumable(item)) return `History #${index} is saved for reference but did not reach a locally re-attestable implementation checkpoint. Start a new follow-up goal instead.`;
 
-    if (latest && latest.state !== "COMPLETED" && latest.state !== "BLOCKED") {
+    if (latest && latest.state !== "COMPLETED") {
       const answer = (await io.question([
         "The current task is still saved:",
         `\"${latest.goal}\"`,
@@ -588,7 +589,10 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
 
   const continueBestTask = async (): Promise<string> => {
     latest = await readLocalWorkerSession(paths.state, repositoryId);
-    if (latest && latest.state !== "COMPLETED" && latest.state !== "BLOCKED") {
+    if (latest?.state === "BLOCKED") {
+      return "The current task needs your attention before WCO can continue it. Use /status and /review for the exact evidence, then /doctor for recovery guidance. Use /resume only if you intentionally want to switch to a different saved task.";
+    }
+    if (latest && latest.state !== "COMPLETED") {
       await clearPairPauseIfNeeded(latest);
       return await launchSavedTask();
     }
@@ -771,8 +775,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
           if (!latest.run_id) return { message: `PAIR · ${await displayUserStatus(latest)}\nGoal          ${latest.goal}\nPlan          ${latest.sealed ? "locked" : "being refined"}\nYour action   ${background?.pause_requested ? "None — WCO is finishing the current safe step" : background ? "None — WCO is preparing the task; you can still add details before the plan locks" : "use /continue to continue saved preparation"}` };
           try {
             const [snapshot, result] = await Promise.all([readLifecycleSnapshot(paths.state, latest.run_id), resultReceipt(latest.run_id, paths.state)]);
-            const status = formatPairStatus({ goal: latest.goal, planLocked: latest.sealed, snapshot, draftPrUrl: result?.pull_request?.url ?? null });
-            return { message: background?.pause_requested ? `${status}\nWorker        pause requested · finishing current safe step` : status.replace(/\/run/g, "/continue").replace(/\/resume then \/run/g, "/continue") };
+            return { message: formatPairStatus({ goal: latest.goal, planLocked: latest.sealed, snapshot, draftPrUrl: result?.pull_request?.url ?? null }) };
           } catch {
             if (background) return { message: `PAIR · Updating\nGoal          ${latest.goal}\nWorker        ${background.pause_requested ? "pause requested · finishing current safe step" : "running"}\nYour action   None — state is being committed; run /status again in a moment` };
             return { message: `PAIR · Needs your attention\nGoal          ${latest.goal}\nYour action   use /review for evidence and /doctor for recovery guidance` };
@@ -815,7 +818,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
           const result = item.run_id ? await resultReceipt(item.run_id, paths.state).catch(() => null) : null;
           const isCurrent = latest?.session_id === item.session_id;
           const action = isCurrent
-            ? taskSlot.isActive() ? "None — WCO is working on this task; use /status for live progress" : item.state === "COMPLETED" ? "None — this task is complete" : "use /continue to continue saved progress"
+            ? taskSlot.isActive() ? "None — WCO is working on this task; use /status for live progress" : item.state === "COMPLETED" ? "None — this task is complete" : item.state === "BLOCKED" ? "use /status, /review, and /doctor for this blocked task" : "use /continue to continue saved progress"
             : item.state === "COMPLETED"
               ? "None — this task is complete; start a new follow-up goal for more work"
               : locallyResumable(item)
