@@ -21,7 +21,7 @@ test("public documentation freezes install + one authorization + prompt-only dai
 
   assert.equal(packageJson.private, undefined);
   assert.equal(packageJson.publishConfig?.access, "public");
-  assert.match(readme, /npm install -g web-codex-orchestrator/);
+  assert.match(readme, /npm install -g \.\/web-codex-orchestrator-[^\s`]+\.tgz/);
   assert.match(readme, /cd \/path\/to\/project\n+wco/);
   assert.match(readme, /one official ChatGPT browser authorization/i);
   assert.match(readme, /no `web_bridge` field/i);
