@@ -23,7 +23,7 @@ function authorPayloadContract(request: AuthoringJobRequest, jobId: string): str
   `repository must equal ${boundedJson(request.repository)} and user_intent must equal ${JSON.stringify(request.user_intent)} exactly.`,
   "repository has exactly repository_id, base_branch, base_commit; acceptance_criteria items have exactly id, description; verification_commands items have exactly id, executable, args; risk_policy has exactly network_access, secrets_required, notes; delivery has exactly remote, base_branch, branch_name, draft, auto_merge; source items have exactly url, title, accessed_at, relevance.",
   "title and goal are strings. non_goals, architecture_decisions, allowed_paths, forbidden_paths, implementation_strategy, and project_map_hints are string arrays. acceptance_criteria and verification_commands are non-empty arrays. sources and risk_policy.notes are arrays, even when empty.",
-  `delivery.remote must be "origin", delivery.base_branch must be ${JSON.stringify(request.repository.base_branch)}, delivery.branch_name must be a new safe branch, delivery.draft must be true, and delivery.auto_merge must be false.`,
+  `delivery.remote must be "origin", delivery.base_branch must be ${JSON.stringify(request.repository.base_branch)}, delivery.branch_name must be a new git-check-ref-format-safe branch starting with "codex/", delivery.draft must be true, and delivery.auto_merge must be false.`,
 ].join("\n"); }
 
 function reviewPayloadContract(request: FinalReviewRequest, reviewId: string): string { return [

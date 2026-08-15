@@ -53,6 +53,7 @@ test("semantic prompts expose the closed JSON payload wire contracts", () => {
     assert.match(prompt, /protocol_version, job_id, repository, user_intent/);
     assert.match(prompt, /protocol_version must be exactly "wco-web-bridge-v1" and job_id must be exactly "job-exact"/);
     assert.match(prompt, /sources and risk_policy\.notes are arrays/);
+    assert.match(prompt, /branch starting with "codex\/"/);
   }
 
   const review = chatGptCodexReviewPrompt({ run_id: `TASK:${"b".repeat(64)}`, result_bundle_sha256: "c".repeat(64), published_commit_sha: "d".repeat(40), pull_request_url: "https://github.com/example/repo/pull/1", review_round: 1 }, { exact: true }, "review-exact");
