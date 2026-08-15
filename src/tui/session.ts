@@ -35,6 +35,17 @@ export function resolveSlashCompletion(value: string, command: string, kind: Com
   return { value: command, submit: kind === "enter" && value.trimStart() !== command };
 }
 
+/**
+ * Return a completion only when Enter should consume the highlighted palette
+ * entry instead of submitting the current buffer verbatim. Exact commands that
+ * still need an argument (/new, /auto, /mode) therefore stay open for input.
+ */
+export function resolveEnterSelection(value: string, command?: string): { value: string; submit: boolean } | null {
+  if (!command) return null;
+  const completion = resolveSlashCompletion(value, command, "enter");
+  return value.trimStart() !== command || completion.value !== value ? completion : null;
+}
+
 async function liveSlashComposer(prompt: string, history: string[]): Promise<string> {
   const input = process.stdin;
   const output = process.stdout;
@@ -191,9 +202,10 @@ async function liveSlashComposer(prompt: string, history: string[]): Promise<str
 
       if (key.name === "return" || key.name === "enter") {
         const suggestions = currentSuggestions();
-        const suggestion = suggestions[selected];
-        if (suggestion && value.trimStart() !== suggestion.command) {
-          acceptSelected("enter");
+        const completion = resolveEnterSelection(value, suggestions[selected]?.command);
+        if (completion) {
+          if (completion.submit) finish(completion.value);
+          else setValue(completion.value);
           return;
         }
         finish(value);
