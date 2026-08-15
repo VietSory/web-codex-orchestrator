@@ -53,8 +53,10 @@ test("fresh bare wco auto-sets up zero-config local mode and returning launch do
   assert.equal(await runInteractiveApp(scriptedIo(["/quit"], firstOutput)), 0, firstOutput.join("\n"));
   const firstText = firstOutput.join("");
   assert.match(firstText, /Welcome to WCO/);
-  assert.match(firstText, /local ChatGPT\/Codex \(zero-config default\)/);
+  assert.match(firstText, /Setting up this Git repository locally/);
+  assert.match(firstText, /local ChatGPT\/Codex/);
   assert.match(firstText, /Web Codex Orchestrator · v0\.3/);
+  assert.match(firstText, /Type a goal to start/);
 
   const configPath = path.join(home, "config.json");
   const config = JSON.parse(await readFile(configPath, "utf8"));
