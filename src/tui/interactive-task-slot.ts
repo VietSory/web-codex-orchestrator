@@ -83,9 +83,9 @@ export class InteractiveTaskSlot {
     if (task.pauseRequested) return "Pause is already requested. WCO will stop after the current safe step.";
 
     task.pauseRequested = true;
-    task.controller.abort();
     try {
       await task.pauseAtSafeBoundary?.();
+      task.controller.abort();
     } catch (error) {
       task.pauseRequested = false;
       const message = error instanceof Error ? error.message : String(error);
