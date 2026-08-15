@@ -92,10 +92,35 @@ async function assertSafeDirectory(target: string): Promise<void> {
   if (!info.isDirectory() || info.isSymbolicLink() || await realpath(resolved) !== resolved) throw new Error("semantic shadow receipt directory is unsafe.");
 }
 
-async function writeCreateOnce(target: string, bytes: Buffer): Promise<"created" | "replayed"> {
-  const directory = path.dirname(target);
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  await assertSafeDirectory(directory);
+async function ensureSafeReceiptDirectory(stateDirectory: string, repositoryId: string, sessionId: string): Promise<string> {
+  const root = path.resolve(stateDirectory);
+  await assertSafeDirectory(root);
+  const components = ["bridge", "semantic-shadow", safeRepositoryId(repositoryId), safeSessionId(sessionId)];
+  let current = root;
+  for (const component of components) {
+    current = path.join(current, component);
+    try {
+      await mkdir(current, { mode: 0o700 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    await assertSafeDirectory(current);
+  }
+  return current;
+}
+
+async function syncDirectory(directory: string): Promise<void> {
+  const handle = await open(directory, fsConstants.O_RDONLY);
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function writeCreateOnce(target: string, bytes: Buffer, stateDirectory: string, repositoryId: string, sessionId: string): Promise<"created" | "replayed"> {
+  const directory = await ensureSafeReceiptDirectory(stateDirectory, repositoryId, sessionId);
+  if (directory !== path.dirname(target)) throw new Error("semantic shadow receipt target escaped its attested directory.");
   const temporary = path.join(directory, `.${path.basename(target)}.${process.pid}.${Date.now()}.${crypto.randomBytes(6).toString("hex")}.tmp`);
   const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
   const handle = await open(temporary, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollow, 0o600);
@@ -104,9 +129,12 @@ async function writeCreateOnce(target: string, bytes: Buffer): Promise<"created"
     await handle.writeFile(bytes);
     await handle.sync();
     await handle.close();
+    await assertSafeDirectory(directory);
     try {
       await link(temporary, target);
       linked = true;
+      await syncDirectory(directory);
+      await assertSafeDirectory(directory);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
@@ -114,7 +142,12 @@ async function writeCreateOnce(target: string, bytes: Buffer): Promise<"created"
     await handle.close().catch(() => undefined);
     await rm(temporary, { force: true }).catch(() => undefined);
   }
-  if (linked) return "created";
+  if (linked) {
+    const created = await readStableFile(target, MAX_RECEIPT_BYTES);
+    if (!created.bytes.equals(bytes)) throw new Error("semantic shadow receipt changed after durable create.");
+    return "created";
+  }
+  await assertSafeDirectory(directory);
   const existing = await readStableFile(target, MAX_RECEIPT_BYTES);
   if (!existing.bytes.equals(bytes)) throw new Error("semantic shadow receipt replay conflicts with immutable existing evidence.");
   return "replayed";
@@ -138,6 +171,6 @@ export async function persistSemanticShadowObservation(options: {
     requestId: options.requestId,
   });
   const bytes = Buffer.concat([canonicalJsonBuffer(receipt), Buffer.from("\n", "utf8")]);
-  const status = await writeCreateOnce(target, bytes);
+  const status = await writeCreateOnce(target, bytes, options.stateDirectory, receipt.repository.repository_id, receipt.session_id);
   return { receipt, path: target, status };
 }
