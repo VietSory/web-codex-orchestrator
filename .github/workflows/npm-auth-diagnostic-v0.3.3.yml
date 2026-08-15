@@ -32,21 +32,31 @@ jobs:
 
       - name: Diagnose npm authentication without publishing
         id: auth
+        continue-on-error: true
         shell: bash
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set +e
-          npm whoami --registry=https://registry.npmjs.org >npm-auth.log 2>&1
+          npm whoami --registry=https://registry.npmjs.org >npm-auth.raw.log 2>&1
           code=$?
-          {
-            echo '## npm authentication diagnostic'
-            echo
-            echo "Exit code: $code"
-            echo
-            echo '```text'
-            sed -E 's/(npm_[A-Za-z0-9_-]{8,})/[MASKED_TOKEN]/g' npm-auth.log | tail -n 80
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          sed -E 's/(npm_[A-Za-z0-9_-]{8,})/[MASKED_TOKEN]/g' npm-auth.raw.log >npm-auth.log
+          echo "$code" >npm-auth.exit
           cat npm-auth.log
           exit "$code"
+
+      - name: Upload sanitized npm auth diagnostic
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-auth-diagnostic
+          path: |
+            npm-auth.log
+            npm-auth.exit
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Fail if npm auth is unavailable
+        if: steps.auth.outcome != 'success'
+        run: |
+          echo 'npm authentication is not available; see npm-auth-diagnostic artifact.'
+          exit 1
