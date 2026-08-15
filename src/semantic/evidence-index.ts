@@ -167,7 +167,10 @@ function normalizePathResult(value: unknown, label: string, kind: "tree" | "sear
   const object = objectValue(value, label);
   const key = kind === "tree" ? "paths" : "matches";
   exactKeys(object, [key, "truncated"], [key, "truncated"], label);
-  const paths = pathArray(object[key], `${label}.${key}`, kind === "tree" ? 5_000 : 500);
+  const requestedMaximum = kind === "tree"
+    ? (command.operation === "tree" ? command.maximum_paths ?? 5_000 : 5_000)
+    : (command.operation === "search" ? command.maximum_matches ?? 500 : 500);
+  const paths = pathArray(object[key], `${label}.${key}`, requestedMaximum);
   const source_truncated = bool(object.truncated, `${label}.truncated`);
   if (kind === "tree" && command.operation === "tree" && command.prefix) {
     const prefix = safeRepositoryPath(command.prefix, "tree command prefix");
@@ -187,10 +190,24 @@ function metrics(value: unknown): SemanticEvidenceMetrics {
   const object = objectValue(value, "read result.metrics");
   const keys = ["context_bytes_prepared", "context_bytes_transmitted", "repeated_bytes_avoided", "files_considered", "files_read", "regions_read", "cache_hits", "cache_misses"] as const;
   exactKeys(object, keys, keys, "read result.metrics");
-  const result = Object.fromEntries(keys.map((key) => [key, safeInteger(object[key], `read result.metrics.${key}`)])) as unknown as SemanticEvidenceMetrics;
-  if (result.context_bytes_transmitted > result.context_bytes_prepared) throw new Error("read result.metrics transmitted bytes exceed prepared bytes.");
-  if (result.repeated_bytes_avoided > result.context_bytes_prepared) throw new Error("read result.metrics repeated bytes exceed prepared bytes.");
-  return result;
+  return Object.fromEntries(keys.map((key) => [key, safeInteger(object[key], `read result.metrics.${key}`)])) as unknown as SemanticEvidenceMetrics;
+}
+
+function validateReadMetrics(result: SemanticEvidenceMetrics, files: Extract<SemanticEvidenceResult, { kind: "read" }>["files"], expected: readonly ReadExpectation[]): void {
+  const prepared = files.reduce((sum, file) => sum + file.size_bytes, 0);
+  const transmitted = files.reduce((sum, file) => sum + (file.content_transmitted ? file.size_bytes : 0), 0);
+  const repeated = files.reduce((sum, file) => sum + (file.content_transmitted ? 0 : file.size_bytes), 0);
+  const uniquePaths = new Set(expected.map((item) => item.path)).size;
+  const exact: Array<[keyof SemanticEvidenceMetrics, number]> = [
+    ["context_bytes_prepared", prepared],
+    ["context_bytes_transmitted", transmitted],
+    ["repeated_bytes_avoided", repeated],
+    ["files_considered", uniquePaths],
+    ["files_read", new Set(files.map((file) => file.path)).size],
+    ["regions_read", files.length],
+  ];
+  for (const [key, wanted] of exact) if (result[key] !== wanted) throw new Error(`read result.metrics.${key} does not match normalized read evidence.`);
+  if (result.cache_hits + result.cache_misses !== files.length) throw new Error("read result.metrics cache hit/miss count does not match normalized read evidence.");
 }
 
 function canonicalBase64(value: string, label: string): Buffer {
@@ -273,7 +290,9 @@ function normalizeReadResult(value: unknown, command: Extract<RepositoryCommand,
     };
   });
 
-  return { kind: "read", files, metrics: metrics(object.metrics) };
+  const normalizedMetrics = metrics(object.metrics);
+  validateReadMetrics(normalizedMetrics, files, expected);
+  return { kind: "read", files, metrics: normalizedMetrics };
 }
 
 function normalizeResult(result: unknown, command: RepositoryCommand, repository: RepositoryBinding): SemanticEvidenceResult {
