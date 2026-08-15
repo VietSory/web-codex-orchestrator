@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { ensureChatGptLogin, type ChatGptLoginRunner } from "../src/runtime/chatgpt-login.js";
+import { chatGptLoginCanOwnTerminal, ensureChatGptLogin, type ChatGptLoginRunner } from "../src/runtime/chatgpt-login.js";
 
 const config = { runtime: { source: "bundled" } } as any;
 
@@ -70,6 +70,12 @@ test("non-interactive callers never start a browser authorization flow", async (
 
   assert.equal(authorized, false);
   assert.deepEqual(calls, [{ args: ["login", "status"], stdio: "ignore" }]);
+});
+
+test("raw-mode TUI ownership blocks inherited interactive login", () => {
+  assert.equal(chatGptLoginCanOwnTerminal({ isTTY: true, isRaw: true } as NodeJS.ReadStream, { isTTY: true } as NodeJS.WriteStream), false);
+  assert.equal(chatGptLoginCanOwnTerminal({ isTTY: true, isRaw: false } as NodeJS.ReadStream, { isTTY: true } as NodeJS.WriteStream), true);
+  assert.equal(chatGptLoginCanOwnTerminal({ isTTY: false, isRaw: false } as NodeJS.ReadStream, { isTTY: true } as NodeJS.WriteStream), false);
 });
 
 test("CI never opens the interactive login flow even when interactive=true", async (t) => {
