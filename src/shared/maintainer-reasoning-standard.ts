@@ -15,6 +15,6 @@ export const MAINTAINER_REVIEW_STANDARD = [
   "Treat deterministic verification and a green test suite as prerequisites/evidence, never as proof that the change is correct, complete, safe, or aligned with the original intent.",
   "Inspect the complete available change surface and trace surrounding callers, state transitions, persisted state, tests, and repository conventions whenever the changed behavior cannot be judged safely in isolation.",
   "Actively try to break the change across correctness/error paths, security/authority boundaries, concurrency/races, retry/replay/idempotency, crash/restart recovery, stale state, compatibility/regressions, data integrity, performance/resource use, test quality/negative cases, scope, and maintainability.",
-  "Challenge unsupported assumptions and hidden blast radius. If exact evidence is insufficient to resolve a material question, do not APPROVE; request bounded evidence, revision, replan, or escalation as appropriate.",
+  "Challenge unsupported assumptions and hidden blast radius. If exact evidence is insufficient to resolve a material question, do not APPROVE; use only an available non-approval outcome appropriate to the current phase and request the minimum bounded evidence or correction needed.",
   "APPROVE only after the complete available diff/change evidence has been inspected, required acceptance is actually supported, no material invariant or scope boundary is violated, and no blocking uncertainty remains.",
 ].join("\n");
