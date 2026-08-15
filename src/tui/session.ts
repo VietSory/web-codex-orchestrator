@@ -9,6 +9,7 @@ const ARGUMENT_COMMANDS = new Set(["/new", "/auto", "/mode"]);
 
 type Keypress = { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean; sequence?: string };
 type CompletionKind = "enter" | "tab";
+type ExternalComposerWriter = (value: string) => void;
 
 function promptColumn(prompt: string): number {
   const newline = prompt.lastIndexOf("\n");
@@ -27,6 +28,12 @@ function fitLine(value: string, columns: number): string {
 
 function normalizeInlineInput(value: string): string {
   return value.replace(/[\r\n]+/gu, " ");
+}
+
+function isReadlineClosed(error: unknown): boolean {
+  const code = error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code) : "";
+  const message = error instanceof Error ? error.message : String(error);
+  return code === "ERR_USE_AFTER_CLOSE" || /readline was closed/i.test(message);
 }
 
 export function splitComposerPrompt(value: string): { prefix: string; prompt: string } {
@@ -77,7 +84,11 @@ export function resolveEnterSelection(value: string, command?: string): { value:
   return value.trimStart() !== command || completion.value !== value ? completion : null;
 }
 
-async function liveSlashComposer(prompt: string, history: string[]): Promise<string> {
+async function liveSlashComposer(
+  prompt: string,
+  history: string[],
+  setExternalWriter?: (writer: ExternalComposerWriter | null) => void,
+): Promise<string> {
   const input = process.stdin;
   const output = process.stdout;
   const wasRaw = input.isRaw;
@@ -140,11 +151,23 @@ async function liveSlashComposer(prompt: string, history: string[]): Promise<str
       renderedCursorRow = geometry.cursorRow;
     };
 
+    const writeExternal: ExternalComposerWriter = (message) => {
+      if (settled) {
+        output.write(message);
+        return;
+      }
+      clearRenderedBlock();
+      output.write(message);
+      if (message && !message.endsWith("\n")) output.write("\n");
+      render();
+    };
+
     const onResize = (): void => render();
 
     const cleanup = (): void => {
       input.removeListener("keypress", onKeypress);
       output.removeListener("resize", onResize);
+      setExternalWriter?.(null);
       restoreComposerInput(input, wasRaw);
     };
 
@@ -321,6 +344,7 @@ async function liveSlashComposer(prompt: string, history: string[]): Promise<str
 
     input.on("keypress", onKeypress);
     output.on("resize", onResize);
+    setExternalWriter?.(writeExternal);
     render();
   });
 }
@@ -337,6 +361,7 @@ export interface InteractiveIo {
 
 export function terminalIo(): InteractiveIo {
   let rl: ReturnType<typeof readline.createInterface> | undefined;
+  let externalWriter: ExternalComposerWriter | null = null;
   const history: string[] = [];
   const get = () => rl ??= readline.createInterface({ input: process.stdin, output: process.stdout });
   const reset = (): void => { rl?.close(); rl = undefined; };
@@ -353,12 +378,12 @@ export function terminalIo(): InteractiveIo {
     reset();
     const parts = splitComposerPrompt(prompt);
     if (parts.prefix) process.stdout.write(parts.prefix);
-    return await liveSlashComposer(parts.prompt, history);
+    return await liveSlashComposer(parts.prompt, history, (writer) => { externalWriter = writer; });
   };
   return {
     input: process.stdin,
     output: process.stdout,
-    write: (value) => process.stdout.write(value),
+    write: (value) => externalWriter ? externalWriter(value) : process.stdout.write(value),
     question: async (prompt) => await get().question(prompt),
     composer,
     secret,
@@ -371,6 +396,7 @@ export interface InteractiveHandlers {
   newTask(goal: string): Promise<string>;
   clarify(value: string): Promise<string>;
   command(command: string, args: string): Promise<{ message: string; quit?: boolean }>;
+  exitRequest?(): Promise<{ message?: string; quit: boolean }>;
 }
 
 export async function runInteractiveSession(io: InteractiveIo, handlers: InteractiveHandlers): Promise<void> {
@@ -384,7 +410,18 @@ export async function runInteractiveSession(io: InteractiveIo, handlers: Interac
         io.write(`${state.summary}\n`);
         previousSummary = state.summary;
       }
-      const raw = io.composer ? await io.composer("\n> ") : await io.question("\n> ");
+
+      let raw: string;
+      try {
+        raw = io.composer ? await io.composer("\n> ") : await io.question("\n> ");
+      } catch (error) {
+        if (!isReadlineClosed(error)) throw error;
+        const exit = handlers.exitRequest ? await handlers.exitRequest() : { quit: true };
+        if (exit.message) io.write(`${exit.message}\n`);
+        if (exit.quit) return;
+        continue;
+      }
+
       if (raw.trim() === "/") { io.write(`\n${commandPalette()}\n`); continue; }
       const parsed = parseInteractiveInput(raw, state);
       if (parsed.kind === "empty") continue;
@@ -395,10 +432,5 @@ export async function runInteractiveSession(io: InteractiveIo, handlers: Interac
       if (result.message) io.write(`${result.message}\n`);
       if (result.quit) return;
     }
-  } catch (error) {
-    const code = error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code) : "";
-    const message = error instanceof Error ? error.message : String(error);
-    if (code === "ERR_USE_AFTER_CLOSE" || /readline was closed/i.test(message)) return;
-    throw error;
   } finally { io.close(); }
 }

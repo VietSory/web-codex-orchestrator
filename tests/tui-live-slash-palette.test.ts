@@ -116,3 +116,40 @@ test("unchanged task summary is not reprinted after every command", async () => 
   assert.equal(output.join("").match(/SAME SUMMARY/g)?.length, 1);
   assert.match(output.join(""), /help text/);
 });
+
+test("Ctrl+C style composer close respects a refused safe-exit request and returns to the prompt", async () => {
+  const output: string[] = [];
+  let composerCalls = 0;
+  let exitCalls = 0;
+
+  await runInteractiveSession({
+    input: process.stdin,
+    output: process.stdout,
+    write: (value) => output.push(value),
+    question: async () => "unused",
+    composer: async () => {
+      composerCalls += 1;
+      if (composerCalls === 1) {
+        const error = new Error("readline was closed") as Error & { code?: string };
+        error.code = "ERR_USE_AFTER_CLOSE";
+        throw error;
+      }
+      return "/quit";
+    },
+    close: () => undefined,
+  }, {
+    state: async () => ({ active: true, sealed: true, summary: "RUNNING" }),
+    newTask: async () => "unused",
+    clarify: async () => "unused",
+    command: async () => ({ message: "bye", quit: true }),
+    exitRequest: async () => {
+      exitCalls += 1;
+      return { message: "safe pause not confirmed", quit: false };
+    },
+  });
+
+  assert.equal(exitCalls, 1);
+  assert.equal(composerCalls, 2);
+  assert.match(output.join(""), /safe pause not confirmed/);
+  assert.match(output.join(""), /bye/);
+});

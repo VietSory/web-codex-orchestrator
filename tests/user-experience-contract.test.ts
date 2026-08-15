@@ -53,21 +53,47 @@ test("the first normal goal may trigger official ChatGPT authorization without a
   assert.match(bridge, /before durable task creation/i);
 });
 
+test("local background execution completes authorization before the prompt can own raw stdin", async () => {
+  const [interactive, login] = await Promise.all([
+    text("src/tui/interactive-app.ts"),
+    text("src/runtime/chatgpt-login.ts"),
+  ]);
+  const launchStart = interactive.indexOf("const launchNewTask");
+  const taskStart = interactive.indexOf("taskSlot.start", launchStart);
+  const authStart = interactive.indexOf("ensureLocalBackgroundAuthorization", launchStart);
+  assert.ok(launchStart >= 0 && authStart > launchStart && taskStart > authStart);
+  assert.match(login, /input\.isRaw !== true/);
+  assert.match(login, /two terminal readers|raw-mode parent TUI/i);
+});
+
 test("PAIR status and review stay read-only while presenting durable lifecycle evidence", async () => {
   const interactive = await text("src/tui/interactive-app.ts");
   const statusStart = interactive.indexOf('if (command === "/status")');
-  const reviewStart = interactive.indexOf('if (command === "/review")');
-  const pauseStart = interactive.indexOf('if (command === "/pause"');
-  assert.ok(statusStart >= 0 && reviewStart > statusStart && pauseStart > reviewStart);
+  const reviewStart = interactive.indexOf('if (command === "/review")', statusStart);
+  const durablePauseStart = interactive.indexOf('if (command === "/pause" || command === "/resume")', reviewStart);
+  assert.ok(statusStart >= 0 && reviewStart > statusStart && durablePauseStart > reviewStart);
 
   const statusBlock = interactive.slice(statusStart, reviewStart);
   assert.match(statusBlock, /readLifecycleSnapshot/);
   assert.match(statusBlock, /formatPairStatus/);
   assert.doesNotMatch(statusBlock, /runControlCommand|startAndDriveTask|drivePairHarnessToCodeReview|driveAutopilotJob/);
 
-  const reviewBlock = interactive.slice(reviewStart, pauseStart);
+  const reviewBlock = interactive.slice(reviewStart, durablePauseStart);
   assert.match(reviewBlock, /reviewSummary/);
   assert.doesNotMatch(reviewBlock, /runControlCommand|startAndDriveTask|drivePairHarnessToCodeReview|driveAutopilotJob/);
+});
+
+test("background execution remains single-owner and exposes only read/control commands", async () => {
+  const interactive = await text("src/tui/interactive-app.ts");
+  assert.match(interactive, /LIVE_BACKGROUND_COMMANDS = new Set\(\["\/status", "\/review", "\/task", "\/history", "\/pause", "\/help", "\/quit"\]\)/);
+  assert.match(interactive, /background && !LIVE_BACKGROUND_COMMANDS\.has\(command\)/);
+  assert.doesNotMatch(interactive.match(/LIVE_BACKGROUND_COMMANDS = new Set\([^\n]+/)?.[0] ?? "", /\/new|\/auto|\/run|\/mode|\/config|\/web|\/uninstall/);
+});
+
+test("advanced compatibility profiles stay foreground so they never race the live composer for stdin", async () => {
+  const interactive = await text("src/tui/interactive-app.ts");
+  assert.match(interactive, /if \(!isLocal\(\)\) return await startAndDriveTask/);
+  assert.match(interactive, /if \(!isLocal\(\)\) return await runSavedTask/);
 });
 
 test("normal path keeps mutation and shipment authority local and human-owned", async () => {
