@@ -6,6 +6,8 @@ import { readExecutorReceipt } from "../executor/store.js";
 import { driveAutopilotJob, readAutopilotReceipt } from "../orchestration/autopilot-job.js";
 import { readSelectedArtifact } from "../orchestration/artifact-binding.js";
 import { runControlCommand } from "../orchestration/control-cli.js";
+import { pauseRun } from "../orchestration/controller.js";
+import { OrchestrationError } from "../orchestration/contracts.js";
 import type { JobMode } from "../orchestration/job-mode.js";
 import { drivePairHarnessToCodeReview } from "../orchestration/pair-harness.js";
 import { readLifecycleSnapshot } from "../orchestration/snapshot-reader.js";
@@ -57,7 +59,7 @@ class InteractivePauseRequested extends Error {
 }
 
 function pauseOutcome(mode: JobMode): string {
-  return `${mode} · Paused\nProgress is saved. Use /status to inspect it, then /resume and /run when you want to continue.`;
+  return `${mode} · Paused\nProgress is saved. Use /status to inspect it and /run to continue; if the durable run is paused, use /resume first.`;
 }
 
 function assertNotPaused(signal?: AbortSignal): void {
@@ -414,7 +416,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
   };
 
   const runSavedTask = async (signal?: AbortSignal): Promise<string> => {
-    latest = await readLocalWorkerSession(paths.state, repositoryId);
+    if (!signal) latest = await readLocalWorkerSession(paths.state, repositoryId);
     if (!latest) return "Type a task goal first.";
     if (latest.state === "COMPLETED") return "This task is complete. Type a new goal or use /new <goal>.";
     const mode = localWorkerJobMode(latest);
@@ -436,23 +438,32 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
   };
 
   const pausePairAtSafeBoundary = async (): Promise<void> => {
-    const current = await readLocalWorkerSession(paths.state, repositoryId);
-    if (current) latest = current;
+    const current = latest;
     if (!current?.run_id) return;
-    const code = await runControlCommand("pause", ["--run-id", current.run_id, "--state-dir", paths.state], { stdout: () => undefined, stderr: () => undefined });
-    if (code !== 0) throw new Error("PAIR durable pause could not be recorded. The task is still running and WCO will remain open.");
+    try {
+      await pauseRun(paths.state, current.run_id, "Interactive pause requested.");
+    } catch (error) {
+      if (error instanceof OrchestrationError && error.code === "ORCHESTRATION_TERMINAL") return;
+      throw new Error(`PAIR durable pause could not be recorded. The task is still running and WCO will remain open. ${error instanceof Error ? error.message : String(error)}`);
+    }
   };
 
-  const launchNewTask = (goal: string, replaceExplicit: boolean, mode: JobMode): string => taskSlot.start({
-    mode,
-    goal,
-    run: async (signal) => await startAndDriveTask(goal, replaceExplicit, mode, signal),
-    ...(mode === "PAIR" ? { pauseAtSafeBoundary: pausePairAtSafeBoundary } : {}),
-  }).message;
+  const launchNewTask = async (goal: string, replaceExplicit: boolean, mode: JobMode): Promise<string> => {
+    if (!isLocal()) return await startAndDriveTask(goal, replaceExplicit, mode);
+    const started = taskSlot.start({
+      mode,
+      goal,
+      run: async (signal) => await startAndDriveTask(goal, replaceExplicit, mode, signal),
+      ...(mode === "PAIR" ? { pauseAtSafeBoundary: pausePairAtSafeBoundary } : {}),
+    });
+    if (started.started) latest = null;
+    return started.message;
+  };
 
-  const launchSavedTask = (): string => {
+  const launchSavedTask = async (): Promise<string> => {
     if (!latest) return "Type a task goal first.";
     if (latest.state === "COMPLETED") return "This task is complete. Type a new goal or use /new <goal>.";
+    if (!isLocal()) return await runSavedTask();
     const mode = localWorkerJobMode(latest);
     return taskSlot.start({
       mode,
@@ -468,14 +479,14 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     if (localWorkerJobMode(session) !== "AUTOPILOT") {
       if (!session.run_id) return formatUserStage(stage === "READY" ? "WEB_RESEARCH" : stage);
       try { return formatUserStage(derivePairStage(await readLifecycleSnapshot(paths.state, session.run_id))); }
-      catch { return "Needs your attention"; }
+      catch { return taskSlot.isActive() ? "Updating" : "Needs your attention"; }
     }
     if (!session.run_id) {
       const visibleStage: UserStage = stage === "READY" ? "WEB_RESEARCH" : stage;
       return `AUTOPILOT · ${formatUserStage(visibleStage)}`;
     }
     try { return formatAutopilotStatus(await readAutopilotReceipt(paths.state, session.run_id)); }
-    catch { return "AUTOPILOT · Needs your attention"; }
+    catch { return taskSlot.isActive() ? "AUTOPILOT · Updating" : "AUTOPILOT · Needs your attention"; }
   };
 
   if (firstRun && isNative()) {
@@ -493,19 +504,19 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
   try {
     await runInteractiveSession(io, {
       state: async () => {
-        latest = await readLocalWorkerSession(paths.state, repositoryId);
         const background = taskSlot.snapshot();
+        if (!background) latest = await readLocalWorkerSession(paths.state, repositoryId);
         const active = Boolean(background || (latest && latest.state !== "COMPLETED"));
         const visibleGoal = latest?.goal ?? background?.goal;
-        const status = latest
-          ? await displayUserStatus(latest)
-          : background
-            ? `${background.mode} · ${background.pause_requested ? "Pause requested" : "Starting"}`
+        const status = background
+          ? `${background.mode} · ${background.pause_requested ? "Pause requested" : "Running"}`
+          : latest
+            ? await displayUserStatus(latest)
             : await displayUserStatus(null);
         const worker = background ? `\nWorker       ${background.pause_requested ? "pause requested · finishing current safe step" : "running · /status /review /pause stay available"}` : "";
         return { active, sealed: latest?.sealed ?? false, summary: `WCO · ${repositoryId}\nRepository   ${detected.base_branch}@${detected.base_commit.slice(0, 7)}\nStatus       ${status}${visibleGoal ? `\nTask         ${visibleGoal}` : ""}${worker}` };
       },
-      newTask: async (goal) => launchNewTask(goal, false, "PAIR"),
+      newTask: async (goal) => await launchNewTask(goal, false, "PAIR"),
       clarify: async (value) => {
         if (taskSlot.isActive()) return "The task is running. Use /pause before changing the goal so execution never races with a clarification.";
         if (!latest) return "No active task. Type a goal to start one.";
@@ -527,8 +538,8 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
         }
 
         if (command === "/help") return { message: commandPalette() };
-        if (command === "/new") { if (!args) return { message: "Usage: /new <goal>" }; return { message: launchNewTask(args, true, "PAIR") }; }
-        if (command === "/auto") { if (!args) return { message: "Usage: /auto <goal>" }; return { message: launchNewTask(args, true, "AUTOPILOT") }; }
+        if (command === "/new") { if (!args) return { message: "Usage: /new <goal>" }; return { message: await launchNewTask(args, true, "PAIR") }; }
+        if (command === "/auto") { if (!args) return { message: "Usage: /auto <goal>" }; return { message: await launchNewTask(args, true, "AUTOPILOT") }; }
         if (command === "/mode") {
           const current = await readReviewMode(paths.state);
           if (!args) return { message: `AUTOPILOT reviewer: ${reviewerLabel(current)}\nFinal review: required\nUsage: /mode <sol|terra> <minimal|low|medium|high|xhigh>` };
@@ -569,17 +580,25 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
             const status = formatPairStatus({ goal: latest.goal, planLocked: latest.sealed, snapshot, draftPrUrl: result?.pull_request?.url ?? null });
             return { message: background?.pause_requested ? `${status}\nWorker        pause requested · finishing current safe step` : status };
           } catch {
+            if (background) return { message: `PAIR · Updating\nGoal          ${latest.goal}\nWorker        ${background.pause_requested ? "pause requested · finishing current safe step" : "running"}\nNext          state is being committed; run /status again in a moment` };
             return { message: `PAIR · Needs your attention\nGoal          ${latest.goal}\nNext          use /review for evidence and /doctor for recovery guidance` };
           }
         }
-        if (command === "/review") return { message: latest?.run_id ? await reviewSummary(latest.run_id, paths.state) : "No review is available yet." };
+        if (command === "/review") {
+          if (!latest?.run_id) return { message: "No review is available yet." };
+          try { return { message: await reviewSummary(latest.run_id, paths.state) }; }
+          catch (error) {
+            if (background) return { message: "Review evidence is being updated by the active task. Run /review again in a moment." };
+            throw error;
+          }
+        }
         if (command === "/pause" || command === "/resume") {
           if (!latest?.run_id) return { message: command === "/pause" ? "This task has not reached a durable run step yet. If it is actively preparing, the live /pause command will stop it at the next safe boundary." : "This task has not reached a resumable run step yet. Use /run to continue saved preparation." };
           const code = await runControlCommand(command.slice(1), ["--run-id", latest.run_id, "--state-dir", paths.state], { stdout: () => undefined, stderr: () => undefined });
           if (code === 0) return { message: command === "/pause" ? "Paused safely. Progress is saved." : "Resumed. Use /run to continue the task." };
           return { message: `${command === "/pause" ? "Pause" : "Resume"} could not be completed. Use /status and /doctor for details.` };
         }
-        if (command === "/run") return { message: launchSavedTask() };
+        if (command === "/run") return { message: await launchSavedTask() };
         if (command === "/uninstall") {
           const answer = (await io.question("Remove WCO-owned local data and uninstall WCO? Your repositories, branches, and PRs will be preserved. [y/N] ")).trim();
           if (!/^y(es)?$/i.test(answer)) return { message: "Uninstall cancelled." };
