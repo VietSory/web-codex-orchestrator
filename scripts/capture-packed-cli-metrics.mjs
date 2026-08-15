@@ -2,8 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-const result = spawnSync(npm, ["run", "pack:smoke"], {
+const result = spawnSync(process.execPath, ["scripts/smoke-packed-cli.mjs"], {
   cwd: process.cwd(),
   encoding: "utf8",
   stdio: "pipe",
@@ -18,11 +17,11 @@ if (result.status !== 0) process.exit(result.status ?? 1);
 
 const marker = "Packed CLI process metrics ";
 const line = (result.stdout ?? "").split(/\r?\n/u).find((value) => value.startsWith(marker));
-if (!line) throw new Error("pack:smoke passed without emitting packed CLI process metrics");
+if (!line) throw new Error("pack smoke passed without emitting packed CLI process metrics");
 
 let metrics;
 try { metrics = JSON.parse(line.slice(marker.length)); }
-catch (error) { throw new Error("pack:smoke emitted malformed packed CLI process metrics", { cause: error }); }
+catch (error) { throw new Error("pack smoke emitted malformed packed CLI process metrics", { cause: error }); }
 
 const outputDirectory = path.resolve("artifacts");
 mkdirSync(outputDirectory, { recursive: true });
