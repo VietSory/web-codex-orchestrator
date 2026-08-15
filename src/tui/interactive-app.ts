@@ -13,6 +13,7 @@ import { drivePairHarnessToCodeReview } from "../orchestration/pair-harness.js";
 import { readLifecycleSnapshot } from "../orchestration/snapshot-reader.js";
 import { readResultBundleReceipt } from "../result-bundle/result-bundle-store.js";
 import { resultBundlePaths } from "../result-bundle/result-bundle-paths.js";
+import { ensureChatGptLogin } from "../runtime/chatgpt-login.js";
 import { resolveWcoPaths } from "../setup/default-paths.js";
 import { detectRepository } from "../setup/repository-detect.js";
 import { runSetupCommand } from "../setup/setup-cli.js";
@@ -172,8 +173,6 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     firstRun = true;
     io.write("Welcome to WCO\n");
     io.write("Setting up this Git repository locally. If ChatGPT is not authorized yet, the official Codex sign-in may open once.\n\n");
-    // `wco` itself is consent to register the current repository. ChatGPT
-    // authorization is the only normal-user external setup boundary.
     const code = await runSetupCommand(["--yes"], process.cwd(), { write: (value) => io.write(value), error: (value) => io.write(value), question: async (prompt) => await io.question(prompt) });
     if (code !== 0) return code;
   }
@@ -210,6 +209,15 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
   const isLocal = (): boolean => !config.web_bridge;
   const isNative = (): boolean => config.web_bridge?.mode === "web_native_mcp";
   const isManaged = (): boolean => config.web_bridge?.mode === "managed_actions";
+  const ensureLocalBackgroundAuthorization = async (): Promise<boolean> => {
+    if (!isLocal()) return true;
+    const authorized = await ensureChatGptLogin({ config, stateDirectory: paths.state });
+    if (!authorized) {
+      io.write("ChatGPT authorization is not ready. Finish `wco web connect`, then start the task again. No task state was created.\n");
+      return false;
+    }
+    return true;
+  };
   const ensureNativeTunnel = async (): Promise<void> => {
     if (!isNative()) return;
     if (nativeTunnel && nativeTunnel.child.exitCode === null) return;
@@ -224,10 +232,6 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     try { return (await bridge.getConnectionStatus()).connected; } catch { return false; }
   };
   const ensureWebConnected = async (): Promise<boolean> => {
-    // Normal local ChatGPT/Codex owns its official login boundary inside the
-    // provider call. Do not preflight auth here: createAuthoringJob() performs
-    // the interactive sign-in before durable task creation, so the user's first
-    // goal can naturally trigger one browser authorization and continue.
     if (isLocal()) {
       if (bridge) return true;
       io.write("The local ChatGPT/Codex runtime is unavailable. Use /doctor for the next step.\n");
@@ -282,18 +286,14 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     const guard = nativeRuns.get(identity);
     if (!guard) return;
     const status = await guard.assertCanStillComplete();
-    if (status === "completed") {
-      throw new WebBridgeError("WEB_NATIVE_AGENT_INCOMPLETE", `The ChatGPT Workspace Agent run completed without submitting the required WCO ${output}.`);
-    }
+    if (status === "completed") throw new WebBridgeError("WEB_NATIVE_AGENT_INCOMPLETE", `The ChatGPT Workspace Agent run completed without submitting the required WCO ${output}.`);
   };
 
   const waitForImplementation = async (signal?: AbortSignal): Promise<LocalWorkerSession> => {
     if (!latest) throw new Error("No active authoring session.");
     if (!bridge) throw new Error("WCO transport is not connected.");
     const poll = Math.max(250, Math.min(config.web_bridge?.poll_interval_ms ?? 1_000, 10_000));
-    io.write(isLocal()
-      ? "● Understanding your goal and the exact repository state…\n"
-      : "● Waiting for the configured authoring profile to prepare the task…\n");
+    io.write(isLocal() ? "● Understanding your goal and the exact repository state…\n" : "● Waiting for the configured authoring profile to prepare the task…\n");
     while (latest.state !== "IMPLEMENTATION_REGISTERED") {
       assertNotPaused(signal);
       latest = await advanceLocalWorker({ bridge, session: latest, repositoryPath: repositoryConfig.path, stateDirectory: paths.state, configPath: paths.config, config });
@@ -321,7 +321,6 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
       return `PAIR · Needs your attention\nReason        ${error instanceof Error ? error.message : String(error)}\nNext          use /review for evidence and /doctor for recovery guidance\nNothing was merged. Saved progress is preserved.`;
     }
     let code = 0;
-
     for (let round = 0; round < MAX_WEB_REVIEW_ROUNDS; round += 1) {
       if (signal?.aborted) return pauseOutcome("PAIR");
       let snapshot = await readLifecycleSnapshot(paths.state, runId);
@@ -331,7 +330,6 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
         return `PAIR · Ready for you\nDraft PR      ${result?.pull_request?.url ?? "ready"}\nChecks        passed\nCode review   approved\nFinal review  approved\nNext          review the Draft PR and merge when ready`;
       }
       if (snapshot.web_review_state === "ESCALATED") return "PAIR · Needs your attention\nFinal review found a consequential decision that needs you. Nothing was merged.";
-
       if (snapshot.web_review_state === "REVISION_REQUESTED") {
         if (signal?.aborted) return pauseOutcome("PAIR");
         code = await runControlCommand("continue", ["--run-id", runId, "--state-dir", paths.state, "--config", paths.config, "--max-transitions", "8"], { stdout: () => undefined, stderr: () => undefined });
@@ -341,7 +339,6 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
         if (snapshot.web_review_state === "ESCALATED") return "PAIR · Needs your attention\nFinal review found a consequential decision that needs you. Nothing was merged.";
         if (pairSessionCanComplete(snapshot)) continue;
       }
-
       const review = await createPendingFinalReview({ bridge, runId, stateDirectory: paths.state });
       const reviewLabel = review.purpose === "independent_code_review" ? "independent code review" : "final intent review";
       if (isNative()) await triggerNativeTurn(review.purpose, review.job_id);
@@ -363,7 +360,6 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
       if (signal?.aborted) return pauseOutcome("PAIR");
       if (code !== 0) return "The workflow stopped safely. Use /review and /doctor for details, then retry /run.";
     }
-
     return "PAIR · Needs your attention\nThe review limit was reached without a final approval. Nothing was merged.";
   };
 
@@ -437,11 +433,15 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     }
   };
 
+  const requireDurableBackgroundTask = async (): Promise<void> => {
+    if (!latest) throw new Error("The task is still starting and has not reached durable WCO state yet. Wait for 'Goal accepted' and try /pause again.");
+  };
+
   const pausePairAtSafeBoundary = async (): Promise<void> => {
-    const current = latest;
-    if (!current?.run_id) return;
+    await requireDurableBackgroundTask();
+    if (!latest?.run_id) return;
     try {
-      await pauseRun(paths.state, current.run_id, "Interactive pause requested.");
+      await pauseRun(paths.state, latest.run_id, "Interactive pause requested.");
     } catch (error) {
       if (error instanceof OrchestrationError && error.code === "ORCHESTRATION_TERMINAL") return;
       throw new Error(`PAIR durable pause could not be recorded. The task is still running and WCO will remain open. ${error instanceof Error ? error.message : String(error)}`);
@@ -450,11 +450,12 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
 
   const launchNewTask = async (goal: string, replaceExplicit: boolean, mode: JobMode): Promise<string> => {
     if (!isLocal()) return await startAndDriveTask(goal, replaceExplicit, mode);
+    if (!await ensureLocalBackgroundAuthorization()) return "Task was not started. No task state was created.";
     const started = taskSlot.start({
       mode,
       goal,
       run: async (signal) => await startAndDriveTask(goal, replaceExplicit, mode, signal),
-      ...(mode === "PAIR" ? { pauseAtSafeBoundary: pausePairAtSafeBoundary } : {}),
+      pauseAtSafeBoundary: mode === "PAIR" ? pausePairAtSafeBoundary : requireDurableBackgroundTask,
     });
     if (started.started) latest = null;
     return started.message;
@@ -464,12 +465,13 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     if (!latest) return "Type a task goal first.";
     if (latest.state === "COMPLETED") return "This task is complete. Type a new goal or use /new <goal>.";
     if (!isLocal()) return await runSavedTask();
+    if (!await ensureLocalBackgroundAuthorization()) return "Task was not resumed. Saved progress is unchanged.";
     const mode = localWorkerJobMode(latest);
     return taskSlot.start({
       mode,
       goal: latest.goal,
       run: async (signal) => await runSavedTask(signal),
-      ...(mode === "PAIR" ? { pauseAtSafeBoundary: pausePairAtSafeBoundary } : {}),
+      pauseAtSafeBoundary: mode === "PAIR" ? pausePairAtSafeBoundary : requireDurableBackgroundTask,
     }).message;
   };
 
@@ -533,9 +535,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
             : { message: `${exit.message}\nWCO will stay open because it could not confirm a safe pause.` };
         }
         if (command === "/pause" && background) return { message: await taskSlot.requestPause() };
-        if (background && !LIVE_BACKGROUND_COMMANDS.has(command)) {
-          return { message: `${background.mode} is running in the background. To avoid concurrent mutation, only /status, /review, /task, /history, /pause, /help, and /quit are available until it stops.` };
-        }
+        if (background && !LIVE_BACKGROUND_COMMANDS.has(command)) return { message: `${background.mode} is running in the background. To avoid concurrent mutation, only /status, /review, /task, /history, /pause, /help, and /quit are available until it stops.` };
 
         if (command === "/help") return { message: commandPalette() };
         if (command === "/new") { if (!args) return { message: "Usage: /new <goal>" }; return { message: await launchNewTask(args, true, "PAIR") }; }
