@@ -3,6 +3,7 @@ import path from "node:path";
 import { readRunLedger } from "../orchestration/ledger.js";
 import { atomicWriteJson } from "../run/run-store.js";
 import { readStableFile } from "../shared/stable-file.js";
+import { contentDigest, parseWebContractEnvelope } from "./contracts.js";
 import type { LocalWorkerSession } from "./local-worker.js";
 
 const HISTORY_ENTRY_MAX_BYTES = 2 * 1024 * 1024;
@@ -11,11 +12,31 @@ const HISTORY_SCAN_HARD_LIMIT = 4_096;
 const SAFE_HISTORY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const CURRENT_SESSION_ID = /^[0-9a-f-]{36}$/i;
 const HISTORY_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json$/;
+const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}:[a-f0-9]{64}$/;
+const JOB_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const SESSION_STATES = new Set(["CREATING", "AUTHORING", "CONTRACT_SEALED", "PREPARED", "IMPLEMENTATION_REGISTERED", "COMPLETED", "BLOCKED"]);
 
 function validSession(value: unknown): value is LocalWorkerSession {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const item = value as Partial<LocalWorkerSession>;
-  return item.schema_version === "1.0" && typeof item.session_id === "string" && SAFE_HISTORY_ID.test(item.session_id) && typeof item.goal === "string" && typeof item.updated_at === "string" && Number.isFinite(Date.parse(item.updated_at)) && Boolean(item.repository && typeof item.repository.repository_id === "string");
+  if (item.schema_version !== "1.0" || typeof item.session_id !== "string" || !SAFE_HISTORY_ID.test(item.session_id)) return false;
+  if (!item.repository || typeof item.repository.repository_id !== "string" || !SAFE_HISTORY_ID.test(item.repository.repository_id) || typeof item.repository.base_branch !== "string" || !item.repository.base_branch || typeof item.repository.base_commit !== "string" || !/^[a-f0-9]{40}$/.test(item.repository.base_commit)) return false;
+  if (typeof item.goal !== "string" || !item.goal || item.goal.length > 65_536 || !Number.isSafeInteger(item.last_event_sequence) || (item.last_event_sequence ?? -1) < 0 || typeof item.sealed !== "boolean") return false;
+  if (typeof item.state !== "string" || !SESSION_STATES.has(item.state) || typeof item.created_at !== "string" || typeof item.updated_at !== "string" || !Number.isFinite(Date.parse(item.created_at)) || !Number.isFinite(Date.parse(item.updated_at))) return false;
+  if (item.job_mode !== undefined && item.job_mode !== "PAIR" && item.job_mode !== "AUTOPILOT") return false;
+  if (item.job_id !== null && (typeof item.job_id !== "string" || !JOB_ID.test(item.job_id))) return false;
+  for (const field of [item.task_archive_path, item.web_pack_path]) if (field !== null && (typeof field !== "string" || !path.isAbsolute(field))) return false;
+  if (item.run_id !== null && (typeof item.run_id !== "string" || !RUN_ID.test(item.run_id))) return false;
+  try {
+    if (item.contract !== null) {
+      const contract = parseWebContractEnvelope(item.contract);
+      if (item.job_id === null || contract.job_id !== item.job_id || contract.user_intent !== item.goal || contentDigest(contract.repository) !== contentDigest(item.repository)) return false;
+    }
+  } catch { return false; }
+  if (item.sealed && item.contract === null) return false;
+  if (["PREPARED", "IMPLEMENTATION_REGISTERED", "COMPLETED"].includes(item.state) && (!item.sealed || !item.run_id || !item.task_archive_path)) return false;
+  if (item.state === "IMPLEMENTATION_REGISTERED" && !item.web_pack_path) return false;
+  return true;
 }
 
 function historyDirectory(stateDirectory: string): string {
@@ -51,8 +72,6 @@ async function pruneForInsert(history: string): Promise<void> {
       throw error;
     });
     if (!info) continue;
-    // History is convenience state, not authority. Invalid history entries may
-    // be discarded rather than allowed to pin retention capacity.
     if (!info.isFile() || info.isSymbolicLink()) {
       await unlink(target).catch(() => undefined);
       continue;
@@ -65,8 +84,6 @@ async function pruneForInsert(history: string): Promise<void> {
 }
 
 export async function archiveLocalTaskHistory(stateDirectory: string, session: LocalWorkerSession): Promise<void> {
-  // New sessions are always UUIDs. The reader remains compatible with safe
-  // legacy IDs because history is non-authoritative convenience state.
   if (!CURRENT_SESSION_ID.test(session.session_id)) throw new Error("WEB_SESSION_ID_INVALID: session identity is invalid.");
   const serializedBytes = Buffer.byteLength(JSON.stringify(session), "utf8");
   if (serializedBytes > HISTORY_ENTRY_MAX_BYTES) throw new Error("WEB_HISTORY_LIMIT: session history entry exceeds its safe bound.");
@@ -90,8 +107,6 @@ export async function listLocalTaskHistory(stateDirectory: string, repositoryId:
       const parsed = JSON.parse(bytes.toString("utf8")) as unknown;
       if (validSession(parsed) && parsed.repository.repository_id === repositoryId && `${parsed.session_id}.json` === name) values.push(parsed);
     } catch (error) {
-      // History cannot advance workflow authority. A stale/corrupt convenience
-      // record is ignored rather than making the active task unusable.
       if (error instanceof SyntaxError || error instanceof Error && error.name === "StableFileError") continue;
       throw error;
     }
@@ -112,7 +127,7 @@ export async function restoreLocalTaskHistoryFocus(
   repositoryId: string,
   session: LocalWorkerSession,
 ): Promise<LocalWorkerSession> {
-  if (!validSession(session) || session.repository.repository_id !== repositoryId) throw new Error("WEB_HISTORY_NOT_RESUMABLE: history identity does not match this repository.");
+  if (!validSession(session) || !CURRENT_SESSION_ID.test(session.session_id) || session.repository.repository_id !== repositoryId) throw new Error("WEB_HISTORY_NOT_RESUMABLE: history identity does not match a current durable session for this repository.");
   if (session.state !== "IMPLEMENTATION_REGISTERED" || !session.sealed || !session.run_id || !session.task_archive_path || !session.web_pack_path) {
     throw new Error("WEB_HISTORY_NOT_RESUMABLE: this task did not reach a locally re-attestable implementation checkpoint. Start a new follow-up task instead.");
   }
