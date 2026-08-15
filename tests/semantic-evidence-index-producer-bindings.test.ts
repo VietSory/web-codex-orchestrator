@@ -72,6 +72,37 @@ test("read transfer metrics are derived from normalized evidence instead of trus
   );
 });
 
+test("content-reference mode must be justified by the exact command-known digest", () => {
+  const cached = file("src/app.ts", "hello", false);
+  const validMetrics = {
+    context_bytes_prepared: 5,
+    context_bytes_transmitted: 0,
+    repeated_bytes_avoided: 5,
+    files_considered: 1,
+    files_read: 1,
+    regions_read: 1,
+    cache_hits: 1,
+    cache_misses: 0,
+  };
+  const missingKnown = { operation: "read", paths: ["src/app.ts"] };
+  assert.throws(
+    () => buildSemanticEvidenceIndex({ repository, observations: [observation(missingKnown, { files: [cached], metrics: validMetrics })] }),
+    /content_ref is not justified/i,
+  );
+  const wrongKnown = { operation: "read", paths: ["src/app.ts"], known_content_sha256: { "src/app.ts": "c".repeat(64) } };
+  assert.throws(
+    () => buildSemanticEvidenceIndex({ repository, observations: [observation(wrongKnown, { files: [cached], metrics: validMetrics })] }),
+    /content_ref is not justified/i,
+  );
+
+  const transmitted = file("src/app.ts", "hello", true);
+  const exactKnown = { operation: "read", paths: ["src/app.ts"], known_content_sha256: { "src/app.ts": transmitted.content_sha256 } };
+  assert.throws(
+    () => buildSemanticEvidenceIndex({ repository, observations: [observation(exactKnown, { files: [transmitted], metrics: { ...validMetrics, context_bytes_transmitted: 5, repeated_bytes_avoided: 0 } })] }),
+    /transmitted bytes contradict/i,
+  );
+});
+
 test("multi-region reads count unique files separately from exact regions", () => {
   const one = Buffer.from("a", "utf8");
   const two = Buffer.from("b", "utf8");
