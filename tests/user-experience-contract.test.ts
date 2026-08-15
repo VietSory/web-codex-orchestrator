@@ -53,6 +53,23 @@ test("the first normal goal may trigger official ChatGPT authorization without a
   assert.match(bridge, /before durable task creation/i);
 });
 
+test("PAIR status and review stay read-only while presenting durable lifecycle evidence", async () => {
+  const interactive = await text("src/tui/interactive-app.ts");
+  const statusStart = interactive.indexOf('if (command === "/status")');
+  const reviewStart = interactive.indexOf('if (command === "/review")');
+  const pauseStart = interactive.indexOf('if (command === "/pause"');
+  assert.ok(statusStart >= 0 && reviewStart > statusStart && pauseStart > reviewStart);
+
+  const statusBlock = interactive.slice(statusStart, reviewStart);
+  assert.match(statusBlock, /readLifecycleSnapshot/);
+  assert.match(statusBlock, /formatPairStatus/);
+  assert.doesNotMatch(statusBlock, /runControlCommand|startAndDriveTask|drivePairHarnessToCodeReview|driveAutopilotJob/);
+
+  const reviewBlock = interactive.slice(reviewStart, pauseStart);
+  assert.match(reviewBlock, /reviewSummary/);
+  assert.doesNotMatch(reviewBlock, /runControlCommand|startAndDriveTask|drivePairHarnessToCodeReview|driveAutopilotJob/);
+});
+
 test("normal path keeps mutation and shipment authority local and human-owned", async () => {
   const contract = await text("docs/user-experience-contract.md");
   const bridge = await text("docs/web-bridge.md");
