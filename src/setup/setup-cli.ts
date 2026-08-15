@@ -10,10 +10,32 @@ export interface SetupCommandIo {
   question?(prompt: string): Promise<string>;
 }
 
+export interface SetupExecutionHostStatus {
+  severity: "ok" | "warn";
+  value: string;
+  guidance?: string;
+}
+
 const defaultIo: SetupCommandIo = {
   write: (value) => process.stdout.write(value),
   error: (value) => process.stderr.write(value),
 };
+
+export function setupExecutionHostStatus(platform: NodeJS.Platform = process.platform): SetupExecutionHostStatus {
+  if (platform === "linux") return { severity: "ok", value: "Linux/WSL verification supported" };
+  if (platform === "win32") {
+    return {
+      severity: "warn",
+      value: "native Windows host; normal task verification requires Linux/WSL",
+      guidance: "WCO can be installed from PowerShell, but the normal deterministic task workflow is not supported on native Windows by this build. Open the project from WSL and run `wco` there so Bubblewrap verification can enforce filesystem/network isolation.",
+    };
+  }
+  return {
+    severity: "warn",
+    value: `${platform} host; normal task verification requires Linux/WSL`,
+    guidance: "This build requires a Linux/WSL host for the normal deterministic task workflow because verification is isolated with Bubblewrap. Use a Linux environment before starting normal WCO tasks.",
+  };
+}
 
 function friendlySetupError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -69,6 +91,8 @@ export async function runSetupCommand(args: string[], cwd = process.cwd(), suppl
     suppliedIo.write("Checking this Git repository and initial WCO setup…\n");
     const result = await performFirstRunSetup({ cwd, ...(configPath ? { configPath } : {}), ...(stateDirectory ? { stateDirectory } : {}), overwrite });
     const checks: Array<["ok" | "warn", string, string]> = [["ok", "Git repository", result.repository.github_repository ?? result.repository.root]];
+    const executionHost = setupExecutionHostStatus();
+    checks.push([executionHost.severity, "Execution host", executionHost.value]);
     let codex = "authorization pending";
     try { const runtime = await resolveCodexRuntime(result.config.runtime, result.paths.state); await new CodexSdkAgentClient(runtime).checkAvailability(); codex = `ChatGPT authenticated (${runtime.package_version})`; } catch { /* reported below */ }
     let github = "not configured";
@@ -79,6 +103,7 @@ export async function runSetupCommand(args: string[], cwd = process.cwd(), suppl
     const transport = explicitMode ? `${explicitMode} (advanced override)` : "local ChatGPT/Codex";
     checks.push([explicitMode ? "warn" : "ok", "Transport", transport]);
     suppliedIo.write(`\nWeb Codex Orchestrator v0.3 setup\n\n${checks.map(([severity, label, value]) => `${severity === "ok" ? "✓" : "!"} ${label.padEnd(16)} ${value}`).join("\n")}\n`);
+    if (executionHost.guidance) suppliedIo.write(`\n${executionHost.guidance}\n`);
     if (codex === "authorization pending" && !explicitMode) {
       suppliedIo.write("\nSetup is complete. On the first interactive `wco` run, the official Codex sign-in will request ChatGPT authorization if needed. No API key, relay, tunnel, domain, or cloud setup is required. WCO performs the full mode readiness check before starting a task.\n");
     } else if (!explicitMode) {
