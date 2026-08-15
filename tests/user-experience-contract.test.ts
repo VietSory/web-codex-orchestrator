@@ -20,7 +20,6 @@ test("fresh user configuration leaves the normal Web transport implicit", () => 
   } as any, {
     suggested_commands: [{ id: "test", executable: "npm", args: ["test"] }],
   } as any);
-
   assert.equal(config.web_bridge, undefined);
 });
 
@@ -30,7 +29,6 @@ test("authoritative docs freeze local one-authorization prompt-only workflow", a
     text("docs/user-experience-contract.md"),
     text("docs/web-bridge.md"),
   ]);
-
   assert.match(readme, /npm install -g \.\/web-codex-orchestrator-[^\s`]+\.tgz/);
   for (const source of [contract, bridge]) {
     assert.match(source, /local ChatGPT\/Codex/i);
@@ -46,7 +44,6 @@ test("the first normal goal may trigger official ChatGPT authorization without a
     text("src/tui/interactive-app.ts"),
     text("src/web-bridge/chatgpt-codex-bridge.ts"),
   ]);
-
   assert.match(interactive, /if \(isLocal\(\)\) \{\s+if \(bridge\) return true;/s);
   assert.doesNotMatch(interactive, /if \(isLocal\(\)\) \{[^}]*Run \/web connect to authorize/s);
   assert.match(bridge, /createAuthoringJob[\s\S]*ensureAuthorizedForProviderTurn/);
@@ -97,14 +94,12 @@ test("PAIR status and review stay read-only while presenting durable lifecycle e
   const interactive = await text("src/tui/interactive-app.ts");
   const statusStart = interactive.indexOf('if (command === "/status")');
   const reviewStart = interactive.indexOf('if (command === "/review")', statusStart);
-  const durablePauseStart = interactive.indexOf('if (command === "/pause" || command === "/resume")', reviewStart);
+  const durablePauseStart = interactive.indexOf('if (command === "/pause")', reviewStart);
   assert.ok(statusStart >= 0 && reviewStart > statusStart && durablePauseStart > reviewStart);
-
   const statusBlock = interactive.slice(statusStart, reviewStart);
   assert.match(statusBlock, /readLifecycleSnapshot/);
   assert.match(statusBlock, /formatPairStatus/);
   assert.doesNotMatch(statusBlock, /runControlCommand|startAndDriveTask|drivePairHarnessToCodeReview|driveAutopilotJob/);
-
   const reviewBlock = interactive.slice(reviewStart, durablePauseStart);
   assert.match(reviewBlock, /reviewSummary/);
   assert.doesNotMatch(reviewBlock, /runControlCommand|startAndDriveTask|drivePairHarnessToCodeReview|driveAutopilotJob/);
@@ -121,21 +116,53 @@ test("normal status presenters always expose the user's required action", async 
   assert.match(autopilot, /review the Draft PR and merge when ready/);
 });
 
-test("history details are inspectable without becoming mutation authority", async () => {
-  const interactive = await text("src/tui/interactive-app.ts");
+test("history inspection stays read-only while resume is a separate re-attested authority transition", async () => {
+  const [interactive, history] = await Promise.all([
+    text("src/tui/interactive-app.ts"),
+    text("src/web-bridge/session-history.ts"),
+  ]);
   const historyStart = interactive.indexOf('if (command === "/history")');
   const historyBlock = interactive.slice(historyStart);
   assert.match(historyBlock, /Use \/history <number> for details/);
   assert.match(historyBlock, /History #/);
-  assert.match(historyBlock, /current task focus is unchanged/);
-  assert.doesNotMatch(historyBlock, /startLocalAuthoring|drivePairHarnessToCodeReview|driveAutopilotJob/);
+  assert.doesNotMatch(historyBlock, /restoreLocalTaskHistoryFocus|startLocalAuthoring|drivePairHarnessToCodeReview|driveAutopilotJob/);
+  assert.match(interactive, /const resumeHistoryItem = async/);
+  assert.match(interactive, /restoreLocalTaskHistoryFocus/);
+  assert.match(interactive, /archiveLocalTaskHistory/);
+  assert.match(history, /readRunLedger/);
+  assert.match(history, /assertBoundedStateArtifact/);
+  assert.match(history, /CURRENT_SESSION_ID/);
+  assert.match(history, /history JSON itself as workflow authority/i);
+});
+
+test("continue is the normal one-step continuation while legacy run stays compatibility-only", async () => {
+  const [interactive, slash] = await Promise.all([
+    text("src/tui/interactive-app.ts"),
+    text("src/tui/slash-commands.ts"),
+  ]);
+  assert.match(slash, /\/continue/);
+  assert.match(slash, /\/resume/);
+  assert.doesNotMatch(slash.match(/SLASH_COMMANDS = \[[\s\S]*?\] as const/)?.[0] ?? "", /\["\/run"/);
+  assert.match(interactive, /command === "\/continue" \|\| command === "\/run"/);
+  assert.match(interactive, /const continueBestTask = async/);
+  assert.match(interactive, /const resumeFromHistory = async/);
 });
 
 test("background execution remains single-owner and exposes only read/control commands", async () => {
   const interactive = await text("src/tui/interactive-app.ts");
   assert.match(interactive, /LIVE_BACKGROUND_COMMANDS = new Set\(\["\/status", "\/review", "\/task", "\/history", "\/pause", "\/help", "\/quit"\]\)/);
   assert.match(interactive, /background && !LIVE_BACKGROUND_COMMANDS\.has\(command\)/);
-  assert.doesNotMatch(interactive.match(/LIVE_BACKGROUND_COMMANDS = new Set\([^\n]+/)?.[0] ?? "", /\/new|\/auto|\/run|\/mode|\/config|\/web|\/uninstall/);
+  assert.doesNotMatch(interactive.match(/LIVE_BACKGROUND_COMMANDS = new Set\([^\n]+/)?.[0] ?? "", /\/new|\/auto|\/run|\/continue|\/resume|\/mode|\/config|\/web|\/uninstall/);
+});
+
+test("interactive terminal separates interrupt from exit and preserves multiline input", async () => {
+  const session = await text("src/tui/session.ts");
+  assert.match(session, /WCO_COMPOSER_INTERRUPT/);
+  assert.match(session, /WCO_COMPOSER_EXIT/);
+  assert.match(session, /interruptRequest/);
+  assert.match(session, /key\.ctrl && key\.name === "j"/);
+  assert.match(session, /key\.shift/);
+  assert.match(session, /replace\(\/\\r\\n\?\/gu, "\\n"\)/);
 });
 
 test("advanced compatibility profiles stay foreground so they never race the live composer for stdin", async () => {
@@ -147,7 +174,6 @@ test("advanced compatibility profiles stay foreground so they never race the liv
 test("normal path keeps mutation and shipment authority local and human-owned", async () => {
   const contract = await text("docs/user-experience-contract.md");
   const bridge = await text("docs/web-bridge.md");
-
   assert.match(contract, /Harness mutation authority/i);
   assert.match(contract, /human alone decides merge\/release/i);
   assert.match(contract, /automatic merge\/release\s+= 0/i);
