@@ -66,7 +66,7 @@ export function chatGptCodexRepositoryResultPrompt(result: unknown, request: Aut
 export function chatGptCodexReviewPrompt(request: FinalReviewRequest, evidence: Record<string, unknown>, reviewId: string): string {
   return [
     CHATGPT_CODEX_REVIEW_PHASE_MARKER,
-    "You are WCO's independent final semantic reviewer. You have no mutation, shell, Git, publish, or merge authority.",
+    "You are WCO's independent semantic reviewer. You have no mutation, shell, Git, publish, or merge authority.",
     MAINTAINER_REVIEW_STANDARD,
     "When this evidence is for independent_code_review, independently derive correctness from the exact change evidence instead of inheriting the author's conclusions. When it is for final_intent_review, re-check the final result against the original user intent, frozen architecture/acceptance authority, and end-to-end behavior even if an earlier reviewer approved.",
     "Review only the exact bounded evidence below and return exactly one web_verdict provider envelope.",
