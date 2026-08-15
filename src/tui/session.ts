@@ -51,6 +51,15 @@ export function composerCursorGeometry(
   };
 }
 
+export function restoreComposerInput(
+  input: Pick<NodeJS.ReadStream, "setRawMode" | "pause">,
+  wasRaw: boolean,
+): void {
+  if (wasRaw) return;
+  input.setRawMode(false);
+  input.pause();
+}
+
 /** Pure completion rule used by the live TTY and UX regression tests. */
 export function resolveSlashCompletion(value: string, command: string, kind: CompletionKind): { value: string; submit: boolean } {
   if (ARGUMENT_COMMANDS.has(command)) return { value: `${command} `, submit: false };
@@ -136,7 +145,7 @@ async function liveSlashComposer(prompt: string, history: string[]): Promise<str
     const cleanup = (): void => {
       input.removeListener("keypress", onKeypress);
       output.removeListener("resize", onResize);
-      if (!wasRaw) input.setRawMode(false);
+      restoreComposerInput(input, wasRaw);
     };
 
     const remember = (answer: string): void => {
