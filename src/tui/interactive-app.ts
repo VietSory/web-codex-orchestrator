@@ -38,6 +38,7 @@ import { triggerWorkspaceAgent } from "../web-bridge/workspace-agent-client.js";
 import { contentDigest, WebBridgeError } from "../web-bridge/contracts.js";
 import { formatAutopilotOutcome, formatAutopilotStatus } from "./autopilot-presenter.js";
 import { withFinalReviewNotification } from "./autopilot-web-bridge.js";
+import { InteractiveTaskSlot } from "./interactive-task-slot.js";
 import { pairSessionCanComplete } from "./pair-completion.js";
 import { derivePairStage, formatPairReview, formatPairStatus } from "./pair-presenter.js";
 import { readReviewMode, writeReviewMode } from "./review-mode-store.js";
@@ -45,8 +46,41 @@ import { commandPalette } from "./slash-commands.js";
 import { deriveUserStage, formatUserStage, type UserStage } from "./stages.js";
 import { runInteractiveSession, terminalIo, type InteractiveIo } from "./session.js";
 
-const sleep = async (milliseconds: number): Promise<void> => await new Promise((resolve) => setTimeout(resolve, milliseconds));
 const MAX_WEB_REVIEW_ROUNDS = 4;
+const LIVE_BACKGROUND_COMMANDS = new Set(["/status", "/review", "/task", "/history", "/pause", "/help", "/quit"]);
+
+class InteractivePauseRequested extends Error {
+  constructor() {
+    super("Interactive pause requested.");
+    this.name = "InteractivePauseRequested";
+  }
+}
+
+function pauseOutcome(mode: JobMode): string {
+  return `${mode} · Paused\nProgress is saved. Use /status to inspect it, then /resume and /run when you want to continue.`;
+}
+
+function assertNotPaused(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new InteractivePauseRequested();
+}
+
+async function sleepWithSignal(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return;
+  if (!signal) {
+    await new Promise((resolve) => setTimeout(resolve, milliseconds));
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (): void => {
+      if (timer) clearTimeout(timer);
+      signal.removeEventListener("abort", finish);
+      resolve();
+    };
+    timer = setTimeout(finish, milliseconds);
+    signal.addEventListener("abort", finish, { once: true });
+  });
+}
 
 function splitRunId(runId: string): { taskId: string; archiveSha: string } | null {
   const index = runId.lastIndexOf(":");
@@ -156,6 +190,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
   let latest = await readLocalWorkerSession(paths.state, repositoryId);
   let nativeTunnel: NativeTunnelProcess | null = null;
   const nativeRuns = new Map<string, NativeAgentRunGuard>();
+  const taskSlot = new InteractiveTaskSlot((value) => io.write(value));
   const webIo = {
     write: (value: string) => io.write(value),
     error: (value: string) => io.write(value),
@@ -250,7 +285,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     }
   };
 
-  const waitForImplementation = async (): Promise<LocalWorkerSession> => {
+  const waitForImplementation = async (signal?: AbortSignal): Promise<LocalWorkerSession> => {
     if (!latest) throw new Error("No active authoring session.");
     if (!bridge) throw new Error("WCO transport is not connected.");
     const poll = Math.max(250, Math.min(config.web_bridge?.poll_interval_ms ?? 1_000, 10_000));
@@ -258,29 +293,35 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
       ? "● Understanding your goal and the exact repository state…\n"
       : "● Waiting for the configured authoring profile to prepare the task…\n");
     while (latest.state !== "IMPLEMENTATION_REGISTERED") {
+      assertNotPaused(signal);
       latest = await advanceLocalWorker({ bridge, session: latest, repositoryPath: repositoryConfig.path, stateDirectory: paths.state, configPath: paths.config, config });
-      if (latest.state === "IMPLEMENTATION_REGISTERED") break;
       if (latest.state === "BLOCKED") throw new Error("Task preparation needs your attention. Use /status for details.");
+      assertNotPaused(signal);
+      if (latest.state === "IMPLEMENTATION_REGISTERED") break;
       if (latest.job_id) await assertNativeOutputStillPossible(latest.job_id, "implementation");
-      await sleep(poll);
+      await sleepWithSignal(poll, signal);
     }
     return latest;
   };
 
-  const continuePairWorkflow = async (): Promise<string> => {
+  const continuePairWorkflow = async (signal?: AbortSignal): Promise<string> => {
+    if (signal?.aborted) return pauseOutcome("PAIR");
     if (!latest?.run_id || !latest.web_pack_path || latest.state !== "IMPLEMENTATION_REGISTERED") return "PAIR is still preparing the task. Use /status for the current step.";
     if (!bridge) throw new Error("WCO transport is not connected.");
     const runId = latest.run_id;
     try {
       io.write("● Implementing, running checks, and preparing the Draft PR…\n");
       await drivePairHarnessToCodeReview({ runId, webPackPath: latest.web_pack_path, stateDirectory: paths.state, configPath: paths.config });
+      if (signal?.aborted) return pauseOutcome("PAIR");
       io.write("● Implementation and checks complete. Review evidence is ready.\n");
     } catch (error) {
+      if (signal?.aborted || (error && typeof error === "object" && "code" in error && String((error as { code?: unknown }).code) === "ORCHESTRATION_PAUSED")) return pauseOutcome("PAIR");
       return `PAIR · Needs your attention\nReason        ${error instanceof Error ? error.message : String(error)}\nNext          use /review for evidence and /doctor for recovery guidance\nNothing was merged. Saved progress is preserved.`;
     }
     let code = 0;
 
     for (let round = 0; round < MAX_WEB_REVIEW_ROUNDS; round += 1) {
+      if (signal?.aborted) return pauseOutcome("PAIR");
       let snapshot = await readLifecycleSnapshot(paths.state, runId);
       if (pairSessionCanComplete(snapshot)) {
         await completeLocalWorkerSession({ session: latest, stateDirectory: paths.state });
@@ -290,7 +331,9 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
       if (snapshot.web_review_state === "ESCALATED") return "PAIR · Needs your attention\nFinal review found a consequential decision that needs you. Nothing was merged.";
 
       if (snapshot.web_review_state === "REVISION_REQUESTED") {
+        if (signal?.aborted) return pauseOutcome("PAIR");
         code = await runControlCommand("continue", ["--run-id", runId, "--state-dir", paths.state, "--config", paths.config, "--max-transitions", "8"], { stdout: () => undefined, stderr: () => undefined });
+        if (signal?.aborted) return pauseOutcome("PAIR");
         if (code !== 0) return "The revision stopped safely. Use /review and /doctor for details, then retry /run.";
         snapshot = await readLifecycleSnapshot(paths.state, runId);
         if (snapshot.web_review_state === "ESCALATED") return "PAIR · Needs your attention\nFinal review found a consequential decision that needs you. Nothing was merged.";
@@ -305,23 +348,27 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
       const poll = Math.max(250, Math.min(config.web_bridge?.poll_interval_ms ?? 1_000, 10_000));
       let verdict = await bridge.waitForVerdict(review.job_id);
       while (!verdict) {
+        if (signal?.aborted) return pauseOutcome("PAIR");
         await assertNativeOutputStillPossible(review.job_id, "verdict");
-        await sleep(poll);
+        await sleepWithSignal(poll, signal);
+        if (signal?.aborted) return pauseOutcome("PAIR");
         verdict = await bridge.waitForVerdict(review.job_id);
       }
       const adopted = await materializeAndSubmitWebVerdict({ envelope: verdict, stateDirectory: paths.state, configPath: paths.config });
       io.write(`● ${reviewLabel}: ${readableState(adopted.receipt.state)}\n`);
+      if (signal?.aborted) return pauseOutcome("PAIR");
       code = await runControlCommand("continue", ["--run-id", runId, "--state-dir", paths.state, "--config", paths.config, "--max-transitions", "8"], { stdout: () => undefined, stderr: () => undefined });
+      if (signal?.aborted) return pauseOutcome("PAIR");
       if (code !== 0) return "The workflow stopped safely. Use /review and /doctor for details, then retry /run.";
     }
 
     return "PAIR · Needs your attention\nThe review limit was reached without a final approval. Nothing was merged.";
   };
 
-  const driveAutopilotForUser = async (): Promise<string> => {
+  const driveAutopilotForUser = async (signal?: AbortSignal): Promise<string> => {
+    if (signal?.aborted) return pauseOutcome("AUTOPILOT");
     if (!latest?.run_id || !latest.web_pack_path || latest.state !== "IMPLEMENTATION_REGISTERED") return "AUTOPILOT is still preparing the task.";
     if (!bridge) throw new Error("WCO transport is not connected.");
-    const controller = new AbortController(); const interrupt = (): void => controller.abort(); process.once("SIGINT", interrupt);
     try {
       const interactiveBridge = withFinalReviewNotification(
         bridge,
@@ -333,28 +380,86 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
         },
         isNative() ? async (reviewId) => await assertNativeOutputStillPossible(reviewId, "verdict") : undefined,
       );
-      const receipt = await driveAutopilotJob({ bridge: interactiveBridge, runId: latest.run_id, stateDirectory: paths.state, configPath: paths.config, webPackPath: latest.web_pack_path, signal: controller.signal, ...(config.web_bridge?.poll_interval_ms !== undefined ? { pollIntervalMs: config.web_bridge.poll_interval_ms } : {}) });
+      const receipt = await driveAutopilotJob({ bridge: interactiveBridge, runId: latest.run_id, stateDirectory: paths.state, configPath: paths.config, webPackPath: latest.web_pack_path, ...(signal ? { signal } : {}), ...(config.web_bridge?.poll_interval_ms !== undefined ? { pollIntervalMs: config.web_bridge.poll_interval_ms } : {}) });
       if (receipt.status === "READY_FOR_YOU") await completeLocalWorkerSession({ session: latest, stateDirectory: paths.state });
       const result = await resultReceipt(receipt.run_id, paths.state);
       return formatAutopilotOutcome(receipt, result?.pull_request?.url ?? null);
     } catch (error) {
+      if (signal?.aborted) return pauseOutcome("AUTOPILOT");
       return ["AUTOPILOT stopped safely.", error instanceof Error ? error.message : String(error), "Nothing was merged. Use /review for evidence and /doctor if a prerequisite is unavailable, then retry /run."].join("\n");
-    } finally { process.removeListener("SIGINT", interrupt); }
+    }
   };
 
-  const startAndDriveTask = async (goal: string, replaceExplicit = false, mode: JobMode = "PAIR"): Promise<string> => {
-    if (!await ensureWebConnected()) return "Task was not started. Use /doctor for the next step, or /web status to inspect the selected transport.";
-    if (!bridge) throw new Error("WCO transport is not connected.");
-    const selectedReviewer = await readReviewMode(paths.state);
-    latest = await startLocalAuthoring({ bridge, repository: { repository_id: repositoryId, base_branch: detected.base_branch, base_commit: detected.base_commit }, goal, stateDirectory: paths.state, replaceExplicit, mode });
-    io.write("● Goal accepted. WCO is preparing the task safely.\n");
-    if (mode === "AUTOPILOT") io.write(`AUTOPILOT reviewer: ${reviewerLabel(selectedReviewer)}\n`);
-    if (isNative()) await triggerNativeTurn("author", latest.job_id!);
-    else if (isManaged()) io.write("Optional managed ChatGPT Web authoring started automatically.\n");
-    else if (!isLocal()) { io.write("Opening advanced WCO Senior Architect...\n"); await openWebArchitect(); }
-    await waitForImplementation();
-    io.write("● Plan ready. Starting implementation, checks, and review…\n");
-    return mode === "AUTOPILOT" ? await driveAutopilotForUser() : await continuePairWorkflow();
+  const startAndDriveTask = async (goal: string, replaceExplicit = false, mode: JobMode = "PAIR", signal?: AbortSignal): Promise<string> => {
+    try {
+      assertNotPaused(signal);
+      if (!await ensureWebConnected()) return "Task was not started. Use /doctor for the next step, or /web status to inspect the selected transport.";
+      assertNotPaused(signal);
+      if (!bridge) throw new Error("WCO transport is not connected.");
+      const selectedReviewer = await readReviewMode(paths.state);
+      latest = await startLocalAuthoring({ bridge, repository: { repository_id: repositoryId, base_branch: detected.base_branch, base_commit: detected.base_commit }, goal, stateDirectory: paths.state, replaceExplicit, mode });
+      io.write("● Goal accepted. WCO is preparing the task safely.\n");
+      if (mode === "AUTOPILOT") io.write(`AUTOPILOT reviewer: ${reviewerLabel(selectedReviewer)}\n`);
+      if (isNative()) await triggerNativeTurn("author", latest.job_id!);
+      else if (isManaged()) io.write("Optional managed ChatGPT Web authoring started automatically.\n");
+      else if (!isLocal()) { io.write("Opening advanced WCO Senior Architect...\n"); await openWebArchitect(); }
+      await waitForImplementation(signal);
+      assertNotPaused(signal);
+      io.write("● Plan ready. Starting implementation, checks, and review…\n");
+      return mode === "AUTOPILOT" ? await driveAutopilotForUser(signal) : await continuePairWorkflow(signal);
+    } catch (error) {
+      if (error instanceof InteractivePauseRequested || signal?.aborted) return pauseOutcome(mode);
+      throw error;
+    }
+  };
+
+  const runSavedTask = async (signal?: AbortSignal): Promise<string> => {
+    latest = await readLocalWorkerSession(paths.state, repositoryId);
+    if (!latest) return "Type a task goal first.";
+    if (latest.state === "COMPLETED") return "This task is complete. Type a new goal or use /new <goal>.";
+    const mode = localWorkerJobMode(latest);
+    try {
+      assertNotPaused(signal);
+      if (!await ensureWebConnected()) return "The selected transport is not ready. Use /doctor for the next step.";
+      assertNotPaused(signal);
+      if (latest.state !== "IMPLEMENTATION_REGISTERED") {
+        if (isNative()) await triggerNativeTurn("author", latest.job_id ?? latest.session_id);
+        else if (!isManaged() && !isLocal()) await openWebArchitect();
+        await waitForImplementation(signal);
+      }
+      assertNotPaused(signal);
+      return mode === "AUTOPILOT" ? await driveAutopilotForUser(signal) : await continuePairWorkflow(signal);
+    } catch (error) {
+      if (error instanceof InteractivePauseRequested || signal?.aborted) return pauseOutcome(mode);
+      throw error;
+    }
+  };
+
+  const pausePairAtSafeBoundary = async (): Promise<void> => {
+    const current = await readLocalWorkerSession(paths.state, repositoryId);
+    if (current) latest = current;
+    if (!current?.run_id) return;
+    const code = await runControlCommand("pause", ["--run-id", current.run_id, "--state-dir", paths.state], { stdout: () => undefined, stderr: () => undefined });
+    if (code !== 0) throw new Error("PAIR durable pause could not be recorded. The task is still running and WCO will remain open.");
+  };
+
+  const launchNewTask = (goal: string, replaceExplicit: boolean, mode: JobMode): string => taskSlot.start({
+    mode,
+    goal,
+    run: async (signal) => await startAndDriveTask(goal, replaceExplicit, mode, signal),
+    ...(mode === "PAIR" ? { pauseAtSafeBoundary: pausePairAtSafeBoundary } : {}),
+  }).message;
+
+  const launchSavedTask = (): string => {
+    if (!latest) return "Type a task goal first.";
+    if (latest.state === "COMPLETED") return "This task is complete. Type a new goal or use /new <goal>.";
+    const mode = localWorkerJobMode(latest);
+    return taskSlot.start({
+      mode,
+      goal: latest.goal,
+      run: async (signal) => await runSavedTask(signal),
+      ...(mode === "PAIR" ? { pauseAtSafeBoundary: pausePairAtSafeBoundary } : {}),
+    }).message;
   };
 
   const displayUserStatus = async (session: LocalWorkerSession | null): Promise<string> => {
@@ -389,19 +494,41 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     await runInteractiveSession(io, {
       state: async () => {
         latest = await readLocalWorkerSession(paths.state, repositoryId);
-        return { active: Boolean(latest && latest.state !== "COMPLETED"), sealed: latest?.sealed ?? false, summary: `WCO · ${repositoryId}\nRepository   ${detected.base_branch}@${detected.base_commit.slice(0, 7)}\nStatus       ${await displayUserStatus(latest)}${latest ? `\nTask         ${latest.goal}` : ""}` };
+        const background = taskSlot.snapshot();
+        const active = Boolean(background || (latest && latest.state !== "COMPLETED"));
+        const visibleGoal = latest?.goal ?? background?.goal;
+        const status = latest
+          ? await displayUserStatus(latest)
+          : background
+            ? `${background.mode} · ${background.pause_requested ? "Pause requested" : "Starting"}`
+            : await displayUserStatus(null);
+        const worker = background ? `\nWorker       ${background.pause_requested ? "pause requested · finishing current safe step" : "running · /status /review /pause stay available"}` : "";
+        return { active, sealed: latest?.sealed ?? false, summary: `WCO · ${repositoryId}\nRepository   ${detected.base_branch}@${detected.base_commit.slice(0, 7)}\nStatus       ${status}${visibleGoal ? `\nTask         ${visibleGoal}` : ""}${worker}` };
       },
-      newTask: async (goal) => await startAndDriveTask(goal),
+      newTask: async (goal) => launchNewTask(goal, false, "PAIR"),
       clarify: async (value) => {
+        if (taskSlot.isActive()) return "The task is running. Use /pause before changing the goal so execution never races with a clarification.";
         if (!latest) return "No active task. Type a goal to start one.";
         const connectedBridge = bridge; if (!connectedBridge) return "ChatGPT/Codex is not ready. Use /doctor for the next step.";
         await appendLocalClarification({ bridge: connectedBridge, session: latest, value, stateDirectory: paths.state }); return "Added that detail to the task before the plan was locked.";
       },
       command: async (command, args) => {
-        if (command === "/quit") return { message: "Goodbye.", quit: true };
+        const background = taskSlot.snapshot();
+        if (command === "/quit") {
+          if (!background) return { message: "Goodbye.", quit: true };
+          const exit = await taskSlot.pauseAndWait();
+          return exit.safe_to_exit
+            ? { message: `${exit.message}\nProgress is saved. Goodbye.`, quit: true }
+            : { message: `${exit.message}\nWCO will stay open because it could not confirm a safe pause.` };
+        }
+        if (command === "/pause" && background) return { message: await taskSlot.requestPause() };
+        if (background && !LIVE_BACKGROUND_COMMANDS.has(command)) {
+          return { message: `${background.mode} is running in the background. To avoid concurrent mutation, only /status, /review, /task, /history, /pause, /help, and /quit are available until it stops.` };
+        }
+
         if (command === "/help") return { message: commandPalette() };
-        if (command === "/new") { if (!args) return { message: "Usage: /new <goal>" }; return { message: await startAndDriveTask(args, true, "PAIR") }; }
-        if (command === "/auto") { if (!args) return { message: "Usage: /auto <goal>" }; return { message: await startAndDriveTask(args, true, "AUTOPILOT") }; }
+        if (command === "/new") { if (!args) return { message: "Usage: /new <goal>" }; return { message: launchNewTask(args, true, "PAIR") }; }
+        if (command === "/auto") { if (!args) return { message: "Usage: /auto <goal>" }; return { message: launchNewTask(args, true, "AUTOPILOT") }; }
         if (command === "/mode") {
           const current = await readReviewMode(paths.state);
           if (!args) return { message: `AUTOPILOT reviewer: ${reviewerLabel(current)}\nFinal review: required\nUsage: /mode <sol|terra> <minimal|low|medium|high|xhigh>` };
@@ -412,6 +539,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
           catch (error) { return { message: error instanceof Error ? error.message : String(error) }; }
         }
         if (command === "/task") {
+          if (!latest && background) return { message: `Goal: ${background.goal}\nMode: ${background.mode}\nPlan: starting` };
           if (!latest) return { message: "No active task." };
           const mode = localWorkerJobMode(latest); return { message: mode === "AUTOPILOT" ? `Goal: ${latest.goal}\nMode: AUTOPILOT\nPlan: ${latest.sealed ? "locked" : "being refined"}` : `Goal: ${latest.goal}\nPlan: ${latest.sealed ? "locked" : "being refined"}` };
         }
@@ -429,37 +557,29 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
           return { message: `${lines.join("\n")}\n${ending}` };
         }
         if (command === "/status") {
+          if (!latest && background) return { message: `${background.mode} · ${background.pause_requested ? "Pause requested" : "Starting"}\nGoal          ${background.goal}\nNext          ${background.pause_requested ? "finishing the current safe step" : "WCO is creating durable task state"}` };
           if (!latest) return { message: "Ready. Type a goal to start a task." };
           if (localWorkerJobMode(latest) === "AUTOPILOT") {
             const status = await displayUserStatus(latest);
-            return { message: `Status: ${status}\nGoal: ${latest.goal}\nMode: AUTOPILOT\nPlan: ${latest.sealed ? "locked" : "being refined"}` };
+            return { message: `Status: ${status}\nGoal: ${latest.goal}\nMode: AUTOPILOT\nPlan: ${latest.sealed ? "locked" : "being refined"}${background ? `\nWorker: ${background.pause_requested ? "pause requested" : "running"}` : ""}` };
           }
-          if (!latest.run_id) return { message: `PAIR · ${await displayUserStatus(latest)}\nGoal          ${latest.goal}\nPlan          ${latest.sealed ? "locked" : "being refined"}\nNext          WCO is preparing the task` };
+          if (!latest.run_id) return { message: `PAIR · ${await displayUserStatus(latest)}\nGoal          ${latest.goal}\nPlan          ${latest.sealed ? "locked" : "being refined"}\nNext          ${background?.pause_requested ? "finishing the current safe step" : "WCO is preparing the task"}` };
           try {
             const [snapshot, result] = await Promise.all([readLifecycleSnapshot(paths.state, latest.run_id), resultReceipt(latest.run_id, paths.state)]);
-            return { message: formatPairStatus({ goal: latest.goal, planLocked: latest.sealed, snapshot, draftPrUrl: result?.pull_request?.url ?? null }) };
+            const status = formatPairStatus({ goal: latest.goal, planLocked: latest.sealed, snapshot, draftPrUrl: result?.pull_request?.url ?? null });
+            return { message: background?.pause_requested ? `${status}\nWorker        pause requested · finishing current safe step` : status };
           } catch {
             return { message: `PAIR · Needs your attention\nGoal          ${latest.goal}\nNext          use /review for evidence and /doctor for recovery guidance` };
           }
         }
         if (command === "/review") return { message: latest?.run_id ? await reviewSummary(latest.run_id, paths.state) : "No review is available yet." };
         if (command === "/pause" || command === "/resume") {
-          if (!latest?.run_id) return { message: "This task has not reached a pausable step yet." };
+          if (!latest?.run_id) return { message: command === "/pause" ? "This task has not reached a durable run step yet. If it is actively preparing, the live /pause command will stop it at the next safe boundary." : "This task has not reached a resumable run step yet. Use /run to continue saved preparation." };
           const code = await runControlCommand(command.slice(1), ["--run-id", latest.run_id, "--state-dir", paths.state], { stdout: () => undefined, stderr: () => undefined });
           if (code === 0) return { message: command === "/pause" ? "Paused safely. Progress is saved." : "Resumed. Use /run to continue the task." };
           return { message: `${command === "/pause" ? "Pause" : "Resume"} could not be completed. Use /status and /doctor for details.` };
         }
-        if (command === "/run") {
-          if (!latest) return { message: "Type a task goal first." };
-          if (latest.state === "COMPLETED") return { message: "This task is complete. Type a new goal or use /new <goal>." };
-          if (!await ensureWebConnected()) return { message: "The selected transport is not ready. Use /doctor for the next step." };
-          if (latest.state !== "IMPLEMENTATION_REGISTERED") {
-            if (isNative()) await triggerNativeTurn("author", latest.job_id ?? latest.session_id);
-            else if (!isManaged() && !isLocal()) await openWebArchitect();
-            await waitForImplementation();
-          }
-          return { message: localWorkerJobMode(latest) === "AUTOPILOT" ? await driveAutopilotForUser() : await continuePairWorkflow() };
-        }
+        if (command === "/run") return { message: launchSavedTask() };
         if (command === "/uninstall") {
           const answer = (await io.question("Remove WCO-owned local data and uninstall WCO? Your repositories, branches, and PRs will be preserved. [y/N] ")).trim();
           if (!/^y(es)?$/i.test(answer)) return { message: "Uninstall cancelled." };
@@ -475,7 +595,20 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
         }
         return { message: `Unknown command '${command}'. Type / to see available commands.` };
       },
+      exitRequest: async () => {
+        if (!taskSlot.isActive()) return { message: "Goodbye.", quit: true };
+        const exit = await taskSlot.pauseAndWait();
+        return exit.safe_to_exit
+          ? { message: `${exit.message}\nProgress is saved. Goodbye.`, quit: true }
+          : { message: `${exit.message}\nWCO will stay open because it could not confirm a safe pause.`, quit: false };
+      },
     });
-  } finally { await stopNativeTunnel(nativeTunnel).catch(() => undefined); }
+  } finally {
+    if (taskSlot.isActive()) {
+      const exit = await taskSlot.pauseAndWait();
+      if (!exit.safe_to_exit) await taskSlot.waitForIdle();
+    }
+    await stopNativeTunnel(nativeTunnel).catch(() => undefined);
+  }
   return 0;
 }
