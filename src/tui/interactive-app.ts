@@ -85,6 +85,28 @@ async function sleepWithSignal(milliseconds: number, signal?: AbortSignal): Prom
   });
 }
 
+export function createInteractiveAbortScope(
+  signal?: AbortSignal,
+  events: {
+    once(event: "SIGINT", listener: () => void): unknown;
+    removeListener(event: "SIGINT", listener: () => void): unknown;
+  } = process,
+): { signal: AbortSignal; cleanup(): void } {
+  if (signal) return { signal, cleanup: () => undefined };
+  const controller = new AbortController();
+  const interrupt = (): void => controller.abort();
+  let cleaned = false;
+  events.once("SIGINT", interrupt);
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      if (cleaned) return;
+      cleaned = true;
+      events.removeListener("SIGINT", interrupt);
+    },
+  };
+}
+
 function splitRunId(runId: string): { taskId: string; archiveSha: string } | null {
   const index = runId.lastIndexOf(":");
   const taskId = runId.slice(0, index), archiveSha = runId.slice(index + 1);
@@ -367,6 +389,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     if (signal?.aborted) return pauseOutcome("AUTOPILOT");
     if (!latest?.run_id || !latest.web_pack_path || latest.state !== "IMPLEMENTATION_REGISTERED") return "AUTOPILOT is still preparing the task.";
     if (!bridge) throw new Error("WCO transport is not connected.");
+    const abortScope = createInteractiveAbortScope(signal);
     try {
       const interactiveBridge = withFinalReviewNotification(
         bridge,
@@ -378,13 +401,15 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
         },
         isNative() ? async (reviewId) => await assertNativeOutputStillPossible(reviewId, "verdict") : undefined,
       );
-      const receipt = await driveAutopilotJob({ bridge: interactiveBridge, runId: latest.run_id, stateDirectory: paths.state, configPath: paths.config, webPackPath: latest.web_pack_path, ...(signal ? { signal } : {}), ...(config.web_bridge?.poll_interval_ms !== undefined ? { pollIntervalMs: config.web_bridge.poll_interval_ms } : {}) });
+      const receipt = await driveAutopilotJob({ bridge: interactiveBridge, runId: latest.run_id, stateDirectory: paths.state, configPath: paths.config, webPackPath: latest.web_pack_path, signal: abortScope.signal, ...(config.web_bridge?.poll_interval_ms !== undefined ? { pollIntervalMs: config.web_bridge.poll_interval_ms } : {}) });
       if (receipt.status === "READY_FOR_YOU") await completeLocalWorkerSession({ session: latest, stateDirectory: paths.state });
       const result = await resultReceipt(receipt.run_id, paths.state);
       return formatAutopilotOutcome(receipt, result?.pull_request?.url ?? null);
     } catch (error) {
-      if (signal?.aborted) return pauseOutcome("AUTOPILOT");
+      if (abortScope.signal.aborted) return pauseOutcome("AUTOPILOT");
       return ["AUTOPILOT stopped safely.", error instanceof Error ? error.message : String(error), "Nothing was merged. Use /review for evidence and /doctor if a prerequisite is unavailable, then retry /run."].join("\n");
+    } finally {
+      abortScope.cleanup();
     }
   };
 
