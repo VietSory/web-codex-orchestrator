@@ -11,15 +11,14 @@ import { resolveGitHubToken } from "../src/setup/credential-provider.js";
 import { RelayFileStore } from "../src/web-bridge/relay/file-store.js";
 import { purgeWcoHome } from "../src/uninstall/purge.js";
 
-test("v0.3 slash palette keeps the normal path local ChatGPT/Codex and /unitsall", () => {
+test("v0.3 slash palette keeps the normal path local ChatGPT/Codex and hides legacy aliases", () => {
   const palette = commandPalette();
-  assert.match(palette, /\/new\s+Start a new task/);
-  assert.match(palette, /\/web status\s+Show local ChatGPT authorization/);
-  assert.match(palette, /\/web connect\s+Authorize\/reconnect local ChatGPT via bundled Codex/);
-  assert.match(palette, /\/config web\s+Authorize\/reconnect the local ChatGPT transport/);
-  assert.match(palette, /\/web open\s+Show Web transport status \(no per-task browser step\)/);
+  assert.match(palette, /\/new\s+Start a new PAIR task/);
+  assert.match(palette, /\/web status\s+Show ChatGPT authorization status/);
+  assert.match(palette, /\/web connect\s+Authorize or reconnect ChatGPT/);
+  assert.doesNotMatch(palette, /\/config web|\/web open|\/web disconnect/);
   assert.doesNotMatch(palette, /default managed|one-link managed|Cloudflare|ngrok|VPS|tunnel ID|API key|Workspace Agent token/i);
-  assert.match(palette, /\/unitsall\s+Alias for \/uninstall/);
+  assert.doesNotMatch(palette, /\/unitsall/);
   assert.equal(canonicalSlashCommand("/unitsall"), "/uninstall");
   assert.deepEqual(parseInteractiveInput("build it", { active: false, sealed: false }), { kind: "new", goal: "build it" });
   assert.equal(parseInteractiveInput("change scope", { active: true, sealed: true }).kind, "sealed_block");
