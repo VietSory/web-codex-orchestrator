@@ -1,0 +1,52 @@
+name: Diagnose npm publish auth v0.3.3
+
+on:
+  push:
+    branches:
+      - release/v0.3.3
+    paths:
+      - .github/workflows/npm-auth-diagnostic-v0.3.3.yml
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_SHA: f991610141adfcdaa436b5802c8b1e5493faea0b
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact qualified main
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+          persist-credentials: false
+
+      - name: Set up Node and npm registry
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24.x'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: Diagnose npm authentication without publishing
+        id: auth
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set +e
+          npm whoami --registry=https://registry.npmjs.org >npm-auth.log 2>&1
+          code=$?
+          {
+            echo '## npm authentication diagnostic'
+            echo
+            echo "Exit code: $code"
+            echo
+            echo '```text'
+            sed -E 's/(npm_[A-Za-z0-9_-]{8,})/[MASKED_TOKEN]/g' npm-auth.log | tail -n 80
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat npm-auth.log
+          exit "$code"
