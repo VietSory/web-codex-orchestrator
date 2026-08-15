@@ -20,5 +20,6 @@ test("other native hosts are told the same Bubblewrap execution boundary", () =>
   const status = setupExecutionHostStatus("darwin");
   assert.equal(status.severity, "warn");
   assert.match(status.value, /darwin.*requires Linux\/WSL/i);
-  assert.match(status.guidance ?? "", /Linux environment.*Bubblewrap/i);
+  assert.match(status.guidance ?? "", /Bubblewrap/i);
+  assert.match(status.guidance ?? "", /Linux environment/i);
 });
