@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { SLASH_COMMANDS, commandPalette, slashCommandSuggestions } from "../src/tui/slash-commands.js";
-import { resolveSlashCompletion, runInteractiveSession } from "../src/tui/session.js";
+import { resolveEnterSelection, resolveSlashCompletion, runInteractiveSession } from "../src/tui/session.js";
 
 test("live slash suggestions prioritize normal-user commands and hide legacy/advanced noise", () => {
   assert.equal(slashCommandSuggestions("/").length, SLASH_COMMANDS.length);
@@ -28,6 +28,13 @@ test("Enter and Tab completion do the intuitive thing for commands with and with
   assert.deepEqual(resolveSlashCompletion("/m", "/mode", "tab"), { value: "/mode ", submit: false });
   assert.deepEqual(resolveSlashCompletion("/st", "/status", "enter"), { value: "/status", submit: true });
   assert.deepEqual(resolveSlashCompletion("/st", "/status", "tab"), { value: "/status", submit: false });
+
+  assert.deepEqual(resolveEnterSelection("/new", "/new"), { value: "/new ", submit: false });
+  assert.deepEqual(resolveEnterSelection("/auto", "/auto"), { value: "/auto ", submit: false });
+  assert.deepEqual(resolveEnterSelection("/mode", "/mode"), { value: "/mode ", submit: false });
+  assert.deepEqual(resolveEnterSelection("/n", "/new"), { value: "/new ", submit: false });
+  assert.deepEqual(resolveEnterSelection("/st", "/status"), { value: "/status", submit: true });
+  assert.equal(resolveEnterSelection("/status", "/status"), null);
 });
 
 test("interactive session prefers the live composer when one is available", async () => {
