@@ -33,7 +33,7 @@ test("PAIR stage is derived from durable lifecycle evidence instead of the coars
   assert.equal(derivePairStage(snapshot({ executor_state: "FAILED", publish_state: null, draft_pr_state: null, result_bundle_ready: false, web_code_review_state: null, web_review_state: null })), "BLOCKED");
 });
 
-test("PAIR status is human-readable and does not leak lifecycle enum names", () => {
+test("PAIR status is human-readable and makes the required user action explicit", () => {
   const output = formatPairStatus({
     goal: "Add organization invitations",
     planLocked: true,
@@ -46,11 +46,11 @@ test("PAIR status is human-readable and does not leak lifecycle enum names", () 
   assert.match(output, /Code review\s+approved/);
   assert.match(output, /Draft PR\s+https:\/\/github\.com\/example\/repo\/pull\/42/);
   assert.match(output, /Final review\s+in progress/);
-  assert.match(output, /Next\s+WCO is waiting for the final review/);
+  assert.match(output, /Your action\s+None — WCO is waiting for the final review/);
   assert.doesNotMatch(output, /READY_FOR_PUBLISH|PUSHED|READY_FOR_WEB_REVIEW|IMPLEMENTATION_REGISTERED/);
 });
 
-test("PAIR review summary focuses on evidence and the next user action", () => {
+test("PAIR review summary focuses on evidence and the required user action", () => {
   const output = formatPairReview({
     snapshot: snapshot(),
     checksPassed: true,
@@ -63,5 +63,5 @@ test("PAIR review summary focuses on evidence and the next user action", () => {
   assert.match(output, /Code review\s+independent review · approved/);
   assert.match(output, /Final review\s+approved/);
   assert.match(output, /Git result\s+verified/);
-  assert.match(output, /Next\s+review the Draft PR and merge when ready/);
+  assert.match(output, /Your action\s+review the Draft PR and merge when ready/);
 });
