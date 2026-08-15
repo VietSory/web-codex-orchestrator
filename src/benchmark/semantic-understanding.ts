@@ -34,7 +34,8 @@ export interface SemanticUnderstandingScore {
 type CandidateField = keyof SemanticUnderstandingCandidate;
 type GoldField = Exclude<keyof SemanticUnderstandingGold, "critical_ids">;
 
-const FIELD_PAIRS: Array<{ candidate: CandidateField; gold: GoldField; weight: number }> = [
+type FieldPair = { candidate: CandidateField; gold: GoldField; weight: number };
+const FIELD_PAIRS: FieldPair[] = [
   { candidate: "affected_component_ids", gold: "required_component_ids", weight: 0.2 },
   { candidate: "invariant_ids", gold: "required_invariant_ids", weight: 0.25 },
   { candidate: "risk_ids", gold: "required_risk_ids", weight: 0.2 },
@@ -71,12 +72,24 @@ function rounded(value: number): number {
   return Number(value.toFixed(4));
 }
 
-function allRequired(gold: SemanticUnderstandingGold): string[] {
-  return FIELD_PAIRS.flatMap(({ gold: key }) => gold[key]);
+function assertGloballyUniqueGoldIds(gold: SemanticUnderstandingGold): void {
+  const seen = new Map<string, string>();
+  for (const pair of FIELD_PAIRS) {
+    for (const id of gold[pair.gold]) {
+      const previous = seen.get(id);
+      if (previous) throw new Error(`Semantic gold ID '${id}' appears in both ${previous} and ${pair.gold}; benchmark truth must be category-unique.`);
+      seen.set(id, pair.gold);
+    }
+  }
 }
 
-function allSelected(candidate: SemanticUnderstandingCandidate): string[] {
-  return FIELD_PAIRS.flatMap(({ candidate: key }) => candidate[key]);
+function pairForGoldId(gold: SemanticUnderstandingGold, id: string): FieldPair | null {
+  return FIELD_PAIRS.find((pair) => gold[pair.gold].includes(id)) ?? null;
+}
+
+function selectedCorrectly(candidate: SemanticUnderstandingCandidate, gold: SemanticUnderstandingGold, id: string): boolean {
+  const pair = pairForGoldId(gold, id);
+  return pair ? candidate[pair.candidate].includes(id) : false;
 }
 
 export function scoreSemanticUnderstanding(rawCandidate: SemanticUnderstandingCandidate, rawGold: SemanticUnderstandingGold): SemanticUnderstandingScore {
@@ -95,27 +108,33 @@ export function scoreSemanticUnderstanding(rawCandidate: SemanticUnderstandingCa
     rejected_assumption_ids: normalizedIds(rawGold.rejected_assumption_ids, "rejected_assumption_ids"),
     critical_ids: normalizedIds(rawGold.critical_ids, "critical_ids"),
   };
+  assertGloballyUniqueGoldIds(gold);
 
-  const required = allRequired(gold);
-  const requiredSet = new Set(required);
   for (const id of gold.critical_ids) {
-    if (!requiredSet.has(id)) throw new Error(`critical_ids contains '${id}' which is not a required semantic item.`);
+    if (!pairForGoldId(gold, id)) throw new Error(`critical_ids contains '${id}' which is not a required semantic item.`);
   }
 
-  const selected = allSelected(candidate);
-  const selectedSet = new Set(selected);
-  const missingRequired = required.filter((id) => !selectedSet.has(id));
-  const unexpected = selected.filter((id) => !requiredSet.has(id));
-  const criticalMisses = gold.critical_ids.filter((id) => !selectedSet.has(id));
+  const missingRequired: string[] = [];
+  const unexpected: string[] = [];
+  let selectedCount = 0;
+  for (const pair of FIELD_PAIRS) {
+    const selected = candidate[pair.candidate];
+    const required = gold[pair.gold];
+    const truth = new Set(required);
+    selectedCount += selected.length;
+    missingRequired.push(...required.filter((id) => !selected.includes(id)));
+    unexpected.push(...selected.filter((id) => !truth.has(id)));
+  }
 
+  const criticalMisses = gold.critical_ids.filter((id) => !selectedCorrectly(candidate, gold, id));
   const componentRecall = recall(candidate.affected_component_ids, gold.required_component_ids);
   const componentPrecision = precision(candidate.affected_component_ids, gold.required_component_ids);
   const invariantRecall = recall(candidate.invariant_ids, gold.required_invariant_ids);
   const riskRecall = recall(candidate.risk_ids, gold.required_risk_ids);
   const unknownRecall = recall(candidate.unknown_ids, gold.required_unknown_ids);
   const rejectedAssumptionRecall = recall(candidate.rejected_assumption_ids, gold.rejected_assumption_ids);
-  const criticalRecall = recall(selected, gold.critical_ids);
-  const unnecessaryRate = selected.length === 0 ? 0 : unexpected.length / selected.length;
+  const criticalRecall = gold.critical_ids.length === 0 ? 1 : (gold.critical_ids.length - criticalMisses.length) / gold.critical_ids.length;
+  const unnecessaryRate = selectedCount === 0 ? 0 : unexpected.length / selectedCount;
 
   const weightedRecall = FIELD_PAIRS.reduce((sum, pair) => sum + pair.weight * recall(candidate[pair.candidate], gold[pair.gold]), 0);
   // Critical misses are deliberately expensive: a candidate that overlooks an
