@@ -1,7 +1,5 @@
 # Web Codex Orchestrator
 
-[![CI](https://github.com/VietSory/web-codex-orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/VietSory/web-codex-orchestrator/actions/workflows/ci.yml)
-
 **Give WCO a software-engineering goal and come back to an exact reviewed Draft PR. Only you ship it.**
 
 Web Codex Orchestrator (WCO) is a local-first CLI that coordinates ChatGPT/Codex-assisted software work while keeping repository mutation, verification, recovery, task state, and Git lifecycle on your machine.
