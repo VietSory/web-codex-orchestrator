@@ -592,14 +592,14 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     if (latest?.state === "BLOCKED") {
       return "The current task needs your attention before WCO can continue it. Use /status and /review for the exact evidence, then /doctor for recovery guidance. Use /resume only if you intentionally want to switch to a different saved task.";
     }
-    if (latest && latest.state !== "COMPLETED") {
+    if (latest?.state === "COMPLETED") {
+      return "The current task is complete. Type a new follow-up goal for more work, or use /resume if you intentionally want to choose a different saved task.";
+    }
+    if (latest) {
       await clearPairPauseIfNeeded(latest);
       return await launchSavedTask();
     }
-    const entries = await recentTaskHistory();
-    const index = entries.findIndex((item) => item.session_id !== latest?.session_id && locallyResumable(item));
-    if (index < 0) return "No safely resumable task was found. Type a new goal to start.";
-    return await resumeHistoryItem(entries[index]!, index + 1);
+    return "There is no current saved task to continue. Type a new goal, or use /resume to intentionally choose a saved task.";
   };
 
   const currentTaskIsPaused = async (): Promise<boolean> => {
