@@ -677,7 +677,12 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
             ? await displayUserStatus(latest)
             : await displayUserStatus(null);
         const worker = background ? `\nWorker       ${background.pause_requested ? "pause requested · finishing current safe step" : "running · /status /review /pause stay available"}` : "";
-        return { active, sealed: latest?.sealed ?? false, summary: `WCO · ${repositoryId}\nRepository   ${detected.base_branch}@${detected.base_commit.slice(0, 7)}\nStatus       ${status}${visibleGoal ? `\nTask         ${visibleGoal}` : ""}${worker}` };
+        return {
+          active,
+          sealed: latest?.sealed ?? false,
+          summary: `WCO · ${repositoryId}\nRepository   ${detected.base_branch}@${detected.base_commit.slice(0, 7)}\nStatus       ${status}${visibleGoal ? `\nTask         ${visibleGoal}` : ""}${worker}`,
+          availableCommands: background ? [...LIVE_BACKGROUND_COMMANDS] : undefined,
+        };
       },
       newTask: async (goal) => await launchNewTask(goal, false, "PAIR"),
       clarify: async (value) => {
@@ -717,7 +722,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
         if (command === "/pause" && background) return { message: await taskSlot.requestPause() };
         if (background && !LIVE_BACKGROUND_COMMANDS.has(command)) return { message: `${background.mode} is running in the background. To avoid concurrent mutation, only /status, /review, /task, /history, /pause, /help, and /quit are available until it stops.` };
 
-        if (command === "/help") return { message: commandPalette() };
+        if (command === "/help") return { message: commandPalette(background ? LIVE_BACKGROUND_COMMANDS : undefined) };
         if (command === "/new") {
           if (!args) return { message: "Usage: /new <goal>" };
           if (!await confirmTaskReplacement("PAIR")) return { message: "Current task kept in focus. Nothing changed." };
