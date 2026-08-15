@@ -10,6 +10,8 @@ const MAX_OBSERVATIONS = 128;
 const MAX_INDEXED_PATHS = 256;
 const MAX_INDEX_BYTES = 1_048_576;
 const MAX_PATH_METADATA_BYTES = 4_194_304;
+const MAX_PREPARED_CONTEXT_BYTES = 4_194_304;
+const MAX_TRANSMITTED_CONTEXT_BYTES = 65_536;
 const MAX_TRANSMITTED_BASE64_CHARS = 100_000;
 const SENSITIVE_PATHS = [
   /(^|\/)\.env($|\.)/i,
@@ -207,6 +209,8 @@ function validateReadMetrics(result: SemanticEvidenceMetrics, files: Extract<Sem
     ["regions_read", files.length],
   ];
   for (const [key, wanted] of exact) if (result[key] !== wanted) throw new Error(`read result.metrics.${key} does not match normalized read evidence.`);
+  if (prepared > MAX_PREPARED_CONTEXT_BYTES) throw new Error("read result exceeds the repository producer prepared-context bound.");
+  if (transmitted > MAX_TRANSMITTED_CONTEXT_BYTES) throw new Error("read result exceeds the repository producer transmitted-context bound.");
   if (result.cache_hits + result.cache_misses !== files.length) throw new Error("read result.metrics cache hit/miss count does not match normalized read evidence.");
 }
 
@@ -261,6 +265,7 @@ function normalizeReadResult(value: unknown, command: Extract<RepositoryCommand,
     const wanted = expected[index]!;
     const endMatches = wanted.end === -1 ? end === total : end === wanted.end;
     if (filePath !== wanted.path || start !== wanted.start || !endMatches) throw new Error(`read result.files[${index}] does not bind the exact requested path/region.`);
+    const knownContentSha = command.known_content_sha256?.[wanted.reference_key];
 
     if (typeof item.content_base64 !== "string") throw new Error(`read result.files[${index}].content_base64 must be a string.`);
     const contentBase64 = item.content_base64;
@@ -268,9 +273,11 @@ function normalizeReadResult(value: unknown, command: Extract<RepositoryCommand,
     let content_transmitted = false;
     if (contentBase64.length === 0) {
       if (typeof item.content_ref !== "string" || item.content_ref !== `sha256:${contentSha}`) throw new Error(`read result.files[${index}] empty content requires an exact SHA-256 content_ref.`);
+      if (knownContentSha !== contentSha) throw new Error(`read result.files[${index}] content_ref is not justified by the exact known-content command digest.`);
       content_reference = item.content_ref;
     } else {
       if (item.content_ref !== undefined) throw new Error(`read result.files[${index}] cannot carry content_ref with transmitted bytes.`);
+      if (knownContentSha === contentSha) throw new Error(`read result.files[${index}] transmitted bytes contradict the exact known-content command digest.`);
       const bytes = canonicalBase64(contentBase64, `read result.files[${index}].content_base64`);
       if (bytes.byteLength !== size) throw new Error(`read result.files[${index}] transmitted byte length does not match size_bytes.`);
       if (crypto.createHash("sha256").update(bytes).digest("hex") !== contentSha) throw new Error(`read result.files[${index}] transmitted bytes do not match content_sha256.`);
