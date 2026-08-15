@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -112,4 +112,31 @@ test("invalid repository/session identities fail before filesystem placement", a
     persistSemanticShadowObservation({ stateDirectory: "/tmp/state", sessionId, repository: { ...repository, repository_id: "../repo" }, eventSequence: 0, requestId: "req", command: read.command, result: read.result }),
     /repository identity is invalid|repository\.repository_id is invalid/i,
   );
+});
+
+test("shadow persistence refuses a missing state root instead of creating authority-like ancestry", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "wco-semantic-shadow-missing-root-"));
+  try {
+    const read = readObservation();
+    await assert.rejects(
+      persistSemanticShadowObservation({ stateDirectory: path.join(parent, "missing"), sessionId, repository, eventSequence: 0, requestId: "req", command: read.command, result: read.result }),
+      /ENOENT|receipt directory is unsafe/i,
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("shadow persistence refuses a non-directory managed ancestor", async () => {
+  const stateDirectory = await mkdtemp(path.join(os.tmpdir(), "wco-semantic-shadow-bad-ancestor-"));
+  try {
+    await writeFile(path.join(stateDirectory, "bridge"), "not a directory\n", "utf8");
+    const read = readObservation();
+    await assert.rejects(
+      persistSemanticShadowObservation({ stateDirectory, sessionId, repository, eventSequence: 0, requestId: "req", command: read.command, result: read.result }),
+      /receipt directory is unsafe/i,
+    );
+  } finally {
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
 });
