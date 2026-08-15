@@ -187,11 +187,16 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     try { return (await bridge.getConnectionStatus()).connected; } catch { return false; }
   };
   const ensureWebConnected = async (): Promise<boolean> => {
-    if (await connectionWorks()) { if (isNative()) await ensureNativeTunnel(); return true; }
+    // Normal local ChatGPT/Codex owns its official login boundary inside the
+    // provider call. Do not preflight auth here: createAuthoringJob() performs
+    // the interactive sign-in before durable task creation, so the user's first
+    // goal can naturally trigger one browser authorization and continue.
     if (isLocal()) {
-      io.write("ChatGPT/Codex is not ready. Run /web connect to authorize again, or /doctor if the local runtime is unavailable. WCO will not switch you to a relay or hosted profile.\n");
+      if (bridge) return true;
+      io.write("The local ChatGPT/Codex runtime is unavailable. Use /doctor for the next step.\n");
       return false;
     }
+    if (await connectionWorks()) { if (isNative()) await ensureNativeTunnel(); return true; }
     if (config.web_bridge?.mode === "manual_file") return false;
     if (isNative()) {
       io.write("Advanced native-MCP transport is not connected.\n");
@@ -336,7 +341,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
   };
 
   const startAndDriveTask = async (goal: string, replaceExplicit = false, mode: JobMode = "PAIR"): Promise<string> => {
-    if (!await ensureWebConnected()) return "Task was not started. Run /web connect to re-authorize ChatGPT, or /doctor if the local runtime is unavailable, then retry.";
+    if (!await ensureWebConnected()) return "Task was not started. Use /doctor for the next step, or /web status to inspect the selected transport.";
     if (!bridge) throw new Error("WCO transport is not connected.");
     const selectedReviewer = await readReviewMode(paths.state);
     latest = await startLocalAuthoring({ bridge, repository: { repository_id: repositoryId, base_branch: detected.base_branch, base_commit: detected.base_commit }, goal, stateDirectory: paths.state, replaceExplicit, mode });
@@ -383,7 +388,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
       newTask: async (goal) => await startAndDriveTask(goal),
       clarify: async (value) => {
         if (!latest) return "No active task. Type a goal to start one.";
-        const connectedBridge = bridge; if (!connectedBridge) return "ChatGPT/Codex is not ready. Use /web connect or /doctor.";
+        const connectedBridge = bridge; if (!connectedBridge) return "ChatGPT/Codex is not ready. Use /doctor for the next step.";
         await appendLocalClarification({ bridge: connectedBridge, session: latest, value, stateDirectory: paths.state }); return "Added that detail to the task before the plan was locked.";
       },
       command: async (command, args) => {
@@ -431,7 +436,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
         if (command === "/run") {
           if (!latest) return { message: "Type a task goal first." };
           if (latest.state === "COMPLETED") return { message: "This task is complete. Type a new goal or use /new <goal>." };
-          if (!await ensureWebConnected()) return { message: "ChatGPT/Codex is not ready. Use /web connect or /doctor." };
+          if (!await ensureWebConnected()) return { message: "The selected transport is not ready. Use /doctor for the next step." };
           if (latest.state !== "IMPLEMENTATION_REGISTERED") {
             if (isNative()) await triggerNativeTurn("author", latest.job_id ?? latest.session_id);
             else if (!isManaged() && !isLocal()) await openWebArchitect();
