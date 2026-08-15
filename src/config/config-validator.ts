@@ -268,10 +268,14 @@ export function validateConfig(value: unknown): ConfigValidationReport {
     if (!isRecord(webBridge)) add(issues, "web_bridge must be an object.");
     else {
       for (const key of unknownFields(webBridge, WEB_BRIDGE_FIELDS)) add(issues, `Unknown web_bridge field: ${key}`);
-      if (webBridge.mode !== "managed_actions" && webBridge.mode !== "actions_relay" && webBridge.mode !== "manual_file") add(issues, "web_bridge.mode is invalid.");
-      if (webBridge.mode === "actions_relay" && !safeWebUrl(webBridge.relay_url)) add(issues, "web_bridge.relay_url must be HTTPS or an HTTP loopback URL.");
-      if (webBridge.mode === "actions_relay" && !safeWebUrl(webBridge.gpt_url, true)) add(issues, "web_bridge.gpt_url is required for self-hosted relay mode.");
-      if (webBridge.mode === "managed_actions" && (webBridge.relay_url !== undefined || webBridge.gpt_url !== undefined)) add(issues, "managed_actions uses shipped service metadata; trusted config must not override relay or GPT URLs.");
+      const mode = webBridge.mode;
+      if (mode !== "chatgpt_codex" && mode !== "web_native_mcp" && mode !== "personal_actions" && mode !== "managed_actions" && mode !== "actions_relay" && mode !== "manual_file") add(issues, "web_bridge.mode is invalid.");
+      if (mode === "chatgpt_codex" && (webBridge.relay_url !== undefined || webBridge.gpt_url !== undefined)) add(issues, "chatgpt_codex is a local official-runtime transport; relay_url and gpt_url are forbidden.");
+      if (mode === "web_native_mcp" && (webBridge.relay_url !== undefined || webBridge.gpt_url !== undefined)) add(issues, "web_native_mcp uses official OpenAI transport credentials outside trusted config; relay_url and gpt_url are forbidden.");
+      if (mode === "actions_relay" && !safeWebUrl(webBridge.relay_url)) add(issues, "web_bridge.relay_url must be HTTPS or an HTTP loopback URL.");
+      if (mode === "actions_relay" && !safeWebUrl(webBridge.gpt_url, true)) add(issues, "web_bridge.gpt_url is required for self-hosted relay mode.");
+      if (mode === "personal_actions" && webBridge.relay_url !== undefined && !safeWebUrl(webBridge.relay_url)) add(issues, "web_bridge.relay_url must be HTTPS or an HTTP loopback URL for personal_actions.");
+      if (mode === "managed_actions" && (webBridge.relay_url !== undefined || webBridge.gpt_url !== undefined)) add(issues, "managed_actions uses shipped service metadata; trusted config must not override relay or GPT URLs.");
       if (webBridge.relay_url !== undefined && !safeWebUrl(webBridge.relay_url)) add(issues, "web_bridge.relay_url is invalid.");
       if (webBridge.gpt_url !== undefined && !safeWebUrl(webBridge.gpt_url, true)) add(issues, "web_bridge.gpt_url must be an HTTPS URL without credentials or fragments.");
       if (!positiveIntegerWithin(webBridge.poll_interval_ms, TRUSTED_CONFIG_HARD_LIMITS.web_bridge.poll_interval_ms)) add(issues, `web_bridge.poll_interval_ms must be a positive integer <= ${TRUSTED_CONFIG_HARD_LIMITS.web_bridge.poll_interval_ms}.`);

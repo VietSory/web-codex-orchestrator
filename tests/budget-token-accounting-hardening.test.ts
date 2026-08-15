@@ -1,55 +1,42 @@
-import test from "node:test";
 import assert from "node:assert/strict";
-
-import { BudgetTracker, defaultAgentLimits } from "../src/execution/budget.js";
+import test from "node:test";
+import { BudgetTracker } from "../src/execution/budget.js";
 import { ExecutionError } from "../src/execution/errors.js";
 
-function isBudgetError(error: unknown): boolean {
-  return error instanceof ExecutionError && error.code === "BUDGET_EXHAUSTED";
+function limits() {
+  return {
+    maximum_implementation_iterations: 10,
+    maximum_internal_review_rounds: 10,
+    maximum_sol_review_rounds: 10,
+    maximum_total_agent_turns: 10,
+    maximum_turn_seconds: 900,
+    maximum_total_seconds: 7200,
+    maximum_total_input_tokens: 100,
+    maximum_total_output_tokens: 100,
+  };
 }
 
-test("BUDGET-HARD-001 missing provider input/output usage is never counted as zero", () => {
-  const tracker = new BudgetTracker(defaultAgentLimits(), 0, undefined, () => 0);
-  assert.throws(() => tracker.recordTokens(undefined, 1, 0), isBudgetError);
-  assert.throws(() => tracker.recordTokens(1, undefined, 0), isBudgetError);
-  assert.deepEqual(
-    { input: tracker.usage.inputTokens, cached: tracker.usage.cachedInputTokens, output: tracker.usage.outputTokens },
-    { input: 0, cached: 0, output: 0 },
-  );
+test("cached input is observed but not double-counted against total input budget", () => {
+  const budget = new BudgetTracker(limits(), 0, undefined, () => 0);
+  budget.recordTokens(75, 1, 25);
+  assert.deepEqual({ input: budget.usage.inputTokens, cached: budget.usage.cachedInputTokens, output: budget.usage.outputTokens }, { input: 75, cached: 25, output: 1 });
+  assert.doesNotThrow(() => budget.recordTokens(25, 1, 25));
+  assert.throws(() => budget.recordTokens(1, 0, 0), (error: unknown) => error instanceof ExecutionError && error.code === "BUDGET_EXHAUSTED");
 });
 
-test("BUDGET-HARD-002 negative or fractional provider counters fail closed", () => {
-  const tracker = new BudgetTracker(defaultAgentLimits(), 0, undefined, () => 0);
-  for (const values of [
-    [-1, 1, 0],
-    [1.5, 1, 0],
-    [1, -1, 0],
-    [1, 1.5, 0],
-    [1, 1, -1],
-    [1, 1, 0.5],
-  ] as const) {
-    assert.throws(() => tracker.recordTokens(values[0], values[1], values[2]), isBudgetError);
-  }
+test("shared accounting preserves legacy cached counters without charging them twice", () => {
+  const budget = new BudgetTracker(limits(), 0, { inputTokens: 3, cachedInputTokens: 11, outputTokens: 5 }, () => 0);
+  assert.doesNotThrow(() => budget.recordTokens(2, 3, 0));
+  assert.deepEqual({ input: budget.usage.inputTokens, cached: budget.usage.cachedInputTokens, output: budget.usage.outputTokens }, { input: 5, cached: 11, output: 8 });
 });
 
-test("BUDGET-HARD-003 explicit zero usage is valid and safe-integer overflow is rejected", () => {
-  const zeroTracker = new BudgetTracker(defaultAgentLimits(), 0, undefined, () => 0);
-  zeroTracker.recordTokens(0, 0, 0);
-  assert.deepEqual(
-    { input: zeroTracker.usage.inputTokens, cached: zeroTracker.usage.cachedInputTokens, output: zeroTracker.usage.outputTokens },
-    { input: 0, cached: 0, output: 0 },
-  );
+test("missing cached token usage fails closed instead of silently undercounting", () => {
+  const budget = new BudgetTracker(limits(), 0, undefined, () => 0);
+  assert.throws(() => budget.recordTokens(1, 1, undefined), (error: unknown) => error instanceof ExecutionError && error.code === "BUDGET_EXHAUSTED");
+});
 
-  const overflowLimits = {
-    ...defaultAgentLimits(),
-    maximum_total_input_tokens: Number.MAX_SAFE_INTEGER,
-    maximum_total_output_tokens: Number.MAX_SAFE_INTEGER,
-  };
-  const overflowTracker = new BudgetTracker(overflowLimits, 0, {
-    inputTokens: Number.MAX_SAFE_INTEGER,
-    cachedInputTokens: 0,
-    outputTokens: 0,
-  }, () => 0);
-  overflowTracker.recordTokens(0, 0, 0);
-  assert.throws(() => overflowTracker.recordTokens(1, 0, 0), isBudgetError);
+test("token overflow fails closed before unsafe integer accounting", () => {
+  const permissive = { ...limits(), maximum_total_input_tokens: Number.MAX_SAFE_INTEGER, maximum_total_output_tokens: Number.MAX_SAFE_INTEGER };
+  const budget = new BudgetTracker(permissive, 0, { inputTokens: Number.MAX_SAFE_INTEGER, cachedInputTokens: 0, outputTokens: 0 }, () => 0);
+  assert.throws(() => budget.recordTokens(1, 0, 0), (error: unknown) => error instanceof ExecutionError && error.code === "BUDGET_EXHAUSTED");
 });

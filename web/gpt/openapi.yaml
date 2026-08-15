@@ -14,7 +14,26 @@ paths:
     get:
       operationId: getPendingTask
       responses:
-        '200': { description: Pending authoring task, content: { application/json: { schema: { type: object } } } }
+        '200':
+          description: Newest active pending authoring task for the authenticated principal
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job]
+                properties:
+                  job:
+                    oneOf:
+                      - type: 'null'
+                      - type: object
+                        required: [identity, request]
+                        properties:
+                          identity: { type: object }
+                          request:
+                            type: object
+                            properties:
+                              orchestration_mode: { enum: [PAIR, AUTOPILOT] }
+                            additionalProperties: true
   /v1/jobs/{jobId}/events:
     get:
       operationId: pollJobEvents
@@ -74,9 +93,33 @@ paths:
       parameters:
         - { name: jobId, in: path, required: true, schema: { type: string } }
         - { name: Idempotency-Key, in: header, required: true, schema: { type: string } }
-      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [paths], properties: { paths: { type: array, maxItems: 32, items: { type: string } } } } } } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                paths: { type: array, minItems: 1, maxItems: 32, uniqueItems: true, items: { type: string } }
+                regions:
+                  type: array
+                  minItems: 1
+                  maxItems: 32
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [path, start_byte, end_byte_exclusive]
+                    properties:
+                      path: { type: string }
+                      start_byte: { type: integer, minimum: 0, maximum: 1048575 }
+                      end_byte_exclusive: { type: integer, minimum: 1, maximum: 1048576 }
+                known_content_sha256: { type: object, additionalProperties: { type: string, pattern: '^[a-f0-9]{64}$' }, maxProperties: 32 }
+              oneOf:
+                - required: [paths]
+                - required: [regions]
       responses:
-        '201': { description: Bounded exact-base file read queued, content: { application/json: { schema: { type: object } } } }
+        '201': { description: Bounded exact-base file or byte-region read queued; immutable content digests may suppress retransmission, content: { application/json: { schema: { type: object } } } }
   /v1/jobs/{jobId}/repository-results/{requestId}:
     get:
       operationId: getRepositoryCommandResult
@@ -89,7 +132,7 @@ paths:
     get:
       operationId: getPendingReview
       responses:
-        '200': { description: Pending exact final-review binding, content: { application/json: { schema: { type: object } } } }
+        '200': { description: Newest active pending exact final-review binding, content: { application/json: { schema: { type: object } } } }
   /v1/final-reviews/{reviewId}/verdict:
     post:
       operationId: submitWebVerdict
@@ -122,6 +165,31 @@ paths:
                       id: { type: string }
                       severity: { enum: [blocking, non_blocking] }
                       description: { type: string, maxLength: 8192 }
+                repair_operations:
+                  type: array
+                  minItems: 1
+                  maxItems: 64
+                  description: Optional only for REVISE. Exact bounded repair proposal; local Harness remains sole mutation authority and revalidates every preimage/postimage.
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [op_id, kind, path, preimage_sha256, postimage_base64, postimage_sha256]
+                    properties:
+                      op_id: { type: string, maxLength: 128 }
+                      kind: { enum: [create_file, replace_file, delete_file] }
+                      path: { type: string, maxLength: 4096 }
+                      preimage_sha256:
+                        oneOf:
+                          - type: 'null'
+                          - { type: string, pattern: '^[a-f0-9]{64}$' }
+                      postimage_base64:
+                        oneOf:
+                          - type: 'null'
+                          - { type: string, maxLength: 12000000 }
+                      postimage_sha256:
+                        oneOf:
+                          - type: 'null'
+                          - { type: string, pattern: '^[a-f0-9]{64}$' }
       responses:
         '201': { description: Verdict transported for local canonical validation, content: { application/json: { schema: { type: object } } } }
   /v1/final-reviews/{reviewId}/evidence:

@@ -36,7 +36,7 @@ test("relay credential persists only under WCO credentials and can be removed", 
   await assert.rejects(readRelayToken(credentials, {}), /not configured|AUTH_UNAVAILABLE/i);
 });
 
-test("one-time Web connect verifies relay before persisting actions_relay config", async () => {
+test("one-time advanced relay connect verifies relay and explicit disconnect restores zero-config local mode", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-v03-connect-"));
   const repo = path.join(root, "repo"), configPath = path.join(root, "home", "config.json"), credentials = path.join(root, "home", "credentials"), relayRoot = path.join(root, "relay");
   await mkdir(repo, { recursive: true });
@@ -54,7 +54,8 @@ test("one-time Web connect verifies relay before persisting actions_relay config
     assert.equal(saved.web_bridge?.gpt_url, "https://chatgpt.com/g/example-wco");
     assert.equal(await readRelayToken(credentials, {}), token);
     const disconnected = await disconnectWebBridgeConnection({ configPath, credentialsDirectory: credentials });
-    assert.equal(disconnected.web_bridge?.mode, "manual_file");
+    assert.equal(disconnected.web_bridge, undefined);
+    assert.equal((await loadTrustedConfig(configPath)).web_bridge, undefined);
     await assert.rejects(readRelayToken(credentials, {}), /not configured|AUTH_UNAVAILABLE/i);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -78,15 +79,41 @@ test("disconnected manual bridge status never claims the relay is connected", as
   }
 });
 
-test("Web CLI preserves stable structured error codes for unsafe relay input", async () => {
+test("managed Web status directs a missing device credential to reconnect instead of retrying status", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-v03-managed-reconnect-hint-"));
+  const old = process.env.WCO_HOME;
+  process.env.WCO_HOME = root;
+  try {
+    await writeTrustedConfigAtomic(path.join(root, "config.json"), {
+      ...minimalConfig(path.join(root, "repo")),
+      web_bridge: { mode: "managed_actions", poll_interval_ms: 1_000, job_ttl_seconds: 86_400 },
+    });
+    const stderr: string[] = [];
+    const code = await runWebCommand(["status"], { write: () => undefined, error: (value) => stderr.push(value) });
+    assert.equal(code, 1);
+    assert.match(stderr.join(""), /^WEB_MANAGED_RECONNECT_REQUIRED:/);
+    assert.match(stderr.join(""), /Next: wco web connect/);
+    assert.doesNotMatch(stderr.join(""), /Try: wco web status/);
+  } finally {
+    if (old === undefined) delete process.env.WCO_HOME; else process.env.WCO_HOME = old;
+  }
+});
+
+test("advanced self-hosted Web CLI preserves stable structured error codes for unsafe relay input", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-v03-web-error-code-"));
   const old = process.env.WCO_HOME;
   process.env.WCO_HOME = root;
   try {
     await writeTrustedConfigAtomic(path.join(root, "config.json"), minimalConfig(path.join(root, "repo")));
-    const answers = ["http://example.com/relay", "https://chatgpt.com/g/test", "x".repeat(40)];
+    const answers = ["http://example.com/relay", "https://chatgpt.com/g/test"];
+    const relayToken = "x".repeat(40);
     const stderr: string[] = [];
-    const code = await runWebCommand(["connect", "--self-hosted"], { write: () => undefined, error: (value) => stderr.push(value), question: async () => answers.shift()! });
+    const code = await runWebCommand(["connect", "--self-hosted"], {
+      write: () => undefined,
+      error: (value) => stderr.push(value),
+      question: async () => answers.shift()!,
+      secret: async () => relayToken,
+    });
     assert.equal(code, 1);
     assert.match(stderr.join(""), /^WEB_RELAY_URL_UNSAFE:/);
     assert.doesNotMatch(stderr.join(""), /x{16,}/);
@@ -96,7 +123,7 @@ test("Web CLI preserves stable structured error codes for unsafe relay input", a
   }
 });
 
-test("missing desktop URL opener is an actionable fallback instead of an unhandled process error", async () => {
+test("missing desktop URL opener fails cleanly for explicit advanced GPT open instead of throwing", async () => {
   const child = new EventEmitter() as EventEmitter & { unref(): void };
   child.unref = () => undefined;
   const opened = openBrowser("https://chatgpt.com/g/example-wco", () => {
@@ -116,8 +143,8 @@ test("missing desktop URL opener is an actionable fallback instead of an unhandl
     const stdout: string[] = [];
     const code = await runWebCommand(["open"], { write: (value) => stdout.push(value), error: () => undefined }, async () => false);
     assert.equal(code, 0);
-    assert.match(stdout.join(""), /Could not open a desktop browser automatically/);
-    assert.match(stdout.join(""), /https:\/\/chatgpt\.com\/g\/example-wco/);
+    assert.match(stdout.join(""), /Could not open the configured advanced GPT automatically/);
+    assert.doesNotMatch(stdout.join(""), /Cloudflare|tunnel ID|runtime API key|Workspace Agent access token/i);
   } finally {
     if (old === undefined) delete process.env.WCO_HOME; else process.env.WCO_HOME = old;
   }

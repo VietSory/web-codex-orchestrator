@@ -2,6 +2,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { loadTrustedConfig } from "../config/config-loader.js";
 import type { TrustedConfig } from "../config/contracts.js";
+import { ensureChatGptLogin } from "../runtime/chatgpt-login.js";
 import { writeTrustedConfigAtomic } from "./config-writer.js";
 import { resolveWcoPaths, type WcoPaths } from "./default-paths.js";
 import { detectProject, type ProjectDiscovery } from "./project-detect.js";
@@ -36,7 +37,9 @@ export function buildFirstRunConfig(repository: RepositoryDiscovery, project: Pr
     ...(githubAuth ? { github_pull_request: { provider: "github.com" as const, authentication: githubAuth } } : {}),
     result_bundle: { github_attestation: githubAuth ? "required" : "optional" },
     ui: { interactive: true },
-    web_bridge: { mode: "managed_actions", poll_interval_ms: 1_000, job_ttl_seconds: 86_400 },
+    // Intentionally no web_bridge field. Absence is the normal zero-config
+    // local ChatGPT/Codex transport. Explicit web_bridge profiles are advanced
+    // compatibility overrides and are never selected implicitly.
   };
 }
 
@@ -89,5 +92,13 @@ export async function performFirstRunSetup(options: { cwd: string; configPath?: 
     ? await writeTrustedConfigAtomic(paths.config, config, { overwrite: Boolean(current) || options.overwrite === true })
     : { config, backup_path: null };
   await atomicWriteJson(paths.install_manifest, { schema_version: "1.0", product: "web-codex-orchestrator", version: "0.3.3", home: paths.home, owned_paths: [paths.config, paths.credentials, paths.state, paths.cache, paths.logs, paths.bridge, paths.install_manifest] });
+
+  // Interactive zero-config first use performs the only normal-user Web auth
+  // step. Explicit advanced bridge profiles preserve their own legacy setup.
+  if (written.config.web_bridge === undefined && process.stdin.isTTY && process.stdout.isTTY && process.env.CI !== "true") {
+    const authorized = await ensureChatGptLogin({ config: written.config, stateDirectory: paths.state, interactive: true });
+    if (!authorized) throw new Error("SETUP_CHATGPT_AUTH_FAILED: ChatGPT authorization did not complete. Run wco again to retry the official browser authorization.");
+  }
+
   return { paths, repository, project, config: written.config };
 }

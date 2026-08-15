@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import type { ReasoningEffort } from "../config/contracts.js";
+import type { ReviewerRepairOperation } from "../execution/contracts.js";
 import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
 import { ExecutorError, type ExecutorUsage } from "./contracts.js";
 import type { SmartContextSelection } from "./smart-context.js";
@@ -24,6 +26,8 @@ export interface ExecutorVerifierPort {
 
 export interface ExecutorReviewRequest extends ExecutorVerificationRequest {
   reviewer: "terra" | "sol";
+  /** Exact paths absent because the registered operation deleted them. */
+  deleted_paths?: string[];
   prior_evidence_sha256: string[];
   context_selection: SmartContextSelection;
 }
@@ -32,6 +36,8 @@ export interface ExecutorReviewResult {
   verdict: "APPROVE" | "REVISE" | "ESCALATE";
   evidence: unknown;
   usage?: ExecutorUsage;
+  /** Proposal only. Harness remains the sole worktree mutation authority. */
+  repair_operations?: ReviewerRepairOperation[];
 }
 
 export interface ExecutorReviewBudgetPolicy {
@@ -42,6 +48,12 @@ export interface ExecutorReviewBudgetPolicy {
 }
 
 export interface ExecutorReviewerPort {
+  /**
+   * Normal user flow selects exactly one reviewer. Undefined preserves the
+   * historical Terra -> Sol low-level automation contract for compatibility.
+   */
+  reviewer_kind?: "terra" | "sol";
+  reviewer_profile?: { model: string; reasoning_effort: ReasoningEffort };
   /** Optional trusted policy. When present, the executor durably reserves one
    * turn in its own receipt before each review call. */
   budget_policy?: ExecutorReviewBudgetPolicy;

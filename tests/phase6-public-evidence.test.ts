@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert";
-import { projectExecutionEvidence, projectGitPublishEvidence, projectDraftPrEvidence, redactVerificationOutput } from "../src/result-bundle/public-evidence.js";
+import { projectExecutionEvidence, projectGitPublishEvidence, projectDraftPrEvidence, projectVerificationEvidence, redactVerificationOutput } from "../src/result-bundle/public-evidence.js";
 
 test("Phase 6 Public Evidence: project execution evidence", () => {
   const internal = {
@@ -59,4 +59,23 @@ test("Phase 6 Public Evidence: redact verification output", () => {
   assert.equal(r2.text.length, 100 + "\n[output truncated]".length);
   assert.equal(r2.truncated, true);
   assert.ok(r2.text.endsWith("\n[output truncated]"));
+});
+
+test("Phase 6 Public Evidence: preserves bounded Harness command identity and outcome", () => {
+  const projected = projectVerificationEvidence({
+    rounds: 1,
+    required_commands_passed: true,
+    verified_change_set_sha256: "a".repeat(64),
+    commands: [{
+      command_id: "VERIFY-1", required: true, status: "PASS", exit_code: 0, timed_out: false,
+      duration_ms: 42, stdout_truncated: false, stderr_truncated: false,
+      stdout_tail: "2 tests passed", stderr_tail: "",
+    }],
+  }, 1024) as any;
+  assert.equal(projected.commands.length, 1);
+  assert.deepEqual(projected.commands[0], {
+    command_id: "VERIFY-1", required: true, exit_code: 0, status: "PASS", timed_out: false,
+    duration_ms: 42, stdout_bytes: 14, stderr_bytes: 0, stdout_truncated: false,
+    stderr_truncated: false, stdout: "2 tests passed", stderr: "", generated_paths: [],
+  });
 });

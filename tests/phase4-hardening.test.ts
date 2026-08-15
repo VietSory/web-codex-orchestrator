@@ -135,13 +135,16 @@ test("P4-H-005: verifier records generated artifacts and blocks source mutation"
   } finally { await rm(fixture.root, { recursive: true, force: true }); }
 });
 
-test("P4-H-006: persisted budget counts assessment turns and cached input", () => {
+test("P4-H-006: persisted budget counts assessment turns and cached input without double-charging cache", () => {
   const tracker = new BudgetTracker({ maximum_implementation_iterations: 2, maximum_internal_review_rounds: 2, maximum_sol_review_rounds: 2, maximum_total_agent_turns: 3, maximum_turn_seconds: 10, maximum_total_seconds: 60, maximum_total_input_tokens: 10, maximum_total_output_tokens: 10 }, Date.now() - 1_000, { totalTurns: 1, cachedInputTokens: 1 });
   tracker.beginAssessment();
   tracker.recordTokens(2, 1, 3);
   assert.equal(tracker.usage.totalTurns, 2);
+  assert.equal(tracker.usage.inputTokens, 2);
   assert.equal(tracker.usage.cachedInputTokens, 4);
-  assert.throws(() => tracker.recordTokens(6, 0, 0), (error: unknown) => error instanceof ExecutionError && error.code === "BUDGET_EXHAUSTED");
+  assert.doesNotThrow(() => tracker.recordTokens(6, 0, 0));
+  assert.equal(tracker.usage.inputTokens, 8);
+  assert.throws(() => tracker.recordTokens(3, 0, 0), (error: unknown) => error instanceof ExecutionError && error.code === "BUDGET_EXHAUSTED");
 });
 
 test("P4-H-007: interruption can resume through a fixing state", () => {

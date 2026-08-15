@@ -2,178 +2,126 @@
 
 [![CI](https://github.com/VietSory/web-codex-orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/VietSory/web-codex-orchestrator/actions/workflows/ci.yml)
 
-**Spend Codex on implementation. Use ChatGPT Web to architect the task. Verify the exact result before it reaches you.**
+**Give WCO a software-engineering goal and come back to an exact reviewed Draft PR. Only you ship it.**
 
-Web Codex Orchestrator (WCO) is a local CLI for medium and large AI-assisted coding jobs. Start it inside a Git repository, type a goal, and let WCO coordinate bounded repository inspection, a sealed implementation contract, Codex execution, deterministic checks, independent Terra/Sol review, and GitHub Draft PR delivery.
+WCO is a local-first orchestrator. Repository/worktree state, task state, receipts, mutation authority, verification, recovery and Git lifecycle remain on the user's machine.
 
-The public release is resolved from GitHub's **Latest** release. The package is distributed as a checksummed GitHub release tarball and remains private on npm.
-
-## Install the Latest release
-
-Requirements:
-
-- Linux or WSL;
-- Node.js 22 or newer and npm;
-- Git;
-- Codex authentication for implementation/review;
-- GitHub CLI authentication for Draft PR delivery;
-- a browser for the one-time managed ChatGPT Web authorization.
-
-Resolve, download, and verify the current Latest release artifact:
+## Normal user experience
 
 ```bash
-release_tag="$(gh release view --repo VietSory/web-codex-orchestrator --json tagName --jq '.tagName')"
-release_version="${release_tag#v}"
-release_asset="web-codex-orchestrator-${release_version}.tgz"
-gh release download "$release_tag" --repo VietSory/web-codex-orchestrator --pattern "${release_asset}*"
-sha256sum -c "${release_asset}.sha256"
-npm install --global "./${release_asset}"
-test "$(wco --version)" = "$release_version"
-```
-
-The final command must exit successfully, proving the installed binary reports the version selected by GitHub Latest. Installing Latest also repairs incomplete older installations.
-
-## Daily use
-
-```bash
+npm install -g web-codex-orchestrator
 cd /path/to/project
 wco
 ```
 
-On the first run, WCO:
+On the first interactive use, WCO delegates one official ChatGPT browser authorization to its bundled pinned Codex runtime. After that, daily use is just `wco` and a goal.
 
-1. confirms setup;
-2. detects the repository root, remote, base branch and project tools;
-3. writes WCO-owned configuration/state under the user data directory;
-4. reports Codex and GitHub credential readiness;
-5. checks the managed WCO Relay and offers one-time ChatGPT Web authorization;
-6. enters the interactive shell.
+A fresh normal-user config intentionally has **no `web_bridge` field**. Absence selects the zero-config local ChatGPT/Codex transport. Per-task browser interactions = **0**.
 
-Then type a normal-language goal, for example:
+WCO does not require a normal user to deploy a WCO server, relay, cloud service, public endpoint or connector. An expired provider session is recovered with `wco web connect`, which repeats the official sign-in flow instead of silently changing transport.
+
+## Architecture
 
 ```text
-Add rate limiting to POST /login, preserve existing login behavior, and add regression tests.
+user goal
+  -> semantic author (read-only)
+  -> bounded exact repository reads
+  -> sealed contract
+  -> canonical prepared run
+  -> Harness-side Codex implementation proposal
+  -> WCO validation + isolated mutation
+  -> deterministic verification / repair
+  -> exact result evidence
+  -> independent semantic final review
+  -> reviewed Draft PR
+  -> human merge / release
 ```
 
-WCO opens the preconfigured WCO Senior Architect GPT. ChatGPT may ask the user to Connect/authorize WCO once. The user does not configure a Custom GPT, import YAML, enter relay/GPT URLs, copy a bearer token, run a tunnel, or edit WCO JSON. WCO stores only a scoped, expiring device credential in protected WCO-owned credential storage.
+Provider/model output is never direct repository or shipment authority. WCO validates closed schemas plus exact job/run/path/digest bindings before workflow authority can advance.
 
-Maintainers deploy and configure the stable managed relay, GPT Action schema, GPT and OAuth once globally. Advanced self-hosting remains available only through `/web connect --self-hosted` and is not the normal workflow.
+## Context efficiency
 
-After the one-time Web setup, the returning-user path is simply:
+Authoring is progressive:
 
 ```text
-cd project
-wco
-type one goal
+goal
+→ summary / tree / search
+→ focused exact file or region reads
+→ digest reuse
+→ contract
+→ implementation and result deltas
 ```
 
-No Task Bundle creation, ZIP movement, checksum calculation, JSON editing, state-directory environment variable, or run-ID copying is required on this path.
+Disposable caches or local indexes may improve localization, but authoritative repository content must resolve back to exact reads and digests before mutation.
 
-## What the Web handoff does
+## PAIR and AUTOPILOT
 
-WCO creates a pending authoring job and opens the configured WCO Senior Architect GPT. The hosted ChatGPT UI may require one click to start the pending job. The GPT can request bounded searches and exact-base file reads through the authenticated relay, but repository text is data—not authority.
+PAIR is the default for a plain goal or `/new <goal>`. AUTOPILOT starts with `/auto <goal>` and continues through bounded review/repair policy without routine intervention.
 
-WCO locally validates and materializes the sealed contract and implementation. The relay cannot authorize code, weaken path policy, publish, merge, or replace WCO receipts.
+Both modes preserve local mutation authority, verification, recovery and the human-only shipment boundary. Neither mode merges or releases automatically.
 
-When the exact Draft PR result is ready, WCO opens the GPT for final review. APPROVE stops at the human merge boundary; REVISE uses the bounded same-PR revision loop; ESCALATE stops for a human. WCO never merges or marks a PR ready.
-
-## Discoverable commands
-
-At the WCO prompt, enter `/` or `/help`:
+## Commands
 
 ```text
-/new <goal>       start a different task
-/status           show current progress
-/task             show the current goal and contract state
-/run              continue the active workflow
-/web status       diagnose the Web connection
-/web connect      connect the managed Senior Architect once
-/web open         open the fixed Senior Architect GPT
-/web disconnect   revoke/remove the local device credential
-/review           show Terra/Sol/result/Draft PR evidence
-/pause            stop before the next safe transition
-/resume           clear an explicit pause
-/history          show bounded history for this repository
-/config           show user-facing settings
-/config web       reconnect the managed Web connection
-/doctor           check runtime, authentication and sandbox readiness
-/uninstall        remove WCO-owned local resources
-/unitsall         alias for /uninstall
-/quit             exit safely
+/new <goal>             start a PAIR task
+/auto <goal>            start an AUTOPILOT task
+/mode                    show AUTOPILOT reviewer preference
+/status                  show current progress
+/task                    show current goal/contract state
+/run                     continue the active workflow
+/web status              show local ChatGPT/Codex readiness
+/web connect             authorize or re-authorize ChatGPT
+/web open                no-op in the normal local mode
+/review                  show verification/review/result evidence
+/pause                   stop before the next safe transition
+/resume                  clear an explicit pause
+/history                 show bounded local task history
+/config                  show user-facing settings
+/doctor                  show prerequisite diagnostics
+/uninstall               remove WCO-owned local resources
+/quit                    exit safely
 ```
 
-Plain text before contract sealing is treated as clarification. Plain text after sealing is rejected with guidance to use `/new`, so sealed authority cannot silently change.
+Advanced compatibility profiles remain explicit only:
 
-## Recovery
-
-If the terminal closes or the machine restarts, return to the same repository and run:
-
-```bash
-wco
+```text
+wco web connect --native
+wco web connect --managed
+wco web setup --personal
+wco web connect --self-hosted
 ```
 
-WCO discovers repository-scoped durable state and re-attests completed work. It does not blindly replay an ambiguous model call, push, or PR creation. Use `/status` for progress, `/doctor` for local prerequisites, `/web status` for relay problems, and `/resume` only when you explicitly paused the run.
+WCO never auto-falls back to an advanced profile.
 
-WCO preserves uncommitted work in the original repository and performs implementation in a managed isolated worktree. If state or an external side effect cannot be proven, WCO stops and reports the failed subsystem, what remained unchanged, and the next safe action.
+## Requirements
 
-## Uninstall and reinstall
+- Node.js 22+ and npm
+- Git
+- platform sandbox prerequisites for the selected execution mode
+- one ChatGPT authorization through bundled Codex
+- GitHub authentication only when Draft-PR delivery is requested
 
-Inside WCO, run `/uninstall` (or `/unitsall`) and confirm. From a non-interactive shell, preview and confirm with:
+## Release boundary
 
-```bash
-wco uninstall --purge
-wco uninstall --purge --yes
-```
+Publishing remains a human maintainer action. WCO must never merge this project, Mark Ready, tag, deploy, release or publish a package without an explicit maintainer decision.
 
-WCO removes only its canonical owned home and clean, re-attested managed worktrees. It preserves source repositories, uncommitted work, Git history, remote branches, Draft PRs and deployments. A packed npm installation schedules removal from its exact detected npm prefix after WCO exits.
-
-Reinstall the checksummed release tarball to start again.
-
-## Safety boundary
-
-WCO preserves these invariants throughout the interactive and automation paths:
-
-- exact repository and base-commit binding;
-- secure bounded archive intake;
-- allowed/forbidden path and preimage enforcement;
-- network-disabled verification sandbox with no unrestricted fallback;
-- exact change-set binding for Terra and Sol review;
-- remote URL and Draft PR repo/base/head verification;
-- no direct protected-branch push, force push, auto-merge, Mark Ready or branch deletion;
-- credential redaction and durable receipts;
-- fail-closed recovery around ambiguous model and external side effects.
-
-See [SECURITY.md](SECURITY.md) and [Protocols](docs/protocols.md) for the detailed contracts.
-
-## Advanced automation and compatibility
-
-The packed CLI still exposes Task Bundle, Web implementation pack, verdict, run-ID and explicit state/config commands for deterministic automation and backward compatibility. They are not required for normal interactive use.
-
-Run `wco --help` for that low-level surface. Operators building automation should read [Operations](docs/operations.md), [Architecture](docs/architecture.md), and [Protocols](docs/protocols.md) before using it.
-
-## Development
-
-To work on WCO itself:
+Before release:
 
 ```bash
-git clone https://github.com/VietSory/web-codex-orchestrator.git
-cd web-codex-orchestrator
 npm ci
 npm run check
 npm run pack:check
 npm run pack:smoke
-npm run test:user:packed
+npm run test:user:contract
 ```
 
-Real native gates are explicit and may consume provider usage:
+A release is not normal-user ready until the exact packaged zero-config journey passes and a real local acceptance confirms first authorization, complete goal-to-Draft-PR execution, final review and restart/recovery behavior.
 
-```bash
-WCO_RUN_SANDBOX_INTEGRATION=1 npm run test:native:sandbox
-WCO_RUN_CODEX_INTEGRATION=1 npm run test:native:codex
-```
+## More
 
-Normal CI uses fake agents and synthetic relay actors; it does not contact model providers or ChatGPT Web.
-
-## License
-
-Apache License 2.0. See [LICENSE](LICENSE).
+- [Frozen user experience contract](docs/user-experience-contract.md)
+- [Architecture](docs/architecture.md)
+- [Web bridge](docs/web-bridge.md)
+- [ADR 0004 — local ChatGPT/Codex default](docs/adr/0004-chatgpt-codex-local-default.md)
+- [Job modes](docs/job-modes.md)
+- [Operations](docs/operations.md)

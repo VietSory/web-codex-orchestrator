@@ -23,21 +23,24 @@ function config(repo: string): any {
 
 function json(value: unknown, status = 200): Response { return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }); }
 
-function managedFetcher(options: { expiresIn?: number; refreshStatus?: number } = {}): { fetchImpl: typeof fetch; registrations: any[]; refreshes: any[]; revokes: any[] } {
-  const registrations: any[] = [], refreshes: any[] = [], revokes: any[] = [];
+function managedFetcher(options: { expiresIn?: number; refreshStatus?: number; ready?: boolean } = {}): { fetchImpl: typeof fetch; registrations: any[]; refreshes: any[]; revokes: any[]; triggers: any[] } {
+  const registrations: any[] = [], refreshes: any[] = [], revokes: any[] = [], triggers: any[] = [];
   let deviceId = "";
+  const ready = options.ready ?? true;
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = new URL(input instanceof Request ? input.url : String(input));
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
-    if (url.pathname === "/v1/managed/service/status") return json({ protocol_version: "wco-web-bridge-v1", available: true, chatgpt_oauth_configured: true, senior_architect_gpt_configured: true });
+    if (url.pathname === "/v1/managed/service/status") return json({ protocol_version: "wco-web-bridge-v1", available: true, chatgpt_oauth_configured: ready, senior_architect_gpt_configured: ready, automatic_agent_trigger_configured: ready });
     if (url.pathname === "/v1/managed/device/registrations") { registrations.push(body); deviceId = body.device_id; return json({ registration_id: "registration-1", device_code: "device-code-1", verification_uri_complete: "https://auth.example.test/wco", expires_in: 600, interval: 1 }, 201); }
     if (url.pathname === "/v1/managed/device/token") return json({ token_type: "Bearer", access_token: "a".repeat(40), refresh_token: "r".repeat(40), expires_in: options.expiresIn ?? 3_600, account_id: "account-a", device_id: deviceId, scope: "wco.relay" });
     if (url.pathname === "/v1/managed/token/refresh") { refreshes.push(body); if (options.refreshStatus && options.refreshStatus !== 200) return json({ error: "invalid_grant" }, options.refreshStatus); return json({ token_type: "Bearer", access_token: "b".repeat(40), refresh_token: "s".repeat(40), expires_in: 3_600, account_id: "account-a", device_id: body.device_id, scope: "wco.relay" }); }
     if (url.pathname === "/v1/managed/device/revoke") { revokes.push(body); return json({ revoked: true }); }
-    if (url.pathname === "/v1/status") return json({ configured: true, connected: init?.headers instanceof Headers ? init.headers.has("Authorization") : true });
+    if (url.pathname === "/v1/managed/agent/trigger") { triggers.push({ body, headers: init?.headers }); return json({ agent_trigger_run_id: "apirun_test123", conversation_url: "https://chatgpt.com/c/test" }, 202); }
+    if (url.pathname === "/v1/managed/agent/runs/apirun_test123") return json({ id: "apirun_test123", status: "in_progress", conversation_url: "https://chatgpt.com/c/test", error: null });
+    if (url.pathname === "/v1/status") return json({ configured: true, connected: true });
     return json({ error: "not_found" }, 404);
   }) as typeof fetch;
-  return { fetchImpl, registrations, refreshes, revokes };
+  return { fetchImpl, registrations, refreshes, revokes, triggers };
 }
 
 test("managed metadata is secret-free, clean HTTPS, fixed, and test overrides are explicit", async () => {
@@ -60,14 +63,21 @@ test("managed GPT schema uses scoped OAuth and exposes only bounded WCO transpor
   assert.match(schema, /deployment-required\.invalid/);
 });
 
-test("managed first connection stores only a protected scoped device credential and fixed URLs never enter config", async () => {
+test("managed service fails closed when operator-side Agent/OAuth automation is not ready", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-managed-not-ready-"));
+  const fixture = managedFetcher({ ready: false });
+  const client = new ManagedWebOnboardingClient({ metadata, credentialsDirectory: path.join(root, "credentials"), fetchImpl: fixture.fetchImpl });
+  await assert.rejects(client.probeService(), (error: any) => error?.code === "WEB_MANAGED_OPERATOR_NOT_READY");
+});
+
+test("managed first connection opens exactly one URL and stores only a protected scoped device credential", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-managed-connect-")), repo = path.join(root, "repo"), home = path.join(root, "home");
   await mkdir(repo); await writeTrustedConfigAtomic(path.join(home, "config.json"), config(repo));
   const fixture = managedFetcher(), opened: string[] = [];
-  const connected = await configureManagedWebBridgeConnection({ configPath: path.join(home, "config.json"), credentialsDirectory: path.join(home, "credentials"), metadata, fetchImpl: fixture.fetchImpl, openAuthorization: async (url) => { opened.push(url); return opened.length === 1; } });
+  const connected = await configureManagedWebBridgeConnection({ configPath: path.join(home, "config.json"), credentialsDirectory: path.join(home, "credentials"), metadata, fetchImpl: fixture.fetchImpl, openAuthorization: async (url) => { opened.push(url); return true; } });
   assert.equal(connected.status.connected, true);
   assert.equal(connected.gpt_opened, false);
-  assert.deepEqual(opened, ["https://auth.example.test/wco", metadata.gpt_url]);
+  assert.deepEqual(opened, ["https://auth.example.test/wco"], "normal onboarding must open exactly one browser authorization URL");
   assert.equal(fixture.registrations.length, 1);
   assert.equal(fixture.registrations[0].code_challenge_method, "S256");
   assert.ok(fixture.registrations[0].client_nonce.length >= 32);
@@ -78,6 +88,21 @@ test("managed first connection stores only a protected scoped device credential 
   const credential = await readManagedDeviceCredential(path.join(home, "credentials"));
   assert.equal(credential.account_id, "account-a"); assert.deepEqual(credential.scopes, ["wco.relay"]);
   if (process.platform !== "win32") assert.equal((await stat(managedCredentialPath(path.join(home, "credentials")))).mode & 0o777, 0o600);
+});
+
+test("managed semantic trigger uses only scoped device auth and no local provider credential", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-managed-trigger-"));
+  const fixture = managedFetcher();
+  const client = new ManagedWebOnboardingClient({ metadata, credentialsDirectory: path.join(root, "credentials"), fetchImpl: fixture.fetchImpl });
+  await client.connect(async () => true);
+  const receipt = await client.triggerAgent({ purpose: "author", identity: "job-1", input: "Continue WCO task", idempotencyKey: "trigger-1" });
+  assert.equal(receipt.agent_trigger_run_id, "apirun_test123");
+  assert.equal(fixture.triggers.length, 1);
+  assert.deepEqual(fixture.triggers[0].body, { purpose: "author", identity: "job-1", input: "Continue WCO task" });
+  const headers = fixture.triggers[0].headers as { Authorization: string; "Idempotency-Key": string };
+  assert.match(headers.Authorization, /^Bearer a{40}$/);
+  assert.equal(headers["Idempotency-Key"], "trigger-1");
+  assert.equal((await client.readAgentRun(receipt.agent_trigger_run_id)).status, "in_progress");
 });
 
 test("returning credential refreshes silently, revoked refresh is removed and requires one safe reconnect", async () => {

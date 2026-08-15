@@ -1,7 +1,6 @@
 {
   "name": "web-codex-orchestrator",
   "version": "0.3.3",
-  "private": true,
   "description": "A durable, security-focused CLI for orchestrating Web-authored code changes through verification, review, and Draft PR delivery.",
   "license": "Apache-2.0",
   "repository": {
@@ -12,6 +11,9 @@
     "url": "https://github.com/VietSory/web-codex-orchestrator/issues"
   },
   "homepage": "https://github.com/VietSory/web-codex-orchestrator#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "keywords": [
     "codex",
     "orchestration",
@@ -53,12 +55,13 @@
     "test:integration": "npm run test:e2e && npm run test:cli",
     "test:native:sandbox": "tsx --test tests/integration/codex-sandbox.integration.ts",
     "test:native:codex": "tsx --test tests/integration/codex-execution.integration.ts",
+    "test:user:contract": "tsx --test tests/user-experience-contract.test.ts tests/v03-product-truth.test.ts",
     "benchmark:context": "tsx scripts/benchmark-smart-context.mts",
+    "benchmark:web-context": "tsx scripts/benchmark-web-context.mts",
     "benchmark:native:context": "tsx scripts/benchmark-native-context.mts",
-    "check": "npm run lock:check && npm run validate:template && npm run typecheck && npm test && npm run benchmark:context && npm run test:e2e && npm run build && npm run test:cli",
+    "check": "npm run lock:check && npm run validate:template && npm run typecheck && npm test && npm run benchmark:context && npm run benchmark:web-context && npm run test:e2e && npm run build && npm run test:cli && npm run test:user:contract",
     "pack:check": "npm pack --dry-run --json",
     "pack:smoke": "node scripts/smoke-packed-cli.mjs",
-    "test:user:packed": "node scripts/run-packed-user-journeys.mjs",
     "prepack": "npm run build"
   },
   "devDependencies": {

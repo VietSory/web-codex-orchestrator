@@ -1,4 +1,6 @@
 import path from "node:path";
+import { effectiveRunReviewMode } from "../agent/reviewer-mode-store.js";
+import { validateReviewFindings } from "../agent/output-validator.js";
 import { loadPhase4Config, readBundleJson, effectiveLimit } from "../execution/execution-config.js";
 import { assertPhase4ExecutionContract } from "../execution/execution-validator.js";
 import { snapshotBundle, assertBundleUnchanged } from "../execution/bundle-integrity.js";
@@ -86,6 +88,12 @@ function mapExecutionError(error: unknown): RevisionError {
 function reviewApproved(review: ReviewResult, digest: string): boolean {
   return review.verdict === "APPROVE" && review.reviewed_change_set_sha256 === digest && review.blocking_findings.length === 0 && review.scope_violations.length === 0 && review.unverified_acceptance.length === 0 && review.human_action === null;
 }
+function assertRevisionAcceptance(review: ReviewResult, criteria: Array<{ id: string; required: boolean }>): void {
+  const known = new Set(criteria.map((criterion) => criterion.id));
+  const results = new Map(review.acceptance_results.map((result) => [result.acceptance_id, result]));
+  if (review.acceptance_results.some((result) => !known.has(result.acceptance_id))) throw new RevisionError("REVISION_POLICY_BLOCKED", "Selected reviewer returned acceptance evidence outside the frozen contract.");
+  for (const criterion of criteria) if (criterion.required && results.get(criterion.id)?.status !== "PASS") throw new RevisionError("REVISION_POLICY_BLOCKED", `Selected reviewer did not PASS required acceptance '${criterion.id}'.`);
+}
 function correctionPrompt(kind: string, review: ReviewResult | null, verificationSummary: string | null): string {
   return JSON.stringify({
     phase: "8",
@@ -111,6 +119,15 @@ function revisionPrompt(source: Awaited<ReturnType<typeof loadSealedRevisionSour
       "Do not commit, push, change branch, modify Git metadata, use network, execute payloads, or change task contract files.",
       "Preserve public behavior except where the sealed finding and frozen acceptance contract explicitly require a correction.",
     ],
+  });
+}
+function reviewerPrompt(source: Awaited<ReturnType<typeof loadSealedRevisionSource>>, digest: string): string {
+  return JSON.stringify({
+    phase: "8",
+    role: "selected_revision_code_reviewer",
+    sealed_revision_request: source.request,
+    exact_change_set_sha256: digest,
+    instruction: "Independently review the exact revision against the frozen task contract. APPROVE only if every sealed finding is resolved, deterministic verification remains valid, all required acceptance criteria pass, scope is unchanged, evidence is sufficient, and no hidden correctness/security/regression issue remains.",
   });
 }
 async function persist(receiptPath: string, receipt: RevisionReceipt, now?: () => Date): Promise<void> {
@@ -139,8 +156,13 @@ export async function reviseRun(options: RevisionServiceOptions): Promise<Revisi
     const runContext = await resolveTrustedRunContext(runId, stateDirectory, configPath);
     const runReceipt = runContext.runReceipt;
     if (!runReceipt.worktree_path || !runReceipt.accepted_bundle_path || !runReceipt.repository_path || !runReceipt.remote) throw new RevisionError("REVISION_HISTORY_INVALID", "Canonical Phase 3 run receipt lacks worktree/bundle/repository/remote bindings.");
-    const config = await loadPhase4Config(configPath).catch((error) => { throw new RevisionError("REVISION_CONFIG_INVALID", error instanceof Error ? error.message : String(error)); });
+    const [config, reviewerSelection] = await Promise.all([
+      loadPhase4Config(configPath).catch((error) => { throw new RevisionError("REVISION_CONFIG_INVALID", error instanceof Error ? error.message : String(error)); }),
+      effectiveRunReviewMode(stateDirectory, runId).catch((error) => { throw new RevisionError("REVISION_STATE_INVALID", error instanceof Error ? error.message : String(error)); }),
+    ]);
     if (!config.publish) throw new RevisionError("REVISION_CONFIG_INVALID", "Trusted publish configuration is required for Phase 8.");
+    const terraProfile = reviewerSelection.kind === "terra" ? { model: reviewerSelection.model, reasoning_effort: reviewerSelection.reasoning_effort } : config.agents.internal_reviewer;
+    const solProfile = reviewerSelection.kind === "sol" ? { model: reviewerSelection.model, reasoning_effort: reviewerSelection.reasoning_effort } : config.agents.final_reviewer;
     const acceptedBundlePath = path.resolve(runReceipt.accepted_bundle_path);
     await attestAcceptedBundleAuthority(acceptedBundlePath, source.previousResultBundle.receipt.accepted_bundle_tree_sha256);
     const bundleSnapshot = await snapshotBundle(acceptedBundlePath).catch((error) => { throw new RevisionError("REVISION_BUNDLE_MUTATED", error instanceof Error ? error.message : String(error)); });
@@ -168,9 +190,13 @@ export async function reviseRun(options: RevisionServiceOptions): Promise<Revisi
         baseBranch: contract.delivery.base_branch,
         worktreePath: path.resolve(runReceipt.worktree_path),
         implementer: { model: config.agents.implementer.model, reasoningEffort: config.agents.implementer.reasoning_effort },
-        terra: { model: config.agents.internal_reviewer.model, reasoningEffort: config.agents.internal_reviewer.reasoning_effort },
-        sol: { model: config.agents.final_reviewer.model, reasoningEffort: config.agents.final_reviewer.reasoning_effort },
+        terra: { model: terraProfile.model, reasoningEffort: terraProfile.reasoning_effort },
+        sol: { model: solProfile.model, reasoningEffort: solProfile.reasoning_effort },
       });
+      if (existing.state !== "RESULT_READY") {
+        const inactive = reviewerSelection.kind === "terra" ? existing.sol_review : existing.terra_review;
+        if (inactive.rounds > 0 || inactive.verdict !== null || inactive.reviewed_change_set_sha256 !== null) throw new RevisionError("REVISION_STATE_INVALID", "In-progress revision contains review authority from a reviewer not selected for this run.");
+      }
     }
     if (existing?.state === "RESULT_READY") {
       const verified = await loadAndVerifyResultBundle(stateDirectory, runId, revisionRound + 1);
@@ -196,8 +222,8 @@ export async function reviseRun(options: RevisionServiceOptions): Promise<Revisi
         branch_name:contract.delivery.branch_name, base_branch:contract.delivery.base_branch, worktree_path:boundary.worktreePath, initial_refs_sha256:boundary.initialRefsSha256,
         implementer:{ model:config.agents.implementer.model, reasoning_effort:config.agents.implementer.reasoning_effort, thread_id:null, iterations:0 },
         verification:{ rounds:0, required_commands_passed:false, verified_change_set_sha256:null, commands:[] },
-        terra_review:{ model:config.agents.internal_reviewer.model, reasoning_effort:config.agents.internal_reviewer.reasoning_effort, rounds:0, thread_ids:[], verdict:null, reviewed_change_set_sha256:null },
-        sol_review:{ model:config.agents.final_reviewer.model, reasoning_effort:config.agents.final_reviewer.reasoning_effort, rounds:0, thread_ids:[], verdict:null, reviewed_change_set_sha256:null },
+        terra_review:{ model:terraProfile.model, reasoning_effort:terraProfile.reasoning_effort, rounds:0, thread_ids:[], verdict:null, reviewed_change_set_sha256:null },
+        sol_review:{ model:solProfile.model, reasoning_effort:solProfile.reasoning_effort, rounds:0, thread_ids:[], verdict:null, reviewed_change_set_sha256:null },
         usage:{ input_tokens:0,cached_input_tokens:0,output_tokens:0,total_turns:0,implementation_iterations:0,internal_review_rounds:0,sol_review_rounds:0,started_at:created },
         revision_change_set_sha256:null, revision_paths:[], approved_snapshot_sha256:null, new_published_commit_sha:null, remote_branch_sha:null, result_bundle_sha256:null, result_manifest_sha256:null, next_review_round:revisionRound+1,
         errors:[], created_at:created, updated_at:created, completed_at:null,
@@ -242,14 +268,10 @@ export async function reviseRun(options: RevisionServiceOptions): Promise<Revisi
     };
 
     let currentChangeSet: ChangeSet | null = null;
-    let terraReview: ReviewResult | null = null;
-    let solReview: ReviewResult | null = null;
 
     if (activeReceipt.state === "READY_TO_REVISE" || activeReceipt.state === "IMPLEMENTING") {
       let partialChangeSet: ChangeSet | null = null;
-      if (activeReceipt.state === "IMPLEMENTING") {
-        partialChangeSet = await calculateChangeSet({ worktreePath:activeReceipt.worktree_path, baseCommit:activeReceipt.previous_pr_head_sha, branchName:activeReceipt.branch_name, runner:gitRunner, allowedGeneratedPaths:config.verification.allowed_generated_paths });
-      }
+      if (activeReceipt.state === "IMPLEMENTING") partialChangeSet = await calculateChangeSet({ worktreePath:activeReceipt.worktree_path, baseCommit:activeReceipt.previous_pr_head_sha, branchName:activeReceipt.branch_name, runner:gitRunner, allowedGeneratedPaths:config.verification.allowed_generated_paths });
       if (!partialChangeSet || partialChangeSet.entries.length === 0) {
         activeReceipt.state = "IMPLEMENTING";
         activeReceipt.resume_state = null;
@@ -321,53 +343,57 @@ export async function reviseRun(options: RevisionServiceOptions): Promise<Revisi
       activeReceipt.verification.verified_change_set_sha256=currentChangeSet.change_set_sha256;
       activeReceipt.verification.commands=verification.commands;
 
-      activeReceipt.state="TERRA_REVIEWING";
-      await persist(paths.receiptPath,activeReceipt,now);
-      budget.beginInternalReview();
-      await persistBudget(paths.receiptPath,activeReceipt,budget,now);
-      const terra=await reviewWithTerra(agentClient,{ model:config.agents.internal_reviewer.model, reasoning_effort:config.agents.internal_reviewer.reasoning_effort, prompt:JSON.stringify({ phase:"8", role:"independent_revision_review", sealed_revision_request:source.request, exact_change_set_sha256:currentChangeSet.change_set_sha256, instruction:"Review the exact revision against the frozen task contract. APPROVE only if all sealed findings are resolved, required acceptance remains satisfied, scope is unchanged, and evidence is sufficient." }), threadId:undefined, workspacePath:activeReceipt.worktree_path, acceptedBundlePath, signal });
-      recordUsage(budget,terra.response);
-      terraReview=terra.review;
-      activeReceipt.terra_review.thread_ids.push(terra.threadId);
-      activeReceipt.terra_review.verdict=terra.review.verdict;
-      activeReceipt.terra_review.reviewed_change_set_sha256=terra.review.reviewed_change_set_sha256;
-      await persistBudget(paths.receiptPath,activeReceipt,budget,now);
-      if (!reviewApproved(terra.review,currentChangeSet.change_set_sha256)) {
-        if (terra.review.verdict!=="REVISE" || terra.review.human_action) throw new RevisionError("REVISION_TERRA_REVIEW_FAILED",`Terra revision review returned ${terra.review.verdict}.`);
-        budget.beginImplementation();
-        await persistBudget(paths.receiptPath,activeReceipt,budget,now);
-        const corrected=await implementWithTerra(agentClient,{ model:config.agents.implementer.model, reasoning_effort:config.agents.implementer.reasoning_effort, prompt:correctionPrompt("terra_review",terra.review,null), threadId:activeReceipt.implementer.thread_id!, workspacePath:activeReceipt.worktree_path, acceptedBundlePath, signal });
-        recordUsage(budget,corrected.response);
-        await persistBudget(paths.receiptPath,activeReceipt,budget,now);
-        if (corrected.implementation.status!=="READY_FOR_VERIFICATION"||corrected.implementation.human_action) throw new RevisionError("REVISION_TERRA_REVIEW_FAILED","Terra correction left the bounded revision contract.");
-        activeReceipt.verification.required_commands_passed=false;
-        activeReceipt.verification.verified_change_set_sha256=null;
-        activeReceipt.terra_review.verdict=null;
-        activeReceipt.terra_review.reviewed_change_set_sha256=null;
-        activeReceipt.sol_review.verdict=null;
-        activeReceipt.sol_review.reviewed_change_set_sha256=null;
-        continue;
-      }
+      const beforeReview=await calculateChangeSet({ worktreePath:activeReceipt.worktree_path, baseCommit:activeReceipt.previous_pr_head_sha, branchName:activeReceipt.branch_name, runner:gitRunner, allowedGeneratedPaths:config.verification.allowed_generated_paths });
+      if (beforeReview.change_set_sha256!==currentChangeSet.change_set_sha256) throw new RevisionError("REVISION_POLICY_BLOCKED","Revision changed between deterministic verification and code review.");
+      const deletedReviewPaths=currentChangeSet.entries.flatMap((entry)=>entry.change_type==="deleted"?[entry.path]:entry.change_type==="renamed"&&entry.old_path?[entry.old_path]:[]);
+      const allPriorThreads=[...activeReceipt.terra_review.thread_ids,...activeReceipt.sol_review.thread_ids];
+      let selectedReview: ReviewResult;
+      let selectedThreadId: string;
+      let selectedResponse: AgentTurnResponse;
 
-      activeReceipt.state="SOL_REVIEWING";
-      await persist(paths.receiptPath,activeReceipt,now);
-      budget.beginSolReview();
+      if (reviewerSelection.kind === "terra") {
+        activeReceipt.state="TERRA_REVIEWING";
+        await persist(paths.receiptPath,activeReceipt,now);
+        budget.beginInternalReview();
+        await persistBudget(paths.receiptPath,activeReceipt,budget,now);
+        const reviewed=await reviewWithTerra(agentClient,{ model:reviewerSelection.model, reasoning_effort:reviewerSelection.reasoning_effort, prompt:reviewerPrompt(source,currentChangeSet.change_set_sha256), threadId:undefined, workspacePath:activeReceipt.worktree_path, acceptedBundlePath, deletedPaths:deletedReviewPaths, signal });
+        selectedReview=reviewed.review; selectedThreadId=reviewed.threadId; selectedResponse=reviewed.response;
+      } else {
+        activeReceipt.state="SOL_REVIEWING";
+        await persist(paths.receiptPath,activeReceipt,now);
+        budget.beginSolReview();
+        await persistBudget(paths.receiptPath,activeReceipt,budget,now);
+        const reviewed=await reviewWithSol(agentClient,{ model:reviewerSelection.model, reasoning_effort:reviewerSelection.reasoning_effort, prompt:reviewerPrompt(source,currentChangeSet.change_set_sha256), threadId:undefined, workspacePath:activeReceipt.worktree_path, acceptedBundlePath, deletedPaths:deletedReviewPaths, signal });
+        selectedReview=reviewed.review; selectedThreadId=reviewed.threadId; selectedResponse=reviewed.response;
+      }
+      recordUsage(budget,selectedResponse);
+      if (!selectedThreadId || selectedThreadId===activeReceipt.implementer.thread_id || allPriorThreads.includes(selectedThreadId)) throw new RevisionError(reviewerSelection.kind === "terra" ? "REVISION_TERRA_REVIEW_FAILED" : "REVISION_SOL_REVIEW_FAILED", "Selected revision reviewer must use a fresh independent thread.");
+      if (!["APPROVE","REVISE"].includes(selectedReview.verdict) || selectedReview.human_action) throw new RevisionError(reviewerSelection.kind === "terra" ? "REVISION_TERRA_REVIEW_FAILED" : "REVISION_SOL_REVIEW_FAILED", `Selected revision reviewer returned ${selectedReview.verdict}.`);
+      assertRevisionAcceptance(selectedReview,bundle.acceptance.criteria);
+      try { await validateReviewFindings(selectedReview,activeReceipt.worktree_path,reviewerSelection.kind === "terra" ? "TERRA_REVIEW_OUTPUT_INVALID" : "REVIEW_OUTPUT_INVALID",deletedReviewPaths); }
+      catch (error) { throw new RevisionError(reviewerSelection.kind === "terra" ? "REVISION_TERRA_REVIEW_FAILED" : "REVISION_SOL_REVIEW_FAILED", error instanceof Error ? error.message : String(error)); }
+      const afterReview=await calculateChangeSet({ worktreePath:activeReceipt.worktree_path, baseCommit:activeReceipt.previous_pr_head_sha, branchName:activeReceipt.branch_name, runner:gitRunner, allowedGeneratedPaths:config.verification.allowed_generated_paths });
+      if (afterReview.change_set_sha256!==currentChangeSet.change_set_sha256) throw new RevisionError("REVISION_POLICY_BLOCKED","Selected code reviewer mutated or raced the revision worktree.");
+
+      if (reviewerSelection.kind === "terra") {
+        activeReceipt.terra_review.thread_ids.push(selectedThreadId);
+        activeReceipt.terra_review.verdict=selectedReview.verdict;
+        activeReceipt.terra_review.reviewed_change_set_sha256=selectedReview.reviewed_change_set_sha256;
+      } else {
+        activeReceipt.sol_review.thread_ids.push(selectedThreadId);
+        activeReceipt.sol_review.verdict=selectedReview.verdict;
+        activeReceipt.sol_review.reviewed_change_set_sha256=selectedReview.reviewed_change_set_sha256;
+      }
       await persistBudget(paths.receiptPath,activeReceipt,budget,now);
-      const sol=await reviewWithSol(agentClient,{ model:config.agents.final_reviewer.model, reasoning_effort:config.agents.final_reviewer.reasoning_effort, prompt:JSON.stringify({ phase:"8", role:"adversarial_revision_review", sealed_revision_request:source.request, exact_change_set_sha256:currentChangeSet.change_set_sha256, instruction:"Adversarially review the exact revision. APPROVE only if deterministic verification and frozen-contract compliance are complete with no hidden regression, scope expansion, or weakened test/evidence." }), threadId:undefined, workspacePath:activeReceipt.worktree_path, acceptedBundlePath, signal });
-      recordUsage(budget,sol.response);
-      solReview=sol.review;
-      activeReceipt.sol_review.thread_ids.push(sol.threadId);
-      activeReceipt.sol_review.verdict=sol.review.verdict;
-      activeReceipt.sol_review.reviewed_change_set_sha256=sol.review.reviewed_change_set_sha256;
-      await persistBudget(paths.receiptPath,activeReceipt,budget,now);
-      if (!reviewApproved(sol.review,currentChangeSet.change_set_sha256)) {
-        if (sol.review.verdict!=="REVISE" || sol.review.human_action) throw new RevisionError("REVISION_SOL_REVIEW_FAILED",`Sol revision review returned ${sol.review.verdict}.`);
+
+      if (!reviewApproved(selectedReview,currentChangeSet.change_set_sha256)) {
+        if (selectedReview.verdict!=="REVISE") throw new RevisionError(reviewerSelection.kind === "terra" ? "REVISION_TERRA_REVIEW_FAILED" : "REVISION_SOL_REVIEW_FAILED", `Selected revision reviewer returned ${selectedReview.verdict}.`);
         budget.beginImplementation();
         await persistBudget(paths.receiptPath,activeReceipt,budget,now);
-        const corrected=await implementWithTerra(agentClient,{ model:config.agents.implementer.model, reasoning_effort:config.agents.implementer.reasoning_effort, prompt:correctionPrompt("sol_review",sol.review,null), threadId:activeReceipt.implementer.thread_id!, workspacePath:activeReceipt.worktree_path, acceptedBundlePath, signal });
+        const corrected=await implementWithTerra(agentClient,{ model:config.agents.implementer.model, reasoning_effort:config.agents.implementer.reasoning_effort, prompt:correctionPrompt(`${reviewerSelection.kind}_review`,selectedReview,null), threadId:activeReceipt.implementer.thread_id!, workspacePath:activeReceipt.worktree_path, acceptedBundlePath, signal });
         recordUsage(budget,corrected.response);
         await persistBudget(paths.receiptPath,activeReceipt,budget,now);
-        if (corrected.implementation.status!=="READY_FOR_VERIFICATION"||corrected.implementation.human_action) throw new RevisionError("REVISION_SOL_REVIEW_FAILED","Sol correction left the bounded revision contract.");
+        if (corrected.implementation.status!=="READY_FOR_VERIFICATION"||corrected.implementation.human_action) throw new RevisionError(reviewerSelection.kind === "terra" ? "REVISION_TERRA_REVIEW_FAILED" : "REVISION_SOL_REVIEW_FAILED","Selected-reviewer correction left the bounded revision contract.");
         activeReceipt.verification.required_commands_passed=false;
         activeReceipt.verification.verified_change_set_sha256=null;
         activeReceipt.terra_review.verdict=null;
@@ -380,7 +406,10 @@ export async function reviseRun(options: RevisionServiceOptions): Promise<Revisi
       await assertBundleUnchanged(acceptedBundlePath,bundleSnapshot).catch((error)=>{throw new RevisionError("REVISION_BUNDLE_MUTATED",error instanceof Error?error.message:String(error));});
       const finalSet=await calculateChangeSet({ worktreePath:activeReceipt.worktree_path, baseCommit:activeReceipt.previous_pr_head_sha, branchName:activeReceipt.branch_name, runner:gitRunner, allowedGeneratedPaths:config.verification.allowed_generated_paths });
       await policy(finalSet);
-      if (finalSet.change_set_sha256!==activeReceipt.verification.verified_change_set_sha256 || finalSet.change_set_sha256!==activeReceipt.terra_review.reviewed_change_set_sha256 || finalSet.change_set_sha256!==activeReceipt.sol_review.reviewed_change_set_sha256) throw new RevisionError("REVISION_POLICY_BLOCKED","Revision changed after verification/review approval.");
+      const selectedDigest=reviewerSelection.kind === "terra" ? activeReceipt.terra_review.reviewed_change_set_sha256 : activeReceipt.sol_review.reviewed_change_set_sha256;
+      if (finalSet.change_set_sha256!==activeReceipt.verification.verified_change_set_sha256 || finalSet.change_set_sha256!==selectedDigest) throw new RevisionError("REVISION_POLICY_BLOCKED","Revision changed after deterministic verification or selected-reviewer approval.");
+      const inactiveReview=reviewerSelection.kind === "terra" ? activeReceipt.sol_review : activeReceipt.terra_review;
+      if (inactiveReview.rounds!==0 || inactiveReview.verdict!==null || inactiveReview.reviewed_change_set_sha256!==null) throw new RevisionError("REVISION_STATE_INVALID","Inactive revision reviewer acquired authority unexpectedly.");
       activeReceipt.revision_change_set_sha256=finalSet.change_set_sha256;
       activeReceipt.revision_paths=finalSet.entries.map((entry)=>entry.path).sort();
       activeReceipt.approved_snapshot_sha256=await calculateApprovedRevisionSnapshot({ runner:gitRunner, worktreePath:activeReceipt.worktree_path, approvedPaths:activeReceipt.revision_paths });
@@ -436,7 +465,7 @@ export async function reviseRun(options: RevisionServiceOptions): Promise<Revisi
     const finalPr=await attestRevisionPullRequest({ expected:{ pullRequestUrl:source.previousResultBundle.receipt.pull_request.url, pullRequestNumber:activeReceipt.pull_request_number, headBranch:activeReceipt.branch_name, headSha:activeReceipt.new_published_commit_sha, baseBranch:activeReceipt.base_branch, baseSha:source.previousResultBundle.receipt.base_commit }, config, githubClient });
     const publishArtifact={ run_id:runId, revision_round:revisionRound, previous_head_sha:activeReceipt.previous_pr_head_sha, new_commit_sha:activeReceipt.new_published_commit_sha, remote_branch_sha:activeReceipt.remote_branch_sha, branch_name:activeReceipt.branch_name, pull_request_number:activeReceipt.pull_request_number, same_pull_request:true, force_push:false, merged:false };
     const publishWritten=await writeCanonicalRevisionArtifact(paths.publishPath,publishArtifact);
-    const revisionEvidence={ run_id:runId, revision_round:revisionRound, state:"PUSHED", sealed_revision_request_sha256:source.requestSha256, spec_set_sha256:activeReceipt.spec_set_sha256, previous_result_bundle_sha256:activeReceipt.previous_result_bundle_sha256, previous_result_receipt_sha256:activeReceipt.previous_result_receipt_sha256, previous_verdict_sha256:activeReceipt.previous_verdict_sha256, previous_head_sha:activeReceipt.previous_pr_head_sha, revision_change_set_sha256:activeReceipt.revision_change_set_sha256, revision_paths:activeReceipt.revision_paths, approved_snapshot_sha256:activeReceipt.approved_snapshot_sha256, verification:activeReceipt.verification, terra_review:activeReceipt.terra_review, sol_review:activeReceipt.sol_review, usage:activeReceipt.usage, published_commit_sha:activeReceipt.new_published_commit_sha, remote_branch_sha:activeReceipt.remote_branch_sha };
+    const revisionEvidence={ run_id:runId, revision_round:revisionRound, state:"PUSHED", selected_reviewer:{ kind:reviewerSelection.kind, model:reviewerSelection.model, reasoning_effort:reviewerSelection.reasoning_effort }, sealed_revision_request_sha256:source.requestSha256, spec_set_sha256:activeReceipt.spec_set_sha256, previous_result_bundle_sha256:activeReceipt.previous_result_bundle_sha256, previous_result_receipt_sha256:activeReceipt.previous_result_receipt_sha256, previous_verdict_sha256:activeReceipt.previous_verdict_sha256, previous_head_sha:activeReceipt.previous_pr_head_sha, revision_change_set_sha256:activeReceipt.revision_change_set_sha256, revision_paths:activeReceipt.revision_paths, approved_snapshot_sha256:activeReceipt.approved_snapshot_sha256, verification:activeReceipt.verification, terra_review:activeReceipt.terra_review, sol_review:activeReceipt.sol_review, usage:activeReceipt.usage, published_commit_sha:activeReceipt.new_published_commit_sha, remote_branch_sha:activeReceipt.remote_branch_sha };
     const revisionEvidenceWritten=await writeCanonicalRevisionArtifact(paths.evidencePath,revisionEvidence);
 
     const resultReceipt=await packageRevisionResultBundle({ stateDirectory, paths, source, revisionReceipt:activeReceipt, revisionEvidence, revisionEvidenceSha256:revisionEvidenceWritten.sha256, publishEvidence:publishArtifact, publishEvidenceSha256:publishWritten.sha256, prAttestation:finalPr, acceptedBundlePath, originalBaseCommit:contract.repository.base_commit, worktreePath:activeReceipt.worktree_path, runner:gitRunner, limits:config.result_bundle, secrets:options.secrets, now });

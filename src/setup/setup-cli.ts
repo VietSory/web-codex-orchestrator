@@ -3,8 +3,6 @@ import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
 import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
 import { resolveGitHubToken } from "./credential-provider.js";
 import { performFirstRunSetup } from "./first-run.js";
-import { resolveManagedWebService } from "../web-bridge/managed-service.js";
-import { ManagedWebOnboardingClient } from "../web-bridge/managed-onboarding.js";
 
 export interface SetupCommandIo {
   write(value: string): void;
@@ -50,23 +48,22 @@ export async function runSetupCommand(args: string[], cwd = process.cwd(), suppl
   try {
     const result = await performFirstRunSetup({ cwd, ...(configPath ? { configPath } : {}), ...(stateDirectory ? { stateDirectory } : {}), overwrite });
     const checks: Array<["ok" | "warn", string, string]> = [["ok", "Git repository", result.repository.github_repository ?? result.repository.root]];
-    let codex = "unavailable";
-    try { const runtime = await resolveCodexRuntime(result.config.runtime, result.paths.state); await new CodexSdkAgentClient(runtime).checkAvailability(); codex = `authenticated (${runtime.package_version})`; } catch { /* reported below */ }
+    let codex = "authorization pending";
+    try { const runtime = await resolveCodexRuntime(result.config.runtime, result.paths.state); await new CodexSdkAgentClient(runtime).checkAvailability(); codex = `ChatGPT authenticated (${runtime.package_version})`; } catch { /* reported below */ }
     let github = "not configured";
     if (result.config.github_pull_request) { try { await resolveGitHubToken(result.config.github_pull_request.authentication); github = "gh authenticated"; } catch { github = "authentication unavailable"; } }
     checks.push([github === "authentication unavailable" ? "warn" : "ok", "GitHub", github]);
-    checks.push([codex === "unavailable" ? "warn" : "ok", "Codex", codex]);
-    let relay = "managed deployment required";
-    try {
-      const metadata = resolveManagedWebService();
-      await new ManagedWebOnboardingClient({ metadata, credentialsDirectory: result.paths.credentials }).probeService();
-      relay = "available";
-    } catch { /* truthful warning below */ }
-    checks.push([relay === "available" ? "ok" : "warn", "WCO Relay", relay]);
+    checks.push([codex === "authorization pending" ? "warn" : "ok", "Codex", codex]);
+    const explicitMode = result.config.web_bridge?.mode;
+    const transport = explicitMode ? `${explicitMode} (advanced override)` : "local ChatGPT/Codex (zero-config default)";
+    checks.push([explicitMode ? "warn" : "ok", "Web transport", transport]);
     suppliedIo.write(`\nWeb Codex Orchestrator v0.3 setup\n\n${checks.map(([severity, label, value]) => `${severity === "ok" ? "✓" : "!"} ${label.padEnd(16)} ${value}`).join("\n")}\n`);
-    if (codex === "unavailable" || github === "authentication unavailable") {
-      suppliedIo.write("\nSetup is complete. Credential checks need attention before model execution or publication. Run `wco doctor`.\n");
+    if (codex === "authorization pending" && !explicitMode) {
+      suppliedIo.write("\nSetup is complete. On the first interactive `wco` run, the bundled official Codex runtime will request one ChatGPT browser authorization. WCO does not require an API key, tunnel, MCP connector, relay, domain, VPS, Cloudflare, ngrok, or copied browser credential.\n");
+    } else if (!explicitMode) {
+      suppliedIo.write("\nSetup is complete. ChatGPT authorization is ready; daily use is simply `wco` and a goal. No per-task browser setup is required.\n");
     }
+    if (github === "authentication unavailable") suppliedIo.write("GitHub authentication needs attention before Draft PR publication. Run `gh auth login`, then `wco doctor`.\n");
     return 0;
   } catch (error) {
     suppliedIo.error(`${error instanceof Error ? error.message : String(error)}\nNo repository files or remote resources were changed.\n`);

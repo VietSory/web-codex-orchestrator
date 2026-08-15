@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import nodeFs from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -97,4 +98,25 @@ test("ZIP-HARD-004 declared entry-count cap is enforced before traversal", async
     verifyResultBundleZip(archive, { maximum_entries: 1 }),
     (error: unknown) => error instanceof ResultBundleError && error.code === "RESULT_ARCHIVE_ENTRY_LIMIT",
   );
+});
+
+test("ZIP-HARD-005 early rejection does not let yauzl close the caller-owned fd", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wco-zip-hard-fd-owner-"));
+  t.after(async () => fs.rm(root, { recursive: true, force: true }));
+  const archive = await buildValidArchive(root);
+  const originalClose = nodeFs.close;
+  let libraryCloseCalls = 0;
+  nodeFs.close = ((fd, callback) => {
+    libraryCloseCalls += 1;
+    callback?.(null);
+  }) as typeof nodeFs.close;
+  try {
+    await assert.rejects(
+      verifyResultBundleZip(archive, { maximum_entries: 1 }),
+      (error: unknown) => error instanceof ResultBundleError && error.code === "RESULT_ARCHIVE_ENTRY_LIMIT",
+    );
+  } finally {
+    nodeFs.close = originalClose;
+  }
+  assert.equal(libraryCloseCalls, 0, "yauzl must not close the verifier-owned archive descriptor");
 });

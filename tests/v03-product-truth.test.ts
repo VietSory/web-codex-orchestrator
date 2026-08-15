@@ -14,32 +14,33 @@ test("release-candidate version stays synchronized across package and installed 
   assert.match(firstRun, new RegExp(`version: "${packageJson.version!.replaceAll(".", "\\.")}"`));
 });
 
-test("public documentation presents the packed Latest release and normal daily workflow truthfully", async () => {
+test("public documentation freezes install + one authorization + prompt-only daily workflow", async () => {
   const readme = await repositoryText("README.md");
   const operations = await repositoryText("docs/operations.md");
+  const packageJson = JSON.parse(await repositoryText("package.json")) as { private?: boolean; publishConfig?: { access?: string } };
 
-  const latestStart = readme.indexOf("## Install the Latest release");
-  const latestEnd = readme.indexOf("## Daily use");
-  assert.ok(latestStart >= 0 && latestEnd > latestStart);
-  const latestSection = readme.slice(latestStart, latestEnd);
-  assert.match(latestSection, /gh release view --repo VietSory\/web-codex-orchestrator --json tagName/);
-  assert.match(latestSection, /release_version="\$\{release_tag#v\}"/);
-  assert.match(latestSection, /gh release download "\$release_tag"/);
-  assert.match(latestSection, /sha256sum -c "\$\{release_asset\}\.sha256"/);
-  assert.match(latestSection, /npm install --global "\.\/\$\{release_asset\}"/);
-  assert.match(latestSection, /test "\$\(wco --version\)" = "\$release_version"/);
-  assert.doesNotMatch(latestSection, /(?:\bv|web-codex-orchestrator-)\d+\.\d+\.\d+/);
-  assert.doesNotMatch(readme, /Latest public release[^\n]*v\d+\.\d+\.\d+/i);
+  assert.equal(packageJson.private, undefined);
+  assert.equal(packageJson.publishConfig?.access, "public");
+  assert.match(readme, /npm install -g web-codex-orchestrator/);
   assert.match(readme, /cd \/path\/to\/project\n+wco/);
-  assert.match(readme, /\/web connect/);
+  assert.match(readme, /one official ChatGPT browser authorization/i);
+  assert.match(readme, /no `web_bridge` field/i);
+  assert.match(readme, /Per-task browser interactions = \*\*0\*\*/i);
+  assert.match(readme, /never auto-falls back/i);
+  assert.match(readme, /Publishing remains a human maintainer action/i);
+
   assert.match(operations, /## Normal interactive workflow/);
   assert.match(operations, /## Multiple repositories/);
-  assert.doesNotMatch(readme, /stable public package has not been released/i);
-  assert.doesNotMatch(operations, /does not currently create/i);
+  assert.match(operations, /one provider-owned ChatGPT authorization interaction/i);
+  assert.match(operations, /per-task browser interactions = 0/i);
+  assert.match(operations, /web_native_mcp.*advanced|Advanced `web_native_mcp`/is);
 });
 
-test("CI permanently executes the packed daily-user journey gate", async () => {
+test("CI keeps real packed install and zero-config product-contract gates separate", async () => {
   const workflow = await repositoryText(".github/workflows/ci.yml");
+  const compatibility = await repositoryText(".github/workflows/managed-one-link-packed.yml");
 
-  assert.match(workflow, /name: Packed daily-user journeys\n\s+run: npm run test:user:packed/);
+  assert.match(workflow, /name: Clean-install packed CLI without dev dependencies\n\s+run: npm run pack:smoke/);
+  assert.match(workflow, /name: Zero-config daily-user contract\n\s+run: npm run test:user:contract/);
+  assert.match(compatibility, /compatibility/i);
 });
