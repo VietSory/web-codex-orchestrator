@@ -61,7 +61,7 @@
     "benchmark:native:context": "tsx scripts/benchmark-native-context.mts",
     "check": "npm run lock:check && npm run validate:template && npm run typecheck && npm test && npm run benchmark:context && npm run benchmark:web-context && npm run test:e2e && npm run build && npm run test:cli && npm run test:user:contract",
     "pack:check": "npm pack --dry-run --json",
-    "pack:smoke": "node scripts/smoke-packed-cli.mjs",
+    "pack:smoke": "node scripts/capture-packed-cli-metrics.mjs",
     "prepack": "npm run build"
   },
   "devDependencies": {
