@@ -130,8 +130,11 @@ test("history inspection stays read-only while resume is a separate re-attested 
   assert.match(interactive, /restoreLocalTaskHistoryFocus/);
   assert.match(interactive, /archiveLocalTaskHistory/);
   assert.match(history, /readRunLedger/);
+  assert.match(history, /readRunReceipt/);
   assert.match(history, /assertBoundedStateArtifact/);
   assert.match(history, /CURRENT_SESSION_ID/);
+  assert.match(history, /canonical run receipt/i);
+  assert.match(history, /repository base/i);
   assert.match(history, /history JSON itself as workflow authority/i);
 });
 
@@ -146,21 +149,34 @@ test("continue is the normal one-step continuation while legacy run stays compat
   assert.match(interactive, /command === "\/continue" \|\| command === "\/run"/);
   assert.match(interactive, /const continueBestTask = async/);
   assert.match(interactive, /const resumeFromHistory = async/);
+  assert.match(interactive, /latest\?\.state === "BLOCKED"/);
+  assert.match(interactive, /Use \/resume only if you intentionally want to switch/i);
 });
 
-test("background execution remains single-owner and exposes only read/control commands", async () => {
-  const interactive = await text("src/tui/interactive-app.ts");
+test("background execution remains single-owner and command discovery exposes only live-valid read/control commands", async () => {
+  const [interactive, session, slash] = await Promise.all([
+    text("src/tui/interactive-app.ts"),
+    text("src/tui/session.ts"),
+    text("src/tui/slash-commands.ts"),
+  ]);
   assert.match(interactive, /LIVE_BACKGROUND_COMMANDS = new Set\(\["\/status", "\/review", "\/task", "\/history", "\/pause", "\/help", "\/quit"\]\)/);
   assert.match(interactive, /background && !LIVE_BACKGROUND_COMMANDS\.has\(command\)/);
+  assert.match(interactive, /availableCommands: background \? \[\.\.\.LIVE_BACKGROUND_COMMANDS\] : undefined/);
+  assert.match(interactive, /commandPalette\(background \? LIVE_BACKGROUND_COMMANDS : undefined\)/);
   assert.doesNotMatch(interactive.match(/LIVE_BACKGROUND_COMMANDS = new Set\([^\n]+/)?.[0] ?? "", /\/new|\/auto|\/run|\/continue|\/resume|\/mode|\/config|\/web|\/uninstall/);
+  assert.match(session, /allowedCommands/);
+  assert.match(slash, /commandAllowed/);
 });
 
-test("interactive terminal separates interrupt from exit and preserves multiline input", async () => {
+test("interactive terminal separates interrupt from exit, preserves multiline input, and offers bounded reverse history search", async () => {
   const session = await text("src/tui/session.ts");
   assert.match(session, /WCO_COMPOSER_INTERRUPT/);
   assert.match(session, /WCO_COMPOSER_EXIT/);
   assert.match(session, /interruptRequest/);
   assert.match(session, /key\.ctrl && key\.name === "j"/);
+  assert.match(session, /key\.ctrl && key\.name === "r"/);
+  assert.match(session, /findReverseHistoryMatch/);
+  assert.match(session, /MAX_SESSION_HISTORY = 100/);
   assert.match(session, /key\.shift/);
   assert.match(session, /replace\(\/\\r\\n\?\/gu, "\\n"\)/);
 });
