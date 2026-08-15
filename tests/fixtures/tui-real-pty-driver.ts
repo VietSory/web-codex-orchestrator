@@ -15,7 +15,7 @@ await runInteractiveSession(io, {
     active = true;
     sealed = false;
     if (scenario === "interactive") {
-      setTimeout(() => io.write("BG_PROGRESS · repository scan complete\n"), 500);
+      setTimeout(() => io.write("BG_PROGRESS · repository scan complete\n"), 1_000);
     }
     return `accepted:${goal}`;
   },
