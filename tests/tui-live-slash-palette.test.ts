@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { SLASH_COMMANDS, commandPalette, slashCommandSuggestions } from "../src/tui/slash-commands.js";
-import { resolveEnterSelection, resolveSlashCompletion, runInteractiveSession } from "../src/tui/session.js";
+import { composerCursorGeometry, resolveEnterSelection, resolveSlashCompletion, runInteractiveSession, splitComposerPrompt } from "../src/tui/session.js";
 
 test("live slash suggestions prioritize normal-user commands and hide legacy/advanced noise", () => {
   assert.equal(slashCommandSuggestions("/").length, SLASH_COMMANDS.length);
@@ -35,6 +35,17 @@ test("Enter and Tab completion do the intuitive thing for commands with and with
   assert.deepEqual(resolveEnterSelection("/n", "/new"), { value: "/new ", submit: false });
   assert.deepEqual(resolveEnterSelection("/st", "/status"), { value: "/status", submit: true });
   assert.equal(resolveEnterSelection("/status", "/status"), null);
+});
+
+test("live composer prints leading prompt spacing once and tracks wrapped cursor rows", () => {
+  assert.deepEqual(splitComposerPrompt("\n> "), { prefix: "\n", prompt: "> " });
+  assert.deepEqual(splitComposerPrompt("\r\n> "), { prefix: "\r\n", prompt: "> " });
+
+  const wrapped = composerCursorGeometry("> ", "x".repeat(30), 30, 24);
+  assert.deepEqual(wrapped, { cursorRow: 1, endRow: 1, cursorColumn: 8 });
+
+  const movedBack = composerCursorGeometry("> ", "x".repeat(30), 5, 24);
+  assert.deepEqual(movedBack, { cursorRow: 0, endRow: 1, cursorColumn: 7 });
 });
 
 test("interactive session prefers the live composer when one is available", async () => {
