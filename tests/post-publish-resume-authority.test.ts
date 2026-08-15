@@ -11,6 +11,7 @@ import { publishedResumeDigestIsAllowed } from "../src/executor/resume-source.js
 test("post-publish Harness resume is receipt-bound and accepts only exact current/source generations", async () => {
   const source = await readFile(new URL("../src/executor/resume-source.ts", import.meta.url), "utf8");
   assert.match(source, /readGitPublishReceipt/);
+  assert.match(source, /if \(publish\.state === "READY_FOR_COMMIT"\) return undefined;/, "pre-push intent is not post-publish authority");
   assert.match(source, /publish\.state !== "PUSHED"/);
   assert.match(source, /publish\.run_id !== options\.runId/);
   assert.match(source, /publish\.base_commit !== options\.baseCommit/);

@@ -4,6 +4,7 @@ import type { ExecutorReviewerPort } from "../executor/gates.js";
 import type { LifecycleSnapshot } from "./planner.js";
 import { readLifecycleSnapshot } from "./snapshot-reader.js";
 import { runNextTransition, type ContinueResult, type OrchestrationDependencies } from "./transition-runner.js";
+import { OrchestrationError } from "./contracts.js";
 
 const unreachableReviewer: ExecutorReviewerPort = {
   async review() { throw new Error("PAIR_WEB_REVIEW_BOUNDARY: model reviewer must never run in PAIR Harness execution."); },
@@ -24,6 +25,15 @@ const pairHarnessDependencies: Pick<OrchestrationDependencies, "createExecutorGa
     });
   },
 };
+
+export function assertPairHarnessReadyForCodeReview(last: ContinueResult | null, snapshot: LifecycleSnapshot): void {
+  if (snapshot.result_bundle_ready) return;
+  const diagnostic = last?.ledger.diagnostics.at(-1);
+  throw new OrchestrationError(
+    diagnostic?.code ?? "ORCHESTRATION_PAIR_HARNESS_INCOMPLETE",
+    diagnostic?.message ?? "PAIR Harness stopped before producing an exact Result Bundle for independent code review.",
+  );
+}
 
 /**
  * Drive PAIR through Web-pack registration, Harness apply/verification,
@@ -51,5 +61,7 @@ export async function drivePairHarnessToCodeReview(options: {
     suppliedPack = true;
     if (last.needs_input === "web_verdict_path" || ["WAIT_HUMAN", "DONE"].includes(last.planned.transition) || !last.progressed) break;
   }
-  return { last, snapshot: await readLifecycleSnapshot(options.stateDirectory, options.runId) };
+  const snapshot = await readLifecycleSnapshot(options.stateDirectory, options.runId);
+  assertPairHarnessReadyForCodeReview(last, snapshot);
+  return { last, snapshot };
 }

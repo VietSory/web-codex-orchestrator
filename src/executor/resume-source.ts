@@ -68,6 +68,10 @@ async function exactPublishedResumeHead(options: {
   );
   const publish = await readGitPublishReceipt(publishPath);
   if (!publish) return undefined;
+  // READY_FOR_COMMIT is the write-ahead intent for the first publication. It
+  // does not yet authorize a post-publish head, and normal publish-time
+  // re-attestation must continue to bind the unchanged base worktree.
+  if (publish.state === "READY_FOR_COMMIT") return undefined;
   const publicationBindsAllowedGeneration = publishedResumeDigestIsAllowed(
     executor.change_set_digest,
     executor.repair?.source_change_set_digest,
