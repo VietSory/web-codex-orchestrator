@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { SLASH_COMMANDS, commandPalette, slashCommandSuggestions } from "../src/tui/slash-commands.js";
-import { composerCursorGeometry, resolveEnterSelection, resolveSlashCompletion, runInteractiveSession, splitComposerPrompt } from "../src/tui/session.js";
+import { composerCursorGeometry, resolveEnterSelection, resolveSlashCompletion, restoreComposerInput, runInteractiveSession, splitComposerPrompt } from "../src/tui/session.js";
 
 test("live slash suggestions prioritize normal-user commands and hide legacy/advanced noise", () => {
   assert.equal(slashCommandSuggestions("/").length, SLASH_COMMANDS.length);
@@ -46,6 +46,25 @@ test("live composer prints leading prompt spacing once and tracks wrapped cursor
 
   const movedBack = composerCursorGeometry("> ", "x".repeat(30), 5, 24);
   assert.deepEqual(movedBack, { cursorRow: 0, endRow: 1, cursorColumn: 7 });
+});
+
+test("composer cleanup restores raw mode and releases stdin when WCO owns it", () => {
+  const rawModes: boolean[] = [];
+  let pauses = 0;
+  const fake = {
+    setRawMode(value: boolean) { rawModes.push(value); return this; },
+    pause() { pauses += 1; return this; },
+  };
+
+  restoreComposerInput(fake as any, false);
+  assert.deepEqual(rawModes, [false]);
+  assert.equal(pauses, 1);
+
+  rawModes.length = 0;
+  pauses = 0;
+  restoreComposerInput(fake as any, true);
+  assert.deepEqual(rawModes, []);
+  assert.equal(pauses, 0);
 });
 
 test("interactive session prefers the live composer when one is available", async () => {
