@@ -168,7 +168,7 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
     if (lastAuthority?.type === "repository_command" && !latestResult && !latestClarification) return null;
     assertProviderBudget(record.events, this.limits(), true);
     const request = record.request as AuthoringJobRequest;
-    const prompt = latestResult ? chatGptCodexRepositoryResultPrompt(latestResult.payload) : latestClarification ? `${chatGptCodexAuthorPrompt(request)}\nUser clarification: ${JSON.stringify(latestClarification.payload)}` : chatGptCodexAuthorPrompt(request);
+    const prompt = latestResult ? chatGptCodexRepositoryResultPrompt(latestResult.payload, request, jobId) : latestClarification ? `${chatGptCodexAuthorPrompt(request, jobId)}\nUser clarification: ${JSON.stringify(latestClarification.payload)}` : chatGptCodexAuthorPrompt(request, jobId);
     const existingThread = threadId(record.events);
     const inputSha256 = contentDigest({ prompt, thread_id: existingThread ?? null });
     const result = await this.turn(prompt, existingThread, signal, async () => { await this.store.append(jobId, OWNER, "chatgpt_codex_authoring_reserved", { input_sha256: inputSha256, thread_id: existingThread ?? null }, `author-reserve-${inputSha256}`); });
@@ -249,7 +249,7 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
     if (hasUnresolvedReservation(record.events, "chatgpt_codex_review_reserved", ["web_verdict"])) throw new WebBridgeError("WEB_CHATGPT_CODEX_AMBIGUOUS_REVIEW", "A prior semantic review turn may have completed without a durable verdict; WCO refuses to replay an ambiguous authority-bearing review.");
     assertProviderBudget(record.events, this.limits(), true);
     const request = record.request as FinalReviewRequest;
-    const prompt = chatGptCodexReviewPrompt(request, evidence.payload as Record<string, unknown>);
+    const prompt = chatGptCodexReviewPrompt(request, evidence.payload as Record<string, unknown>, reviewId);
     const inputSha256 = contentDigest({ reviewId, prompt });
     const result = await this.turn(prompt, undefined, signal, async () => { await this.store.append(reviewId, OWNER, "chatgpt_codex_review_reserved", { input_sha256: inputSha256 }, `review-reserve-${inputSha256}`); });
     await this.recordProviderUsage(reviewId, "review", inputSha256, result.usage);
