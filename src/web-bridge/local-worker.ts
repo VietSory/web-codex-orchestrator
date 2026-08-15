@@ -8,6 +8,7 @@ import type { TrustedConfig } from "../config/contracts.js";
 import type { JobMode } from "../orchestration/job-mode.js";
 import { atomicWriteJson } from "../run/run-store.js";
 import { prepareTask } from "../run/preparation-service.js";
+import { persistSemanticShadowObservation } from "../semantic/shadow-observer.js";
 import { contentDigest, parseWebContractEnvelope, WebBridgeError, type RepositoryBinding, type WebContractEnvelope } from "./contracts.js";
 import type { WebBridge } from "./web-bridge.js";
 import { ExactRepositoryReadService } from "./repo-read-service.js";
@@ -21,6 +22,8 @@ import { archiveLocalTaskHistory } from "./session-history.js";
 const SESSION_MAX_BYTES = 2 * 1024 * 1024;
 const SESSION_STATES = new Set(["CREATING", "AUTHORING", "CONTRACT_SEALED", "PREPARED", "IMPLEMENTATION_REGISTERED", "COMPLETED", "BLOCKED"]);
 const JOB_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+type SemanticShadowObserver = typeof persistSemanticShadowObservation;
 
 export interface LocalWorkerSession {
   schema_version: "1.0";
@@ -195,11 +198,13 @@ export async function advanceLocalWorker(options: {
   config: TrustedConfig;
   maximumEvents?: number;
   stopAfterPrepared?: boolean;
+  semanticShadowObserver?: SemanticShadowObserver;
 }): Promise<LocalWorkerSession> {
   const session = options.session;
   if (!session.job_id) throw new WebBridgeError("WEB_SESSION_INVALID", "Authoring job identity is missing.");
   const coverage = new ReadCoverageStore(path.join(options.stateDirectory, "bridge", "read-coverage"));
   const reader = new ExactRepositoryReadService(options.repositoryPath, session.repository, coverage, {}, new ContentAddressedContextCache(path.join(options.stateDirectory, "cache", "web-context")));
+  const semanticShadowObserver = options.semanticShadowObserver ?? persistSemanticShadowObservation;
 
   for (let count = 0; count < (options.maximumEvents ?? 32); count += 1) {
     const event = await options.bridge.waitForAuthoringEvent(session.job_id, session.last_event_sequence);
@@ -209,6 +214,20 @@ export async function advanceLocalWorker(options: {
     if (event.type === "repository_command") {
       const result = await reader.execute(session.job_id, event.request_id, event.command);
       await options.bridge.submitRepositoryCommandResult(session.job_id, { request_id: event.request_id, result }, `repo-result-${event.request_id}`);
+      try {
+        await semanticShadowObserver({
+          stateDirectory: options.stateDirectory,
+          sessionId: session.session_id,
+          repository: session.repository,
+          eventSequence: event.sequence,
+          requestId: event.request_id,
+          command: event.command,
+          result,
+        });
+      } catch {
+        // Shadow evidence is deliberately non-authoritative: observation failure
+        // must never suppress an exact repository result already delivered to Web.
+      }
     } else if (event.type === "contract_sealed") {
       if (event.envelope.job_id !== session.job_id || event.envelope.user_intent !== session.goal || contentDigest(event.envelope.repository) !== contentDigest(session.repository)) throw new WebBridgeError("WEB_CONTRACT_BINDING_MISMATCH", "Sealed Web contract does not bind the original authoring job, user intent, and exact repository.");
       const materialized = await materializeTaskBundle({ envelope: event.envelope, repository: session.repository, config: options.config, stateDirectory: options.stateDirectory });
