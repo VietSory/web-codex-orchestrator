@@ -23,6 +23,11 @@ export interface StartInteractiveTaskOptions {
   pauseAtSafeBoundary?: () => Promise<void>;
 }
 
+export interface PauseAndWaitResult {
+  message: string;
+  safe_to_exit: boolean;
+}
+
 export class InteractiveTaskSlot {
   private activeTask: ActiveInteractiveTask | null = null;
 
@@ -94,11 +99,13 @@ export class InteractiveTaskSlot {
     return "Pause requested. WCO will finish the current safe step, save progress, and stop before starting another step.";
   }
 
-  async pauseAndWait(): Promise<void> {
+  async pauseAndWait(): Promise<PauseAndWaitResult> {
     const task = this.activeTask;
-    if (!task) return;
-    await this.requestPause();
+    if (!task) return { message: "No background task is running.", safe_to_exit: true };
+    const message = await this.requestPause();
+    if (!task.pauseRequested) return { message, safe_to_exit: false };
     await task.promise;
+    return { message, safe_to_exit: true };
   }
 
   async waitForIdle(): Promise<void> {
