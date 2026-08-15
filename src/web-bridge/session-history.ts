@@ -1,7 +1,7 @@
 import { lstat, mkdir, readdir, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
 import { readRunLedger } from "../orchestration/ledger.js";
-import { atomicWriteJson } from "../run/run-store.js";
+import { atomicWriteJson, readRunReceipt } from "../run/run-store.js";
 import { readStableFile } from "../shared/stable-file.js";
 import { contentDigest, parseWebContractEnvelope } from "./contracts.js";
 import type { LocalWorkerSession } from "./local-worker.js";
@@ -46,6 +46,14 @@ function historyDirectory(stateDirectory: string): string {
 function currentSessionPath(stateDirectory: string, repositoryId: string): string {
   if (!SAFE_HISTORY_ID.test(repositoryId)) throw new Error("WEB_SESSION_ID_INVALID: repository identity is invalid.");
   return path.join(stateDirectory, "bridge", "sessions", `${repositoryId}.json`);
+}
+
+function splitRunId(runId: string): { taskId: string; archiveSha256: string } {
+  const index = runId.lastIndexOf(":");
+  const taskId = runId.slice(0, index);
+  const archiveSha256 = runId.slice(index + 1);
+  if (index <= 0 || !SAFE_HISTORY_ID.test(taskId) || !/^[a-f0-9]{64}$/.test(archiveSha256)) throw new Error("WEB_HISTORY_NOT_RESUMABLE: run identity is invalid.");
+  return { taskId, archiveSha256 };
 }
 
 async function assertBoundedStateArtifact(stateDirectory: string, target: string, label: string): Promise<void> {
@@ -117,10 +125,11 @@ export async function listLocalTaskHistory(stateDirectory: string, repositoryId:
 /**
  * Move an already-durable historical task back into current focus without ever
  * treating the history JSON itself as workflow authority. The selected history
- * item is accepted only when its exact run ledger and implementation artifacts
- * can be re-attested under the current WCO state root. Earlier authoring-only
- * history intentionally remains inspectable but not resumable because its
- * external authoring job cannot be proven from local durable authority alone.
+ * item is accepted only when its exact canonical run receipt, run ledger, and
+ * implementation artifacts can all be re-attested under the current WCO state
+ * root. Earlier authoring-only history intentionally remains inspectable but
+ * not resumable because its external authoring job cannot be proven from local
+ * durable authority alone.
  */
 export async function restoreLocalTaskHistoryFocus(
   stateDirectory: string,
@@ -131,8 +140,23 @@ export async function restoreLocalTaskHistoryFocus(
   if (session.state !== "IMPLEMENTATION_REGISTERED" || !session.sealed || !session.run_id || !session.task_archive_path || !session.web_pack_path) {
     throw new Error("WEB_HISTORY_NOT_RESUMABLE: this task did not reach a locally re-attestable implementation checkpoint. Start a new follow-up task instead.");
   }
-  const ledger = await readRunLedger(stateDirectory, session.run_id);
+  const identity = splitRunId(session.run_id);
+  const [ledger, run] = await Promise.all([
+    readRunLedger(stateDirectory, session.run_id),
+    readRunReceipt(stateDirectory, identity.taskId, identity.archiveSha256),
+  ]);
   if (!ledger || ledger.run_id !== session.run_id) throw new Error("WEB_HISTORY_NOT_RESUMABLE: the durable run ledger is missing or no longer matches this task.");
+  if (
+    !run ||
+    run.run_id !== session.run_id ||
+    run.task_id !== identity.taskId ||
+    run.archive_sha256 !== identity.archiveSha256 ||
+    run.repository_id !== repositoryId ||
+    run.base_branch !== session.repository.base_branch ||
+    run.base_commit !== session.repository.base_commit
+  ) {
+    throw new Error("WEB_HISTORY_NOT_RESUMABLE: canonical run authority no longer matches the historical task identity or repository base.");
+  }
   await Promise.all([
     assertBoundedStateArtifact(stateDirectory, session.task_archive_path, "task bundle"),
     assertBoundedStateArtifact(stateDirectory, session.web_pack_path, "implementation pack"),
