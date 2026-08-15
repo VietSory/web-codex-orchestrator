@@ -36,6 +36,28 @@ function isReadlineClosed(error: unknown): boolean {
   return code === "ERR_USE_AFTER_CLOSE" || /readline was closed/i.test(message);
 }
 
+export function splitComposerPrompt(value: string): { prefix: string; prompt: string } {
+  const prompt = value.replace(/^[\r\n]+/u, "");
+  return { prefix: value.slice(0, value.length - prompt.length), prompt };
+}
+
+export function composerCursorGeometry(
+  prompt: string,
+  value: string,
+  cursor: number,
+  columns: number,
+): { cursorRow: number; endRow: number; cursorColumn: number } {
+  const safeColumns = Math.max(1, Math.trunc(columns));
+  const boundedCursor = Math.max(0, Math.min(value.length, cursor));
+  const absoluteCursor = promptColumn(prompt) + boundedCursor;
+  const absoluteEnd = promptColumn(prompt) + value.length;
+  return {
+    cursorRow: Math.floor(absoluteCursor / safeColumns),
+    endRow: Math.floor(absoluteEnd / safeColumns),
+    cursorColumn: absoluteCursor % safeColumns,
+  };
+}
+
 /** Pure completion rule used by the live TTY and UX regression tests. */
 export function resolveSlashCompletion(value: string, command: string, kind: CompletionKind): { value: string; submit: boolean } {
   if (ARGUMENT_COMMANDS.has(command)) return { value: `${command} `, submit: false };
@@ -74,8 +96,16 @@ async function liveSlashComposer(
     let settled = false;
     let historyIndex = -1;
     let historyDraft = "";
+    let renderedCursorRow = 0;
 
     const currentSuggestions = () => paletteSuppressed ? [] : slashCommandSuggestions(value);
+
+    const clearRenderedBlock = (): void => {
+      if (renderedCursorRow > 0) moveCursor(output, 0, -renderedCursorRow);
+      cursorTo(output, 0);
+      clearScreenDown(output);
+      renderedCursorRow = 0;
+    };
 
     const render = (): void => {
       const suggestions = currentSuggestions();
@@ -86,8 +116,7 @@ async function liveSlashComposer(
       const visible = suggestions.slice(pageStart, pageStart + MAX_VISIBLE_SUGGESTIONS);
       const columns = terminalColumns(output);
 
-      cursorTo(output, 0);
-      clearScreenDown(output);
+      clearRenderedBlock();
       output.write(`${prompt}${value}`);
 
       for (let index = 0; index < visible.length; index += 1) {
@@ -107,12 +136,10 @@ async function liveSlashComposer(
       }
 
       if (rowsBelow > 0) moveCursor(output, 0, -rowsBelow);
-      const absoluteCursor = promptColumn(prompt) + cursor;
-      const absoluteEnd = promptColumn(prompt) + value.length;
-      const cursorRow = Math.floor(absoluteCursor / columns);
-      const endRow = Math.floor(absoluteEnd / columns);
-      if (cursorRow < endRow) moveCursor(output, 0, cursorRow - endRow);
-      cursorTo(output, absoluteCursor % columns);
+      const geometry = composerCursorGeometry(prompt, value, cursor, columns);
+      if (geometry.cursorRow < geometry.endRow) moveCursor(output, 0, geometry.cursorRow - geometry.endRow);
+      cursorTo(output, geometry.cursorColumn);
+      renderedCursorRow = geometry.cursorRow;
     };
 
     const writeExternal: ExternalComposerWriter = (message) => {
@@ -120,8 +147,7 @@ async function liveSlashComposer(
         output.write(message);
         return;
       }
-      cursorTo(output, 0);
-      clearScreenDown(output);
+      clearRenderedBlock();
       output.write(message);
       if (message && !message.endsWith("\n")) output.write("\n");
       render();
@@ -146,8 +172,7 @@ async function liveSlashComposer(
       if (settled) return;
       settled = true;
       remember(answer);
-      cursorTo(output, 0);
-      clearScreenDown(output);
+      clearRenderedBlock();
       output.write(`${prompt}${answer}\n`);
       cleanup();
       resolve(answer);
@@ -156,8 +181,7 @@ async function liveSlashComposer(
     const abort = (): void => {
       if (settled) return;
       settled = true;
-      cursorTo(output, 0);
-      clearScreenDown(output);
+      clearRenderedBlock();
       output.write("\n");
       cleanup();
       const error = new Error("readline was closed") as Error & { code?: string };
@@ -343,7 +367,9 @@ export function terminalIo(): InteractiveIo {
       return await get().question(prompt);
     }
     reset();
-    return await liveSlashComposer(prompt, history, (writer) => { externalWriter = writer; });
+    const parts = splitComposerPrompt(prompt);
+    if (parts.prefix) process.stdout.write(parts.prefix);
+    return await liveSlashComposer(parts.prompt, history, (writer) => { externalWriter = writer; });
   };
   return {
     input: process.stdin,
