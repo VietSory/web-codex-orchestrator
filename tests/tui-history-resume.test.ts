@@ -41,8 +41,8 @@ function durableSession(state: string, taskArchive: string, webPack: string): Lo
     run_id: `TASK-RESUME:${"a".repeat(64)}`,
     web_pack_path: webPack,
     state: state as LocalWorkerSession["state"],
-    created_at: "2026-08-16T00:00:00.000Z",
-    updated_at: "2026-08-16T00:01:00.000Z",
+    created_at: "2020-01-01T00:00:00.000Z",
+    updated_at: "2020-01-01T00:01:00.000Z",
   };
 }
 
@@ -58,7 +58,7 @@ test("history resume re-attests the durable ledger and artifacts before changing
 
   const restored = await restoreLocalTaskHistoryFocus(state, "repo", session);
   assert.equal(restored.session_id, session.session_id);
-  assert.ok(Date.parse(restored.updated_at) >= Date.parse(session.updated_at));
+  assert.ok(Date.parse(restored.updated_at) > Date.parse(session.updated_at));
   const current = await readLocalWorkerSession(state, "repo");
   assert.equal(current?.run_id, session.run_id);
   assert.equal(current?.goal, session.goal);
