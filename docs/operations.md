@@ -6,17 +6,19 @@ ADR 0004 defines the normal-user transport implemented on this branch. A fresh c
 
 ## Normal interactive workflow
 
-After a human maintainer publishes a qualified release:
+After a human maintainer publishes a qualified GitHub Release, download the packaged `.tgz` artifact and install that exact release once:
 
 ```bash
-npm install -g web-codex-orchestrator
+npm install -g ./web-codex-orchestrator-<version>.tgz
 cd /path/to/project
 wco
 ```
 
+Normal users do not clone/build WCO and should not use GitHub's automatic source-code archives as the CLI package.
+
 ### First use only
 
-The normal path permits one provider-owned ChatGPT authorization interaction. WCO delegates it to the bundled pinned official Codex runtime and does not read, copy or persist the provider token itself. Authorization is invoked when the first semantic provider turn needs it, or explicitly with `wco web connect`.
+The normal path permits one provider-owned ChatGPT authorization interaction. WCO delegates it to the bundled pinned official Codex runtime and does not read, copy or persist the provider token itself. Interactive first use requests the official authorization automatically when needed; `wco web connect` remains an explicit reauthorization command.
 
 Normal-user manual setup budget:
 
@@ -74,16 +76,16 @@ Then type a goal. No normal returning-user configuration step is allowed. If aut
 
 Important commands remain:
 
-- `/status`: current stage;
-- `/task`: goal/contract state;
+- `/status`: current progress and next task state;
+- `/task`: current goal and plan state;
 - `/run`: continue a durable active workflow;
-- `/review`: exact verification/review/result/PR evidence;
+- `/review`: verification, review and Draft-PR evidence;
 - `/pause` / `/resume`: safe transition control;
 - `/doctor`: selected-mode/transport diagnosis;
 - `/web status`: local semantic transport and authorization state;
 - `/history`: bounded repository task history.
 
-`wco web status` distinguishes a healthy local runtime from a missing/expired ChatGPT authorization. `wco web connect` is the normal reauthorization command. It never changes the transport profile.
+`wco web status` distinguishes a healthy local runtime from a missing/expired ChatGPT authorization. `wco web connect` is the normal explicit reauthorization command. It never changes the transport profile.
 
 ## Failure and restart behavior
 

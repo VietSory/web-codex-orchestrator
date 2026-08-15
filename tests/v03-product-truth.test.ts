@@ -17,17 +17,21 @@ test("release-candidate version stays synchronized across package and installed 
 test("public documentation freezes install + one authorization + prompt-only daily workflow", async () => {
   const readme = await repositoryText("README.md");
   const operations = await repositoryText("docs/operations.md");
+  const contract = await repositoryText("docs/user-experience-contract.md");
   const packageJson = JSON.parse(await repositoryText("package.json")) as { private?: boolean; publishConfig?: { access?: string } };
 
   assert.equal(packageJson.private, undefined);
   assert.equal(packageJson.publishConfig?.access, "public");
-  assert.match(readme, /npm install -g web-codex-orchestrator/);
+  for (const source of [readme, operations, contract]) {
+    assert.match(source, /npm install -g (?:\.\/|\\?[^\n]*\/)?web-codex-orchestrator-[^\s`]+\.tgz/i);
+    assert.doesNotMatch(source, /npm install -g web-codex-orchestrator\s*(?:\r?\n|$)/i);
+  }
   assert.match(readme, /cd \/path\/to\/project\n+wco/);
-  assert.match(readme, /one official ChatGPT browser authorization/i);
+  assert.match(readme, /Codex official ChatGPT sign-in[\s\S]*Browser authorization/i);
   assert.match(readme, /no `web_bridge` field/i);
-  assert.match(readme, /Per-task browser interactions = \*\*0\*\*/i);
-  assert.match(readme, /never auto-falls back/i);
-  assert.match(readme, /Publishing remains a human maintainer action/i);
+  assert.match(readme, /per-task browser interactions\s*=\s*(?:\*\*)?0(?:\*\*)?/i);
+  assert.match(readme, /never(?: silently)? falls back/i);
+  assert.match(readme, /Publishing(?: WCO)? remains a human maintainer action/i);
 
   assert.match(operations, /## Normal interactive workflow/);
   assert.match(operations, /## Multiple repositories/);

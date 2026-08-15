@@ -1,3 +1,49 @@
 export const USER_STAGES = ["READY", "WEB_RESEARCH", "WEB_CONTRACT", "CONTRACT_VALIDATION", "WEB_IMPLEMENTATION", "IMPLEMENTATION_REGISTRATION", "EXECUTION", "VERIFICATION", "TERRA_REVIEW", "SOL_REVIEW", "PUBLISHING", "DRAFT_PR", "RESULT_BUNDLE", "WEB_FINAL_REVIEW", "REVISION", "AWAITING_HUMAN", "COMPLETED", "BLOCKED", "FAILED", "PAUSED"] as const;
 export type UserStage = typeof USER_STAGES[number];
-export function deriveUserStage(receipt: { state?: unknown; status?: unknown; paused?: unknown } | null): UserStage { if (!receipt) return "READY"; if (receipt.paused === true) return "PAUSED"; const value = String(receipt.state ?? receipt.status ?? ""); if (value.includes("BLOCK")) return "BLOCKED"; if (value.includes("FAIL")) return "FAILED"; if (value.includes("WEB") && value.includes("REVIEW")) return "WEB_FINAL_REVIEW"; if (value.includes("REVISION")) return "REVISION"; if (value.includes("DRAFT")) return "DRAFT_PR"; if (value.includes("PUBLISH")) return "PUBLISHING"; if (value.includes("SOL")) return "SOL_REVIEW"; if (value.includes("TERRA") || value.includes("INTERNAL_REVIEW")) return "TERRA_REVIEW"; if (value.includes("VERIFY")) return "VERIFICATION"; if (value.includes("EXECUT")) return "EXECUTION"; if (value.includes("READY_FOR_CODEX")) return "WEB_IMPLEMENTATION"; if (value.includes("APPROVED") || value.includes("AWAITING_HUMAN")) return "AWAITING_HUMAN"; if (value.includes("COMPLETE")) return "COMPLETED"; return "READY"; }
+
+const USER_STAGE_LABELS: Record<UserStage, string> = {
+  READY: "Ready",
+  WEB_RESEARCH: "Understanding your goal",
+  WEB_CONTRACT: "Planning the change",
+  CONTRACT_VALIDATION: "Checking the plan",
+  WEB_IMPLEMENTATION: "Preparing implementation",
+  IMPLEMENTATION_REGISTRATION: "Preparing implementation",
+  EXECUTION: "Implementing",
+  VERIFICATION: "Running checks",
+  TERRA_REVIEW: "Reviewing changes",
+  SOL_REVIEW: "Reviewing changes",
+  PUBLISHING: "Publishing the branch",
+  DRAFT_PR: "Preparing the Draft PR",
+  RESULT_BUNDLE: "Preparing review evidence",
+  WEB_FINAL_REVIEW: "Final review",
+  REVISION: "Applying review fixes",
+  AWAITING_HUMAN: "Ready for you",
+  COMPLETED: "Complete",
+  BLOCKED: "Needs your attention",
+  FAILED: "Needs your attention",
+  PAUSED: "Paused",
+};
+
+export function formatUserStage(stage: UserStage): string {
+  return USER_STAGE_LABELS[stage];
+}
+
+export function deriveUserStage(receipt: { state?: unknown; status?: unknown; paused?: unknown } | null): UserStage {
+  if (!receipt) return "READY";
+  if (receipt.paused === true) return "PAUSED";
+  const value = String(receipt.state ?? receipt.status ?? "");
+  if (value.includes("BLOCK")) return "BLOCKED";
+  if (value.includes("FAIL")) return "FAILED";
+  if (value.includes("WEB") && value.includes("REVIEW")) return "WEB_FINAL_REVIEW";
+  if (value.includes("REVISION")) return "REVISION";
+  if (value.includes("DRAFT")) return "DRAFT_PR";
+  if (value.includes("PUBLISH")) return "PUBLISHING";
+  if (value.includes("SOL")) return "SOL_REVIEW";
+  if (value.includes("TERRA") || value.includes("INTERNAL_REVIEW")) return "TERRA_REVIEW";
+  if (value.includes("VERIFY")) return "VERIFICATION";
+  if (value.includes("EXECUT")) return "EXECUTION";
+  if (value.includes("READY_FOR_CODEX")) return "WEB_IMPLEMENTATION";
+  if (value.includes("APPROVED") || value.includes("AWAITING_HUMAN")) return "AWAITING_HUMAN";
+  if (value.includes("COMPLETE")) return "COMPLETED";
+  return "READY";
+}

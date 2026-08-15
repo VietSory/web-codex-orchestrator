@@ -1,37 +1,37 @@
 import type { AutopilotJobReceipt } from "../orchestration/autopilot-job.js";
 
 const STAGE_LABELS: Record<AutopilotJobReceipt["stage"], string> = {
-  EXECUTE: "IMPLEMENTATION",
-  PUBLISH: "PUBLISHING",
-  DRAFT_PR: "DRAFT_PR",
-  PACKAGE_RESULT: "RESULT_BUNDLE",
-  WAIT_WEB: "WEB_FINAL_REVIEW",
-  REVISE: "REVISING",
-  DONE: "READY_FOR_YOU",
+  EXECUTE: "Implementing",
+  PUBLISH: "Publishing the branch",
+  DRAFT_PR: "Preparing the Draft PR",
+  PACKAGE_RESULT: "Preparing review evidence",
+  WAIT_WEB: "Final review",
+  REVISE: "Applying review fixes",
+  DONE: "Ready for you",
 };
 
 export function formatAutopilotStatus(receipt: AutopilotJobReceipt | null): string {
-  if (!receipt) return "AUTOPILOT · CONTRACT_READY";
-  if (receipt.status === "READY_FOR_YOU") return "AUTOPILOT · READY_FOR_YOU";
-  if (receipt.status === "NEEDS_YOU") return "AUTOPILOT · NEEDS_YOU";
-  if (receipt.status === "PAUSED") return "AUTOPILOT · PAUSED";
-  if (receipt.status === "WAITING_RETRY") return `AUTOPILOT · RETRYING_${STAGE_LABELS[receipt.stage]}`;
-  if (receipt.status === "WAITING_WEB") return "AUTOPILOT · WEB_FINAL_REVIEW";
+  if (!receipt) return "AUTOPILOT · Plan ready";
+  if (receipt.status === "READY_FOR_YOU") return "AUTOPILOT · Ready for you";
+  if (receipt.status === "NEEDS_YOU") return "AUTOPILOT · Needs your attention";
+  if (receipt.status === "PAUSED") return "AUTOPILOT · Paused";
+  if (receipt.status === "WAITING_RETRY") return `AUTOPILOT · Retrying — ${STAGE_LABELS[receipt.stage]}`;
+  if (receipt.status === "WAITING_WEB") return "AUTOPILOT · Final review";
   return `AUTOPILOT · ${STAGE_LABELS[receipt.stage]}`;
 }
 
 export function formatAutopilotOutcome(receipt: AutopilotJobReceipt, draftPrUrl: string | null): string {
   if (receipt.status === "READY_FOR_YOU") {
     return [
-      "AUTOPILOT · READY FOR YOU",
+      "AUTOPILOT · Ready for you",
       `Draft PR      ${draftPrUrl ?? "ready"}`,
-      "Verification  passed",
-      "Code reviewer approved",
-      "Web final     approved",
-      "Action        review and merge when ready",
+      "Checks        passed",
+      "Code review   approved",
+      "Final review  approved",
+      "Next          review the Draft PR and merge when ready",
     ].join("\n");
   }
-  if (receipt.status === "PAUSED") return ["AUTOPILOT · PAUSED", "Safe checkpoint saved. Use /run to resume."].join("\n");
-  if (receipt.status === "NEEDS_YOU") return ["AUTOPILOT · NEEDS YOU", receipt.reason ?? "WCO stopped at a human-owned or non-retryable boundary.", "No merge action was taken. Use /status, /review and /doctor for evidence."].join("\n");
-  return [formatAutopilotStatus(receipt), receipt.reason ?? "WCO stopped before a terminal user boundary.", "Use /run to continue from durable state."].join("\n");
+  if (receipt.status === "PAUSED") return ["AUTOPILOT · Paused", "Progress is saved. Use /run to continue."].join("\n");
+  if (receipt.status === "NEEDS_YOU") return ["AUTOPILOT · Needs your attention", receipt.reason ?? "WCO stopped at a decision or issue that needs you.", "Nothing was merged. Use /status and /review for details; use /doctor if something is unavailable."].join("\n");
+  return [formatAutopilotStatus(receipt), receipt.reason ?? "WCO stopped before the task was ready for you.", "Use /run to continue from saved progress."].join("\n");
 }

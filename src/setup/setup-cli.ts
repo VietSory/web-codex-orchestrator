@@ -15,6 +15,26 @@ const defaultIo: SetupCommandIo = {
   error: (value) => process.stderr.write(value),
 };
 
+function friendlySetupError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/repository root failed/i.test(message)) {
+    return "WCO needs to be run inside a Git repository. `cd` into the project you want WCO to work on, then run `wco` again.";
+  }
+  if (/no Git remote is configured/i.test(message)) {
+    return "This Git repository has no remote yet. Add the remote you want WCO to use, verify it with `git remote -v`, then run `wco` again.";
+  }
+  if (/fetch and push URLs differ/i.test(message)) {
+    return "This repository uses different fetch and push URLs. Align the Git remote first so WCO can safely bind one repository identity, then run `wco` again.";
+  }
+  if (/SETUP_CHATGPT_AUTH_FAILED|ChatGPT authorization did not complete/i.test(message)) {
+    return "ChatGPT authorization did not finish. Run `wco` again, or run `wco web connect` to retry the official sign-in.";
+  }
+  if (/SETUP_NODE_UNSUPPORTED/i.test(message)) {
+    return "WCO requires Node.js 22 or newer. Update Node.js, then run `wco` again.";
+  }
+  return message;
+}
+
 export async function runSetupCommand(args: string[], cwd = process.cwd(), suppliedIo: SetupCommandIo = defaultIo): Promise<number> {
   let yes = false, overwrite = false, configPath: string | undefined, stateDirectory: string | undefined;
   for (let i = 0; i < args.length; i++) {
@@ -46,27 +66,28 @@ export async function runSetupCommand(args: string[], cwd = process.cwd(), suppl
     } finally { owned?.close(); }
   }
   try {
+    suppliedIo.write("Checking this Git repository and local WCO prerequisites…\n");
     const result = await performFirstRunSetup({ cwd, ...(configPath ? { configPath } : {}), ...(stateDirectory ? { stateDirectory } : {}), overwrite });
     const checks: Array<["ok" | "warn", string, string]> = [["ok", "Git repository", result.repository.github_repository ?? result.repository.root]];
     let codex = "authorization pending";
     try { const runtime = await resolveCodexRuntime(result.config.runtime, result.paths.state); await new CodexSdkAgentClient(runtime).checkAvailability(); codex = `ChatGPT authenticated (${runtime.package_version})`; } catch { /* reported below */ }
     let github = "not configured";
-    if (result.config.github_pull_request) { try { await resolveGitHubToken(result.config.github_pull_request.authentication); github = "gh authenticated"; } catch { github = "authentication unavailable"; } }
-    checks.push([github === "authentication unavailable" ? "warn" : "ok", "GitHub", github]);
-    checks.push([codex === "authorization pending" ? "warn" : "ok", "Codex", codex]);
+    if (result.config.github_pull_request) { try { await resolveGitHubToken(result.config.github_pull_request.authentication); github = "gh authenticated"; } catch { github = "gh missing or not authenticated"; } }
+    checks.push([github === "gh missing or not authenticated" ? "warn" : "ok", "GitHub", github]);
+    checks.push([codex === "authorization pending" ? "warn" : "ok", "ChatGPT", codex]);
     const explicitMode = result.config.web_bridge?.mode;
-    const transport = explicitMode ? `${explicitMode} (advanced override)` : "local ChatGPT/Codex (zero-config default)";
-    checks.push([explicitMode ? "warn" : "ok", "Web transport", transport]);
+    const transport = explicitMode ? `${explicitMode} (advanced override)` : "local ChatGPT/Codex";
+    checks.push([explicitMode ? "warn" : "ok", "Transport", transport]);
     suppliedIo.write(`\nWeb Codex Orchestrator v0.3 setup\n\n${checks.map(([severity, label, value]) => `${severity === "ok" ? "✓" : "!"} ${label.padEnd(16)} ${value}`).join("\n")}\n`);
     if (codex === "authorization pending" && !explicitMode) {
-      suppliedIo.write("\nSetup is complete. On the first interactive `wco` run, the bundled official Codex runtime will request one ChatGPT browser authorization. WCO does not require an API key, tunnel, MCP connector, relay, domain, VPS, Cloudflare, ngrok, or copied browser credential.\n");
+      suppliedIo.write("\nSetup is complete. On the first interactive `wco` run, the official Codex sign-in will request ChatGPT authorization if needed. No API key, relay, tunnel, domain, or cloud setup is required.\n");
     } else if (!explicitMode) {
-      suppliedIo.write("\nSetup is complete. ChatGPT authorization is ready; daily use is simply `wco` and a goal. No per-task browser setup is required.\n");
+      suppliedIo.write("\nSetup is complete. Daily use is simply `wco` and a goal.\n");
     }
-    if (github === "authentication unavailable") suppliedIo.write("GitHub authentication needs attention before Draft PR publication. Run `gh auth login`, then `wco doctor`.\n");
+    if (github === "gh missing or not authenticated") suppliedIo.write("GitHub needs attention before WCO can publish a Draft PR. Install GitHub CLI (`gh`) if it is missing, then run `gh auth login` and `wco doctor`.\n");
     return 0;
   } catch (error) {
-    suppliedIo.error(`${error instanceof Error ? error.message : String(error)}\nNo repository files or remote resources were changed.\n`);
+    suppliedIo.error(`${friendlySetupError(error)}\nYour project files and remote repository were not changed by setup.\n`);
     return 1;
   }
 }

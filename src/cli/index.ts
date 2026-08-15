@@ -36,18 +36,29 @@ const CONTROL_COMMANDS = new Set(["doctor", "status", "next", "continue", "pause
 function printUsage(): void {
   console.log("Web Codex Orchestrator (wco)");
   console.log("");
-  console.log("Usage:");
-  console.log("  wco                         Interactive UI");
-  console.log("  wco setup                   First-run setup wizard");
-  console.log("  wco web [status|open|connect|disconnect]");
-  console.log("  wco uninstall --purge [--yes]");
+  console.log("Use WCO inside the Git project you want it to work on:");
   console.log("");
-  console.log("User workflow:");
-  console.log("  wco run <task-bundle.zip> ...   Run an existing bundle non-interactively");
-  console.log("  wco status ...                  Inspect a durable run");
-  console.log("  wco doctor ...                  Diagnose runtime/auth/sandbox");
+  console.log("  cd /path/to/project");
+  console.log("  wco");
   console.log("");
-  console.log("Advanced / automation:");
+  console.log("Then type a software-engineering goal. Type / inside WCO to discover interactive commands.");
+  console.log("");
+  console.log("Common commands:");
+  console.log("  wco                         Open the interactive WCO session");
+  console.log("  wco setup                   Register/check the current Git repository");
+  console.log("  wco web status              Check ChatGPT authorization");
+  console.log("  wco web connect             Authorize or re-authorize ChatGPT");
+  console.log("  wco doctor                  Check local prerequisites and readiness");
+  console.log("  wco uninstall --purge       Remove WCO-owned local resources");
+  console.log("  wco --version               Show the installed WCO version");
+  console.log("");
+  console.log("Advanced deterministic/protocol commands are still available: wco help advanced");
+}
+
+function printAdvancedUsage(): void {
+  printUsage();
+  console.log("");
+  console.log("Advanced deterministic automation:");
   console.log("  wco preview <task-bundle.zip> --state-dir <directory> [--json]");
   console.log("  wco run <task-bundle.zip> --state-dir <directory> --config <config.json> [--web-pack <zip>] [--web-verdict <json>] [--max-transitions <1-32>] [--json]");
   console.log("  wco status --run-id <run-id> --state-dir <directory> [--json]");
@@ -405,7 +416,7 @@ async function main(): Promise<void> {
     process.exitCode = await runInteractiveApp();
     return;
   }
-  if (command === "--help" || command === "-h" || command === "help") { printUsage(); return; }
+  if (command === "--help" || command === "-h" || command === "help") { args[0] === "advanced" ? printAdvancedUsage() : printUsage(); return; }
   if (command === "--version" || command === "-V" || command === "version") { console.log(await packageVersion()); return; }
   if (command === "preview") return runPreview(args);
   if (command === "setup") { process.exitCode = await runSetupCommand(args); return; }

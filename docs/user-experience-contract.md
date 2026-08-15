@@ -4,13 +4,15 @@ This document is the release acceptance contract for WCO's normal single-user pa
 
 ## End-user steps
 
-After a human maintainer publishes the package:
+After a human maintainer publishes a qualified GitHub Release, the normal user downloads the packaged WCO `.tgz` artifact and installs that exact release once:
 
 ```bash
-npm install -g web-codex-orchestrator
+npm install -g ./web-codex-orchestrator-<version>.tgz
 cd /path/to/project
 wco
 ```
+
+The GitHub `Source code (zip)` / `Source code (tar.gz)` snapshots are not the normal-user package. Normal users do not clone WCO or run its development build.
 
 On first interactive use only, WCO hands authorization to its **bundled official Codex runtime**, which performs the normal ChatGPT browser sign-in. Codex owns the OAuth callback, credential storage and token refresh lifecycle. WCO never asks the normal user to copy or enter a ChatGPT/OpenAI API key, tunnel ID, runtime key, endpoint, bearer token, cookie, browser profile, MCP connector, Workspace Agent identifier, domain or relay configuration.
 
@@ -131,4 +133,4 @@ automatic merge/release             = 0
 
 A release/audit agent must treat any newly introduced mandatory normal-user infrastructure outside this document as a product defect. It must also reject claims of release readiness until the packed zero-config path and a real local one-authorization acceptance have both succeeded.
 
-Local prerequisites remain Node.js 22+, Git, the platform sandbox prerequisites required by selected execution mode, and GitHub authentication only when Draft-PR delivery is requested.
+Local prerequisites remain Node.js 22+, npm, Git, the platform sandbox prerequisites required by the selected execution mode, and GitHub CLI (`gh`) authenticated when Draft-PR delivery is requested.

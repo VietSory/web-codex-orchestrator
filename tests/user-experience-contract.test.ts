@@ -31,7 +31,7 @@ test("authoritative docs freeze local one-authorization prompt-only workflow", a
     text("docs/web-bridge.md"),
   ]);
 
-  assert.match(readme, /npm install -g web-codex-orchestrator/);
+  assert.match(readme, /npm install -g \.\/web-codex-orchestrator-[^\s`]+\.tgz/);
   for (const source of [contract, bridge]) {
     assert.match(source, /local ChatGPT\/Codex/i);
     assert.match(source, /no `web_bridge` field|no `web_bridge`/i);
@@ -39,6 +39,35 @@ test("authoritative docs freeze local one-authorization prompt-only workflow", a
     assert.match(source, /no browser action|per-task browser interactions\s*= 0/i);
     assert.match(source, /never.*fallback|never a silent fallback|must not silently switch/i);
   }
+});
+
+test("the first normal goal may trigger official ChatGPT authorization without a manual connect command", async () => {
+  const [interactive, bridge] = await Promise.all([
+    text("src/tui/interactive-app.ts"),
+    text("src/web-bridge/chatgpt-codex-bridge.ts"),
+  ]);
+
+  assert.match(interactive, /if \(isLocal\(\)\) \{\s+if \(bridge\) return true;/s);
+  assert.doesNotMatch(interactive, /if \(isLocal\(\)\) \{[^}]*Run \/web connect to authorize/s);
+  assert.match(bridge, /createAuthoringJob[\s\S]*ensureAuthorizedForProviderTurn/);
+  assert.match(bridge, /before durable task creation/i);
+});
+
+test("PAIR status and review stay read-only while presenting durable lifecycle evidence", async () => {
+  const interactive = await text("src/tui/interactive-app.ts");
+  const statusStart = interactive.indexOf('if (command === "/status")');
+  const reviewStart = interactive.indexOf('if (command === "/review")');
+  const pauseStart = interactive.indexOf('if (command === "/pause"');
+  assert.ok(statusStart >= 0 && reviewStart > statusStart && pauseStart > reviewStart);
+
+  const statusBlock = interactive.slice(statusStart, reviewStart);
+  assert.match(statusBlock, /readLifecycleSnapshot/);
+  assert.match(statusBlock, /formatPairStatus/);
+  assert.doesNotMatch(statusBlock, /runControlCommand|startAndDriveTask|drivePairHarnessToCodeReview|driveAutopilotJob/);
+
+  const reviewBlock = interactive.slice(reviewStart, pauseStart);
+  assert.match(reviewBlock, /reviewSummary/);
+  assert.doesNotMatch(reviewBlock, /runControlCommand|startAndDriveTask|drivePairHarnessToCodeReview|driveAutopilotJob/);
 });
 
 test("normal path keeps mutation and shipment authority local and human-owned", async () => {

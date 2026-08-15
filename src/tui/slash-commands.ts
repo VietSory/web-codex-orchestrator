@@ -1,34 +1,56 @@
 export const SLASH_COMMANDS = [
-  ["/new", "Start a new task"],
+  ["/new", "Start a new PAIR task: /new <goal>"],
   ["/auto", "Start an AUTOPILOT task: /auto <goal>"],
-  ["/mode", "Review model/effort: /mode <sol|terra> <effort>"],
-  ["/status", "Current task and workflow progress"],
-  ["/task", "View current goal/contract summary"],
-  ["/run", "Start or continue the workflow"],
-  ["/web status", "Show local ChatGPT authorization and pending work"],
-  ["/web connect", "Authorize/reconnect local ChatGPT via bundled Codex"],
-  ["/web open", "Show Web transport status (no per-task browser step)"],
-  ["/web disconnect", "Remove an explicit advanced Web override/credential"],
-  ["/review", "Latest selected-model review, Result Bundle and Draft PR"],
-  ["/pause", "Pause before the next safe transition"],
-  ["/resume", "Clear an explicit pause and continue"],
-  ["/history", "Previous WCO runs for this repository"],
-  ["/config", "View user-facing settings"],
-  ["/config web", "Authorize/reconnect the local ChatGPT transport"],
-  ["/doctor", "Diagnose local environment and selected transport"],
-  ["/uninstall", "Remove WCO-owned local resources and WCO itself"],
-  ["/unitsall", "Alias for /uninstall"],
-  ["/help", "Command help"],
+  ["/status", "Show current progress and next action"],
+  ["/run", "Continue the current task"],
+  ["/review", "Show checks, review, and Draft PR"],
+  ["/history", "Show recent tasks in this repository"],
+  ["/pause", "Pause before the next safe step"],
+  ["/resume", "Resume a paused task"],
+  ["/task", "Show the current goal and plan state"],
+  ["/mode", "AUTOPILOT reviewer: /mode <sol|terra> <effort>"],
+  ["/web status", "Show ChatGPT authorization status"],
+  ["/web connect", "Authorize or reconnect ChatGPT"],
+  ["/doctor", "Check local prerequisites and authorization"],
+  ["/config", "Show WCO settings"],
+  ["/uninstall", "Remove WCO-owned local resources and WCO"],
+  ["/help", "Show command help"],
   ["/quit", "Exit WCO"],
 ] as const;
+
 export type SlashCommandName = typeof SLASH_COMMANDS[number][0];
-export function canonicalSlashCommand(value: string): string { const trimmed = value.trim(); return trimmed === "/unitsall" || trimmed.startsWith("/unitsall ") ? `/uninstall${trimmed.slice(9)}` : trimmed; }
+export interface SlashCommandSuggestion { command: SlashCommandName; description: string; }
+
+/**
+ * Legacy spellings and advanced subcommands remain accepted by the parser,
+ * but are intentionally absent from the normal-user palette. This preserves
+ * compatibility without making first-time command discovery noisy.
+ */
+export function canonicalSlashCommand(value: string): string {
+  const trimmed = value.trim();
+  return trimmed === "/unitsall" || trimmed.startsWith("/unitsall ") ? `/uninstall${trimmed.slice(9)}` : trimmed;
+}
+
+export function slashCommandSuggestions(value: string): SlashCommandSuggestion[] {
+  const input = value.trimStart().toLowerCase();
+  if (!input.startsWith("/")) return [];
+  return SLASH_COMMANDS
+    .filter(([command]) => command.toLowerCase().startsWith(input))
+    .map(([command, description]) => ({ command, description }));
+}
+
 export function parseInteractiveInput(value: string, state: { active: boolean; sealed: boolean }): { kind: "empty" | "command" | "new" | "clarification" | "sealed_block"; command?: string; args?: string; goal?: string } {
   const input = canonicalSlashCommand(value);
   if (!input) return { kind: "empty" };
-  if (input.startsWith("/")) { const space = input.indexOf(" "); return { kind: "command", command: space < 0 ? input : input.slice(0, space), args: space < 0 ? "" : input.slice(space + 1).trim() }; }
+  if (input.startsWith("/")) {
+    const space = input.indexOf(" ");
+    return { kind: "command", command: space < 0 ? input : input.slice(0, space), args: space < 0 ? "" : input.slice(space + 1).trim() };
+  }
   if (!state.active) return { kind: "new", goal: input };
   if (!state.sealed) return { kind: "clarification", goal: input };
   return { kind: "sealed_block", goal: input };
 }
-export function commandPalette(): string { return SLASH_COMMANDS.map(([command, description]) => `${command.padEnd(12)} ${description}`).join("\n"); }
+
+export function commandPalette(): string {
+  return SLASH_COMMANDS.map(([command, description]) => `${command.padEnd(16)} ${description}`).join("\n");
+}
