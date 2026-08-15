@@ -58,8 +58,9 @@
     "test:user:contract": "tsx --test tests/user-experience-contract.test.ts tests/v03-product-truth.test.ts",
     "benchmark:context": "tsx scripts/benchmark-smart-context.mts",
     "benchmark:web-context": "tsx scripts/benchmark-web-context.mts",
+    "benchmark:prompt-footprint": "tsx scripts/benchmark-prompt-footprint.mts",
     "benchmark:native:context": "tsx scripts/benchmark-native-context.mts",
-    "check": "npm run lock:check && npm run validate:template && npm run typecheck && npm test && npm run benchmark:context && npm run benchmark:web-context && npm run test:e2e && npm run build && npm run test:cli && npm run test:user:contract",
+    "check": "npm run lock:check && npm run validate:template && npm run typecheck && npm test && npm run benchmark:context && npm run benchmark:web-context && npm run benchmark:prompt-footprint && npm run test:e2e && npm run build && npm run test:cli && npm run test:user:contract",
     "pack:check": "npm pack --dry-run --json",
     "pack:smoke": "node scripts/capture-packed-cli-metrics.mjs",
     "prepack": "npm run build"
