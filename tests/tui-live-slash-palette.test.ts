@@ -6,25 +6,24 @@ import { resolveEnterSelection, resolveSlashCompletion, runInteractiveSession } 
 test("live slash suggestions prioritize normal-user commands and hide legacy/advanced noise", () => {
   assert.equal(slashCommandSuggestions("/").length, SLASH_COMMANDS.length);
   assert.deepEqual(slashCommandSuggestions("/st").map((item) => item.command), ["/status"]);
-  assert.deepEqual(
-    slashCommandSuggestions("/web ").map((item) => item.command),
-    ["/web status", "/web connect"],
-  );
+  assert.deepEqual(slashCommandSuggestions("/web "), []);
+  assert.deepEqual(slashCommandSuggestions("/mode"), []);
   assert.deepEqual(slashCommandSuggestions("/config "), []);
   assert.deepEqual(slashCommandSuggestions("/new "), []);
   assert.deepEqual(slashCommandSuggestions("ordinary goal"), []);
 
   const palette = commandPalette();
-  assert.doesNotMatch(palette, /\/unitsall/);
-  assert.doesNotMatch(palette, /\/web open|\/web disconnect|\/config web/);
-  assert.match(palette, /\/new/);
-  assert.match(palette, /\/auto/);
+  assert.doesNotMatch(palette, /\/unitsall|\/mode|\/web|\/config/);
+  assert.match(palette, /PAIR: collaborate on a task and add details before the plan locks/);
+  assert.match(palette, /AUTOPILOT: run end-to-end unless a decision needs you/);
   assert.match(palette, /\/status/);
+  assert.match(palette, /what you need to do/);
 });
 
 test("Enter and Tab completion do the intuitive thing for commands with and without arguments", () => {
   assert.deepEqual(resolveSlashCompletion("/n", "/new", "enter"), { value: "/new ", submit: false });
   assert.deepEqual(resolveSlashCompletion("/a", "/auto", "enter"), { value: "/auto ", submit: false });
+  // Advanced commands stay parser-compatible even though they are hidden from normal discovery.
   assert.deepEqual(resolveSlashCompletion("/m", "/mode", "tab"), { value: "/mode ", submit: false });
   assert.deepEqual(resolveSlashCompletion("/st", "/status", "enter"), { value: "/status", submit: true });
   assert.deepEqual(resolveSlashCompletion("/st", "/status", "tab"), { value: "/status", submit: false });
