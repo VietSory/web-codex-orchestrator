@@ -20,7 +20,7 @@ const reviewRequest = {
 
 function assertMaintainerReviewSemantics(prompt: string): void {
   assert.match(prompt, /green test suite|verification passing/i);
-  assert.match(prompt, /not proof/i);
+  assert.match(prompt, /not proof|never as proof/i);
   assert.match(prompt, /concurrency|races/i);
   assert.match(prompt, /retry|replay|idempotency/i);
   assert.match(prompt, /crash\/restart recovery|crash.*restart/i);
