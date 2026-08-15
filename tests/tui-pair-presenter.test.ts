@@ -19,7 +19,7 @@ function snapshot(overrides: Partial<LifecycleSnapshot> = {}): LifecycleSnapshot
 }
 
 test("PAIR stage is derived from durable lifecycle evidence instead of the coarse local session state", () => {
-  assert.equal(derivePairStage(snapshot({ executor_state: "IMPLEMENTING", publish_state: null, draft_pr_state: null, result_bundle_ready: false, web_code_review_state: null, web_review_state: null })), "EXECUTION");
+  assert.equal(derivePairStage(snapshot({ executor_state: "APPLYING", publish_state: null, draft_pr_state: null, result_bundle_ready: false, web_code_review_state: null, web_review_state: null })), "EXECUTION");
   assert.equal(derivePairStage(snapshot({ executor_state: "VERIFYING", publish_state: null, draft_pr_state: null, result_bundle_ready: false, web_code_review_state: null, web_review_state: null })), "VERIFICATION");
   assert.equal(derivePairStage(snapshot({ executor_state: "ESCALATE_TO_WEB", publish_state: null, draft_pr_state: null, result_bundle_ready: false, web_code_review_state: null, web_review_state: null })), "WEB_IMPLEMENTATION");
   assert.equal(derivePairStage(snapshot({ executor_state: "REPAIR_APPLYING", publish_state: null, draft_pr_state: null, result_bundle_ready: false, web_code_review_state: null, web_review_state: null })), "REVISION");
