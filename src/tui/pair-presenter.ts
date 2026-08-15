@@ -9,18 +9,22 @@ export interface PairStatusView {
 }
 
 function hasExecutorFailure(state: string | null): boolean {
-  if (!state) return false;
-  return state.includes("FAIL") || state.includes("ESCALATE");
+  return state === "FAILED";
 }
 
 function isExecutorVerifying(state: string | null): boolean {
-  if (!state) return false;
-  return state.includes("VERIFY");
+  return state === "VERIFYING";
+}
+
+function isExecutorRepairing(state: string | null): boolean {
+  return state === "REPAIR_APPLYING" || state === "REPAIR_APPLIED";
 }
 
 export function derivePairStage(snapshot: LifecycleSnapshot): UserStage {
   if (hasExecutorFailure(snapshot.executor_state)) return "BLOCKED";
-  if (!snapshot.registered_artifact_sha256) return "WEB_IMPLEMENTATION";
+  if (!snapshot.registered_artifact_sha256 || snapshot.executor_state === "ESCALATE_TO_WEB") return "WEB_IMPLEMENTATION";
+  if (isExecutorRepairing(snapshot.executor_state)) return "REVISION";
+  if (snapshot.executor_state === "REVIEWING_WEB" || snapshot.executor_state === "REVIEWING_TERRA" || snapshot.executor_state === "REVIEWING_SOL") return "TERRA_REVIEW";
   if (snapshot.executor_state !== "READY_FOR_PUBLISH") {
     return isExecutorVerifying(snapshot.executor_state) ? "VERIFICATION" : "EXECUTION";
   }
@@ -43,6 +47,7 @@ function checksLabel(snapshot: LifecycleSnapshot): string {
   if (snapshot.executor_state === "READY_FOR_PUBLISH") return "passed";
   if (hasExecutorFailure(snapshot.executor_state)) return "stopped safely";
   if (isExecutorVerifying(snapshot.executor_state)) return "running";
+  if (isExecutorRepairing(snapshot.executor_state)) return "will run again after fixes";
   return "not finished";
 }
 
@@ -72,6 +77,7 @@ function nextAction(stage: UserStage): string {
     case "AWAITING_HUMAN": return "review the Draft PR and merge when ready";
     case "BLOCKED":
     case "FAILED": return "use /review for evidence and /doctor for recovery guidance";
+    case "WEB_IMPLEMENTATION": return "WCO is preparing implementation authority; use /run to continue from saved progress if needed";
     case "REVISION": return "WCO is applying the requested review fixes";
     case "WEB_FINAL_REVIEW": return "WCO is waiting for the final review";
     case "TERRA_REVIEW":
