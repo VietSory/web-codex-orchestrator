@@ -36,7 +36,7 @@ test("critical semantic misses are penalized more heavily than ordinary omission
     risk_ids: ["R_DUPLICATE_RUN"],
   }, gold);
   assert.deepEqual(score.critical_misses, ["I_AUTHORITY", "R_WRONG_TASK"]);
-  assert.equal(score.critical_recall, 1 / 3);
+  assert.equal(score.critical_recall, 0.3333);
   assert.ok(score.weighted_quality < 0.5);
   assert.ok(score.missing_required.includes("I_AUTHORITY"));
   assert.ok(score.missing_required.includes("R_WRONG_TASK"));
@@ -60,7 +60,7 @@ test("unnecessary scope is visible and reduces quality without hiding correct re
     affected_component_ids: ["C_SESSION", "C_HISTORY", "C_UNRELATED"],
   }, gold);
   assert.equal(score.component_recall, 1);
-  assert.equal(score.component_precision, 2 / 3);
+  assert.equal(score.component_precision, 0.6667);
   assert.ok(score.unnecessary_selection_rate > 0);
   assert.ok(score.weighted_quality < 1);
   assert.deepEqual(score.unexpected_selected, ["C_UNRELATED"]);
