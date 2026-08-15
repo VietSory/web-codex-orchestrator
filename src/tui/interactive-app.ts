@@ -152,7 +152,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
 
   const reloadBridge = async (): Promise<void> => {
     config = await loadTrustedConfig(paths.config);
-    try { bridge = createConfiguredWebBridge(config, paths.bridge); }
+    try { bridge = createConfiguredWebBridge(config, paths.bridge, process.env, paths.state); }
     catch { bridge = null; }
   };
   await reloadBridge();

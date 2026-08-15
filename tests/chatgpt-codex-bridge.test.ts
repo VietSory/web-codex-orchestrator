@@ -7,6 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { prepareTask } from "../src/run/preparation-service.js";
+import { createConfiguredWebBridge } from "../src/web-bridge/bridge-factory.js";
 import { ChatGptCodexWebBridge } from "../src/web-bridge/chatgpt-codex-bridge.js";
 import { WEB_BRIDGE_PROTOCOL_VERSION, type WebContractEnvelope, type WebImplementationSubmission, type WebVerdictEnvelope } from "../src/web-bridge/contracts.js";
 import { materializeTaskBundle } from "../src/web-bridge/task-contract-materializer.js";
@@ -57,7 +58,7 @@ async function fixture(mode: "PAIR" | "AUTOPILOT") {
   const repo = path.join(root, "repo");
   const remote = path.join(root, "remote.git");
   const state = path.join(root, "state");
-  const bridgeDirectory = path.join(state, "bridge");
+  const bridgeDirectory = path.join(root, "bridge");
   const configPath = path.join(root, "config.json");
   await mkdir(repo);
   await run("git", ["init", "--bare", remote]);
@@ -89,7 +90,7 @@ async function fixture(mode: "PAIR" | "AUTOPILOT") {
   };
   await writeFile(configPath, JSON.stringify(config));
 
-  const bridge = new ChatGptCodexWebBridge(config, bridgeDirectory);
+  const bridge = createConfiguredWebBridge(config, bridgeDirectory, process.env, state) as ChatGptCodexWebBridge;
   const identity = await bridge.createAuthoringJob({ owner: "local-user", repository: { repository_id: "repo", base_branch: "main", base_commit: base }, user_intent: "replace app content", ttl_seconds: 86_400, orchestration_mode: mode }, `create-${mode}`);
 
   const contract: WebContractEnvelope = {
@@ -149,7 +150,7 @@ for (const mode of ["PAIR", "AUTOPILOT"] as const) {
 
     const task = await materializeTaskBundle({ envelope: item.contract, repository: item.contract.repository, config: item.config, stateDirectory: item.state });
     const prepared = await prepareTask({ archivePath: task.archive_path, stateDirectory: item.state, configPath: item.configPath });
-    const resumed = new ChatGptCodexWebBridge(item.config, item.bridgeDirectory);
+    const resumed = createConfiguredWebBridge(item.config, item.bridgeDirectory, process.env, item.state) as ChatGptCodexWebBridge;
     await resumed.bindPreparedRun(item.identity.job_id, prepared.run_id, `bind-${mode}`);
     const submission = implementationFor(item.identity.job_id, prepared.run_id, item.contract.sources);
     injectProviderFakes(resumed, { counters, implementation: submission });
@@ -158,7 +159,7 @@ for (const mode of ["PAIR", "AUTOPILOT"] as const) {
     assert.deepEqual(implementationEvent?.type === "implementation_sealed" ? implementationEvent.submission : null, submission);
     assert.equal(counters.implementation, 1);
 
-    const adopted = new ChatGptCodexWebBridge(item.config, item.bridgeDirectory);
+    const adopted = createConfiguredWebBridge(item.config, item.bridgeDirectory, process.env, item.state) as ChatGptCodexWebBridge;
     assert.equal(await adopted.waitForAuthoringEvent(item.identity.job_id, implementationEvent!.sequence), null);
     assert.deepEqual(await adopted.receiveWebImplementation(item.identity.job_id), submission);
     assert.equal(counters.implementation, 1);
@@ -170,7 +171,7 @@ for (const mode of ["PAIR", "AUTOPILOT"] as const) {
     injectProviderFakes(adopted, { counters, semanticTurns: [{ thread_id: `${mode.toLowerCase()}-review-thread`, output: providerEnvelope("web_verdict", verdict) }] });
     assert.deepEqual(await adopted.waitForVerdict(review.job_id), verdict);
     const semanticAfterVerdict = counters.semantic;
-    const finalRestart = new ChatGptCodexWebBridge(item.config, item.bridgeDirectory);
+    const finalRestart = createConfiguredWebBridge(item.config, item.bridgeDirectory, process.env, item.state) as ChatGptCodexWebBridge;
     assert.deepEqual(await finalRestart.waitForVerdict(review.job_id), verdict);
     assert.equal(counters.semantic, semanticAfterVerdict);
     assert.equal(counters.auth, 4);
@@ -195,7 +196,7 @@ test("durable provider turn budget prevents unbounded semantic repository-read l
 test("implementation auth/preflight failure does not persist an ambiguous provider reservation", async () => {
   const item = await fixture("PAIR");
   const { prepared, counters } = await sealContractAndPrepare(item, "implementation-auth-retry");
-  const resumed = new ChatGptCodexWebBridge(item.config, item.bridgeDirectory);
+  const resumed = createConfiguredWebBridge(item.config, item.bridgeDirectory, process.env, item.state) as ChatGptCodexWebBridge;
   const submission = implementationFor(item.identity.job_id, prepared.run_id, item.contract.sources);
   const target = resumed as any;
   target.ensureAuthorizedForProviderTurn = async () => { throw new Error("auth unavailable before provider boundary"); };
@@ -217,7 +218,7 @@ test("authoring provider failure after reservation is fail-closed and never repl
 });
 
 test("implementation provider failure after reservation is fail-closed and never replayed blindly", async () => {
-  const item = await fixture("PAIR"); const { prepared } = await sealContractAndPrepare(item, "implementation-provider-crash"); const resumed = new ChatGptCodexWebBridge(item.config, item.bridgeDirectory); let providerTurns = 0; const target = resumed as any;
+  const item = await fixture("PAIR"); const { prepared } = await sealContractAndPrepare(item, "implementation-provider-crash"); const resumed = createConfiguredWebBridge(item.config, item.bridgeDirectory, process.env, item.state) as ChatGptCodexWebBridge; let providerTurns = 0; const target = resumed as any;
   target.ensureAuthorizedForProviderTurn = async () => undefined;
   target.implementation = { async propose() { providerTurns += 1; throw new Error("implementation provider interrupted after reservation"); } };
   await assert.rejects(() => resumed.receiveWebImplementation(item.identity.job_id), /implementation provider interrupted after reservation/);

@@ -93,9 +93,9 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
   private semantic: ChatGptCodexSemanticClient | null = null;
   private implementation: ChatGptCodexImplementationClient | null = null;
 
-  constructor(private readonly config: TrustedConfig, bridgeDirectory: string) {
+  constructor(private readonly config: TrustedConfig, bridgeDirectory: string, stateDirectory = path.join(path.dirname(path.resolve(bridgeDirectory)), "state")) {
     this.store = new RelayFileStore(path.join(bridgeDirectory, "chatgpt-codex"));
-    this.stateDirectory = path.dirname(path.resolve(bridgeDirectory));
+    this.stateDirectory = path.resolve(stateDirectory);
     this.scratchDirectory = path.join(bridgeDirectory, "chatgpt-codex-runtime", "scratch");
     this.authorityDirectory = path.join(bridgeDirectory, "chatgpt-codex-runtime", "authority");
   }

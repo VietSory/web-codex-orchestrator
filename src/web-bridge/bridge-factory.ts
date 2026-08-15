@@ -10,14 +10,14 @@ import { ManagedAutoWebBridge } from "./managed-auto-web-bridge.js";
 import { resolveManagedWebService } from "./managed-service.js";
 import type { WebBridge } from "./web-bridge.js";
 
-export function createConfiguredWebBridge(config: TrustedConfig, bridgeDirectory: string, env: NodeJS.ProcessEnv = process.env): WebBridge {
+export function createConfiguredWebBridge(config: TrustedConfig, bridgeDirectory: string, env: NodeJS.ProcessEnv = process.env, stateDirectory = path.join(path.dirname(path.resolve(bridgeDirectory)), "state")): WebBridge {
   const credentialsDirectory = path.join(path.dirname(path.resolve(bridgeDirectory)), "credentials");
   // Zero-config normal user path. Explicit web_bridge profiles are advanced
   // compatibility overrides; absence never falls back to a manual mailbox.
   const mode = config.web_bridge?.mode ?? "chatgpt_codex";
 
   if (mode === "chatgpt_codex") {
-    return new ChatGptCodexWebBridge(config, bridgeDirectory);
+    return new ChatGptCodexWebBridge(config, bridgeDirectory, stateDirectory);
   }
   if (mode === "managed_actions") {
     const metadata = resolveManagedWebService(env);

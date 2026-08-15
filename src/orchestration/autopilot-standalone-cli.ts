@@ -81,7 +81,7 @@ async function main(): Promise<number> {
   try {
     const config = await loadTrustedConfig(parsed.configPath);
     const paths = resolveWcoPaths({ configPath: parsed.configPath, stateDirectory: parsed.stateDirectory });
-    const bridge = createConfiguredWebBridge(config, paths.bridge);
+    const bridge = createConfiguredWebBridge(config, paths.bridge, process.env, paths.state);
     const receipt = await driveAutopilotJob({
       bridge,
       runId: parsed.runId,

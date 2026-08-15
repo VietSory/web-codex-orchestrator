@@ -300,7 +300,7 @@ export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = d
     }
 
     if (!config.web_bridge) {
-      const bridge = createConfiguredWebBridge(config, paths.bridge);
+      const bridge = createConfiguredWebBridge(config, paths.bridge, process.env, paths.state);
       const status = await bridge.getConnectionStatus();
       const authorizationReady = status.connected && status.account !== CHATGPT_CODEX_AUTH_REQUIRED_ACCOUNT;
       io.write(`Mode                  local ChatGPT/Codex\nWCO authority/state   local only\nChatGPT authorization ${authorizationReady ? "ready" : "required"}\nPer-task browser      not required\nPending author task   ${status.pending_author_job ? "yes" : "none"}\nPending final review  ${status.pending_final_review ? "yes" : "none"}\n`);
@@ -308,7 +308,7 @@ export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = d
     }
     if (config.web_bridge.mode === "web_native_mcp") {
       await readNativeOpenAiCredential(paths.credentials);
-      const bridge = createConfiguredWebBridge(config, paths.bridge), status = await bridge.getConnectionStatus();
+      const bridge = createConfiguredWebBridge(config, paths.bridge, process.env, paths.state), status = await bridge.getConnectionStatus();
       io.write(`Mode                  advanced local OpenAI Secure MCP\nWCO state/mailbox     local only\nThird-party WCO host  none\nLocal WCO mailbox     ${status.connected ? "ready" : "unavailable"}\nPer-task browser      not required\nPending author task   ${status.pending_author_job ? "yes" : "none"}\nPending final review  ${status.pending_final_review ? "yes" : "none"}\n`);
       return status.connected ? 0 : 1;
     }
@@ -317,7 +317,7 @@ export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = d
       return 1;
     }
     if (config.web_bridge.mode === "managed_actions") await readManagedDeviceCredential(paths.credentials);
-    const bridge = createConfiguredWebBridge(config, paths.bridge);
+    const bridge = createConfiguredWebBridge(config, paths.bridge, process.env, paths.state);
     const status = await bridge.getConnectionStatus();
     io.write(`Mode                  ${config.web_bridge.mode === "managed_actions" ? "optional managed Web" : "advanced compatibility"}\nWCO Web service       ${status.connected ? "connected" : "offline"}\nChatGPT Web           ${status.connected ? "linked" : "not linked"}\nPer-task browser      ${config.web_bridge.mode === "managed_actions" ? "not required" : "profile dependent"}\nPending author task   ${status.pending_author_job ? "yes" : "none"}\nPending final review  ${status.pending_final_review ? "yes" : "none"}\n`);
     return status.connected ? 0 : 1;

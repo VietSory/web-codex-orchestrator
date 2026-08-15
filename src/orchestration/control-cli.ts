@@ -169,17 +169,17 @@ export function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
   }));
   const loadManagedConnection = lazyPromise(() => loadManagedService().then(async ({ config, client, service }) => {
     await client.accessToken();
-    const connection = await createConfiguredWebBridge(config, webPaths.bridge).getConnectionStatus();
+    const connection = await createConfiguredWebBridge(config, webPaths.bridge, process.env, webPaths.state).getConnectionStatus();
     return { service, connection };
   }));
   const loadLocalConnection = lazyPromise(() => loadConfig().then(async (config) => {
     if ((config.web_bridge?.mode ?? "chatgpt_codex") !== "chatgpt_codex") throw new Error("local ChatGPT/Codex mode is not configured");
-    return await createConfiguredWebBridge(config, webPaths.bridge).getConnectionStatus();
+    return await createConfiguredWebBridge(config, webPaths.bridge, process.env, webPaths.state).getConnectionStatus();
   }));
   const loadPersonalConnection = lazyPromise(() => loadConfig().then(async (config) => {
     if (config.web_bridge?.mode !== "personal_actions" && config.web_bridge?.mode !== "actions_relay") throw new Error("personal Web mode is not configured");
     await readRelayToken(webPaths.credentials);
-    return await createConfiguredWebBridge(config, webPaths.bridge).getConnectionStatus();
+    return await createConfiguredWebBridge(config, webPaths.bridge, process.env, webPaths.state).getConnectionStatus();
   }));
   const loadNativeCredential = lazyPromise(() => loadConfig().then(async (config) => {
     if (config.web_bridge?.mode !== "web_native_mcp") throw new Error("OpenAI Web-native mode is not configured");
