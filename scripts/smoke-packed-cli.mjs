@@ -18,6 +18,8 @@ function run(command, args, options = {}) {
     stdio: options.capture ? "pipe" : "inherit",
     shell: false,
     env: options.env ?? process.env,
+    ...(options.input !== undefined ? { input: options.input } : {}),
+    ...(options.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
   });
   if (result.error) throw result.error;
   if (!expectedStatuses.includes(result.status)) {
@@ -92,6 +94,35 @@ try {
   assert(/ChatGPT authorization\s+required/i.test(webStatus.stdout), "Packed web status did not fail closed on missing ChatGPT authorization.");
   assert(/Per-task browser\s+not required/i.test(webStatus.stdout), "Packed web status regressed to a per-task browser workflow.");
   assert(!/managed|MCP|relay URL|tunnel/i.test(webStatus.stdout), "Packed zero-config status leaked an advanced transport requirement.");
+
+  // Linux CI has util-linux `script`, which gives the installed packed binary a
+  // real pseudo-terminal. This proves returning-user shortcuts cross the actual
+  // TTY gate, enter the existing interactive app, render their runtime result,
+  // and honor Ctrl+D safe exit instead of merely existing as source wiring.
+  if (process.platform === "linux") {
+    const ptyEnv = { ...isolatedEnv, TERM: "xterm-256color" };
+    const continuePty = run("script", ["-qec", `${bin} --continue`, "/dev/null"], {
+      cwd: project,
+      capture: true,
+      env: ptyEnv,
+      input: "\x04",
+      timeoutMs: 10_000,
+    });
+    const continueOutput = `${continuePty.stdout ?? ""}\n${continuePty.stderr ?? ""}`;
+    assert(/no current saved task to continue/i.test(continueOutput), "Packed `wco --continue` did not enter the interactive current-task continuation path inside a PTY.");
+    assert(!/require(?:s|d) a TTY/i.test(continueOutput), "Packed `wco --continue` incorrectly rejected a real PTY.");
+
+    const resumePty = run("script", ["-qec", `${bin} --resume`, "/dev/null"], {
+      cwd: project,
+      capture: true,
+      env: ptyEnv,
+      input: "\x04",
+      timeoutMs: 10_000,
+    });
+    const resumeOutput = `${resumePty.stdout ?? ""}\n${resumePty.stderr ?? ""}`;
+    assert(/no saved tasks are available to resume/i.test(resumeOutput), "Packed `wco --resume` did not enter the interactive saved-task resume path inside a PTY.");
+    assert(!/require(?:s|d) a TTY/i.test(resumeOutput), "Packed `wco --resume` incorrectly rejected a real PTY.");
+  }
 
   console.log(`Packed CLI clean-install + zero-config first-run smoke PASS (${pkg.name}@${pkg.version}).`);
 } finally {

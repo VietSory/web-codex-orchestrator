@@ -33,7 +33,7 @@ import { createPendingFinalReview, type WebReviewPurpose } from "../web-bridge/f
 import { materializeAndSubmitWebVerdict } from "../web-bridge/verdict-materializer.js";
 import { runWebCommand } from "../web-bridge/web-cli.js";
 import type { WebBridge } from "../web-bridge/web-bridge.js";
-import { listLocalTaskHistory } from "../web-bridge/session-history.js";
+import { archiveLocalTaskHistory, listLocalTaskHistory, restoreLocalTaskHistoryFocus } from "../web-bridge/session-history.js";
 import { NativeAgentRunGuard } from "../web-bridge/native-agent-run-guard.js";
 import { readNativeOpenAiCredential } from "../web-bridge/native-openai-credential.js";
 import { startNativeTunnel, stopNativeTunnel, type NativeTunnelProcess } from "../web-bridge/native-tunnel-runtime.js";
@@ -60,7 +60,7 @@ class InteractivePauseRequested extends Error {
 }
 
 function pauseOutcome(mode: JobMode): string {
-  return `${mode} · Paused\nProgress       saved\nYour action   use /status to inspect saved progress and /run to continue; if the durable run is paused, use /resume first`;
+  return `${mode} · Paused\nProgress       saved\nYour action   use /status to inspect saved progress or /continue to continue it`;
 }
 
 function assertNotPaused(signal?: AbortSignal): void {
@@ -124,6 +124,12 @@ function historyTime(value: string): string {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
   return parsed.toISOString().replace("T", " ").replace(/\.\d{3}Z$/u, " UTC");
+}
+
+function locallyResumable(session: LocalWorkerSession): boolean {
+  return session.state === "IMPLEMENTATION_REGISTERED"
+    && session.sealed
+    && Boolean(session.run_id && session.task_archive_path && session.web_pack_path);
 }
 
 async function resultReceipt(runId: string, stateDirectory: string) {
@@ -235,7 +241,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     if (!isLocal()) return true;
     const authorized = await ensureChatGptLogin({ config, stateDirectory: paths.state });
     if (!authorized) {
-      io.write("ChatGPT authorization is not ready. Finish `wco web connect`, then start the task again. No task state was created.\n");
+      io.write("ChatGPT authorization is not ready. Finish `/auth connect`, then start the task again. No task state was created.\n");
       return false;
     }
     return true;
@@ -248,7 +254,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     if (details) io.write(`\n${details}${details.endsWith("\n") ? "" : "\n"}`);
     io.write(intent === "start"
       ? "Task was not started. Fix the failed readiness checks, then retry the goal. No task state was created.\n"
-      : "Task was not resumed. Fix the failed readiness checks, then retry /run. Saved progress is unchanged.\n");
+      : "Task was not resumed. Fix the failed readiness checks, then retry /continue. Saved progress is unchanged.\n");
     return false;
   };
   const ensureNativeTunnel = async (): Promise<void> => {
@@ -367,7 +373,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
         if (signal?.aborted) return pauseOutcome("PAIR");
         code = await runControlCommand("continue", ["--run-id", runId, "--state-dir", paths.state, "--config", paths.config, "--max-transitions", "8"], { stdout: () => undefined, stderr: () => undefined });
         if (signal?.aborted) return pauseOutcome("PAIR");
-        if (code !== 0) return "The revision stopped safely. Use /review and /doctor for details, then retry /run.";
+        if (code !== 0) return "The revision stopped safely. Use /review and /doctor for details, then retry /continue.";
         snapshot = await readLifecycleSnapshot(paths.state, runId);
         if (snapshot.web_review_state === "ESCALATED") return "PAIR · Needs your attention\nFinal review found a consequential decision that needs you. Nothing was merged.";
         if (pairSessionCanComplete(snapshot)) continue;
@@ -391,7 +397,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
       if (signal?.aborted) return pauseOutcome("PAIR");
       code = await runControlCommand("continue", ["--run-id", runId, "--state-dir", paths.state, "--config", paths.config, "--max-transitions", "8"], { stdout: () => undefined, stderr: () => undefined });
       if (signal?.aborted) return pauseOutcome("PAIR");
-      if (code !== 0) return "The workflow stopped safely. Use /review and /doctor for details, then retry /run.";
+      if (code !== 0) return "The workflow stopped safely. Use /review and /doctor for details, then retry /continue.";
     }
     return "PAIR · Needs your attention\nThe review limit was reached without a final approval. Nothing was merged.";
   };
@@ -418,7 +424,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
       return formatAutopilotOutcome(receipt, result?.pull_request?.url ?? null);
     } catch (error) {
       if (abortScope.signal.aborted) return pauseOutcome("AUTOPILOT");
-      return ["AUTOPILOT stopped safely.", error instanceof Error ? error.message : String(error), "Nothing was merged. Use /review for evidence and /doctor if a prerequisite is unavailable, then retry /run."].join("\n");
+      return ["AUTOPILOT stopped safely.", error instanceof Error ? error.message : String(error), "Nothing was merged. Use /review for evidence and /doctor if a prerequisite is unavailable, then retry /continue."].join("\n");
     } finally {
       abortScope.cleanup();
     }
@@ -427,7 +433,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
   const startAndDriveTask = async (goal: string, replaceExplicit = false, mode: JobMode = "PAIR", signal?: AbortSignal): Promise<string> => {
     try {
       assertNotPaused(signal);
-      if (!await ensureWebConnected()) return "Task was not started. Use /doctor for the next step, or /web status to inspect the selected transport.";
+      if (!await ensureWebConnected()) return "Task was not started. Use /doctor for the next step, or /auth status to inspect ChatGPT authorization.";
       assertNotPaused(signal);
       if (!bridge) throw new Error("WCO transport is not connected.");
       const selectedReviewer = await readReviewMode(paths.state);
@@ -513,16 +519,22 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     }).message;
   };
 
+  const clearPairPauseIfNeeded = async (session: LocalWorkerSession): Promise<void> => {
+    if (localWorkerJobMode(session) !== "PAIR" || !session.run_id) return;
+    const snapshot = await readLifecycleSnapshot(paths.state, session.run_id).catch(() => null);
+    if (!snapshot?.paused) return;
+    const code = await runControlCommand("resume", ["--run-id", session.run_id, "--state-dir", paths.state], { stdout: () => undefined, stderr: () => undefined });
+    if (code !== 0) throw new Error("The saved PAIR run could not be resumed safely. Use /status and /doctor for details.");
+  };
+
   const continueAfterClarificationPause = async (): Promise<string> => {
-    if (latest?.run_id) {
-      await runControlCommand("resume", ["--run-id", latest.run_id, "--state-dir", paths.state], { stdout: () => undefined, stderr: () => undefined });
-    }
+    if (latest) await clearPairPauseIfNeeded(latest);
     return await launchSavedTask();
   };
 
   const confirmTaskReplacement = async (mode: JobMode): Promise<boolean> => {
     latest = await readLocalWorkerSession(paths.state, repositoryId);
-    if (!latest || latest.state === "COMPLETED" || latest.state === "BLOCKED") return true;
+    if (!latest || latest.state === "COMPLETED") return true;
     const answer = (await io.question([
       "The current task is still saved:",
       `\"${latest.goal}\"`,
@@ -541,6 +553,87 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
       seen.add(item.session_id);
       return true;
     }).slice(0, 10);
+  };
+
+  const resumeHistoryItem = async (item: LocalWorkerSession, index: number): Promise<string> => {
+    latest = await readLocalWorkerSession(paths.state, repositoryId);
+    if (latest?.session_id === item.session_id) {
+      if (item.state === "COMPLETED") return `History #${index} is already complete. Start a new follow-up goal instead of reopening completed authority.`;
+      if (item.state === "BLOCKED") return `History #${index} is the current task and needs your attention. Use /status, /review, and /doctor; use /resume only to intentionally choose a different saved task.`;
+      await clearPairPauseIfNeeded(item);
+      return await launchSavedTask();
+    }
+    if (item.state === "COMPLETED") return `History #${index} is already complete. Start a new follow-up goal so it receives a new task/run identity.`;
+    if (!locallyResumable(item)) return `History #${index} is saved for reference but did not reach a locally re-attestable implementation checkpoint. Start a new follow-up goal instead.`;
+
+    if (latest && latest.state !== "COMPLETED") {
+      const answer = (await io.question([
+        "The current task is still saved:",
+        `\"${latest.goal}\"`,
+        "",
+        `Switch current focus to history #${index} \"${item.goal}\"? [y/N] `,
+      ].join("\n"))).trim();
+      if (!/^y(es)?$/i.test(answer)) return "Current task kept in focus. Nothing changed.";
+    }
+
+    try {
+      if (latest) await archiveLocalTaskHistory(paths.state, latest);
+      latest = await restoreLocalTaskHistoryFocus(paths.state, repositoryId, item);
+      await clearPairPauseIfNeeded(latest);
+    } catch (error) {
+      return `History #${index} could not be resumed safely. ${error instanceof Error ? error.message : String(error)}\nCurrent durable runs were not modified.`;
+    }
+    const started = await launchSavedTask();
+    return `Resuming history #${index}\nGoal          ${latest.goal}\n${started}`;
+  };
+
+  const continueBestTask = async (): Promise<string> => {
+    latest = await readLocalWorkerSession(paths.state, repositoryId);
+    if (latest?.state === "BLOCKED") {
+      return "The current task needs your attention before WCO can continue it. Use /status and /review for the exact evidence, then /doctor for recovery guidance. Use /resume only if you intentionally want to switch to a different saved task.";
+    }
+    if (latest?.state === "COMPLETED") {
+      return "The current task is complete. Type a new follow-up goal for more work, or use /resume if you intentionally want to choose a different saved task.";
+    }
+    if (latest) {
+      await clearPairPauseIfNeeded(latest);
+      return await launchSavedTask();
+    }
+    return "There is no current saved task to continue. Type a new goal, or use /resume to intentionally choose a saved task.";
+  };
+
+  const currentTaskIsPaused = async (): Promise<boolean> => {
+    if (!latest?.run_id || latest.state === "COMPLETED") return false;
+    if (localWorkerJobMode(latest) === "PAIR") return Boolean((await readLifecycleSnapshot(paths.state, latest.run_id).catch(() => null))?.paused);
+    return (await readAutopilotReceipt(paths.state, latest.run_id).catch(() => null))?.status === "PAUSED";
+  };
+
+  const resumeFromHistory = async (args: string): Promise<string> => {
+    latest = await readLocalWorkerSession(paths.state, repositoryId);
+    if (!args && await currentTaskIsPaused()) {
+      if (latest) await clearPairPauseIfNeeded(latest);
+      return await launchSavedTask();
+    }
+    const entries = await recentTaskHistory();
+    if (entries.length === 0) return "No saved tasks are available to resume.";
+    let selected: number;
+    if (args) {
+      if (!/^\d+$/u.test(args)) return "Usage: /resume <history-number>";
+      selected = Number(args);
+    } else {
+      const options = entries.map((item, index) => {
+        const current = latest?.session_id === item.session_id ? " · current" : "";
+        const state = item.state === "COMPLETED" ? "complete" : locallyResumable(item) ? "resumable" : "reference only";
+        return `${index + 1}. ${item.goal}\n   ${localWorkerJobMode(item)} · ${state}${current}`;
+      }).join("\n");
+      const answer = (await io.question(`Saved tasks\n${options}\n\nResume which task? [number, Enter to cancel] `)).trim();
+      if (!answer) return "Resume cancelled. Current task focus is unchanged.";
+      if (!/^\d+$/u.test(answer)) return "Resume cancelled. Enter a history number from the list.";
+      selected = Number(answer);
+    }
+    const item = entries[selected - 1];
+    if (!item) return `History item ${selected} is not available. Use /history to see the current list.`;
+    return await resumeHistoryItem(item, selected);
   };
 
   const displayUserStatus = async (session: LocalWorkerSession | null): Promise<string> => {
@@ -584,7 +677,12 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
             ? await displayUserStatus(latest)
             : await displayUserStatus(null);
         const worker = background ? `\nWorker       ${background.pause_requested ? "pause requested · finishing current safe step" : "running · /status /review /pause stay available"}` : "";
-        return { active, sealed: latest?.sealed ?? false, summary: `WCO · ${repositoryId}\nRepository   ${detected.base_branch}@${detected.base_commit.slice(0, 7)}\nStatus       ${status}${visibleGoal ? `\nTask         ${visibleGoal}` : ""}${worker}` };
+        return {
+          active,
+          sealed: latest?.sealed ?? false,
+          summary: `WCO · ${repositoryId}\nRepository   ${detected.base_branch}@${detected.base_commit.slice(0, 7)}\nStatus       ${status}${visibleGoal ? `\nTask         ${visibleGoal}` : ""}${worker}`,
+          availableCommands: background ? [...LIVE_BACKGROUND_COMMANDS] : undefined,
+        };
       },
       newTask: async (goal) => await launchNewTask(goal, false, "PAIR"),
       clarify: async (value) => {
@@ -624,7 +722,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
         if (command === "/pause" && background) return { message: await taskSlot.requestPause() };
         if (background && !LIVE_BACKGROUND_COMMANDS.has(command)) return { message: `${background.mode} is running in the background. To avoid concurrent mutation, only /status, /review, /task, /history, /pause, /help, and /quit are available until it stops.` };
 
-        if (command === "/help") return { message: commandPalette() };
+        if (command === "/help") return { message: commandPalette(background ? LIVE_BACKGROUND_COMMANDS : undefined) };
         if (command === "/new") {
           if (!args) return { message: "Usage: /new <goal>" };
           if (!await confirmTaskReplacement("PAIR")) return { message: "Current task kept in focus. Nothing changed." };
@@ -676,14 +774,13 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
                   ? "None — WCO is finishing the current safe step"
                   : background
                     ? "None — WCO is continuing the task"
-                    : "use /run to continue saved progress";
+                    : "use /continue to continue saved progress";
             return { message: `${status}\nGoal          ${latest.goal}\nPlan          ${latest.sealed ? "locked" : "being refined"}${background ? `\nWorker        ${background.pause_requested ? "pause requested" : "running"}` : ""}\nYour action   ${action}` };
           }
-          if (!latest.run_id) return { message: `PAIR · ${await displayUserStatus(latest)}\nGoal          ${latest.goal}\nPlan          ${latest.sealed ? "locked" : "being refined"}\nYour action   ${background?.pause_requested ? "None — WCO is finishing the current safe step" : background ? "None — WCO is preparing the task; you can still add details before the plan locks" : "use /run to continue saved preparation"}` };
+          if (!latest.run_id) return { message: `PAIR · ${await displayUserStatus(latest)}\nGoal          ${latest.goal}\nPlan          ${latest.sealed ? "locked" : "being refined"}\nYour action   ${background?.pause_requested ? "None — WCO is finishing the current safe step" : background ? "None — WCO is preparing the task; you can still add details before the plan locks" : "use /continue to continue saved preparation"}` };
           try {
             const [snapshot, result] = await Promise.all([readLifecycleSnapshot(paths.state, latest.run_id), resultReceipt(latest.run_id, paths.state)]);
-            const status = formatPairStatus({ goal: latest.goal, planLocked: latest.sealed, snapshot, draftPrUrl: result?.pull_request?.url ?? null });
-            return { message: background?.pause_requested ? `${status}\nWorker        pause requested · finishing current safe step` : status };
+            return { message: formatPairStatus({ goal: latest.goal, planLocked: latest.sealed, snapshot, draftPrUrl: result?.pull_request?.url ?? null }) };
           } catch {
             if (background) return { message: `PAIR · Updating\nGoal          ${latest.goal}\nWorker        ${background.pause_requested ? "pause requested · finishing current safe step" : "running"}\nYour action   None — state is being committed; run /status again in a moment` };
             return { message: `PAIR · Needs your attention\nGoal          ${latest.goal}\nYour action   use /review for evidence and /doctor for recovery guidance` };
@@ -697,13 +794,13 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
             throw error;
           }
         }
-        if (command === "/pause" || command === "/resume") {
-          if (!latest?.run_id) return { message: command === "/pause" ? "This task has not reached a durable run step yet. If it is actively preparing, the live /pause command will stop it at the next safe boundary." : "This task has not reached a resumable run step yet. Use /run to continue saved preparation." };
-          const code = await runControlCommand(command.slice(1), ["--run-id", latest.run_id, "--state-dir", paths.state], { stdout: () => undefined, stderr: () => undefined });
-          if (code === 0) return { message: command === "/pause" ? "Paused safely. Progress is saved." : "Resumed. Use /run to continue the task." };
-          return { message: `${command === "/pause" ? "Pause" : "Resume"} could not be completed. Use /status and /doctor for details.` };
+        if (command === "/pause") {
+          if (!latest?.run_id) return { message: "This task has not reached a durable run step yet. If it is actively preparing, the live /pause command will stop it at the next safe boundary." };
+          const code = await runControlCommand("pause", ["--run-id", latest.run_id, "--state-dir", paths.state], { stdout: () => undefined, stderr: () => undefined });
+          return { message: code === 0 ? "Paused safely. Progress is saved. Use /continue when you want to continue." : "Pause could not be completed. Use /status and /doctor for details." };
         }
-        if (command === "/run") return { message: await launchSavedTask() };
+        if (command === "/continue" || command === "/run") return { message: await continueBestTask() };
+        if (command === "/resume") return { message: await resumeFromHistory(args) };
         if (command === "/uninstall") {
           const answer = (await io.question("Remove WCO-owned local data and uninstall WCO? Your repositories, branches, and PRs will be preserved. [y/N] ")).trim();
           if (!/^y(es)?$/i.test(answer)) return { message: "Uninstall cancelled." };
@@ -717,7 +814,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
           const entries = await recentTaskHistory();
           if (entries.length === 0) return { message: "No task history for this repository." };
           if (!args) {
-            return { message: `${entries.map((item, index) => `${index + 1}. ${item.goal}\n   ${formatUserStage(deriveUserStage(item))} · ${localWorkerJobMode(item)} · ${historyTime(item.updated_at)}`).join("\n")}\n\nUse /history <number> for details.` };
+            return { message: `${entries.map((item, index) => `${index + 1}. ${item.goal}\n   ${formatUserStage(deriveUserStage(item))} · ${localWorkerJobMode(item)} · ${historyTime(item.updated_at)}`).join("\n")}\n\nUse /history <number> for details · /resume opens the saved-task picker.` };
           }
           if (!/^\d+$/u.test(args)) return { message: "Usage: /history <number>" };
           const selectedIndex = Number(args) - 1;
@@ -726,8 +823,12 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
           const result = item.run_id ? await resultReceipt(item.run_id, paths.state).catch(() => null) : null;
           const isCurrent = latest?.session_id === item.session_id;
           const action = isCurrent
-            ? taskSlot.isActive() ? "None — WCO is working on this task; use /status for live progress" : item.state === "COMPLETED" ? "None — this task is complete" : "use /status for current progress or /run to continue saved progress"
-            : item.state === "COMPLETED" ? "None — this task is complete" : "None — this is saved history; current task focus is unchanged";
+            ? taskSlot.isActive() ? "None — WCO is working on this task; use /status for live progress" : item.state === "COMPLETED" ? "None — this task is complete" : item.state === "BLOCKED" ? "use /status, /review, and /doctor for this blocked task" : "use /continue to continue saved progress"
+            : item.state === "COMPLETED"
+              ? "None — this task is complete; start a new follow-up goal for more work"
+              : locallyResumable(item)
+                ? `use /resume ${selectedIndex + 1} to safely return to this task`
+                : "this entry is reference-only because no locally re-attestable implementation checkpoint is available";
           return { message: [
             `History #${selectedIndex + 1}`,
             `Goal          ${item.goal}`,
@@ -740,6 +841,13 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
           ].join("\n") };
         }
         return { message: `Unknown command '${command}'. Type / to see available commands.` };
+      },
+      interruptRequest: async () => {
+        if (!taskSlot.isActive()) return { message: "Input cancelled. WCO is still open." };
+        const interrupted = await taskSlot.pauseAndWait();
+        return interrupted.safe_to_exit
+          ? { message: `${interrupted.message}\nProgress is saved. WCO is still open; use /continue when ready.` }
+          : { message: `${interrupted.message}\nWCO is still open and the task keeps its current owner because a safe interrupt could not be confirmed.` };
       },
       exitRequest: async () => {
         if (!taskSlot.isActive()) return { message: "Goodbye.", quit: true };

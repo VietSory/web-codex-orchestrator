@@ -26,6 +26,7 @@ import { runReviseCli, runRevisionStatusCli } from "../revision/revision-cli.js"
 import { runControlCommand } from "../orchestration/control-cli.js";
 import { formatTaskPreview, previewTaskBundle } from "../preview/task-preview.js";
 import { runInteractiveApp } from "../tui/interactive-app.js";
+import { terminalIo, type InteractiveIo } from "../tui/session.js";
 import { runSetupCommand } from "../setup/setup-cli.js";
 import { resolveWcoPaths } from "../setup/default-paths.js";
 import { runWebCommand } from "../web-bridge/web-cli.js";
@@ -405,8 +406,59 @@ async function runExecutionStatus(args: string[]): Promise<void> {
   } catch (error) { const code = isExecutionError(error) ? error.code : "OPERATIONAL_ERROR"; const message = redact(error instanceof Error ? error.message : String(error)); if (parsed.json) process.stdout.write(`${JSON.stringify({ status: "FAILED", error: { code, message } })}\n`); else process.stderr.write(`${code}: ${message}\n`); process.exitCode = 3; }
 }
 
+function startupInteractiveIo(startupCommand: string): InteractiveIo {
+  const io = terminalIo();
+  let pending = true;
+  return {
+    ...io,
+    composer: async (prompt, options) => {
+      if (pending) {
+        pending = false;
+        return startupCommand;
+      }
+      return io.composer ? await io.composer(prompt, options) : await io.question(prompt);
+    },
+  };
+}
+
+async function runInteractiveShortcut(first: string, args: string[]): Promise<boolean> {
+  if (first === "--continue") {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      process.stderr.write("Interactive WCO shortcuts require a TTY. Run `wco` inside a terminal.\n");
+      process.exitCode = 2;
+      return true;
+    }
+    if (args.length !== 1) {
+      process.stderr.write("Usage: wco --continue\n");
+      process.exitCode = 2;
+      return true;
+    }
+    process.exitCode = await runInteractiveApp(startupInteractiveIo("/continue"));
+    return true;
+  }
+  if (first === "--resume") {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      process.stderr.write("Interactive WCO shortcuts require a TTY. Run `wco` inside a terminal.\n");
+      process.exitCode = 2;
+      return true;
+    }
+    if (args.length > 2 || args[1] !== undefined && !/^\d+$/u.test(args[1])) {
+      process.stderr.write("Usage: wco --resume [history-number]\n");
+      process.exitCode = 2;
+      return true;
+    }
+    const startupCommand = args[1] ? `/resume ${args[1]}` : "/resume";
+    process.exitCode = await runInteractiveApp(startupInteractiveIo(startupCommand));
+    return true;
+  }
+  return false;
+}
+
 async function main(): Promise<void> {
-  const [, , command, ...args] = process.argv;
+  const cliArgs = process.argv.slice(2);
+  const first = cliArgs[0];
+  if (first !== undefined && await runInteractiveShortcut(first, cliArgs)) return;
+  const [command, ...args] = cliArgs;
   if (command === undefined) {
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
       process.stderr.write("Interactive WCO requires a TTY. Use an explicit command such as `wco setup --yes`, `wco run ...`, or `wco --help`.\n");
