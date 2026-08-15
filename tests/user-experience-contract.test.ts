@@ -31,7 +31,7 @@ test("authoritative docs freeze local one-authorization prompt-only workflow", a
     text("docs/web-bridge.md"),
   ]);
 
-  assert.match(readme, /npm install -g web-codex-orchestrator/);
+  assert.match(readme, /npm install -g \.\/web-codex-orchestrator-[^\s`]+\.tgz/);
   for (const source of [contract, bridge]) {
     assert.match(source, /local ChatGPT\/Codex/i);
     assert.match(source, /no `web_bridge` field|no `web_bridge`/i);
