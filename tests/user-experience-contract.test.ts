@@ -53,17 +53,44 @@ test("the first normal goal may trigger official ChatGPT authorization without a
   assert.match(bridge, /before durable task creation/i);
 });
 
-test("local background execution completes authorization before the prompt can own raw stdin", async () => {
+test("local background execution completes authorization and readiness before task ownership", async () => {
   const [interactive, login] = await Promise.all([
     text("src/tui/interactive-app.ts"),
     text("src/runtime/chatgpt-login.ts"),
   ]);
   const launchStart = interactive.indexOf("const launchNewTask");
-  const taskStart = interactive.indexOf("taskSlot.start", launchStart);
   const authStart = interactive.indexOf("ensureLocalBackgroundAuthorization", launchStart);
-  assert.ok(launchStart >= 0 && authStart > launchStart && taskStart > authStart);
+  const readinessStart = interactive.indexOf("ensureTaskReadiness", authStart);
+  const taskStart = interactive.indexOf("taskSlot.start", readinessStart);
+  assert.ok(launchStart >= 0 && authStart > launchStart && readinessStart > authStart && taskStart > readinessStart);
+  assert.match(interactive.slice(launchStart, taskStart), /ensureTaskReadiness\(mode, "start"\)/);
   assert.match(login, /input\.isRaw !== true/);
   assert.match(login, /two terminal readers|raw-mode parent TUI/i);
+});
+
+test("PAIR clarification preserves single-owner execution by pausing before durable clarification", async () => {
+  const interactive = await text("src/tui/interactive-app.ts");
+  const clarifyStart = interactive.indexOf("clarify: async (value)");
+  const clarifyEnd = interactive.indexOf("command: async", clarifyStart);
+  const clarifyBlock = interactive.slice(clarifyStart, clarifyEnd);
+  const pauseIndex = clarifyBlock.indexOf("taskSlot.pauseAndWait()");
+  const rereadIndex = clarifyBlock.indexOf("readLocalWorkerSession", pauseIndex);
+  const appendIndex = clarifyBlock.indexOf("appendLocalClarification", rereadIndex);
+  const resumeIndex = clarifyBlock.indexOf("continueAfterClarificationPause", appendIndex);
+  assert.ok(clarifyStart >= 0 && clarifyEnd > clarifyStart);
+  assert.ok(pauseIndex >= 0 && rereadIndex > pauseIndex && appendIndex > rereadIndex && resumeIndex > appendIndex);
+  assert.match(clarifyBlock, /if \(latest\.sealed\)/);
+  assert.match(clarifyBlock, /The plan locked before that detail could be added/);
+});
+
+test("explicit task replacement asks before changing current focus", async () => {
+  const interactive = await text("src/tui/interactive-app.ts");
+  assert.match(interactive, /const confirmTaskReplacement = async/);
+  assert.match(interactive, /move it out of current focus but keep its durable history/);
+  const newStart = interactive.indexOf('if (command === "/new")');
+  const autoStart = interactive.indexOf('if (command === "/auto")', newStart);
+  assert.match(interactive.slice(newStart, autoStart), /confirmTaskReplacement\("PAIR"\)/);
+  assert.match(interactive.slice(autoStart), /confirmTaskReplacement\("AUTOPILOT"\)/);
 });
 
 test("PAIR status and review stay read-only while presenting durable lifecycle evidence", async () => {
@@ -81,6 +108,27 @@ test("PAIR status and review stay read-only while presenting durable lifecycle e
   const reviewBlock = interactive.slice(reviewStart, durablePauseStart);
   assert.match(reviewBlock, /reviewSummary/);
   assert.doesNotMatch(reviewBlock, /runControlCommand|startAndDriveTask|drivePairHarnessToCodeReview|driveAutopilotJob/);
+});
+
+test("normal status presenters always expose the user's required action", async () => {
+  const [pair, autopilot] = await Promise.all([
+    text("src/tui/pair-presenter.ts"),
+    text("src/tui/autopilot-presenter.ts"),
+  ]);
+  assert.match(pair, /Your action/);
+  assert.match(pair, /None — WCO is applying the requested review fixes/);
+  assert.match(autopilot, /Your action/);
+  assert.match(autopilot, /review the Draft PR and merge when ready/);
+});
+
+test("history details are inspectable without becoming mutation authority", async () => {
+  const interactive = await text("src/tui/interactive-app.ts");
+  const historyStart = interactive.indexOf('if (command === "/history")');
+  const historyBlock = interactive.slice(historyStart);
+  assert.match(historyBlock, /Use \/history <number> for details/);
+  assert.match(historyBlock, /History #/);
+  assert.match(historyBlock, /current task focus is unchanged/);
+  assert.doesNotMatch(historyBlock, /startLocalAuthoring|drivePairHarnessToCodeReview|driveAutopilotJob/);
 });
 
 test("background execution remains single-owner and exposes only read/control commands", async () => {

@@ -66,7 +66,7 @@ export async function runSetupCommand(args: string[], cwd = process.cwd(), suppl
     } finally { owned?.close(); }
   }
   try {
-    suppliedIo.write("Checking this Git repository and local WCO prerequisites…\n");
+    suppliedIo.write("Checking this Git repository and initial WCO setup…\n");
     const result = await performFirstRunSetup({ cwd, ...(configPath ? { configPath } : {}), ...(stateDirectory ? { stateDirectory } : {}), overwrite });
     const checks: Array<["ok" | "warn", string, string]> = [["ok", "Git repository", result.repository.github_repository ?? result.repository.root]];
     let codex = "authorization pending";
@@ -80,11 +80,11 @@ export async function runSetupCommand(args: string[], cwd = process.cwd(), suppl
     checks.push([explicitMode ? "warn" : "ok", "Transport", transport]);
     suppliedIo.write(`\nWeb Codex Orchestrator v0.3 setup\n\n${checks.map(([severity, label, value]) => `${severity === "ok" ? "✓" : "!"} ${label.padEnd(16)} ${value}`).join("\n")}\n`);
     if (codex === "authorization pending" && !explicitMode) {
-      suppliedIo.write("\nSetup is complete. On the first interactive `wco` run, the official Codex sign-in will request ChatGPT authorization if needed. No API key, relay, tunnel, domain, or cloud setup is required.\n");
+      suppliedIo.write("\nSetup is complete. On the first interactive `wco` run, the official Codex sign-in will request ChatGPT authorization if needed. No API key, relay, tunnel, domain, or cloud setup is required. WCO performs the full mode readiness check before starting a task.\n");
     } else if (!explicitMode) {
-      suppliedIo.write("\nSetup is complete. Daily use is simply `wco` and a goal.\n");
+      suppliedIo.write("\nSetup is complete. Daily use is simply `wco` and a goal. WCO performs the full mode readiness check before starting a task.\n");
     }
-    if (github === "gh missing or not authenticated") suppliedIo.write("GitHub needs attention before WCO can publish a Draft PR. Install GitHub CLI (`gh`) if it is missing, then run `gh auth login` and `wco doctor`.\n");
+    if (github === "gh missing or not authenticated") suppliedIo.write("GitHub needs attention before WCO can publish a Draft PR. Install GitHub CLI (`gh`) if it is missing, then run `gh auth login` and `wco doctor`. WCO will not start normal task execution until required readiness checks pass.\n");
     return 0;
   } catch (error) {
     suppliedIo.error(`${friendlySetupError(error)}\nYour project files and remote repository were not changed by setup.\n`);

@@ -28,10 +28,27 @@ export function formatAutopilotOutcome(receipt: AutopilotJobReceipt, draftPrUrl:
       "Checks        passed",
       "Code review   approved",
       "Final review  approved",
-      "Next          review the Draft PR and merge when ready",
+      "Your action   review the Draft PR and merge when ready",
     ].join("\n");
   }
-  if (receipt.status === "PAUSED") return ["AUTOPILOT · Paused", "Progress is saved. Use /run to continue."].join("\n");
-  if (receipt.status === "NEEDS_YOU") return ["AUTOPILOT · Needs your attention", receipt.reason ?? "WCO stopped at a decision or issue that needs you.", "Nothing was merged. Use /status and /review for details; use /doctor if something is unavailable."].join("\n");
-  return [formatAutopilotStatus(receipt), receipt.reason ?? "WCO stopped before the task was ready for you.", "Use /run to continue from saved progress."].join("\n");
+  if (receipt.status === "PAUSED") {
+    return [
+      "AUTOPILOT · Paused",
+      "Progress      saved",
+      "Your action   use /run to continue saved progress",
+    ].join("\n");
+  }
+  if (receipt.status === "NEEDS_YOU") {
+    return [
+      "AUTOPILOT · Needs your attention",
+      `Reason        ${receipt.reason ?? "WCO stopped at a decision or issue that needs you."}`,
+      "Nothing was merged.",
+      "Your action   use /status and /review for details; use /doctor if a prerequisite is unavailable",
+    ].join("\n");
+  }
+  return [
+    formatAutopilotStatus(receipt),
+    `Reason        ${receipt.reason ?? "WCO stopped before the task was ready for you."}`,
+    "Your action   use /run to continue from saved progress",
+  ].join("\n");
 }

@@ -21,6 +21,7 @@ function isExecutorRepairing(state: string | null): boolean {
 }
 
 export function derivePairStage(snapshot: LifecycleSnapshot): UserStage {
+  if (snapshot.paused === true) return "PAUSED";
   if (hasExecutorFailure(snapshot.executor_state)) return "BLOCKED";
   if (!snapshot.registered_artifact_sha256 || snapshot.executor_state === "ESCALATE_TO_WEB") return "WEB_IMPLEMENTATION";
   if (isExecutorRepairing(snapshot.executor_state)) return "REVISION";
@@ -72,17 +73,23 @@ function finalReviewLabel(snapshot: LifecycleSnapshot): string {
   return "in progress";
 }
 
-function nextAction(stage: UserStage): string {
+function userAction(stage: UserStage): string {
   switch (stage) {
     case "AWAITING_HUMAN": return "review the Draft PR and merge when ready";
     case "BLOCKED":
     case "FAILED": return "use /review for evidence and /doctor for recovery guidance";
-    case "WEB_IMPLEMENTATION": return "WCO is preparing implementation authority; use /run to continue from saved progress if needed";
-    case "REVISION": return "WCO is applying the requested review fixes";
-    case "WEB_FINAL_REVIEW": return "WCO is waiting for the final review";
+    case "WEB_IMPLEMENTATION": return "None — WCO is preparing the implementation";
+    case "REVISION": return "None — WCO is applying the requested review fixes";
+    case "WEB_FINAL_REVIEW": return "None — WCO is waiting for the final review";
     case "TERRA_REVIEW":
-    case "SOL_REVIEW": return "WCO is reviewing the exact change";
-    default: return "WCO can continue from saved progress with /run if it is not already running";
+    case "SOL_REVIEW": return "None — WCO is reviewing the exact change";
+    case "EXECUTION": return "None — WCO is implementing the task";
+    case "VERIFICATION": return "None — WCO is running checks";
+    case "PUBLISHING":
+    case "DRAFT_PR":
+    case "RESULT_BUNDLE": return "None — WCO is preparing the reviewed Draft PR";
+    case "PAUSED": return "use /resume, then /run to continue saved progress";
+    default: return "use /run if WCO is not already working";
   }
 }
 
@@ -96,7 +103,7 @@ export function formatPairStatus(view: PairStatusView): string {
     `Code review   ${codeReviewLabel(view.snapshot)}`,
     `Draft PR      ${draftPrLabel(view.snapshot, view.draftPrUrl)}`,
     `Final review  ${finalReviewLabel(view.snapshot)}`,
-    `Next          ${nextAction(stage)}`,
+    `Your action   ${userAction(stage)}`,
   ].join("\n");
 }
 
@@ -115,6 +122,6 @@ export function formatPairReview(options: {
     `Final review  ${finalReviewLabel(options.snapshot)}`,
     `Git result    ${options.gitVerified ? "verified" : "not ready"}`,
     `Draft PR      ${draftPrLabel(options.snapshot, options.draftPrUrl)}`,
-    `Next          ${nextAction(stage)}`,
+    `Your action   ${userAction(stage)}`,
   ].join("\n");
 }

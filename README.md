@@ -179,10 +179,16 @@ WCO does not ask a normal user to copy or enter:
 - an MCP connector
 - a custom domain
 
-If the ChatGPT session later expires or is revoked, reconnect with:
+If the ChatGPT session later expires or is revoked, reconnect from the shell with:
 
 ```bash
 wco web connect
+```
+
+Or, from inside the interactive WCO session, use:
+
+```text
+/auth connect
 ```
 
 ## 6. Give WCO a goal
@@ -203,14 +209,16 @@ Or start AUTOPILOT:
 
 ### PAIR vs AUTOPILOT
 
-| Mode | Start | Behavior |
+| Mode | Start | Use it when |
 | --- | --- | --- |
-| **PAIR** | plain goal or `/new <goal>` | Interactive/default workflow for working with WCO on a task. |
-| **AUTOPILOT** | `/auto <goal>` | Continues through bounded implementation, verification, review, and repair policy without routine intervention. |
+| **PAIR** | plain goal or `/new <goal>` | You want to collaborate while WCO is still understanding the task. You can type extra details until the plan locks; WCO pauses the same background owner safely, adds the clarification, and continues the same task. |
+| **AUTOPILOT** | `/auto <goal>` | The goal is already clear and you want WCO to continue end-to-end unless a real decision needs you. |
 
 Both modes preserve local mutation authority, deterministic verification, recovery, and the human-only merge/release boundary.
 
 Neither mode automatically merges or releases your code.
+
+While a local task is running, the interactive prompt remains available for safe read/control commands such as `/status`, `/review`, and `/pause`. Status and review output explicitly show **Your action**. If WCO owns the next step, the action is `None — WCO ...`; if WCO needs a decision or the final merge, it tells you exactly what to do.
 
 ## What WCO does with a goal
 
@@ -264,35 +272,40 @@ wco
 
 Then give WCO a goal.
 
+Before a local task starts or resumes, WCO uses its existing mode-aware readiness checks so required local prerequisites are caught before normal task execution begins.
+
 You should not need to reinstall WCO, reconfigure a relay, or perform browser interaction for every task.
 
 ## Commands
 
-Inside the interactive WCO CLI:
+Inside the interactive WCO CLI, the normal command-discovery surface is intentionally small:
 
 ```text
-/new <goal>             start a PAIR task
-/auto <goal>            start an AUTOPILOT task
-/mode                    show AUTOPILOT reviewer preference
-/status                  show current progress
-/task                    show current goal/contract state
-/run                     continue the active workflow
-/web status              show local ChatGPT/Codex readiness
-/web connect             authorize or re-authorize ChatGPT
-/web open                no-op in the normal local mode
-/review                  show verification/review/result evidence
-/pause                   stop before the next safe transition
-/resume                  clear an explicit pause
-/history                 show bounded local task history
-/config                  show user-facing settings
-/doctor                  show prerequisite diagnostics
+/new <goal>             start a collaborative PAIR task
+/auto <goal>            start an end-to-end AUTOPILOT task
+/status                  show current progress and Your action
+/task                    show current goal and plan state
+/run                     continue the current saved task
+/auth status             show ChatGPT authorization status
+/auth connect            authorize or re-authorize ChatGPT
+/review                  show verification/review/Draft-PR evidence
+/pause                   pause before the next safe step
+/resume                  resume a durable paused run
+/history                 show recent task history
+/history <number>        inspect one history item read-only
+/doctor                  check readiness for the current mode
 /uninstall               remove WCO-owned local resources
+/help                    show normal workflow commands
 /quit                    exit safely
 ```
 
-Advanced compatibility profiles are explicit opt-ins only:
+Starting `/new` or `/auto` while an unfinished task is still in current focus asks for confirmation first. The previous durable history is preserved; history inspection does not create a new mutation/resume authority path.
+
+Advanced/compatibility commands remain accepted for power users and existing integrations but are intentionally hidden from the normal slash palette. The existing shell compatibility surface is unchanged, including:
 
 ```text
+wco web status
+wco web connect
 wco web connect --native
 wco web connect --managed
 wco web setup --personal
@@ -365,13 +378,19 @@ WCO requires Node.js 22 or newer.
 
 ### ChatGPT authorization expired
 
-Run:
+From the shell, run:
 
 ```bash
 wco web connect
 ```
 
-This repeats the official sign-in flow. WCO does not switch to an API-key or hosted-relay fallback.
+Or inside WCO:
+
+```text
+/auth connect
+```
+
+This repeats the same official sign-in flow. WCO does not switch to an API-key or hosted-relay fallback.
 
 ### Not sure whether WCO is ready
 
@@ -379,7 +398,7 @@ Inside WCO, use:
 
 ```text
 /doctor
-/web status
+/auth status
 /status
 ```
 
