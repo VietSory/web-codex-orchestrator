@@ -8,6 +8,7 @@ import type { TrustedConfig } from "../config/contracts.js";
 import type { JobMode } from "../orchestration/job-mode.js";
 import { atomicWriteJson } from "../run/run-store.js";
 import { prepareTask } from "../run/preparation-service.js";
+import { persistSemanticShadowObservation } from "../semantic/shadow-observer.js";
 import { contentDigest, parseWebContractEnvelope, WebBridgeError, type RepositoryBinding, type WebContractEnvelope } from "./contracts.js";
 import type { WebBridge } from "./web-bridge.js";
 import { ExactRepositoryReadService } from "./repo-read-service.js";
@@ -209,6 +210,20 @@ export async function advanceLocalWorker(options: {
     if (event.type === "repository_command") {
       const result = await reader.execute(session.job_id, event.request_id, event.command);
       await options.bridge.submitRepositoryCommandResult(session.job_id, { request_id: event.request_id, result }, `repo-result-${event.request_id}`);
+      try {
+        await persistSemanticShadowObservation({
+          stateDirectory: options.stateDirectory,
+          sessionId: session.session_id,
+          repository: session.repository,
+          eventSequence: event.sequence,
+          requestId: event.request_id,
+          command: event.command,
+          result,
+        });
+      } catch {
+        // Shadow evidence is deliberately non-authoritative: observation failure
+        // must never suppress an exact repository result already delivered to Web.
+      }
     } else if (event.type === "contract_sealed") {
       if (event.envelope.job_id !== session.job_id || event.envelope.user_intent !== session.goal || contentDigest(event.envelope.repository) !== contentDigest(session.repository)) throw new WebBridgeError("WEB_CONTRACT_BINDING_MISMATCH", "Sealed Web contract does not bind the original authoring job, user intent, and exact repository.");
       const materialized = await materializeTaskBundle({ envelope: event.envelope, repository: session.repository, config: options.config, stateDirectory: options.stateDirectory });
