@@ -20,9 +20,13 @@ export interface SemanticUnderstandingScore {
   component_recall: number;
   component_precision: number;
   invariant_recall: number;
+  invariant_precision: number;
   risk_recall: number;
+  risk_precision: number;
   unknown_recall: number;
+  unknown_precision: number;
   rejected_assumption_recall: number;
+  rejected_assumption_precision: number;
   critical_recall: number;
   unnecessary_selection_rate: number;
   weighted_quality: number;
@@ -66,6 +70,13 @@ function precision(selected: readonly string[], required: readonly string[]): nu
   if (selected.length === 0) return required.length === 0 ? 1 : 0;
   const truth = new Set(required);
   return selected.filter((id) => truth.has(id)).length / selected.length;
+}
+
+function f1(selected: readonly string[], required: readonly string[]): number {
+  const p = precision(selected, required);
+  const r = recall(selected, required);
+  if (p === 0 || r === 0) return 0;
+  return 2 * p * r / (p + r);
 }
 
 function rounded(value: number): number {
@@ -130,28 +141,34 @@ export function scoreSemanticUnderstanding(rawCandidate: SemanticUnderstandingCa
   const componentRecall = recall(candidate.affected_component_ids, gold.required_component_ids);
   const componentPrecision = precision(candidate.affected_component_ids, gold.required_component_ids);
   const invariantRecall = recall(candidate.invariant_ids, gold.required_invariant_ids);
+  const invariantPrecision = precision(candidate.invariant_ids, gold.required_invariant_ids);
   const riskRecall = recall(candidate.risk_ids, gold.required_risk_ids);
+  const riskPrecision = precision(candidate.risk_ids, gold.required_risk_ids);
   const unknownRecall = recall(candidate.unknown_ids, gold.required_unknown_ids);
+  const unknownPrecision = precision(candidate.unknown_ids, gold.required_unknown_ids);
   const rejectedAssumptionRecall = recall(candidate.rejected_assumption_ids, gold.rejected_assumption_ids);
+  const rejectedAssumptionPrecision = precision(candidate.rejected_assumption_ids, gold.rejected_assumption_ids);
   const criticalRecall = gold.critical_ids.length === 0 ? 1 : (gold.critical_ids.length - criticalMisses.length) / gold.critical_ids.length;
   const unnecessaryRate = selectedCount === 0 ? 0 : unexpected.length / selectedCount;
 
-  const weightedRecall = FIELD_PAIRS.reduce((sum, pair) => sum + pair.weight * recall(candidate[pair.candidate], gold[pair.gold]), 0);
-  // Critical misses are deliberately expensive: a candidate that overlooks an
-  // authority/recovery invariant must not look healthy because it named many
-  // low-value details. Unnecessary scope is a smaller but explicit penalty.
+  // Per-category F1 makes both omission and "select everything" benchmark gaming
+  // expensive. Critical misses then apply a second safety-oriented penalty.
+  const weightedF1 = FIELD_PAIRS.reduce((sum, pair) => sum + pair.weight * f1(candidate[pair.candidate], gold[pair.gold]), 0);
   const criticalPenalty = criticalMisses.length === 0 ? 0 : Math.min(0.5, 0.2 + 0.1 * criticalMisses.length);
-  const scopePenalty = Math.min(0.2, unnecessaryRate * 0.2);
-  const quality = Math.max(0, weightedRecall - criticalPenalty - scopePenalty);
+  const quality = Math.max(0, weightedF1 - criticalPenalty);
 
   return {
     schema_version: "1.0",
     component_recall: rounded(componentRecall),
     component_precision: rounded(componentPrecision),
     invariant_recall: rounded(invariantRecall),
+    invariant_precision: rounded(invariantPrecision),
     risk_recall: rounded(riskRecall),
+    risk_precision: rounded(riskPrecision),
     unknown_recall: rounded(unknownRecall),
+    unknown_precision: rounded(unknownPrecision),
     rejected_assumption_recall: rounded(rejectedAssumptionRecall),
+    rejected_assumption_precision: rounded(rejectedAssumptionPrecision),
     critical_recall: rounded(criticalRecall),
     unnecessary_selection_rate: rounded(unnecessaryRate),
     weighted_quality: rounded(quality),
