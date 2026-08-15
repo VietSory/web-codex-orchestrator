@@ -31,6 +31,80 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function packedInteractivePtySmoke(bin, project, env) {
+  if (process.platform !== "linux") return;
+  const python = spawnSync("python3", ["--version"], { encoding: "utf8", stdio: "pipe" });
+  if (python.error || python.status !== 0) return;
+
+  const driver = String.raw`
+import base64, fcntl, json, os, pty, select, signal, struct, sys, termios, time
+bin_path = sys.argv[1]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv(bin_path, [bin_path])
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 80, 0, 0))
+buf = bytearray()
+def drain(timeout=0.05):
+    ready, _, _ = select.select([fd], [], [], timeout)
+    if not ready: return
+    try: chunk = os.read(fd, 4096)
+    except OSError: return
+    if chunk: buf.extend(chunk)
+def wait(marker, start=0, timeout=8.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        pos = bytes(buf).find(marker, start)
+        if pos >= 0: return pos
+        drain()
+    raise RuntimeError("timeout waiting for %r; transcript=%r" % (marker, bytes(buf)[-1600:]))
+try:
+    prompt = wait(b"> ")
+    os.write(fd, b"/")
+    palette = wait(b"/new", prompt)
+    os.write(fd, b"quit\r")
+    wait(b"bye", palette)
+    deadline = time.time() + 5.0
+    status = None
+    while time.time() < deadline:
+        drain()
+        done, value = os.waitpid(pid, os.WNOHANG)
+        if done == pid:
+            status = value
+            break
+    timed_out = status is None
+    if timed_out:
+        try: os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError: pass
+        _, status = os.waitpid(pid, 0)
+    print(json.dumps({
+        "exit_code": os.waitstatus_to_exitcode(status),
+        "timed_out": timed_out,
+        "transcript": base64.b64encode(bytes(buf)).decode("ascii"),
+    }))
+finally:
+    try: os.close(fd)
+    except OSError: pass
+`;
+  const result = spawnSync("python3", ["-c", driver, bin], {
+    cwd: project,
+    env,
+    encoding: "utf8",
+    stdio: "pipe",
+    shell: false,
+    timeout: 20_000,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`Packed interactive PTY smoke failed.\nstdout:\n${result.stdout ?? ""}\nstderr:\n${result.stderr ?? ""}`);
+  let parsed;
+  try { parsed = JSON.parse((result.stdout ?? "").trim()); }
+  catch { throw new Error(`Packed interactive PTY smoke returned invalid JSON.\nstdout:\n${result.stdout ?? ""}\nstderr:\n${result.stderr ?? ""}`); }
+  const transcript = Buffer.from(parsed.transcript ?? "", "base64").toString("utf8");
+  assert(parsed.timed_out === false, `Packed interactive WCO did not exit cleanly.\n${transcript}`);
+  assert(parsed.exit_code === 0, `Packed interactive WCO exited with ${String(parsed.exit_code)}.\n${transcript}`);
+  assert(/\/new/.test(transcript), "Packed interactive WCO did not render the slash palette.");
+  assert(/bye/.test(transcript), "Packed interactive WCO did not complete /quit cleanly.");
+}
+
 try {
   const packed = run(npm, ["pack", "--json"], { capture: true });
   const parsed = JSON.parse(packed.stdout);
@@ -90,8 +164,12 @@ try {
   const webStatus = run(bin, ["web", "status"], { cwd: project, capture: true, env: isolatedEnv, expectedStatuses: [1] });
   assert(/Mode\s+local ChatGPT\/Codex/i.test(webStatus.stdout), "Packed web status did not report the local ChatGPT/Codex transport.");
   assert(/ChatGPT authorization\s+required/i.test(webStatus.stdout), "Packed web status did not fail closed on missing ChatGPT authorization.");
-  assert(/Per-task browser\s+not required/i.test(webStatus.stdout), "Packed web status regressed to a per-task browser workflow.");
+  assert(/Per-task browser\s+not required/i.test(webStatus.stdout), "Packed zero-config status regressed to a per-task browser workflow.");
   assert(!/managed|MCP|relay URL|tunnel/i.test(webStatus.stdout), "Packed zero-config status leaked an advanced transport requirement.");
+
+  // Exercise the installed compiled CLI through a real Linux PTY. This catches
+  // package-only regressions in raw-mode ownership, slash discovery, and clean exit.
+  packedInteractivePtySmoke(bin, project, isolatedEnv);
 
   console.log(`Packed CLI clean-install + zero-config first-run smoke PASS (${pkg.name}@${pkg.version}).`);
 } finally {
