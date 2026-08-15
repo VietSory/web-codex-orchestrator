@@ -13,6 +13,7 @@ type Keypress = { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean
 type CompletionKind = "enter" | "tab";
 type ExternalComposerWriter = (value: string) => void;
 type ComposerSignal = "interrupt" | "exit" | null;
+interface ComposerOptions { allowedCommands?: ReadonlySet<string>; }
 
 function promptColumn(prompt: string): number {
   const newline = prompt.lastIndexOf("\n");
@@ -98,6 +99,19 @@ export function restoreComposerInput(
   input.pause();
 }
 
+export function findReverseHistoryMatch(
+  history: readonly string[],
+  query: string,
+  afterIndex = -1,
+): { index: number; value: string } | null {
+  const needle = query.toLowerCase();
+  for (let index = Math.max(0, afterIndex + 1); index < history.length; index += 1) {
+    const value = history[index]!;
+    if (value.toLowerCase().includes(needle)) return { index, value };
+  }
+  return null;
+}
+
 /** Pure completion rule used by the live TTY and UX regression tests. */
 export function resolveSlashCompletion(value: string, command: string, kind: CompletionKind): { value: string; submit: boolean } {
   if (ARGUMENT_COMMANDS.has(command)) return { value: `${command} `, submit: false };
@@ -119,6 +133,7 @@ async function liveSlashComposer(
   prompt: string,
   history: string[],
   setExternalWriter?: (writer: ExternalComposerWriter | null) => void,
+  options: ComposerOptions = {},
 ): Promise<string> {
   const input = process.stdin;
   const output = process.stdout;
@@ -136,9 +151,11 @@ async function liveSlashComposer(
     let settled = false;
     let historyIndex = -1;
     let historyDraft = "";
+    let reverseSearchIndex = -1;
+    let reverseSearchQuery = "";
     let renderedCursorRow = 0;
 
-    const currentSuggestions = () => paletteSuppressed ? [] : slashCommandSuggestions(value);
+    const currentSuggestions = () => paletteSuppressed ? [] : slashCommandSuggestions(value, options.allowedCommands);
 
     const clearRenderedBlock = (): void => {
       if (renderedCursorRow > 0) moveCursor(output, 0, -renderedCursorRow);
@@ -227,11 +244,17 @@ async function liveSlashComposer(
       reject(composerSignalError(signal));
     };
 
+    const resetHistorySearch = (): void => {
+      reverseSearchIndex = -1;
+      reverseSearchQuery = "";
+    };
+
     const changed = (): void => {
       selected = 0;
       paletteSuppressed = false;
       historyIndex = -1;
       historyDraft = "";
+      resetHistorySearch();
       render();
     };
 
@@ -240,6 +263,7 @@ async function liveSlashComposer(
       cursor = value.length;
       selected = 0;
       paletteSuppressed = false;
+      resetHistorySearch();
       render();
     };
 
@@ -261,10 +285,27 @@ async function liveSlashComposer(
 
     const navigateHistory = (direction: "up" | "down"): void => {
       if (history.length === 0) return;
+      resetHistorySearch();
       if (historyIndex < 0) historyDraft = value;
       if (direction === "up") historyIndex = Math.min(history.length - 1, historyIndex + 1);
       else historyIndex = Math.max(-1, historyIndex - 1);
       value = historyIndex < 0 ? historyDraft : history[historyIndex]!;
+      cursor = value.length;
+      selected = 0;
+      paletteSuppressed = false;
+      render();
+    };
+
+    const reverseSearchHistory = (): void => {
+      if (history.length === 0) return;
+      const query = reverseSearchIndex < 0 ? value : reverseSearchQuery;
+      const match = findReverseHistoryMatch(history, query, reverseSearchIndex);
+      if (!match) return;
+      reverseSearchQuery = query;
+      reverseSearchIndex = match.index;
+      historyIndex = -1;
+      historyDraft = "";
+      value = match.value;
       cursor = value.length;
       selected = 0;
       paletteSuppressed = false;
@@ -297,6 +338,10 @@ async function liveSlashComposer(
       }
       if ((key.ctrl && key.name === "j") || ((key.name === "return" || key.name === "enter") && key.shift)) {
         insertText("\n");
+        return;
+      }
+      if (key.ctrl && key.name === "r") {
+        reverseSearchHistory();
         return;
       }
       if (key.ctrl && key.name === "l") {
@@ -399,7 +444,7 @@ export interface InteractiveIo {
   output: NodeJS.WritableStream;
   write(value: string): void;
   question(prompt: string): Promise<string>;
-  composer?(prompt: string): Promise<string>;
+  composer?(prompt: string, options?: ComposerOptions): Promise<string>;
   secret?(prompt: string): Promise<string>;
   close(): void;
 }
@@ -416,14 +461,14 @@ export function terminalIo(): InteractiveIo {
     try { return await questionWithoutEcho(hidden, prompt, (value) => process.stdout.write(value)); }
     finally { hidden.close(); }
   };
-  const composer = async (prompt: string): Promise<string> => {
+  const composer = async (prompt: string, options?: ComposerOptions): Promise<string> => {
     if (!process.stdin.isTTY || !process.stdout.isTTY || typeof process.stdin.setRawMode !== "function") {
       return await get().question(prompt);
     }
     reset();
     const parts = splitComposerPrompt(prompt);
     if (parts.prefix) process.stdout.write(parts.prefix);
-    return await liveSlashComposer(parts.prompt, history, (writer) => { externalWriter = writer; });
+    return await liveSlashComposer(parts.prompt, history, (writer) => { externalWriter = writer; }, options);
   };
   return {
     input: process.stdin,
@@ -437,7 +482,7 @@ export function terminalIo(): InteractiveIo {
 }
 
 export interface InteractiveHandlers {
-  state(): Promise<{ active: boolean; sealed: boolean; summary: string }>;
+  state(): Promise<{ active: boolean; sealed: boolean; summary: string; availableCommands?: readonly string[] }>;
   newTask(goal: string): Promise<string>;
   clarify(value: string): Promise<string>;
   command(command: string, args: string): Promise<{ message: string; quit?: boolean }>;
@@ -456,10 +501,11 @@ export async function runInteractiveSession(io: InteractiveIo, handlers: Interac
         io.write(`${state.summary}\n`);
         previousSummary = state.summary;
       }
+      const allowedCommands = state.availableCommands ? new Set(state.availableCommands) : undefined;
 
       let raw: string;
       try {
-        raw = io.composer ? await io.composer("\n> ") : await io.question("\n> ");
+        raw = io.composer ? await io.composer("\n> ", { allowedCommands }) : await io.question("\n> ");
       } catch (error) {
         const signal = composerSignal(error);
         if (signal === "interrupt") {
@@ -474,7 +520,7 @@ export async function runInteractiveSession(io: InteractiveIo, handlers: Interac
         continue;
       }
 
-      if (raw.trim() === "/") { io.write(`\n${commandPalette()}\n`); continue; }
+      if (raw.trim() === "/") { io.write(`\n${commandPalette(allowedCommands)}\n`); continue; }
       const parsed = parseInteractiveInput(raw, state);
       if (parsed.kind === "empty") continue;
       if (parsed.kind === "new") { io.write(`${await handlers.newTask(parsed.goal!)}\n`); continue; }
