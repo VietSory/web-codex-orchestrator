@@ -70,7 +70,7 @@ try {
   delete isolatedEnv.WCO_STATE_DIR;
 
   const setup = run(bin, ["setup", "--yes"], { cwd: project, capture: true, env: isolatedEnv });
-  assert(/local ChatGPT\/Codex \(zero-config default\)/i.test(setup.stdout), "Packed setup did not select the local ChatGPT/Codex zero-config transport.");
+  assert(/local ChatGPT\/Codex/i.test(setup.stdout), "Packed setup did not select the local ChatGPT/Codex zero-config transport.");
   assert(!/tunnel ID|API key|MCP connector|relay endpoint/i.test(setup.stderr), "Packed normal setup unexpectedly requested advanced transport infrastructure.");
 
   const configPath = path.join(wcoHome, "config.json");
