@@ -18,6 +18,10 @@ jobs:
         with:
           ref: ux/cli-pattern-parity
           fetch-depth: 1
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
       - name: Wire returning-user shortcuts through the existing TUI
         shell: bash
         run: |
@@ -101,16 +105,19 @@ jobs:
           path.write_text(source, encoding="utf-8")
           PY
           git diff --check
-          git diff -- src/cli/index.ts
-      - name: Commit bounded fix
+      - name: Verify bounded UX fix
         shell: bash
         run: |
-          if git diff --quiet -- src/cli/index.ts; then
-            echo "No patch required."
-            exit 0
-          fi
+          npm ci
+          npm run typecheck
+          npx tsx --test tests/tui-cli-shortcuts.test.ts tests/tui-continue-least-surprise.test.ts
+      - name: Create protected-branch fix commit
+        shell: bash
+        run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/pr41-self-fix.yml
           git add src/cli/index.ts
+          git diff --cached --check
           git commit -m "fix(cli): wire returning-user continuation shortcuts"
-          git push origin HEAD:ux/cli-pattern-parity
+          git push origin HEAD:refs/heads/fix/pr41-cli-shortcuts
