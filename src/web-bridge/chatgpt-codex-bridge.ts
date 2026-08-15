@@ -160,7 +160,16 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
     const record = await this.store.get(jobId, OWNER);
     if (record.kind !== "authoring") throw new WebBridgeError("WEB_JOB_KIND_INVALID", "Requested job is not an authoring job.");
     for (const event of record.events.filter((value) => value.sequence > afterSequence)) { const authoring = toAuthoringEvent(event); if (authoring) return authoring; }
-    if (record.events.some((event) => event.type === "contract_sealed")) return null;
+    if (record.events.some((event) => event.type === "contract_sealed")) {
+      const submission = await this.receiveWebImplementation(jobId);
+      if (!submission) return null;
+      const refreshed = await this.store.get(jobId, OWNER);
+      for (const event of refreshed.events.filter((value) => value.sequence > afterSequence)) {
+        const authoring = toAuthoringEvent(event);
+        if (authoring) return authoring;
+      }
+      return null;
+    }
     if (hasUnresolvedReservation(record.events, "chatgpt_codex_authoring_reserved", ["repository_command", "contract_sealed"])) throw new WebBridgeError("WEB_CHATGPT_CODEX_AMBIGUOUS_AUTHORING", "A prior semantic author turn may have completed without durable authority; WCO refuses to replay an ambiguous contract/repository decision.");
     const lastAuthority = record.events.slice().reverse().find((event) => ["repository_command", "contract_sealed"].includes(event.type));
     const latestResult = record.events.slice().reverse().find((event) => event.type === "repository_command_result" && (!lastAuthority || event.sequence > lastAuthority.sequence));

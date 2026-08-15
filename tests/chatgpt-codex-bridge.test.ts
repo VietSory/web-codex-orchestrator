@@ -153,10 +153,13 @@ for (const mode of ["PAIR", "AUTOPILOT"] as const) {
     await resumed.bindPreparedRun(item.identity.job_id, prepared.run_id, `bind-${mode}`);
     const submission = implementationFor(item.identity.job_id, prepared.run_id, item.contract.sources);
     injectProviderFakes(resumed, { counters, implementation: submission });
-    assert.deepEqual(await resumed.receiveWebImplementation(item.identity.job_id), submission);
+    const implementationEvent = await resumed.waitForAuthoringEvent(item.identity.job_id, contractEvent!.sequence);
+    assert.equal(implementationEvent?.type, "implementation_sealed");
+    assert.deepEqual(implementationEvent?.type === "implementation_sealed" ? implementationEvent.submission : null, submission);
     assert.equal(counters.implementation, 1);
 
     const adopted = new ChatGptCodexWebBridge(item.config, item.bridgeDirectory);
+    assert.equal(await adopted.waitForAuthoringEvent(item.identity.job_id, implementationEvent!.sequence), null);
     assert.deepEqual(await adopted.receiveWebImplementation(item.identity.job_id), submission);
     assert.equal(counters.implementation, 1);
 
