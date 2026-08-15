@@ -34,3 +34,10 @@ test("PAIR status uses presenter continuation semantics without string-rewrite h
   assert.doesNotMatch(source, /\.replace\(\/\\\/run\/g/);
   assert.match(source, /return \{ message: formatPairStatus\(/);
 });
+
+test("background state exposes only commands that the single-owner runtime can accept", () => {
+  assert.match(source, /availableCommands: background \? \[\.\.\.LIVE_BACKGROUND_COMMANDS\] : undefined/);
+  assert.match(source, /commandPalette\(background \? LIVE_BACKGROUND_COMMANDS : undefined\)/);
+  assert.match(source, /background && !LIVE_BACKGROUND_COMMANDS\.has\(command\)/);
+  assert.doesNotMatch(source.match(/LIVE_BACKGROUND_COMMANDS = new Set\([^\n]+/)?.[0] ?? "", /\/continue|\/resume|\/new|\/auto/);
+});
