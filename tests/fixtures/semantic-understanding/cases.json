@@ -1,0 +1,158 @@
+{
+  "schema_version": "1.0",
+  "cases": [
+    {
+      "case_id": "CONTINUE_FOCUS",
+      "category": "state-recovery",
+      "goal": "Make /continue safely continue the user's current work without surprising task switches.",
+      "evidence_catalog": [
+        { "id": "C_TUI", "category": "component", "text": "The interactive app owns /continue command routing and current task focus." },
+        { "id": "C_HISTORY", "category": "component", "text": "Session history can list and restore previously saved tasks." },
+        { "id": "C_THEME", "category": "component", "text": "Terminal theme rendering controls colors and borders only." },
+        { "id": "I_HISTORY_NONAUTH", "category": "invariant", "text": "History is convenience state and cannot invent mutation authority." },
+        { "id": "I_EXPLICIT_SWITCH", "category": "invariant", "text": "Changing mutation focus to historical work requires an explicit resume selection and re-attestation." },
+        { "id": "I_LATEST_WINS", "category": "invariant", "text": "The most recently written history entry always owns current mutation focus." },
+        { "id": "R_WRONG_TASK", "category": "risk", "text": "Implicit history fallback can resume and mutate a different task than the user intended." },
+        { "id": "R_DUP_RUN", "category": "risk", "text": "Incorrect focus restoration can contribute to duplicate execution or duplicate publication attempts." },
+        { "id": "R_COLOR_DRIFT", "category": "risk", "text": "A palette color mismatch can make /continue harder to read." },
+        { "id": "U_CONTINUE_MEANING", "category": "unknown", "text": "The user-visible meaning of continue versus explicit history resume must be resolved rather than inferred from recency." },
+        { "id": "A_LATEST_CURRENT", "category": "assumption", "text": "Assume the newest safely resumable history item is equivalent to the user's current task." },
+        { "id": "A_TESTS_DEFINE_UX", "category": "assumption", "text": "Assume any behavior is acceptable if the existing command tests pass." }
+      ],
+      "gold": {
+        "required_component_ids": ["C_TUI", "C_HISTORY"],
+        "required_invariant_ids": ["I_HISTORY_NONAUTH", "I_EXPLICIT_SWITCH"],
+        "required_risk_ids": ["R_WRONG_TASK", "R_DUP_RUN"],
+        "required_unknown_ids": ["U_CONTINUE_MEANING"],
+        "rejected_assumption_ids": ["A_LATEST_CURRENT", "A_TESTS_DEFINE_UX"],
+        "critical_ids": ["I_HISTORY_NONAUTH", "I_EXPLICIT_SWITCH", "R_WRONG_TASK"]
+      }
+    },
+    {
+      "case_id": "PLATFORM_SANDBOX",
+      "category": "compatibility",
+      "goal": "Document and surface the platforms on which normal deterministic WCO task execution is actually supported.",
+      "evidence_catalog": [
+        { "id": "C_SETUP", "category": "component", "text": "Setup reports user-facing readiness and recovery guidance." },
+        { "id": "C_VERIFIER", "category": "component", "text": "Deterministic verification uses Bubblewrap and rejects non-Linux hosts." },
+        { "id": "C_README", "category": "component", "text": "README contains install and run examples for multiple shells." },
+        { "id": "C_REVIEW_MODE", "category": "component", "text": "Reviewer mode freezes Sol/Terra selection per run." },
+        { "id": "I_INSTALL_NE_EXEC", "category": "invariant", "text": "A package being installable on a host does not imply normal task verification is executable on that host." },
+        { "id": "I_FAIL_CLOSED_SANDBOX", "category": "invariant", "text": "Normal deterministic verification must fail closed when required isolation is unavailable." },
+        { "id": "R_FALSE_SUPPORT", "category": "risk", "text": "Native Windows/macOS users can infer full support from successful installation and fail only after starting work." },
+        { "id": "R_AUTH_LEAK", "category": "risk", "text": "Reviewer selection might reveal a provider credential." },
+        { "id": "U_NATIVE_SCOPE", "category": "unknown", "text": "The product claim must distinguish native host support from WSL/Linux execution support." },
+        { "id": "A_POWERSHELL_SUPPORT", "category": "assumption", "text": "Assume a PowerShell install example means normal native Windows task execution is supported." },
+        { "id": "A_BWRAP_OPTIONAL", "category": "assumption", "text": "Assume Bubblewrap can be skipped when verification commands are simple." }
+      ],
+      "gold": {
+        "required_component_ids": ["C_SETUP", "C_VERIFIER", "C_README"],
+        "required_invariant_ids": ["I_INSTALL_NE_EXEC", "I_FAIL_CLOSED_SANDBOX"],
+        "required_risk_ids": ["R_FALSE_SUPPORT"],
+        "required_unknown_ids": ["U_NATIVE_SCOPE"],
+        "rejected_assumption_ids": ["A_POWERSHELL_SUPPORT", "A_BWRAP_OPTIONAL"],
+        "critical_ids": ["I_FAIL_CLOSED_SANDBOX", "R_FALSE_SUPPORT", "A_BWRAP_OPTIONAL"]
+      }
+    },
+    {
+      "case_id": "AUTH_BEFORE_STATE",
+      "category": "authorization",
+      "goal": "Ensure first interactive use cannot leave an orphan task when ChatGPT authorization is cancelled or unavailable.",
+      "evidence_catalog": [
+        { "id": "C_AUTH", "category": "component", "text": "The authorization boundary can perform official interactive sign-in only on eligible TTY use." },
+        { "id": "C_JOB_CREATE", "category": "component", "text": "Authoring job creation persists durable task state." },
+        { "id": "C_CLI_HELP", "category": "component", "text": "CLI help prints commands but does not own authorization state." },
+        { "id": "I_AUTH_PRESTATE", "category": "invariant", "text": "Interactive authorization must complete before durable task creation on first use." },
+        { "id": "I_NONINTERACTIVE_NO_BROWSER", "category": "invariant", "text": "CI and non-interactive callers must never open browser authorization." },
+        { "id": "R_ORPHAN_AUTHORING", "category": "risk", "text": "Creating task state before cancelled authorization can strand an AUTHORING session and trap the next goal." },
+        { "id": "R_HELP_LATENCY", "category": "risk", "text": "Long help output can slow shell startup." },
+        { "id": "U_AUTH_CONTEXT", "category": "unknown", "text": "The flow must distinguish eligible interactive use from non-interactive/provider-boundary failure." },
+        { "id": "A_AUTH_AFTER_CREATE", "category": "assumption", "text": "Assume it is harmless to create the durable job first and authorize immediately afterward." },
+        { "id": "A_CI_CAN_LOGIN", "category": "assumption", "text": "Assume CI may open a browser if credentials are missing." }
+      ],
+      "gold": {
+        "required_component_ids": ["C_AUTH", "C_JOB_CREATE"],
+        "required_invariant_ids": ["I_AUTH_PRESTATE", "I_NONINTERACTIVE_NO_BROWSER"],
+        "required_risk_ids": ["R_ORPHAN_AUTHORING"],
+        "required_unknown_ids": ["U_AUTH_CONTEXT"],
+        "rejected_assumption_ids": ["A_AUTH_AFTER_CREATE", "A_CI_CAN_LOGIN"],
+        "critical_ids": ["I_AUTH_PRESTATE", "I_NONINTERACTIVE_NO_BROWSER", "R_ORPHAN_AUTHORING"]
+      }
+    },
+    {
+      "case_id": "REVIEWER_FREEZE",
+      "category": "resume-authority",
+      "goal": "Allow global reviewer preference changes without silently changing the reviewer of an already prepared AUTOPILOT run after restart.",
+      "evidence_catalog": [
+        { "id": "C_GLOBAL_MODE", "category": "component", "text": "The UI-level reviewer preference can be changed for future tasks." },
+        { "id": "C_RUN_MODE", "category": "component", "text": "Prepared runs persist a reviewer selection inside the canonical run directory." },
+        { "id": "C_VERIFICATION", "category": "component", "text": "Deterministic verification is provider-independent." },
+        { "id": "I_RUN_REVIEWER_IMMUTABLE", "category": "invariant", "text": "A prepared run's reviewer selection is frozen exactly once and resume must use that immutable selection." },
+        { "id": "I_GLOBAL_FUTURE_ONLY", "category": "invariant", "text": "Mutable global reviewer preference applies to new runs, not existing prepared runs." },
+        { "id": "R_REVIEWER_DRIFT", "category": "risk", "text": "Reading global mode on resume can change provider/model authority after work was prepared." },
+        { "id": "R_TEST_ORDER", "category": "risk", "text": "Unit tests can run in a different filename order." },
+        { "id": "U_PREPARED_STATE", "category": "unknown", "text": "Resume must distinguish a prepared run with frozen reviewer authority from a not-yet-prepared task." },
+        { "id": "A_USE_GLOBAL_ON_RESUME", "category": "assumption", "text": "Assume current global /mode is the desired reviewer whenever a run resumes." },
+        { "id": "A_SOL_ALWAYS", "category": "assumption", "text": "Assume Sol/high should replace a stored reviewer because it is the default." }
+      ],
+      "gold": {
+        "required_component_ids": ["C_GLOBAL_MODE", "C_RUN_MODE"],
+        "required_invariant_ids": ["I_RUN_REVIEWER_IMMUTABLE", "I_GLOBAL_FUTURE_ONLY"],
+        "required_risk_ids": ["R_REVIEWER_DRIFT"],
+        "required_unknown_ids": ["U_PREPARED_STATE"],
+        "rejected_assumption_ids": ["A_USE_GLOBAL_ON_RESUME", "A_SOL_ALWAYS"],
+        "critical_ids": ["I_RUN_REVIEWER_IMMUTABLE", "R_REVIEWER_DRIFT", "A_USE_GLOBAL_ON_RESUME"]
+      }
+    },
+    {
+      "case_id": "DRAFT_PR_RECOVERY",
+      "category": "git-recovery",
+      "goal": "Recover safely after a crash around Draft PR publication without duplicating or silently retargeting the published result.",
+      "evidence_catalog": [
+        { "id": "C_PUBLISHER", "category": "component", "text": "Publisher binds local publication to exact remote/base/head identities." },
+        { "id": "C_PR_RECEIPT", "category": "component", "text": "Draft PR receipts persist the exact PR number, branch and published commit identity." },
+        { "id": "C_THEME_RECOVERY", "category": "component", "text": "TUI theme state is reloaded after restart." },
+        { "id": "I_EXACT_HEAD", "category": "invariant", "text": "Recovery must re-attest the exact expected branch and head, not accept any PR that happens to contain equivalent code." },
+        { "id": "I_IDEMPOTENT_ADOPT", "category": "invariant", "text": "Exact durable pushed state may be adopted idempotently; ambiguous publication must not be blindly replayed." },
+        { "id": "R_DUP_PR", "category": "risk", "text": "Blind retry after a crash can create a second Draft PR or duplicate push." },
+        { "id": "R_RETARGET", "category": "risk", "text": "Accepting a different PR/branch with the same commit can silently retarget publication authority." },
+        { "id": "U_CRASH_BOUNDARY", "category": "unknown", "text": "Recovery must determine whether the remote side effect happened before the durable local checkpoint completed." },
+        { "id": "A_REPLAY_SAFE", "category": "assumption", "text": "Assume repeating publish/create-PR is always safe because Git operations are idempotent." },
+        { "id": "A_SHA_ONLY", "category": "assumption", "text": "Assume matching only the commit SHA is enough to adopt any existing PR." }
+      ],
+      "gold": {
+        "required_component_ids": ["C_PUBLISHER", "C_PR_RECEIPT"],
+        "required_invariant_ids": ["I_EXACT_HEAD", "I_IDEMPOTENT_ADOPT"],
+        "required_risk_ids": ["R_DUP_PR", "R_RETARGET"],
+        "required_unknown_ids": ["U_CRASH_BOUNDARY"],
+        "rejected_assumption_ids": ["A_REPLAY_SAFE", "A_SHA_ONLY"],
+        "critical_ids": ["I_EXACT_HEAD", "I_IDEMPOTENT_ADOPT", "R_DUP_PR", "A_REPLAY_SAFE"]
+      }
+    },
+    {
+      "case_id": "SINGLE_OWNER_PAUSE",
+      "category": "concurrency",
+      "goal": "Allow status/pause interaction while a task runs without introducing a second mutation owner or unsafe immediate interruption.",
+      "evidence_catalog": [
+        { "id": "C_TASK_SLOT", "category": "component", "text": "Interactive task slot enforces one background mutation owner." },
+        { "id": "C_CONTROLLER", "category": "component", "text": "Pause is cooperative and takes effect at a safe lifecycle boundary." },
+        { "id": "C_HISTORY_UI", "category": "component", "text": "Command history supports Up-arrow and search behavior." },
+        { "id": "I_SINGLE_OWNER", "category": "invariant", "text": "At most one interactive worker may own mutation at a time." },
+        { "id": "I_SAFE_PAUSE", "category": "invariant", "text": "Pause must preserve durable progress and may not pretend the task is paused before a safe boundary is reached." },
+        { "id": "R_DOUBLE_MUTATION", "category": "risk", "text": "Launching resume/run while the current worker still owns mutation can create concurrent side effects." },
+        { "id": "R_FALSE_PAUSE", "category": "risk", "text": "Reporting paused before ownership is safely released can make exit/restart unsafe." },
+        { "id": "U_PAUSE_COMPLETION", "category": "unknown", "text": "The UI must distinguish a requested pause from a durably reached paused state." },
+        { "id": "A_ABORT_EQUALS_PAUSE", "category": "assumption", "text": "Assume aborting the active operation immediately is equivalent to a safe durable pause." },
+        { "id": "A_STATUS_MUTATES", "category": "assumption", "text": "Assume /status needs a second worker because the current worker is busy." }
+      ],
+      "gold": {
+        "required_component_ids": ["C_TASK_SLOT", "C_CONTROLLER"],
+        "required_invariant_ids": ["I_SINGLE_OWNER", "I_SAFE_PAUSE"],
+        "required_risk_ids": ["R_DOUBLE_MUTATION", "R_FALSE_PAUSE"],
+        "required_unknown_ids": ["U_PAUSE_COMPLETION"],
+        "rejected_assumption_ids": ["A_ABORT_EQUALS_PAUSE", "A_STATUS_MUTATES"],
+        "critical_ids": ["I_SINGLE_OWNER", "I_SAFE_PAUSE", "R_DOUBLE_MUTATION", "A_ABORT_EQUALS_PAUSE"]
+      }
+    }
+  ]
+}
