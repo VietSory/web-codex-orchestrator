@@ -59,6 +59,6 @@ test("normal Web-B/final Web review and Sol/Terra review share maintainer-grade 
 test("maintainer-grade Web review treats missing exact evidence as a fail-closed review condition", () => {
   const prompt = chatGptCodexReviewPrompt(reviewRequest, { purpose: "final_intent_review", exact: false }, "review-evidence");
   assert.match(prompt, /If exact evidence is insufficient to resolve a material question, do not APPROVE/i);
-  assert.match(prompt, /request bounded evidence, revision, replan, or escalation/i);
+  assert.match(prompt, /use only an available non-approval outcome appropriate to the current phase/i);
   assert.match(prompt, /green test suite.*never as proof/i);
 });
