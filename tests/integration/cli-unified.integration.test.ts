@@ -26,8 +26,8 @@ async function run(args: string[], env: NodeJS.ProcessEnv = {}): Promise<{ code:
   });
 }
 
-test("compiled wco exposes the durable workflow through one public CLI", async () => {
-  const result = await run(["--help"]);
+test("compiled wco keeps durable protocol commands available through advanced help", async () => {
+  const result = await run(["help", "advanced"]);
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stdout, /wco preview <task-bundle\.zip>/);
   assert.match(result.stdout, /wco run <task-bundle\.zip>/);
@@ -61,7 +61,7 @@ test("compiled preview rejects duplicate explicit state-dir even when it equals 
     "--state-dir", state,
   ], { WCO_STATE_DIR: state });
   assert.equal(result.code, 2, result.stderr);
-  assert.match(result.stdout, /wco preview <task-bundle\.zip>/);
+  assert.match(result.stdout, /wco help advanced/);
   assert.equal(result.stderr, "");
 });
 
