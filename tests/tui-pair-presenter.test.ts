@@ -1,6 +1,11 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { pauseRun } from "../src/orchestration/controller.js";
 import type { LifecycleSnapshot } from "../src/orchestration/planner.js";
+import { readLifecycleSnapshot } from "../src/orchestration/snapshot-reader.js";
 import { derivePairStage, formatPairReview, formatPairStatus } from "../src/tui/pair-presenter.js";
 
 function snapshot(overrides: Partial<LifecycleSnapshot> = {}): LifecycleSnapshot {
@@ -48,6 +53,26 @@ test("PAIR status is human-readable and makes the required user action explicit"
   assert.match(output, /Final review\s+in progress/);
   assert.match(output, /Your action\s+None — WCO is waiting for the final review/);
   assert.doesNotMatch(output, /READY_FOR_PUBLISH|PUSHED|READY_FOR_WEB_REVIEW|IMPLEMENTATION_REGISTERED/);
+});
+
+test("PAIR paused status is projected from the durable run ledger and gives the correct resume sequence", async (t) => {
+  const stateDirectory = await mkdtemp(path.join(os.tmpdir(), "wco-pair-paused-status-"));
+  t.after(() => rm(stateDirectory, { recursive: true, force: true }));
+  const runId = `pair-status:${"b".repeat(64)}`;
+  await pauseRun(stateDirectory, runId, "interactive user pause");
+
+  const durable = await readLifecycleSnapshot(stateDirectory, runId);
+  assert.equal(durable.paused, true);
+  assert.equal(derivePairStage(durable), "PAUSED");
+
+  const output = formatPairStatus({
+    goal: "Add organization invitations",
+    planLocked: true,
+    snapshot: durable,
+  });
+  assert.match(output, /PAIR · Paused/);
+  assert.match(output, /Your action\s+use \/resume, then \/run to continue saved progress/);
+  assert.doesNotMatch(output, /Your action\s+None — WCO/);
 });
 
 test("PAIR review summary focuses on evidence and the required user action", () => {

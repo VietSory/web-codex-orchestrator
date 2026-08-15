@@ -21,6 +21,7 @@ function isExecutorRepairing(state: string | null): boolean {
 }
 
 export function derivePairStage(snapshot: LifecycleSnapshot): UserStage {
+  if (snapshot.paused === true) return "PAUSED";
   if (hasExecutorFailure(snapshot.executor_state)) return "BLOCKED";
   if (!snapshot.registered_artifact_sha256 || snapshot.executor_state === "ESCALATE_TO_WEB") return "WEB_IMPLEMENTATION";
   if (isExecutorRepairing(snapshot.executor_state)) return "REVISION";
@@ -87,7 +88,7 @@ function userAction(stage: UserStage): string {
     case "PUBLISHING":
     case "DRAFT_PR":
     case "RESULT_BUNDLE": return "None — WCO is preparing the reviewed Draft PR";
-    case "PAUSED": return "use /run to continue saved progress";
+    case "PAUSED": return "use /resume, then /run to continue saved progress";
     default: return "use /run if WCO is not already working";
   }
 }
