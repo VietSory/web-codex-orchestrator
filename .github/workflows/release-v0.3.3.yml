@@ -1,0 +1,115 @@
+name: Release v0.3.3
+
+on:
+  push:
+    branches:
+      - release/v0.3.3
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_SHA: f991610141adfcdaa436b5802c8b1e5493faea0b
+      TAG: v0.3.3
+      TGZ: web-codex-orchestrator-0.3.3.tgz
+    steps:
+      - name: Checkout exact qualified main
+        uses: actions/checkout@v5
+        with:
+          ref: f991610141adfcdaa436b5802c8b1e5493faea0b
+
+      - name: Confirm exact release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(node -p "require('./package.json').version")" = "0.3.3"
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Reconfirm package gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run pack:check
+          npm run pack:smoke
+
+      - name: Build release artifact and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack >/dev/null
+          test -f "$TGZ"
+          sha256sum "$TGZ" > "$TGZ.sha256"
+          cat "$TGZ.sha256"
+
+      - name: Write release notes
+        shell: bash
+        run: |
+          cat > release-notes.md <<'EOF'
+          ## WCO v0.3.3
+
+          Local-first PAIR/AUTOPILOT release for Web Codex Orchestrator.
+
+          ### Highlights
+          - Zero-config local ChatGPT/Codex transport is the normal user path.
+          - PAIR and AUTOPILOT orchestration with deterministic verification, bounded repair/review loops, and independent semantic final review.
+          - Durable restart/resume with exact run/result/PR identity and fail-closed ambiguous-provider handling.
+          - Draft-PR-only delivery; merge and release remain human-owned.
+          - Cross-process durable-state locking plus bounded cache/history/inbox retention and response/token/time limits.
+          - Hardened first-run/re-auth recovery: failed or cancelled authorization does not leave an active orphan task.
+          - Packaged zero-config first-run/returning-user behavior and real-machine live acceptance completed.
+
+          ### Qualification
+          - Release target: `f991610141adfcdaa436b5802c8b1e5493faea0b` on `main`.
+          - Release tree: `81184109729388928dbbf5be43477c814426678e` (identical to the live-accepted candidate tree).
+          - Merged-main CI run `31889326351`: PASS.
+          - Merged-main Advanced bridge compatibility run `31889326258`: PASS.
+          - Real PAIR: PASS.
+          - Real AUTOPILOT: PASS.
+          - Real restart/resume: PASS with no duplicate run/commit/PR.
+          - Native Bubblewrap validation: PASS during final live acceptance.
+          - Clean packed install / package surface / zero-config user contract: PASS.
+
+          ### Install
+          Download the attached checksummed `web-codex-orchestrator-0.3.3.tgz` artifact and install it with npm.
+
+          Node.js 22 or newer is required.
+          EOF
+
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; refusing to overwrite."
+            exit 1
+          fi
+          gh release create "$TAG" \
+            "$TGZ" \
+            "$TGZ.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$TARGET_SHA" \
+            --title "WCO v0.3.3" \
+            --notes-file release-notes.md \
+            --latest
+
+      - name: Verify published release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName,targetCommitish,isDraft,isPrerelease,url
