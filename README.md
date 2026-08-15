@@ -66,6 +66,8 @@ A matching checksum file is also published:
 web-codex-orchestrator-0.3.3.tgz.sha256
 ```
 
+The commands below use `v0.3.3` as the concrete example. For a newer release, replace `0.3.3` with the version you downloaded.
+
 You do **not** need GitHub's `Source code (zip)` or `Source code (tar.gz)` archives for normal use. Those are source snapshots, not the packaged WCO CLI.
 
 ### Optional: verify the checksum on Linux/WSL
@@ -95,13 +97,6 @@ If the file was downloaded by Windows and you are using WSL, the Downloads direc
 
 ```bash
 cd /mnt/c/Users/<windows-user>/Downloads
-npm install -g ./web-codex-orchestrator-0.3.3.tgz
-```
-
-Example:
-
-```bash
-cd /mnt/c/Users/viet.DESKTOP-IC8LF3U/Downloads
 npm install -g ./web-codex-orchestrator-0.3.3.tgz
 ```
 
