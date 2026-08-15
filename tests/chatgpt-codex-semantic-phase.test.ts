@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ChatGptCodexImplementationClient } from "../src/web-bridge/chatgpt-codex-implementation-client.js";
-import { chatGptCodexAuthorPrompt, chatGptCodexReviewPrompt } from "../src/web-bridge/chatgpt-codex-prompts.js";
+import { chatGptCodexAuthorPrompt, chatGptCodexRepositoryResultPrompt, chatGptCodexReviewPrompt } from "../src/web-bridge/chatgpt-codex-prompts.js";
 import { ChatGptCodexSemanticClient } from "../src/web-bridge/chatgpt-codex-semantic-client.js";
 
 const profile: any = { model: "gpt-5.6-sol", reasoning_effort: "high" };
@@ -42,6 +42,21 @@ test("semantic SDK turn exposes only the authority kind valid for its closed WCO
   assert.equal(requests[1].read_only, true);
   assert.equal(requests[0].network_access, false);
   assert.equal(requests[1].network_access, false);
+});
+
+test("semantic prompts expose the closed JSON payload wire contracts", () => {
+  const request = { owner: "local", repository: { repository_id: "repo", base_branch: "main", base_commit: "a".repeat(40) }, user_intent: "change app", ttl_seconds: 60 } as const;
+  for (const prompt of [chatGptCodexAuthorPrompt(request), chatGptCodexRepositoryResultPrompt({ exact: true })]) {
+    assert.match(prompt, /\{"operation":"summary"\}/);
+    assert.match(prompt, /\{"operation":"read","paths":\["package.json","README.md"\]\}/);
+    assert.match(prompt, /Never put repository_id, commands, argv, shell/);
+    assert.match(prompt, /protocol_version, job_id, repository, user_intent/);
+  }
+
+  const review = chatGptCodexReviewPrompt({ run_id: `TASK:${"b".repeat(64)}`, result_bundle_sha256: "c".repeat(64), published_commit_sha: "d".repeat(40), pull_request_url: "https://github.com/example/repo/pull/1", review_round: 1 }, { exact: true });
+  assert.match(review, /closed WebVerdictEnvelope/);
+  assert.match(review, /Only REVISE may include repair_operations/);
+  assert.match(review, /create_file, replace_file, or delete_file/);
 });
 
 test("successful semantic provider output without measurable usage fails closed", async () => {
