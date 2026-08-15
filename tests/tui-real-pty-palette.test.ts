@@ -93,7 +93,7 @@ test("real PTY exposes slash palette immediately and preserves completion plus c
   const transcript = visible(result.transcript);
   assert.equal(result.timed_out, false, transcript);
   assert.equal(result.exit_code, 0, transcript);
-  assert.match(transcript, /\/new\s+Start a collaborative PAIR task/);
+  assert.match(transcript, /\/new\s+PAIR: collaborate on a task/);
   assert.match(transcript, /> \/new /);
   assert.match(transcript, /accepted:PTY exact command goal/);
   assert.match(transcript, /> \/status/);
