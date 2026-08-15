@@ -41,6 +41,18 @@ test("authoritative docs freeze local one-authorization prompt-only workflow", a
   }
 });
 
+test("the first normal goal may trigger official ChatGPT authorization without a manual connect command", async () => {
+  const [interactive, bridge] = await Promise.all([
+    text("src/tui/interactive-app.ts"),
+    text("src/web-bridge/chatgpt-codex-bridge.ts"),
+  ]);
+
+  assert.match(interactive, /if \(isLocal\(\)\) \{\s+if \(bridge\) return true;/s);
+  assert.doesNotMatch(interactive, /if \(isLocal\(\)\) \{[^}]*Run \/web connect to authorize/s);
+  assert.match(bridge, /createAuthoringJob[\s\S]*ensureAuthorizedForProviderTurn/);
+  assert.match(bridge, /before durable task creation/i);
+});
+
 test("normal path keeps mutation and shipment authority local and human-owned", async () => {
   const contract = await text("docs/user-experience-contract.md");
   const bridge = await text("docs/web-bridge.md");
