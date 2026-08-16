@@ -56,6 +56,13 @@ test("provider benchmark fails closed when the event audit is missing, ambiguous
   );
 });
 
+test("provider benchmark audit bound and item visibility stay aligned with CodexSdkAgentClient", async () => {
+  const source = await readFile(path.resolve("src/agent/codex-sdk-client.ts"), "utf8");
+  assert.match(source, /const MAX_PUBLIC_EVENTS = 256;/);
+  assert.match(source, /case "item\.completed"[\s\S]*recordEvent\(event\.item\.type\)/);
+  assert.match(source, /case "item\.started"[\s\S]*case "item\.updated"[\s\S]*recordEvent\(event\.item\.type\)/);
+});
+
 test("provider benchmark runner enforces the prompt-only event audit before accepting output", async () => {
   const source = await readFile(path.resolve("scripts/benchmark-semantic-provider.mts"), "utf8");
   assert.match(source, /assertPromptOnlySemanticBenchmarkTurn\(response\.public_events\)/);
