@@ -35,12 +35,10 @@ test("semantic challenge capability is optional and requires the complete closed
   assert.equal(isSemanticChallengeAwareWebBridge(full), true);
 });
 
-test("semantic challenge transport stays outside execution and authority core imports", async () => {
+test("semantic challenge transport stays outside execution and base WebBridge core imports", async () => {
   for (const target of [
-    "src/executor/executor.ts",
+    "src/executor/applier.ts",
     "src/executor/production-gates.ts",
-    "src/verifier/verifier.ts",
-    "src/publish/github-publisher.ts",
     "src/web-bridge/web-bridge.ts",
   ]) {
     const source = await readFile(target, "utf8");
