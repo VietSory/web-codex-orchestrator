@@ -6,7 +6,7 @@ import test from "node:test";
 import type { AgentLimits } from "../src/config/contracts.js";
 import { createSemanticChallengeRequest } from "../src/semantic/blind-challenge.js";
 import { ChatGptCodexSemanticChallengeTransport } from "../src/web-bridge/chatgpt-codex-semantic-challenge-transport.js";
-import { ChatGptCodexSemanticClient } from "../src/web-bridge/chatgpt-codex-semantic-client.js";
+import { CHATGPT_CODEX_CHALLENGE_PHASE_MARKER, ChatGptCodexSemanticClient } from "../src/web-bridge/chatgpt-codex-semantic-client.js";
 
 const profile: any = { model: "gpt-5.6-sol", reasoning_effort: "high" };
 const limits: AgentLimits = {
@@ -54,7 +54,7 @@ function blindDirectories() {
 function transportWithAgent(
   turn: (request: any, call: number) => Promise<any>,
   customLimits = limits,
-  extras: { beforeTurn?: () => Promise<void>; now?: () => Date; directories?: ReturnType<typeof blindDirectories> } = {},
+  extras: { now?: () => Date; directories?: ReturnType<typeof blindDirectories> } = {},
 ) {
   let calls = 0;
   const requests: any[] = [];
@@ -73,7 +73,6 @@ function transportWithAgent(
     limits: customLimits,
     scratchDirectory: directories.scratchDirectory,
     authorityDirectory: directories.authorityDirectory,
-    ...(extras.beforeTurn ? { beforeTurn: extras.beforeTurn } : {}),
     now: extras.now ?? (() => new Date("2026-08-16T10:00:00.000Z")),
   });
   return { transport, requests, directories, calls: () => calls };
@@ -188,27 +187,27 @@ test("Web-A candidate bytes in either provider filesystem root fail before a bli
   assert.equal(fixture.calls(), 0);
 });
 
-test("beforeTurn cannot inject Web-A bytes after the first blindness check", async () => {
+test("semantic client itself refuses challenge filesystem candidate bytes even without the transport precheck", async () => {
   const directories = blindDirectories();
-  let callbackCalls = 0;
-  const fixture = transportWithAgent(
-    async () => { throw new Error("provider must not be called"); },
-    limits,
-    {
-      directories,
-      beforeTurn: async () => {
-        callbackCalls += 1;
-        writeFileSync(path.join(directories.scratchDirectory, "candidate-marker.txt"), "WEB_A_PRIVATE_CANDIDATE", "utf8");
-      },
-    },
+  writeFileSync(path.join(directories.scratchDirectory, "web-a-candidate.txt"), "WEB_A_PRIVATE_CANDIDATE", "utf8");
+  let calls = 0;
+  const client = new ChatGptCodexSemanticClient({
+    async checkAvailability() {},
+    async turn() { calls += 1; throw new Error("agent must not run"); },
+  } as any, 60);
+  await assert.rejects(
+    client.turn({
+      profile,
+      prompt: `${CHATGPT_CODEX_CHALLENGE_PHASE_MARKER}\nblind challenger boundary test`,
+      scratchDirectory: directories.scratchDirectory,
+      authorityDirectory: directories.authorityDirectory,
+    }),
+    /CHALLENGE_FILESYSTEM_INVALID.*scratch.*must remain empty/i,
   );
-  const identity = await fixture.transport.createSemanticChallengeJob(request, "challenge-provider-before-turn-fs");
-  await assert.rejects(fixture.transport.waitForSemanticChallengeAction(identity.job_id, 0), /scratch directory must remain empty and challenge-only/i);
-  assert.equal(callbackCalls, 1);
-  assert.equal(fixture.calls(), 0);
+  assert.equal(calls, 0);
 });
 
-test("concurrent and reentrant waits cannot duplicate one provider side effect", async () => {
+test("concurrent waits cannot duplicate one provider side effect", async () => {
   const directories = blindDirectories();
   let release!: () => void;
   const blocked = new Promise<void>((resolve) => { release = resolve; });

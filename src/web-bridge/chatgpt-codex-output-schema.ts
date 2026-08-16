@@ -1,6 +1,7 @@
 export const CHATGPT_CODEX_PROTOCOL_VERSION = "wco-chatgpt-codex-v1" as const;
+export const CHATGPT_CODEX_CHALLENGE_PAYLOAD_MAX_CHARS = 2 * 1024 * 1024;
 
-function providerSchema(kinds: readonly string[]) {
+function providerSchema(kinds: readonly string[], payloadMaxLength?: number) {
   return {
     type: "object",
     additionalProperties: false,
@@ -8,7 +9,7 @@ function providerSchema(kinds: readonly string[]) {
     properties: {
       protocol_version: { type: "string", const: CHATGPT_CODEX_PROTOCOL_VERSION },
       kind: { type: "string", enum: kinds },
-      payload_json: { type: "string" },
+      payload_json: { type: "string", ...(payloadMaxLength === undefined ? {} : { maxLength: payloadMaxLength }) },
     },
   } as const;
 }
@@ -29,7 +30,7 @@ export const CHATGPT_CODEX_REVIEW_KIND = "web_verdict" as const;
 export const CHATGPT_CODEX_CHALLENGE_KINDS = ["repository_command", "semantic_understanding_sealed"] as const;
 export const CHATGPT_CODEX_AUTHOR_OUTPUT_SCHEMA = providerSchema(CHATGPT_CODEX_AUTHOR_KINDS);
 export const CHATGPT_CODEX_REVIEW_OUTPUT_SCHEMA = providerSchema([CHATGPT_CODEX_REVIEW_KIND] as const);
-export const CHATGPT_CODEX_CHALLENGE_OUTPUT_SCHEMA = providerSchema(CHATGPT_CODEX_CHALLENGE_KINDS);
+export const CHATGPT_CODEX_CHALLENGE_OUTPUT_SCHEMA = providerSchema(CHATGPT_CODEX_CHALLENGE_KINDS, CHATGPT_CODEX_CHALLENGE_PAYLOAD_MAX_CHARS);
 
 /**
  * Compatibility parser schema for stored/test fixtures only. Production
