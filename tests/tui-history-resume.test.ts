@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createRunLedger, writeRunLedger } from "../src/orchestration/ledger.js";
+import { pauseRun } from "../src/orchestration/controller.js";
+import { createRunLedger, readRunLedger, writeRunLedger } from "../src/orchestration/ledger.js";
 import type { RunReceipt } from "../src/run/contracts.js";
 import { writeRunReceipt } from "../src/run/run-store.js";
 import { readLocalWorkerSession, type LocalWorkerSession } from "../src/web-bridge/local-worker.js";
@@ -101,6 +102,46 @@ test("history resume re-attests the canonical run receipt, ledger, and artifacts
   assert.equal(current?.goal, session.goal);
 });
 
+test("history resume clears a PAIR pause before publishing the restored current focus", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "wco-history-paused-"));
+  const artifacts = path.join(state, "resume-artifacts");
+  await mkdir(artifacts, { recursive: true });
+  const taskArchive = path.join(artifacts, "task-bundle.zip");
+  const webPack = path.join(artifacts, "web-pack.zip");
+  await Promise.all([writeFile(taskArchive, "task"), writeFile(webPack, "pack")]);
+  const session = durableSession("IMPLEMENTATION_REGISTERED", taskArchive, webPack);
+  await writeCanonicalAuthority(state, session);
+  await pauseRun(state, session.run_id!, "saved from an earlier interactive session");
+  assert.equal((await readRunLedger(state, session.run_id!))?.paused, true);
+
+  await restoreLocalTaskHistoryFocus(state, "repo", session);
+
+  assert.equal((await readRunLedger(state, session.run_id!))?.paused, false);
+  assert.equal((await readLocalWorkerSession(state, "repo"))?.session_id, session.session_id);
+});
+
+test("failed current-focus publication restores the exact pre-resume PAIR ledger", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "wco-history-focus-rollback-"));
+  const artifacts = path.join(state, "resume-artifacts");
+  await mkdir(artifacts, { recursive: true });
+  const taskArchive = path.join(artifacts, "task-bundle.zip");
+  const webPack = path.join(artifacts, "web-pack.zip");
+  await Promise.all([writeFile(taskArchive, "task"), writeFile(webPack, "pack")]);
+  const session = durableSession("IMPLEMENTATION_REGISTERED", taskArchive, webPack);
+  await writeCanonicalAuthority(state, session);
+  await pauseRun(state, session.run_id!, "preserve this exact pause");
+  const before = await readRunLedger(state, session.run_id!);
+  assert.ok(before?.paused);
+
+  // Force atomicWriteJson(target) to fail only after the run has been safely
+  // unpaused inside the focus-switch transaction.
+  await mkdir(path.join(state, "bridge", "sessions", "repo.json"), { recursive: true });
+
+  await assert.rejects(restoreLocalTaskHistoryFocus(state, "repo", session));
+  const after = await readRunLedger(state, session.run_id!);
+  assert.deepEqual(after, before, "failed focus commit must restore the exact durable PAIR ledger bytes/semantics");
+});
+
 test("history resume refuses a history record whose repository base no longer matches canonical run authority", async () => {
   const state = await mkdtemp(path.join(os.tmpdir(), "wco-history-run-mismatch-"));
   const artifacts = path.join(state, "resume-artifacts");
@@ -111,7 +152,7 @@ test("history resume refuses a history record whose repository base no longer ma
   const session = durableSession("IMPLEMENTATION_REGISTERED", taskArchive, webPack);
   await writeCanonicalAuthority(state, session, { base_commit: "c".repeat(40) });
 
-  await assert.rejects(restoreLocalTaskHistoryFocus(state, "repo", session), /canonical run authority|repository base/i);
+  await assert.rejects(restoreLocalTaskHistoryFocus(state, "repo", session), /canonical run receipt|repository base/i);
   assert.equal(await readLocalWorkerSession(state, "repo"), null);
 });
 
