@@ -8,24 +8,36 @@ import { ExecutionError } from "../src/execution/errors.js";
 import { acquireTicketFileLock, TicketFileLockError } from "../src/shared/ticket-file-lock.js";
 
 const DIGEST = "d".repeat(64);
+const STALE = `${JSON.stringify({ pid: 2_147_483_647, nonce: "00000000-0000-4000-8000-000000000000", timestamp: "2026-01-01T00:00:00.000Z" })}\n`;
 
 async function temporaryRoot(prefix: string): Promise<string> {
   return await mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
-test("execution lock reclaims a well-formed lock owned by a dead process", async (t) => {
+test("execution lock fails closed on a well-formed stale owner instead of stealing authority", async (t) => {
   const root = await temporaryRoot("wco-execution-lock-stale-");
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(path.join(root, "locks"));
   const target = executionLockPath(root, DIGEST);
-  await writeFile(target, `${JSON.stringify({ pid: 2_147_483_647, nonce: "00000000-0000-4000-8000-000000000000", timestamp: "2026-01-01T00:00:00.000Z" })}\n`, { mode: 0o600 });
+  await writeFile(target, STALE, { mode: 0o600 });
 
-  const lock = await acquireExecutionLock(root, DIGEST);
-  const recovered = JSON.parse(await readFile(target, "utf8")) as { pid: number; nonce: string };
-  assert.equal(recovered.pid, process.pid);
-  assert.notEqual(recovered.nonce, "00000000-0000-4000-8000-000000000000");
-  await lock.release();
-  await assert.rejects(readFile(target, "utf8"), (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT");
+  await assert.rejects(
+    acquireExecutionLock(root, DIGEST),
+    (error: unknown) => error instanceof ExecutionError && error.code === "EXECUTION_LOCKED" && /never auto-steals authority locks/i.test(error.message),
+  );
+  assert.equal(await readFile(target, "utf8"), STALE);
+});
+
+test("two stale-lock contenders both fail without deleting or replacing the stale inode", async (t) => {
+  const root = await temporaryRoot("wco-execution-lock-stale-race-");
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(path.join(root, "locks"));
+  const target = executionLockPath(root, DIGEST);
+  await writeFile(target, STALE, { mode: 0o600 });
+
+  const outcomes = await Promise.allSettled([acquireExecutionLock(root, DIGEST), acquireExecutionLock(root, DIGEST)]);
+  assert.ok(outcomes.every((outcome) => outcome.status === "rejected" && outcome.reason instanceof ExecutionError && outcome.reason.code === "EXECUTION_LOCKED"));
+  assert.equal(await readFile(target, "utf8"), STALE);
 });
 
 test("execution lock still rejects a second live owner", async (t) => {
