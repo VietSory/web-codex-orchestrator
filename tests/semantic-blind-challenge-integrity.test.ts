@@ -41,6 +41,10 @@ function observations() {
   }];
 }
 
+function citation() {
+  return { path: "src/recovery.ts", content_sha256: contentSha, start_byte: 0, end_byte_exclusive: bytes.length };
+}
+
 function sealed(active: ReturnType<typeof request>) {
   const goalSha = semanticChallengePrompt(active).match(/Original goal SHA-256: ([a-f0-9]{64})/)?.[1];
   assert.ok(goalSha);
@@ -52,12 +56,26 @@ function sealed(active: ReturnType<typeof request>) {
       challenge_id: active.challenge_id,
       repository,
       original_goal_sha256: goalSha,
-      findings: [{
-        finding_id: "RECOVERY_BOUNDARY",
-        category: "invariant",
-        statement: "Recovery authority must remain bound to durable state.",
-        citations: [{ path: "src/recovery.ts", content_sha256: contentSha, start_byte: 0, end_byte_exclusive: bytes.length }],
-      }],
+      findings: [
+        {
+          finding_id: "RECOVERY_COMPONENT",
+          category: "component",
+          statement: "Recovery state is part of the affected semantic path.",
+          citations: [citation()],
+        },
+        {
+          finding_id: "RECOVERY_BOUNDARY",
+          category: "invariant",
+          statement: "Recovery authority must remain bound to durable state.",
+          citations: [citation()],
+        },
+        {
+          finding_id: "RECOVERY_RISK",
+          category: "risk",
+          statement: "Continuation can violate recovery authority if durable state is bypassed.",
+          citations: [citation()],
+        },
+      ],
       unresolved_questions: [],
     },
   };
