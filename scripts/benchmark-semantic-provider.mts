@@ -10,6 +10,7 @@ import {
   type SemanticBenchmarkProvider,
 } from "../src/benchmark/semantic-challenge-evaluation.js";
 import { parseSemanticBenchmarkCorpus } from "../src/benchmark/semantic-corpus.js";
+import { assertPromptOnlySemanticBenchmarkTurn } from "../src/benchmark/semantic-provider-event-policy.js";
 import { loadTrustedConfig } from "../src/config/config-loader.js";
 import type { AgentLimits, AgentProfile } from "../src/config/contracts.js";
 import { defaultAgentLimits } from "../src/execution/budget.js";
@@ -200,6 +201,7 @@ function createArmProvider(options: {
       accepted_bundle_path: options.authorityDirectory,
       signal: options.budget.turnSignal(),
     });
+    assertPromptOnlySemanticBenchmarkTurn(response.public_events);
     if (!response.thread_id || options.observedThreadIds.has(response.thread_id)) throw new Error("semantic provider benchmark requires one fresh provider thread per arm/case turn.");
     options.observedThreadIds.add(response.thread_id);
     const input = measured(response.usage?.input_tokens, "input-token");
@@ -268,7 +270,7 @@ try {
   }
   const comparison = compareSemanticBenchmarkArms(paired.baseline, paired.challenger);
   console.log(JSON.stringify({
-    benchmark_version: "1.1",
+    benchmark_version: "1.2",
     kind: "semantic-provider-ab",
     provider: "local-chatgpt-codex",
     source_head: sourceHead,
@@ -282,7 +284,8 @@ try {
     samples_per_case_per_arm: 1,
     fresh_provider_thread_per_turn: true,
     total_provider_turns: budget.usage.turns,
-    hidden_gold_exposed_to_provider: false,
+    hidden_gold_in_prompt: false,
+    provider_local_tool_activity: "rejected_if_observed_or_event_audit_truncated",
     provider_filesystem_context: "separate_empty_disjoint_temporary_roots_per_arm",
     challenger_policy_source: "runtime_semanticChallengePrompt_core",
     lifecycle_mutation: false,
@@ -292,7 +295,7 @@ try {
       independent_challenger: { ...paired.challenger, usage: challenger.usage, policy_sha256: challenger.policy_sha256 },
     },
     comparison,
-    interpretation: "Provider-backed paired policy A/B on the same public semantic corpus. Case order alternates which arm runs first to reduce time/load/cache confounding. The challenger arm derives its maintainer reasoning text from the runtime blind-challenge prompt. One fresh provider thread per case/arm measures directional semantic-selection quality; it does not prove end-to-end task completion or production authority uplift.",
+    interpretation: "Provider-backed paired policy A/B on the same public semantic corpus. Case order alternates which arm runs first to reduce time/load/cache confounding. The challenger arm derives its maintainer reasoning text from the runtime blind-challenge prompt. Accepted turns contain no observed Codex local/external tool events and fail closed if the bounded public event audit could be truncated. One fresh provider thread per case/arm measures directional semantic-selection quality; it does not prove end-to-end task completion or production authority uplift.",
   }, null, 2));
 } finally {
   await rm(root, { recursive: true, force: true });
