@@ -57,7 +57,12 @@ function friendlySetupError(error: unknown): string {
   return message;
 }
 
-export async function runSetupCommand(args: string[], cwd = process.cwd(), suppliedIo: SetupCommandIo = defaultIo): Promise<number> {
+export async function runSetupCommand(
+  args: string[],
+  cwd = process.cwd(),
+  suppliedIo: SetupCommandIo = defaultIo,
+  platform: NodeJS.Platform = process.platform,
+): Promise<number> {
   let yes = false, overwrite = false, configPath: string | undefined, stateDirectory: string | undefined;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
@@ -73,7 +78,7 @@ export async function runSetupCommand(args: string[], cwd = process.cwd(), suppl
     }
   }
 
-  const executionHost = setupExecutionHostStatus();
+  const executionHost = setupExecutionHostStatus(platform);
   if (executionHost.severity !== "ok") {
     suppliedIo.error(`${executionHost.value}\n${executionHost.guidance ?? "Use Linux/WSL for the normal WCO workflow."}\nNo WCO setup, ChatGPT authorization, or task state was created.\n`);
     return 1;
