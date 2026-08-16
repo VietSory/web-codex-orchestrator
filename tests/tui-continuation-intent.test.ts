@@ -6,7 +6,7 @@ const source = await readFile(new URL("../src/tui/interactive-app.ts", import.me
 
 test("continue never silently leaves a blocked current task for older history", () => {
   const start = source.indexOf("const continueBestTask = async");
-  const end = source.indexOf("const currentTaskIsPaused", start);
+  const end = source.indexOf("const resumeFromHistory", start);
   const block = source.slice(start, end);
   assert.ok(start >= 0 && end > start);
   assert.match(block, /latest\?\.state === "BLOCKED"/);
@@ -14,6 +14,17 @@ test("continue never silently leaves a blocked current task for older history", 
   assert.match(block, /Use \/resume only if you intentionally want to switch/i);
   assert.doesNotMatch(block, /recentTaskHistory\(\)|resumeHistoryItem\(/,
     "`/continue` must never change focus by selecting historical work implicitly");
+});
+
+test("resume remains explicit saved-task selection instead of a second paused-current continuation command", () => {
+  const start = source.indexOf("const resumeFromHistory = async");
+  const end = source.indexOf("const displayUserStatus", start);
+  const block = source.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+  assert.match(block, /recentTaskHistory\(\)/);
+  assert.match(block, /Saved tasks/);
+  assert.doesNotMatch(block, /currentTaskIsPaused|clearPairPauseIfNeeded\(latest\).*launchSavedTask/s);
+  assert.doesNotMatch(source, /const currentTaskIsPaused/);
 });
 
 test("blocked tasks are unfinished for replacement and resume-switch confirmation", () => {
