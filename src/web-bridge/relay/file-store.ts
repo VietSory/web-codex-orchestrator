@@ -24,29 +24,43 @@ export class RelayFileStore {
 
   private async safeRoot(): Promise<string> {
     const absolute = path.resolve(this.root);
-    const parent = path.dirname(absolute);
-    const assertCanonicalDirectory = async (target: string, label: string): Promise<void> => {
-      const stat = await lstat(target).catch((error: unknown) => {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new WebBridgeError("RELAY_STORE_ROOT_UNSAFE", `${label} does not exist.`);
-        throw error;
-      });
+    const assertCanonicalDirectory = async (target: string): Promise<void> => {
+      const stat = await lstat(target);
       if (!stat.isDirectory() || stat.isSymbolicLink() || await realpath(target) !== target) {
-        throw new WebBridgeError("RELAY_STORE_ROOT_UNSAFE", `${label} is not canonical.`);
+        throw new WebBridgeError("RELAY_STORE_ROOT_UNSAFE", `Relay store ancestry is not canonical: ${target}`);
       }
     };
 
-    await assertCanonicalDirectory(parent, "Relay store parent");
-    let stat = await lstat(absolute).catch((error: unknown) => {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-      throw error;
-    });
-    if (!stat) {
-      try { await mkdir(absolute, { mode: 0o700 }); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
-      stat = await lstat(absolute);
+    const missing: string[] = [];
+    let current = absolute;
+    while (true) {
+      const stat = await lstat(current).catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error;
+      });
+      if (stat) {
+        if (!stat.isDirectory() || stat.isSymbolicLink() || await realpath(current) !== current) {
+          throw new WebBridgeError("RELAY_STORE_ROOT_UNSAFE", `Relay store ancestry is not canonical: ${current}`);
+        }
+        break;
+      }
+      const parent = path.dirname(current);
+      if (parent === current) throw new WebBridgeError("RELAY_STORE_ROOT_UNSAFE", "Relay store has no canonical existing ancestor.");
+      missing.push(path.basename(current));
+      current = parent;
     }
-    if (!stat.isDirectory() || stat.isSymbolicLink() || await realpath(absolute) !== absolute) throw new WebBridgeError("RELAY_STORE_ROOT_UNSAFE", "Relay store root is not canonical.");
-    await assertCanonicalDirectory(parent, "Relay store parent");
+
+    for (const segment of missing.reverse()) {
+      await assertCanonicalDirectory(current);
+      const next = path.join(current, segment);
+      try { await mkdir(next, { mode: 0o700 }); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+      await assertCanonicalDirectory(current);
+      await assertCanonicalDirectory(next);
+      current = next;
+    }
+
+    await assertCanonicalDirectory(absolute);
     await chmod(absolute, 0o700).catch(() => undefined);
     return absolute;
   }
