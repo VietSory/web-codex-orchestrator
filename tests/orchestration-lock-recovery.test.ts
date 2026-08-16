@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
@@ -21,7 +21,7 @@ async function exitedPid(): Promise<number> {
   return pid;
 }
 
-async function fixture(t: Parameters<typeof test>[1] extends (...args: infer A) => unknown ? A[0] : never) {
+async function fixture(t: TestContext) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "wco-orchestration-lock-recovery-")));
   t.after(async () => fs.rm(root, { recursive: true, force: true }));
   const paths = orchestrationPaths(root, "lock-recovery", SHA);
