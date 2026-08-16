@@ -1,7 +1,8 @@
-import { lstat, mkdir, readdir, realpath, unlink } from "node:fs/promises";
+import { lstat, readdir, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
 import { readRunLedger } from "../orchestration/ledger.js";
 import { atomicWriteJson, readRunReceipt } from "../run/run-store.js";
+import { ensureCanonicalDirectory } from "../shared/safe-directory.js";
 import { readStableFile } from "../shared/stable-file.js";
 import { contentDigest, parseWebContractEnvelope } from "./contracts.js";
 import type { LocalWorkerSession } from "./local-worker.js";
@@ -66,11 +67,25 @@ async function assertBoundedStateArtifact(stateDirectory: string, target: string
   if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error(`WEB_HISTORY_NOT_RESUMABLE: ${label} is outside the WCO state root.`);
 }
 
-async function pruneForInsert(history: string): Promise<void> {
-  await mkdir(history, { recursive: true, mode: 0o700 });
+async function prepareHistoryDirectory(stateDirectory: string): Promise<string> {
+  const stateRoot = path.resolve(stateDirectory);
+  const [stateInfo, canonical] = await Promise.all([lstat(stateRoot), realpath(stateRoot)]);
+  if (!stateInfo.isDirectory() || stateInfo.isSymbolicLink() || canonical !== stateRoot) throw new Error("WEB_HISTORY_PATH_UNSAFE: state directory is unsafe.");
+  return await ensureCanonicalDirectory(historyDirectory(stateRoot), "WCO session history");
+}
+
+async function prepareSessionDirectory(stateDirectory: string): Promise<string> {
+  const stateRoot = path.resolve(stateDirectory);
+  const [stateInfo, canonical] = await Promise.all([lstat(stateRoot), realpath(stateRoot)]);
+  if (!stateInfo.isDirectory() || stateInfo.isSymbolicLink() || canonical !== stateRoot) throw new Error("WEB_HISTORY_PATH_UNSAFE: state directory is unsafe.");
+  return await ensureCanonicalDirectory(path.join(stateRoot, "bridge", "sessions"), "WCO session storage");
+}
+
+async function pruneForInsert(stateDirectory: string): Promise<string> {
+  const history = await prepareHistoryDirectory(stateDirectory);
   const names = (await readdir(history)).filter((name) => HISTORY_NAME.test(name));
   if (names.length > HISTORY_SCAN_HARD_LIMIT) throw new Error("WEB_HISTORY_LIMIT: session history exceeds its safe maintenance bound.");
-  if (names.length < HISTORY_MAX_FILES) return;
+  if (names.length < HISTORY_MAX_FILES) return history;
 
   const entries: Array<{ name: string; mtimeMs: number }> = [];
   for (const name of names) {
@@ -89,14 +104,14 @@ async function pruneForInsert(history: string): Promise<void> {
   entries.sort((a, b) => a.mtimeMs - b.mtimeMs || a.name.localeCompare(b.name));
   const removeCount = Math.max(0, entries.length - HISTORY_MAX_FILES + 1);
   for (const entry of entries.slice(0, removeCount)) await unlink(path.join(history, entry.name)).catch(() => undefined);
+  return history;
 }
 
 export async function archiveLocalTaskHistory(stateDirectory: string, session: LocalWorkerSession): Promise<void> {
   if (!CURRENT_SESSION_ID.test(session.session_id)) throw new Error("WEB_SESSION_ID_INVALID: session identity is invalid.");
   const serializedBytes = Buffer.byteLength(JSON.stringify(session), "utf8");
   if (serializedBytes > HISTORY_ENTRY_MAX_BYTES) throw new Error("WEB_HISTORY_LIMIT: session history entry exceeds its safe bound.");
-  const history = historyDirectory(stateDirectory);
-  await pruneForInsert(history);
+  const history = await pruneForInsert(stateDirectory);
   await atomicWriteJson(path.join(history, `${session.session_id}.json`), session);
 }
 
@@ -122,15 +137,6 @@ export async function listLocalTaskHistory(stateDirectory: string, repositoryId:
   return values.sort((a, b) => b.updated_at.localeCompare(a.updated_at)).slice(0, Math.min(Math.max(1, limit), 100));
 }
 
-/**
- * Move an already-durable historical task back into current focus without ever
- * treating the history JSON itself as workflow authority. The selected history
- * item is accepted only when its exact canonical run receipt, run ledger, and
- * implementation artifacts can all be re-attested under the current WCO state
- * root. Earlier authoring-only history intentionally remains inspectable but
- * not resumable because its external authoring job cannot be proven from local
- * durable authority alone.
- */
 export async function restoreLocalTaskHistoryFocus(
   stateDirectory: string,
   repositoryId: string,
@@ -163,8 +169,9 @@ export async function restoreLocalTaskHistoryFocus(
   ]);
 
   const restored: LocalWorkerSession = { ...session, updated_at: new Date().toISOString() };
+  const sessionDirectory = await prepareSessionDirectory(stateDirectory);
   const target = currentSessionPath(stateDirectory, repositoryId);
-  await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+  if (path.dirname(target) !== sessionDirectory) throw new Error("WEB_HISTORY_PATH_UNSAFE: restored session path escaped managed session storage.");
   await atomicWriteJson(target, restored);
   return restored;
 }
