@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -159,7 +160,9 @@ if (!profile) throw new Error("Semantic provider benchmark requires the configur
 const limits = config.agents?.limits ?? defaultAgentLimits();
 
 const corpusPath = path.resolve("tests/fixtures/semantic-understanding/cases.json");
-const corpus = parseSemanticBenchmarkCorpus(JSON.parse(await readFile(corpusPath, "utf8")) as unknown);
+const corpusBytes = await readFile(corpusPath);
+const corpusSha256 = crypto.createHash("sha256").update(corpusBytes).digest("hex");
+const corpus = parseSemanticBenchmarkCorpus(JSON.parse(corpusBytes.toString("utf8")) as unknown);
 const requiredTurns = corpus.cases.length * 2;
 if (limits.maximum_total_agent_turns < requiredTurns) {
   throw new Error(`Semantic provider benchmark requires ${requiredTurns} provider turns for two equal arms, but configured maximum_total_agent_turns is ${limits.maximum_total_agent_turns}.`);
@@ -187,9 +190,13 @@ try {
     benchmark_version: "1.0",
     kind: "semantic-provider-ab",
     provider: "local-chatgpt-codex",
+    codex_runtime_version: runtime.package_version,
     model: profile.model,
     reasoning_effort: profile.reasoning_effort,
     corpus_cases: corpus.cases.length,
+    corpus_sha256: corpusSha256,
+    arm_order: ["author_style", "independent_challenger"],
+    samples_per_case_per_arm: 1,
     total_provider_turns: budget.usage.turns,
     hidden_gold_exposed_to_provider: false,
     lifecycle_mutation: false,
@@ -199,7 +206,7 @@ try {
       independent_challenger: { ...challenger.result, usage: challenger.usage },
     },
     comparison,
-    interpretation: "Provider-backed policy A/B on the same public semantic corpus. This measures independent semantic selection quality, not end-to-end task completion or production authority.",
+    interpretation: "Provider-backed policy A/B on the same public semantic corpus. One sample per case/arm measures directional independent semantic-selection quality; it does not prove end-to-end task completion or production authority uplift.",
   }, null, 2));
 } finally {
   await rm(root, { recursive: true, force: true });
