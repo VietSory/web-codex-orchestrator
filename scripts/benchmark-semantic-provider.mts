@@ -11,6 +11,7 @@ import {
 } from "../src/benchmark/semantic-challenge-evaluation.js";
 import { parseSemanticBenchmarkCorpus } from "../src/benchmark/semantic-corpus.js";
 import { assertPromptOnlySemanticBenchmarkTurn } from "../src/benchmark/semantic-provider-event-policy.js";
+import { qualifySemanticProviderBenchmark } from "../src/benchmark/semantic-provider-qualification.js";
 import { loadTrustedConfig } from "../src/config/config-loader.js";
 import type { AgentLimits, AgentProfile } from "../src/config/contracts.js";
 import { defaultAgentLimits } from "../src/execution/budget.js";
@@ -269,8 +270,15 @@ try {
     throw new Error("semantic provider benchmark did not execute exactly one fresh provider turn per case and arm.");
   }
   const comparison = compareSemanticBenchmarkArms(paired.baseline, paired.challenger);
+  const qualification = qualifySemanticProviderBenchmark({
+    baseline: paired.baseline,
+    challenger: paired.challenger,
+    comparison,
+    baseline_usage: author.usage,
+    challenger_usage: challenger.usage,
+  });
   console.log(JSON.stringify({
-    benchmark_version: "1.2",
+    benchmark_version: "1.3",
     kind: "semantic-provider-ab",
     provider: "local-chatgpt-codex",
     source_head: sourceHead,
@@ -295,8 +303,12 @@ try {
       independent_challenger: { ...paired.challenger, usage: challenger.usage, policy_sha256: challenger.policy_sha256 },
     },
     comparison,
-    interpretation: "Provider-backed paired policy A/B on the same public semantic corpus. Case order alternates which arm runs first to reduce time/load/cache confounding. The challenger arm derives its maintainer reasoning text from the runtime blind-challenge prompt. Accepted turns contain no observed Codex local/external tool events and fail closed if the bounded public event audit could be truncated. One fresh provider thread per case/arm measures directional semantic-selection quality; it does not prove end-to-end task completion or production authority uplift.",
+    qualification,
+    interpretation: "Provider-backed paired policy A/B on the same public semantic corpus. Case order alternates which arm runs first to reduce time/load/cache confounding. The challenger arm derives its maintainer reasoning text from the runtime blind-challenge prompt. Accepted turns contain no observed Codex local/external tool events and fail closed if the bounded public event audit could be truncated. Release qualification rejects newly introduced critical misses, aggregate critical-recall or weighted-quality regression, and extra provider-token cost without any measured semantic gain. One fresh provider thread per case/arm remains directional semantic-selection evidence; it does not prove end-to-end task completion or production authority uplift.",
   }, null, 2));
+  if (!qualification.pass) {
+    throw new Error(`Semantic provider benchmark qualification failed: ${qualification.reasons.join(", ")}.`);
+  }
 } finally {
   await rm(root, { recursive: true, force: true });
 }
