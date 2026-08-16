@@ -138,13 +138,22 @@ function parseFinding(value: unknown, label: string): SemanticChallengeFinding {
   return { finding_id, category: category as SemanticFindingCategory, statement, citations };
 }
 
-function challengeEvidencePayload(value: Omit<SemanticChallengeEvidence, "challenge_evidence_sha256">): unknown {
+function challengeEvidencePayload(value: Omit<SemanticChallengeEvidence, "challenge_evidence_sha256"> | SemanticChallengeEvidence): unknown {
   return {
     schema_version: value.schema_version,
     kind: value.kind,
     challenge_id: value.challenge_id,
     repository: value.repository,
     evidence_index_sha256: value.evidence_index.evidence_index_sha256,
+  };
+}
+
+function evidenceIndexPayload(index: SemanticEvidenceIndex): unknown {
+  return {
+    schema_version: index.schema_version,
+    kind: index.kind,
+    repository: index.repository,
+    observations: index.observations,
   };
 }
 
@@ -163,7 +172,10 @@ export function buildSemanticChallengeEvidence(options: { request: SemanticChall
 function assertChallengeEvidenceBinding(evidence: SemanticChallengeEvidence, request: SemanticChallengeRequest): void {
   if (!evidence || evidence.schema_version !== "1.0" || evidence.kind !== "wco-semantic-challenge-evidence") throw new Error("semantic challenge requires exact challenge-scoped evidence.");
   if (evidence.challenge_id !== request.challenge_id) throw new Error("semantic challenge evidence belongs to another challenge.");
+  if (!evidence.evidence_index || evidence.evidence_index.schema_version !== "1.0" || evidence.evidence_index.kind !== "wco-semantic-evidence-index") throw new Error("semantic challenge evidence index kind/version is invalid.");
   if (!sameRepository(evidence.repository, request.repository) || !sameRepository(evidence.evidence_index.repository, request.repository)) throw new Error("semantic challenge evidence repository binding drifted from the challenge.");
+  const expectedIndexDigest = digest(evidenceIndexPayload(evidence.evidence_index));
+  if (!SHA256.test(evidence.evidence_index.evidence_index_sha256) || evidence.evidence_index.evidence_index_sha256 !== expectedIndexDigest) throw new Error("semantic challenge evidence index changed after validation.");
   const expected = digest(challengeEvidencePayload(evidence));
   if (!SHA256.test(evidence.challenge_evidence_sha256) || evidence.challenge_evidence_sha256 !== expected) throw new Error("semantic challenge evidence receipt digest is invalid.");
 }
