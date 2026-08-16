@@ -85,7 +85,10 @@ try:
         wait_new(b"bye", status_at)
     elif scenario == "ctrlc":
         os.write(fd, b"\x03")
-        wait_new(b"safe-exit", first_prompt)
+        cancelled_at = wait_new(b"Input cancelled.", first_prompt)
+        prompt_after_cancel = wait_new(b"> ", cancelled_at + len(b"Input cancelled."))
+        os.write(fd, b"\x04")
+        wait_new(b"safe-exit", prompt_after_cancel)
     else:
         raise RuntimeError("unknown scenario: " + scenario)
 
@@ -179,11 +182,14 @@ test("real PTY preserves wrapped input across resize and redraws around backgrou
   assert.match(transcript, /bye/);
 });
 
-test("real PTY Ctrl+C releases raw stdin and exits through the safe-exit handshake", { skip: process.platform !== "linux" }, async () => {
+test("real PTY Ctrl+C cancels input and Ctrl+D exits through the safe-exit handshake", { skip: process.platform !== "linux" }, async () => {
   const result = await runPtyScenario("ctrlc");
   const transcript = visibleTranscript(result);
 
   assert.equal(result.timed_out, false, transcript);
   assert.equal(result.exit_code, 0, transcript);
-  assert.match(transcript, /safe-exit/);
+  const cancelled = transcript.indexOf("Input cancelled.");
+  const safeExit = transcript.indexOf("safe-exit", cancelled + 1);
+  assert.ok(cancelled >= 0, transcript);
+  assert.ok(safeExit > cancelled, transcript);
 });
