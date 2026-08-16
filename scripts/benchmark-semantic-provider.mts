@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, opendir, readFile, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { CodexSdkAgentClient } from "../src/agent/codex-sdk-client.js";
@@ -51,6 +51,29 @@ function measured(value: number | undefined, label: string): number {
   return value!;
 }
 
+async function assertEmptyCanonicalDirectory(target: string, label: string): Promise<string> {
+  const absolute = path.resolve(target);
+  const info = await lstat(absolute).catch(() => null);
+  if (!info || !info.isDirectory() || info.isSymbolicLink() || await realpath(absolute) !== absolute) throw new Error(`semantic provider benchmark ${label} directory is unsafe.`);
+  const directory = await opendir(absolute);
+  try {
+    if (await directory.read()) throw new Error(`semantic provider benchmark ${label} directory must remain empty.`);
+  } finally {
+    await directory.close().catch(() => undefined);
+  }
+  return absolute;
+}
+
+async function assertBenchmarkFilesystem(scratchDirectory: string, authorityDirectory: string): Promise<void> {
+  const scratch = path.resolve(scratchDirectory);
+  const authority = path.resolve(authorityDirectory);
+  if (scratch === authority || scratch.startsWith(`${authority}${path.sep}`) || authority.startsWith(`${scratch}${path.sep}`)) {
+    throw new Error("semantic provider benchmark filesystem roots must be independent.");
+  }
+  await assertEmptyCanonicalDirectory(scratch, "scratch");
+  await assertEmptyCanonicalDirectory(authority, "authority");
+}
+
 class ProviderBenchmarkBudget {
   readonly usage: UsageTotals = { turns: 0, input_tokens: 0, cached_input_tokens: 0, output_tokens: 0 };
   private readonly startedAt = Date.now();
@@ -81,15 +104,18 @@ class ProviderBenchmarkBudget {
 }
 
 function armPolicy(arm: "author_style" | "independent_challenger"): string {
+  const promptOnly = "Benchmark isolation: use only the public benchmark case in this prompt. Do not inspect the filesystem, shell, repository, environment, network, or any external source; do not attempt to discover hidden benchmark truth.";
   if (arm === "author_style") {
     return [
       MAINTAINER_AUTHORING_STANDARD,
+      promptOnly,
       "Benchmark role: behave like the primary Web-A semantic author deciding which available evidence is materially required before implementation authority could be sealed.",
       "Do not assume another reviewer will correct omissions later.",
     ].join("\n");
   }
   return [
     MAINTAINER_REVIEW_STANDARD,
+    promptOnly,
     "Benchmark role: behave like an independent Web-B challenger with no access to Web-A's candidate answer.",
     "Re-derive the needed understanding from the public evidence catalog, challenge tempting distractors, and reject unsupported assumptions independently.",
   ].join("\n");
@@ -127,6 +153,7 @@ async function runArm(options: {
     arm: options.arm,
     corpus: options.corpus,
     provider: async ({ prompt }) => {
+      await assertBenchmarkFilesystem(options.scratchDirectory, options.authorityDirectory);
       const response = await options.client.turn({
         role: "final_reviewer",
         model: options.profile.model,
@@ -205,6 +232,7 @@ try {
     samples_per_case_per_arm: 1,
     total_provider_turns: budget.usage.turns,
     hidden_gold_exposed_to_provider: false,
+    provider_filesystem_context: "empty_disjoint_temporary_roots",
     lifecycle_mutation: false,
     total_usage: budget.usage,
     arms: {
