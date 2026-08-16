@@ -85,11 +85,16 @@ export async function readLatestTrajectoryBoundSemanticChallengeEvidence(options
   stateDirectory: string;
   request: SemanticChallengeRequest;
 }): Promise<SemanticChallengeEvidenceSnapshot | null> {
-  const snapshot = await readLatestSemanticChallengeEvidenceSnapshot(options);
-  if (!snapshot) return null;
   const trajectory = await readSemanticChallengeTrajectory(options);
-  const receipt = trajectory.find((item) => item.receipt_sha256 === snapshot.trajectory_receipt_sha256);
-  if (!receipt) throw new Error("semantic challenge recovery evidence references a missing trajectory receipt.");
+  const observations = trajectory.filter((item) => item.event_type === "repository_observation");
+  const snapshot = await readLatestSemanticChallengeEvidenceSnapshot(options);
+  if (!snapshot) {
+    if (observations.length > 0) throw new Error("semantic challenge recovery found repository observations without durable evidence snapshots.");
+    return null;
+  }
+  if (snapshot.observation_count !== observations.length) throw new Error("semantic challenge recovery trajectory/evidence observation counts diverged.");
+  const receipt = observations.at(-1);
+  if (!receipt || receipt.receipt_sha256 !== snapshot.trajectory_receipt_sha256) throw new Error("semantic challenge recovery evidence does not reference the latest repository observation receipt.");
   assertTrajectoryObservationBinding({ request: options.request, evidence: snapshot.evidence, receipt });
   return snapshot;
 }
