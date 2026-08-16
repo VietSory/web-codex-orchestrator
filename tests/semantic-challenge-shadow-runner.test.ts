@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -128,6 +128,26 @@ test("shadow runner serializes a challenge before any duplicate provider side ef
   releaseFirstResolve();
   await assert.rejects(firstRun, /ended before sealed understanding/i);
   assert.deepEqual((await readSemanticChallengeTrajectory({ stateDirectory: value.stateDirectory, request: value.request })).map((receipt) => receipt.event_type), ["challenge_created"]);
+});
+
+test("unsafe execution-lock ancestry cannot create outside-state paths or provider jobs", async (t) => {
+  const value = await fixture(); t.after(async () => { await rm(value.root, { recursive: true, force: true }); });
+  const outside = path.join(value.root, "outside-lock-target");
+  await mkdir(outside);
+  await symlink(outside, path.join(value.stateDirectory, "bridge"), process.platform === "win32" ? "junction" : "dir");
+  let providerCreates = 0;
+  const transport: SemanticChallengeTransport = {
+    async createSemanticChallengeJob() { providerCreates += 1; return identity("must-not-create"); },
+    async waitForSemanticChallengeAction() { return null; },
+    async submitSemanticChallengeRepositoryResult() {},
+    async receiveSemanticUnderstanding() { return null; },
+  };
+  await assert.rejects(
+    runSemanticChallengeShadow({ transport, request: value.request, repositoryPath: value.repositoryPath, stateDirectory: value.stateDirectory }),
+    /lock ancestry is unsafe/i,
+  );
+  assert.equal(providerCreates, 0);
+  assert.deepEqual(await readdir(outside), [], "lock setup must not mkdir through an unsafe managed ancestor");
 });
 
 test("shadow runner requires contiguous remote action sequences before repository mutation", async (t) => {
