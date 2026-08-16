@@ -7,6 +7,7 @@ import { readStableFile } from "../shared/stable-file.js";
 import { acquireTicketFileLock, TicketFileLockError } from "../shared/ticket-file-lock.js";
 import type { RepositoryBinding } from "../web-bridge/contracts.js";
 import type { SemanticChallengeEvidence, SemanticChallengeRequest } from "./blind-challenge.js";
+import { assertCanonicalByteStrippedChallengeEvidence } from "./challenge-evidence-shape.js";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SAFE_REPOSITORY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -70,6 +71,7 @@ function challengeEvidencePayload(evidence: SemanticChallengeEvidence): unknown 
 }
 
 function assertEvidenceForRequest(evidence: SemanticChallengeEvidence, request: SemanticChallengeRequest): number {
+  assertCanonicalByteStrippedChallengeEvidence(evidence);
   if (!evidence || evidence.schema_version !== "1.0" || evidence.kind !== "wco-semantic-challenge-evidence") throw new Error("semantic challenge evidence snapshot requires canonical challenge evidence.");
   if (evidence.challenge_id !== request.challenge_id) throw new Error("semantic challenge evidence snapshot belongs to another challenge.");
   if (!sameRepository(evidence.repository, request.repository) || !sameRepository(evidence.evidence_index.repository, request.repository)) throw new Error("semantic challenge evidence snapshot repository binding drifted.");
