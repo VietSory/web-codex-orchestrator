@@ -84,6 +84,20 @@ async function prepareSessionDirectory(stateDirectory: string): Promise<string> 
   return await ensureCanonicalDirectory(path.join(stateRoot, "bridge", "sessions"), "WCO session storage");
 }
 
+async function currentSessionIdForConfirmation(target: string, repositoryId: string): Promise<string | null> {
+  const info = await lstat(target).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  });
+  if (!info) return null;
+  const { bytes } = await readStableFile(target, HISTORY_ENTRY_MAX_BYTES);
+  let parsed: unknown;
+  try { parsed = JSON.parse(bytes.toString("utf8")) as unknown; }
+  catch { throw new Error("WEB_HISTORY_NOT_RESUMABLE: current task focus is not valid JSON."); }
+  if (!validSession(parsed) || parsed.repository.repository_id !== repositoryId) throw new Error("WEB_HISTORY_NOT_RESUMABLE: current task focus is not a valid durable session for this repository.");
+  return parsed.session_id;
+}
+
 async function pruneForInsert(stateDirectory: string): Promise<string> {
   const history = await prepareHistoryDirectory(stateDirectory);
   const names = (await readdir(history)).filter((name) => HISTORY_NAME.test(name));
@@ -142,6 +156,7 @@ export async function restoreLocalTaskHistoryFocus(
   stateDirectory: string,
   repositoryId: string,
   session: LocalWorkerSession,
+  expectedCurrentSessionId?: string | null,
 ): Promise<LocalWorkerSession> {
   // Never treat history JSON itself as workflow authority. Resume first re-attests
   // the canonical run receipt, run ledger, repository base, and exact bounded
@@ -151,6 +166,16 @@ export async function restoreLocalTaskHistoryFocus(
     throw new Error("WEB_HISTORY_NOT_RESUMABLE: this task did not reach a locally re-attestable implementation checkpoint. Start a new follow-up task instead.");
   }
   return await withSessionFocusLock(stateDirectory, repositoryId, async () => {
+    const sessionDirectory = await prepareSessionDirectory(stateDirectory);
+    const target = currentSessionPath(stateDirectory, repositoryId);
+    if (path.dirname(target) !== sessionDirectory) throw new Error("WEB_HISTORY_PATH_UNSAFE: restored session path escaped managed session storage.");
+    if (expectedCurrentSessionId !== undefined) {
+      const currentSessionId = await currentSessionIdForConfirmation(target, repositoryId);
+      if (currentSessionId !== expectedCurrentSessionId) {
+        throw new Error("WEB_SESSION_STALE: current task focus changed after confirmation in another process. Nothing was switched; inspect /status and retry /resume.");
+      }
+    }
+
     const runId = session.run_id!;
     const identity = splitRunId(runId);
     const [ledger, run] = await Promise.all([
@@ -175,9 +200,6 @@ export async function restoreLocalTaskHistoryFocus(
     ]);
 
     const restored: LocalWorkerSession = { ...session, updated_at: new Date().toISOString() };
-    const sessionDirectory = await prepareSessionDirectory(stateDirectory);
-    const target = currentSessionPath(stateDirectory, repositoryId);
-    if (path.dirname(target) !== sessionDirectory) throw new Error("WEB_HISTORY_PATH_UNSAFE: restored session path escaped managed session storage.");
 
     // Switching focus and clearing a PAIR pause are one logical resume transition.
     // Hold the same execution lock used by normal transitions so no worker can
