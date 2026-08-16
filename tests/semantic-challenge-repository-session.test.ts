@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -111,6 +111,28 @@ test("challenge sessions use distinct evidence ownership for distinct challenge 
     assert.notEqual(firstEvidence.challenge_evidence_sha256, secondEvidence.challenge_evidence_sha256);
     assert.equal(firstEvidence.challenge_id, first.request.challenge_id);
     assert.equal(secondEvidence.challenge_id, secondRequest.challenge_id);
+  } finally {
+    await rm(value.root, { recursive: true, force: true });
+  }
+});
+
+test("read-coverage namespace binds the complete repository identity", async () => {
+  const value = await fixture();
+  try {
+    const first = new SemanticChallengeRepositorySession(value);
+    const secondRequest = createSemanticChallengeRequest({
+      challengeId: value.request.challenge_id,
+      repository: { ...value.request.repository, repository_id: "repo-runtime-second" },
+      originalGoal: value.request.original_goal,
+    });
+    const second = new SemanticChallengeRepositorySession({ ...value, request: secondRequest });
+
+    await first.execute({ operation: "read", paths: ["src/session.ts"] });
+    await second.execute({ operation: "read", paths: ["src/session.ts"] });
+
+    const scopes = await readdir(path.join(value.stateDirectory, "semantic", "challenge-read-coverage"));
+    assert.equal(scopes.length, 2, "repository identity drift must not share durable read-coverage state");
+    assert.notEqual(first.buildEvidence().repository.repository_id, second.buildEvidence().repository.repository_id);
   } finally {
     await rm(value.root, { recursive: true, force: true });
   }
