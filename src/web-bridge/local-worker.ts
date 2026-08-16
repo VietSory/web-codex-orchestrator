@@ -74,6 +74,11 @@ function validateSession(value: unknown, repositoryId: string): LocalWorkerSessi
   return session;
 }
 
+function assertCurrentSessionIdentity(current: LocalWorkerSession | null, expected: LocalWorkerSession): LocalWorkerSession {
+  if (!current || current.session_id !== expected.session_id) throw new WebBridgeError("WEB_SESSION_STALE", "Current repository task focus changed in another process; refusing to mutate stale session state.");
+  return current;
+}
+
 export function localWorkerJobMode(session: Pick<LocalWorkerSession, "job_mode">): JobMode {
   return session.job_mode ?? "PAIR";
 }
@@ -161,17 +166,11 @@ export async function startLocalAuthoring(options: {
         orchestration_mode: mode,
       }, `author-${session.session_id}`);
     } catch (error) {
-      // Keep the pre-external-call CREATING receipt as a crash-recovery anchor,
-      // but never leave it looking active after a known bridge/auth failure.
-      // BLOCKED is intentionally replaceable by the next normal goal.
       session.state = "BLOCKED";
       try {
         await save(options.stateDirectory, session);
       } catch (saveError) {
-        throw new WebBridgeError(
-          "WEB_SESSION_RECOVERY_FAILED",
-          `Authoring job creation failed and WCO could not persist the blocked recovery state: ${saveError instanceof Error ? saveError.message : String(saveError)}`,
-        );
+        throw new WebBridgeError("WEB_SESSION_RECOVERY_FAILED", `Authoring job creation failed and WCO could not persist the blocked recovery state: ${saveError instanceof Error ? saveError.message : String(saveError)}`);
       }
       throw error;
     }
@@ -183,15 +182,23 @@ export async function startLocalAuthoring(options: {
 }
 
 export async function appendLocalClarification(options: { bridge: WebBridge; session: LocalWorkerSession; value: string; stateDirectory: string }): Promise<void> {
-  if (options.session.sealed || !options.session.job_id) throw new WebBridgeError("WEB_CONTRACT_ALREADY_SEALED", "The current task contract is already sealed.");
-  await options.bridge.submitClarification(options.session.job_id, options.value, `clarify-${contentDigest(options.value)}`);
-  await save(options.stateDirectory, options.session);
+  await withSessionFocusLock(options.stateDirectory, options.session.repository.repository_id, async () => {
+    const session = assertCurrentSessionIdentity(await readLocalWorkerSession(options.stateDirectory, options.session.repository.repository_id), options.session);
+    if (session.sealed || !session.job_id) throw new WebBridgeError("WEB_CONTRACT_ALREADY_SEALED", "The current task contract is already sealed.");
+    await options.bridge.submitClarification(session.job_id, options.value, `clarify-${contentDigest(options.value)}`);
+    await save(options.stateDirectory, session);
+    Object.assign(options.session, session);
+  });
 }
 
 export async function completeLocalWorkerSession(options: { session: LocalWorkerSession; stateDirectory: string }): Promise<void> {
-  if (!options.session.sealed || !options.session.run_id) throw new WebBridgeError("WEB_SESSION_INVALID", "Only a sealed prepared task can be completed.");
-  options.session.state = "COMPLETED";
-  await save(options.stateDirectory, options.session);
+  await withSessionFocusLock(options.stateDirectory, options.session.repository.repository_id, async () => {
+    const session = assertCurrentSessionIdentity(await readLocalWorkerSession(options.stateDirectory, options.session.repository.repository_id), options.session);
+    if (!session.sealed || !session.run_id) throw new WebBridgeError("WEB_SESSION_INVALID", "Only a sealed prepared task can be completed.");
+    session.state = "COMPLETED";
+    await save(options.stateDirectory, session);
+    Object.assign(options.session, session);
+  });
 }
 
 export async function advanceLocalWorker(options: {
@@ -204,61 +211,60 @@ export async function advanceLocalWorker(options: {
   maximumEvents?: number;
   stopAfterPrepared?: boolean;
 }): Promise<LocalWorkerSession> {
-  const session = options.session;
-  if (!session.job_id) throw new WebBridgeError("WEB_SESSION_INVALID", "Authoring job identity is missing.");
-  const coverage = new ReadCoverageStore(path.join(options.stateDirectory, "bridge", "read-coverage"));
-  const reader = new ExactRepositoryReadService(options.repositoryPath, session.repository, coverage, {}, new ContentAddressedContextCache(path.join(options.stateDirectory, "cache", "web-context")));
+  return await withSessionFocusLock(options.stateDirectory, options.session.repository.repository_id, async () => {
+    const session = assertCurrentSessionIdentity(await readLocalWorkerSession(options.stateDirectory, options.session.repository.repository_id), options.session);
+    if (!session.job_id) throw new WebBridgeError("WEB_SESSION_INVALID", "Authoring job identity is missing.");
+    const coverage = new ReadCoverageStore(path.join(options.stateDirectory, "bridge", "read-coverage"));
+    const reader = new ExactRepositoryReadService(options.repositoryPath, session.repository, coverage, {}, new ContentAddressedContextCache(path.join(options.stateDirectory, "cache", "web-context")));
 
-  for (let count = 0; count < (options.maximumEvents ?? 32); count += 1) {
-    const event = await options.bridge.waitForAuthoringEvent(session.job_id, session.last_event_sequence);
-    if (!event) break;
-    if (event.sequence <= session.last_event_sequence) throw new WebBridgeError("WEB_EVENT_SEQUENCE_INVALID", "Relay event sequence did not advance.");
+    for (let count = 0; count < (options.maximumEvents ?? 32); count += 1) {
+      const event = await options.bridge.waitForAuthoringEvent(session.job_id, session.last_event_sequence);
+      if (!event) break;
+      if (event.sequence <= session.last_event_sequence) throw new WebBridgeError("WEB_EVENT_SEQUENCE_INVALID", "Relay event sequence did not advance.");
 
-    if (event.type === "repository_command") {
-      const result = await reader.execute(session.job_id, event.request_id, event.command);
-      await options.bridge.submitRepositoryCommandResult(session.job_id, { request_id: event.request_id, result }, `repo-result-${event.request_id}`);
-      try {
-        await persistSemanticShadowObservation({
-          stateDirectory: options.stateDirectory,
-          sessionId: session.session_id,
-          repository: session.repository,
-          eventSequence: event.sequence,
-          requestId: event.request_id,
-          command: event.command,
-          result,
-        });
-      } catch {
-        // Shadow evidence is deliberately non-authoritative: observation failure
-        // must never suppress an exact repository result already delivered to Web.
+      if (event.type === "repository_command") {
+        const result = await reader.execute(session.job_id, event.request_id, event.command);
+        await options.bridge.submitRepositoryCommandResult(session.job_id, { request_id: event.request_id, result }, `repo-result-${event.request_id}`);
+        try {
+          await persistSemanticShadowObservation({
+            stateDirectory: options.stateDirectory,
+            sessionId: session.session_id,
+            repository: session.repository,
+            eventSequence: event.sequence,
+            requestId: event.request_id,
+            command: event.command,
+            result,
+          });
+        } catch {
+          // Shadow evidence is deliberately non-authoritative: observation failure
+          // must never suppress an exact repository result already delivered to Web.
+        }
+      } else if (event.type === "contract_sealed") {
+        if (event.envelope.job_id !== session.job_id || event.envelope.user_intent !== session.goal || contentDigest(event.envelope.repository) !== contentDigest(session.repository)) throw new WebBridgeError("WEB_CONTRACT_BINDING_MISMATCH", "Sealed Web contract does not bind the original authoring job, user intent, and exact repository.");
+        const materialized = await materializeTaskBundle({ envelope: event.envelope, repository: session.repository, config: options.config, stateDirectory: options.stateDirectory });
+        const prepared = await prepareTask({ archivePath: materialized.archive_path, stateDirectory: options.stateDirectory, configPath: options.configPath });
+        if (isPreparedRunAwareWebBridge(options.bridge)) {
+          await options.bridge.bindPreparedRun(session.job_id, prepared.run_id, `bind-prepared-${contentDigest({ job_id: session.job_id, run_id: prepared.run_id })}`);
+        }
+        session.sealed = true;
+        session.contract = event.envelope;
+        session.task_archive_path = materialized.archive_path;
+        session.run_id = prepared.run_id;
+        session.reviewer_selection = await freezeRunReviewMode(options.stateDirectory, prepared.run_id, session.reviewer_selection ?? DEFAULT_REVIEWER);
+        session.state = "PREPARED";
+      } else {
+        if (!session.contract || !session.run_id) throw new WebBridgeError("WEB_IMPLEMENTATION_OUT_OF_ORDER", "Web implementation arrived before canonical contract preparation.");
+        if (event.submission.job_id !== session.job_id || event.submission.run_id !== session.run_id) throw new WebBridgeError("WEB_PACK_BINDING_MISMATCH", "Web implementation identity is stale or bound to another authoring job.");
+        const pack = await materializeWebImplementationPack({ submission: event.submission, envelope: session.contract, stateDirectory: options.stateDirectory, configPath: options.configPath, coverageStore: coverage });
+        session.web_pack_path = pack.archive_path;
+        session.state = "IMPLEMENTATION_REGISTERED";
       }
-    } else if (event.type === "contract_sealed") {
-      if (event.envelope.job_id !== session.job_id || event.envelope.user_intent !== session.goal || contentDigest(event.envelope.repository) !== contentDigest(session.repository)) throw new WebBridgeError("WEB_CONTRACT_BINDING_MISMATCH", "Sealed Web contract does not bind the original authoring job, user intent, and exact repository.");
-      const materialized = await materializeTaskBundle({ envelope: event.envelope, repository: session.repository, config: options.config, stateDirectory: options.stateDirectory });
-      const prepared = await prepareTask({ archivePath: materialized.archive_path, stateDirectory: options.stateDirectory, configPath: options.configPath });
-      if (isPreparedRunAwareWebBridge(options.bridge)) {
-        await options.bridge.bindPreparedRun(
-          session.job_id,
-          prepared.run_id,
-          `bind-prepared-${contentDigest({ job_id: session.job_id, run_id: prepared.run_id })}`,
-        );
-      }
-      session.sealed = true;
-      session.contract = event.envelope;
-      session.task_archive_path = materialized.archive_path;
-      session.run_id = prepared.run_id;
-      session.reviewer_selection = await freezeRunReviewMode(options.stateDirectory, prepared.run_id, session.reviewer_selection ?? DEFAULT_REVIEWER);
-      session.state = "PREPARED";
-    } else {
-      if (!session.contract || !session.run_id) throw new WebBridgeError("WEB_IMPLEMENTATION_OUT_OF_ORDER", "Web implementation arrived before canonical contract preparation.");
-      if (event.submission.job_id !== session.job_id || event.submission.run_id !== session.run_id) throw new WebBridgeError("WEB_PACK_BINDING_MISMATCH", "Web implementation identity is stale or bound to another authoring job.");
-      const pack = await materializeWebImplementationPack({ submission: event.submission, envelope: session.contract, stateDirectory: options.stateDirectory, configPath: options.configPath, coverageStore: coverage });
-      session.web_pack_path = pack.archive_path;
-      session.state = "IMPLEMENTATION_REGISTERED";
+
+      session.last_event_sequence = event.sequence;
+      await save(options.stateDirectory, session);
+      if (event.type === "contract_sealed" && options.stopAfterPrepared) break;
     }
-
-    session.last_event_sequence = event.sequence;
-    await save(options.stateDirectory, session);
-    if (event.type === "contract_sealed" && options.stopAfterPrepared) break;
-  }
-  return session;
+    Object.assign(options.session, session);
+    return session;
+  });
 }
