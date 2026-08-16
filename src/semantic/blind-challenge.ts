@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import path from "node:path";
 import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
 import { parseRepositoryCommand, type RepositoryBinding, type RepositoryCommand } from "../web-bridge/contracts.js";
-import type { SemanticEvidenceIndex } from "./evidence-index.js";
+import { buildSemanticEvidenceIndex, type SemanticEvidenceIndex, type SemanticEvidenceObservationInput } from "./evidence-index.js";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -22,6 +22,15 @@ export interface SemanticChallengeRequest {
   challenge_id: string;
   repository: RepositoryBinding;
   original_goal: string;
+}
+
+export interface SemanticChallengeEvidence {
+  schema_version: "1.0";
+  kind: "wco-semantic-challenge-evidence";
+  challenge_id: string;
+  repository: RepositoryBinding;
+  evidence_index: SemanticEvidenceIndex;
+  challenge_evidence_sha256: string;
 }
 
 export interface SemanticEvidenceCitation {
@@ -129,9 +138,34 @@ function parseFinding(value: unknown, label: string): SemanticChallengeFinding {
   return { finding_id, category: category as SemanticFindingCategory, statement, citations };
 }
 
-function assertEvidenceIndexBinding(index: SemanticEvidenceIndex, request: SemanticChallengeRequest): void {
-  if (!index || index.schema_version !== "1.0" || index.kind !== "wco-semantic-evidence-index" || !SHA256.test(index.evidence_index_sha256)) throw new Error("semantic challenge requires a validated evidence index.");
-  if (!sameRepository(index.repository, request.repository)) throw new Error("semantic challenge evidence index repository binding drifted from the challenge.");
+function challengeEvidencePayload(value: Omit<SemanticChallengeEvidence, "challenge_evidence_sha256">): unknown {
+  return {
+    schema_version: value.schema_version,
+    kind: value.kind,
+    challenge_id: value.challenge_id,
+    repository: value.repository,
+    evidence_index_sha256: value.evidence_index.evidence_index_sha256,
+  };
+}
+
+export function buildSemanticChallengeEvidence(options: { request: SemanticChallengeRequest; observations: readonly SemanticEvidenceObservationInput[] }): SemanticChallengeEvidence {
+  const evidence_index = buildSemanticEvidenceIndex({ repository: options.request.repository, observations: options.observations });
+  const payload = {
+    schema_version: "1.0" as const,
+    kind: "wco-semantic-challenge-evidence" as const,
+    challenge_id: options.request.challenge_id,
+    repository: options.request.repository,
+    evidence_index,
+  };
+  return { ...payload, challenge_evidence_sha256: digest(challengeEvidencePayload(payload)) };
+}
+
+function assertChallengeEvidenceBinding(evidence: SemanticChallengeEvidence, request: SemanticChallengeRequest): void {
+  if (!evidence || evidence.schema_version !== "1.0" || evidence.kind !== "wco-semantic-challenge-evidence") throw new Error("semantic challenge requires exact challenge-scoped evidence.");
+  if (evidence.challenge_id !== request.challenge_id) throw new Error("semantic challenge evidence belongs to another challenge.");
+  if (!sameRepository(evidence.repository, request.repository) || !sameRepository(evidence.evidence_index.repository, request.repository)) throw new Error("semantic challenge evidence repository binding drifted from the challenge.");
+  const expected = digest(challengeEvidencePayload(evidence));
+  if (!SHA256.test(evidence.challenge_evidence_sha256) || evidence.challenge_evidence_sha256 !== expected) throw new Error("semantic challenge evidence receipt digest is invalid.");
 }
 
 function citationKey(citation: SemanticEvidenceCitation): string {
@@ -165,7 +199,7 @@ export function createSemanticChallengeRequest(input: { challengeId: string; rep
   return { schema_version: "1.0", kind: "wco-semantic-blind-challenge", challenge_id, repository, original_goal };
 }
 
-export function parseSemanticChallengeAction(value: unknown, request: SemanticChallengeRequest, evidenceIndex?: SemanticEvidenceIndex): SemanticChallengeAction {
+export function parseSemanticChallengeAction(value: unknown, request: SemanticChallengeRequest, challengeEvidence?: SemanticChallengeEvidence): SemanticChallengeAction {
   const object = objectValue(value, "semantic challenge action");
   exactKeys(object, ["kind", "command", "envelope"], ["kind"], "semantic challenge action");
   if (object.kind === "repository_command") {
@@ -174,8 +208,8 @@ export function parseSemanticChallengeAction(value: unknown, request: SemanticCh
   }
   if (object.kind !== "semantic_understanding_sealed") throw new Error("semantic challenge action kind is invalid.");
   if (!("envelope" in object) || "command" in object) throw new Error("semantic_understanding_sealed action must contain envelope only.");
-  if (!evidenceIndex) throw new Error("semantic understanding cannot seal without an exact validated evidence index.");
-  assertEvidenceIndexBinding(evidenceIndex, request);
+  if (!challengeEvidence) throw new Error("semantic understanding cannot seal without exact challenge-scoped evidence.");
+  assertChallengeEvidenceBinding(challengeEvidence, request);
   const envelope = objectValue(object.envelope, "semantic understanding envelope");
   exactKeys(envelope, ["schema_version", "kind", "challenge_id", "repository", "original_goal_sha256", "findings", "unresolved_questions"], ["schema_version", "kind", "challenge_id", "repository", "original_goal_sha256", "findings", "unresolved_questions"], "semantic understanding envelope");
   if (envelope.schema_version !== "1.0" || envelope.kind !== "semantic_understanding_sealed") throw new Error("semantic understanding envelope version/kind is invalid.");
@@ -188,9 +222,10 @@ export function parseSemanticChallengeAction(value: unknown, request: SemanticCh
   if (!Array.isArray(envelope.findings) || envelope.findings.length < 1 || envelope.findings.length > MAX_FINDINGS) throw new Error(`semantic understanding envelope.findings must contain 1-${MAX_FINDINGS} items.`);
   const findings = envelope.findings.map((entry, index) => parseFinding(entry, `semantic understanding envelope.findings[${index}]`));
   if (new Set(findings.map((item) => item.finding_id)).size !== findings.length) throw new Error("semantic understanding envelope contains duplicate finding IDs.");
-  assertFindingCitationsObserved(findings, evidenceIndex);
+  assertFindingCitationsObserved(findings, challengeEvidence.evidence_index);
   if (!Array.isArray(envelope.unresolved_questions) || envelope.unresolved_questions.length > 64) throw new Error("semantic understanding envelope.unresolved_questions exceeds its bound.");
   const unresolved_questions = envelope.unresolved_questions.map((entry, index) => boundedText(entry, `semantic understanding envelope.unresolved_questions[${index}]`, 4096));
+  if (findings.some((finding) => finding.category === "unknown") && unresolved_questions.length === 0) throw new Error("semantic understanding with unknown findings must preserve unresolved questions explicitly.");
   return {
     kind: "semantic_understanding_sealed",
     envelope: { schema_version: "1.0", kind: "semantic_understanding_sealed", challenge_id, repository, original_goal_sha256, findings, unresolved_questions },
@@ -210,7 +245,7 @@ export function semanticChallengePrompt(request: SemanticChallengeRequest): stri
     '{"kind":"repository_command","command":<RepositoryCommand>}',
     '{"kind":"semantic_understanding_sealed","envelope":{"schema_version":"1.0","kind":"semantic_understanding_sealed","challenge_id":"...","repository":{...},"original_goal_sha256":"...","findings":[...],"unresolved_questions":[...]}}',
     "Each finding has exactly finding_id, category, statement, citations. category is component, invariant, risk, unknown, or assumption. Non-unknown findings must cite at least one exact read region with path, content_sha256, start_byte and end_byte_exclusive.",
-    "Every citation is validated against exact read evidence actually observed in this challenge. Never invent a path, digest, or byte range.",
+    "Every citation is validated against exact read evidence actually observed in this challenge. Never invent a path, digest, or byte range. Unknown findings must remain explicit in unresolved_questions.",
     "Seal only an understanding of the problem/current system. Never output APPROVE, REVISE, BLOCK, repair operations, implementation operations, candidate paths, or a proposed code change.",
     `Challenge identity: ${request.challenge_id}`,
     `Repository binding: ${JSON.stringify(request.repository)}`,
