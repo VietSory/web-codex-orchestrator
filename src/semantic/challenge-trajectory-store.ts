@@ -88,6 +88,11 @@ async function assertSafeDirectory(target: string): Promise<void> {
   if (!info.isDirectory() || info.isSymbolicLink() || await realpath(resolved) !== resolved) throw new Error("semantic challenge trajectory directory is unsafe.");
 }
 
+async function syncDirectory(directory: string): Promise<void> {
+  const handle = await open(directory, fsConstants.O_RDONLY);
+  try { await handle.sync(); } finally { await handle.close(); }
+}
+
 async function ensureSafeDirectory(stateDirectory: string, request: SemanticChallengeRequest): Promise<string> {
   const root = path.resolve(stateDirectory);
   await assertSafeDirectory(root);
@@ -99,6 +104,7 @@ async function ensureSafeDirectory(stateDirectory: string, request: SemanticChal
   ];
   let current = root;
   for (const component of components) {
+    const parent = current;
     current = path.join(current, component);
     try {
       await mkdir(current, { mode: 0o700 });
@@ -106,13 +112,11 @@ async function ensureSafeDirectory(stateDirectory: string, request: SemanticChal
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
     await assertSafeDirectory(current);
+    await syncDirectory(parent);
+    await assertSafeDirectory(parent);
+    await assertSafeDirectory(current);
   }
   return current;
-}
-
-async function syncDirectory(directory: string): Promise<void> {
-  const handle = await open(directory, fsConstants.O_RDONLY);
-  try { await handle.sync(); } finally { await handle.close(); }
 }
 
 function parseReceipt(value: unknown, request: SemanticChallengeRequest): SemanticChallengeTrajectoryReceipt {
