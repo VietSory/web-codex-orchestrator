@@ -1,4 +1,3 @@
-import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
 import type { TrustedConfig } from "../config/contracts.js";
@@ -8,6 +7,7 @@ import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
 import type { SemanticChallengeTransport } from "../semantic/challenge-aware-web-bridge.js";
 import { createSemanticChallengeRequest, type SemanticChallengeRequest, type SemanticUnderstandingEnvelope } from "../semantic/blind-challenge.js";
 import { runSemanticChallengeShadow } from "../semantic/challenge-shadow-runner.js";
+import { ensureCanonicalDirectory } from "../shared/safe-directory.js";
 import { ChatGptCodexWebBridge } from "./chatgpt-codex-bridge.js";
 import { ChatGptCodexSemanticChallengeTransport } from "./chatgpt-codex-semantic-challenge-transport.js";
 import { ChatGptCodexSemanticClient } from "./chatgpt-codex-semantic-client.js";
@@ -53,10 +53,11 @@ export class ChatGptCodexChallengeWebBridge extends ChatGptCodexWebBridge implem
 
         // The provider and semantic client independently require canonical,
         // empty, disjoint challenge-only roots before every challenge turn.
-        // Establish them once before transport creation; later replacement,
-        // deletion or contamination fails closed instead of being recreated.
-        await mkdir(this.challengeScratchDirectory, { recursive: true, mode: 0o700 });
-        await mkdir(this.challengeAuthorityDirectory, { recursive: true, mode: 0o700 });
+        // Establish them one component at a time without recursive mkdir through
+        // unattested ancestry; later replacement, deletion or contamination
+        // still fails closed instead of being recreated.
+        await ensureCanonicalDirectory(this.challengeScratchDirectory, "semantic challenge scratch");
+        await ensureCanonicalDirectory(this.challengeAuthorityDirectory, "semantic challenge authority");
 
         return new ChatGptCodexSemanticChallengeTransport({
           client,
