@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { TrustedConfig } from "../config/contracts.js";
 import { ActionRelayWebBridge } from "./action-relay-client.js";
-import { ChatGptCodexWebBridge } from "./chatgpt-codex-bridge.js";
+import { ChatGptCodexChallengeWebBridge } from "./chatgpt-codex-challenge-bridge.js";
 import { ManualFileWebBridge } from "./manual-file-bridge.js";
 import { RelayFileStore } from "./relay/file-store.js";
 import { readRelayToken } from "./relay-credential.js";
@@ -17,7 +17,7 @@ export function createConfiguredWebBridge(config: TrustedConfig, bridgeDirectory
   const mode = config.web_bridge?.mode ?? "chatgpt_codex";
 
   if (mode === "chatgpt_codex") {
-    return new ChatGptCodexWebBridge(config, bridgeDirectory, stateDirectory);
+    return new ChatGptCodexChallengeWebBridge(config, bridgeDirectory, stateDirectory);
   }
   if (mode === "managed_actions") {
     const metadata = resolveManagedWebService(env);
