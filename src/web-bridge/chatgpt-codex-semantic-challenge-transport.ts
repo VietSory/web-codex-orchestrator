@@ -14,13 +14,13 @@ type Usage = { input_tokens: number; cached_input_tokens: number; output_tokens:
 type ChallengeState = {
   request: SemanticChallengeRequest;
   identity: BridgeJobIdentity;
-  idempotency_key: string;
   sequence: number;
   thread_id?: string;
   awaiting_result_request_id?: string;
   pending_result?: RepositoryCommandResult;
   sealed?: SemanticUnderstandingEnvelope;
   usage: Usage & { turns: number };
+  result_replays: Map<string, string>;
 };
 
 function safeAdd(left: number, right: number): number {
@@ -95,6 +95,12 @@ export class ChatGptCodexSemanticChallengeTransport implements SemanticChallenge
     now?: () => Date;
   }) {}
 
+  private now(): Date {
+    const value = (this.options.now ?? (() => new Date()))();
+    if (!(value instanceof Date) || Number.isNaN(value.getTime())) throw new Error("semantic challenge provider clock is invalid.");
+    return value;
+  }
+
   private state(jobId: string): ChallengeState {
     const state = this.states.get(jobId);
     if (!state) throw new Error("semantic challenge provider job is unknown or no longer recoverable.");
@@ -103,7 +109,9 @@ export class ChatGptCodexSemanticChallengeTransport implements SemanticChallenge
 
   private assertBudget(state: ChallengeState, beforeTurn: boolean): void {
     const limits = this.options.limits;
-    if ((beforeTurn && state.usage.turns >= limits.maximum_total_agent_turns)
+    const elapsedMs = this.now().getTime() - Date.parse(state.identity.created_at);
+    if (!Number.isFinite(elapsedMs) || elapsedMs < 0 || elapsedMs > limits.maximum_total_seconds * 1_000
+      || (beforeTurn && state.usage.turns >= limits.maximum_total_agent_turns)
       || state.usage.input_tokens > limits.maximum_total_input_tokens
       || state.usage.output_tokens > limits.maximum_total_output_tokens) {
       throw new Error("semantic challenge provider budget is exhausted.");
@@ -131,17 +139,24 @@ export class ChatGptCodexSemanticChallengeTransport implements SemanticChallenge
     }
     const job_id = `challenge-${contentDigest({ idempotencyKey, request }).slice(0, 48)}`;
     if (!SAFE_JOB_ID.test(job_id)) throw new Error("semantic challenge provider generated an invalid job identity.");
-    const now = (this.options.now ?? (() => new Date()))();
-    if (!(now instanceof Date) || Number.isNaN(now.getTime())) throw new Error("semantic challenge provider clock is invalid.");
+    const now = this.now();
+    const configuredAgeMs = this.options.limits.maximum_total_seconds * 1_000;
+    const jobAgeMs = Number.isSafeInteger(configuredAgeMs) && configuredAgeMs > 0 ? Math.min(MAX_JOB_AGE_MS, configuredAgeMs) : MAX_JOB_AGE_MS;
     const identity: BridgeJobIdentity = {
       protocol_version: WEB_BRIDGE_PROTOCOL_VERSION,
       job_id,
       owner: OWNER,
       created_at: now.toISOString(),
-      expires_at: new Date(now.getTime() + MAX_JOB_AGE_MS).toISOString(),
+      expires_at: new Date(now.getTime() + jobAgeMs).toISOString(),
       content_sha256: requestDigest,
     };
-    this.states.set(job_id, { request, identity, idempotency_key: idempotencyKey, sequence: 0, usage: { turns: 0, input_tokens: 0, cached_input_tokens: 0, output_tokens: 0 } });
+    this.states.set(job_id, {
+      request,
+      identity,
+      sequence: 0,
+      usage: { turns: 0, input_tokens: 0, cached_input_tokens: 0, output_tokens: 0 },
+      result_replays: new Map(),
+    });
     this.idempotency.set(idempotencyKey, job_id);
     return structuredClone(identity);
   }
@@ -182,13 +197,21 @@ export class ChatGptCodexSemanticChallengeTransport implements SemanticChallenge
     return { sequence: nextSequence, type: "semantic_understanding_sealed", envelope: structuredClone(envelope) };
   }
 
-  async submitSemanticChallengeRepositoryResult(jobId: string, result: RepositoryCommandResult, _idempotencyKey: string): Promise<void> {
+  async submitSemanticChallengeRepositoryResult(jobId: string, result: RepositoryCommandResult, idempotencyKey: string): Promise<void> {
+    if (!SAFE_JOB_ID.test(idempotencyKey)) throw new Error("semantic challenge provider result idempotency identity is invalid.");
     const state = this.state(jobId);
+    const resultDigest = contentDigest(result);
+    const replay = state.result_replays.get(idempotencyKey);
+    if (replay) {
+      if (replay !== resultDigest) throw new Error("semantic challenge provider result idempotency replay conflicts with prior result.");
+      return;
+    }
     const expected = state.awaiting_result_request_id;
     if (!expected) throw new Error("semantic challenge provider has no pending repository request.");
     if (result.request_id !== expected) throw new Error("semantic challenge provider repository result request identity mismatched.");
     state.pending_result = structuredClone(result);
     state.awaiting_result_request_id = undefined;
+    state.result_replays.set(idempotencyKey, resultDigest);
   }
 
   async receiveSemanticUnderstanding(jobId: string): Promise<SemanticUnderstandingEnvelope | null> {
