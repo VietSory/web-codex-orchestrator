@@ -37,6 +37,12 @@ export interface SemanticBenchmarkComparison {
   unchanged_cases: string[];
 }
 
+export interface SemanticBenchmarkPairedResult {
+  baseline: SemanticBenchmarkArmResult;
+  challenger: SemanticBenchmarkArmResult;
+  execution_order: Array<{ case_id: string; first_arm: string; second_arm: string }>;
+}
+
 export type SemanticBenchmarkProvider = (options: {
   case_id: string;
   prompt: string;
@@ -50,6 +56,10 @@ function objectValue(value: unknown, label: string): Record<string, unknown> {
 
 function rounded(value: number): number {
   return Number(value.toFixed(4));
+}
+
+function validArm(value: string): boolean {
+  return /^[a-z][a-z0-9_-]{1,63}$/.test(value);
 }
 
 /**
@@ -104,31 +114,92 @@ export function semanticCandidateFromSelection(item: PublicSemanticBenchmarkCase
   };
 }
 
+function armResult(arm: string, corpus: SemanticBenchmarkCorpus, candidates: ReadonlyMap<string, SemanticUnderstandingCandidate>, providerTurns: number): SemanticBenchmarkArmResult {
+  return {
+    schema_version: "1.0",
+    kind: "semantic-benchmark-arm",
+    arm,
+    provider_turns: providerTurns,
+    report: scoreSemanticCorpus(corpus, candidates),
+  };
+}
+
+async function evaluatePublicCase(options: {
+  benchmarkCase: SemanticBenchmarkCorpus["cases"][number];
+  provider: SemanticBenchmarkProvider;
+}): Promise<SemanticUnderstandingCandidate> {
+  const publicCase = publicSemanticBenchmarkCase(options.benchmarkCase);
+  const output = await options.provider({
+    case_id: options.benchmarkCase.case_id,
+    prompt: semanticBenchmarkSelectionPrompt(publicCase),
+    public_case: publicCase,
+  });
+  const selection = parseSemanticBenchmarkSelection(output, publicCase);
+  return semanticCandidateFromSelection(publicCase, selection);
+}
+
 export async function evaluateSemanticBenchmarkArm(options: {
   arm: string;
   corpus: SemanticBenchmarkCorpus;
   provider: SemanticBenchmarkProvider;
 }): Promise<SemanticBenchmarkArmResult> {
-  if (!/^[a-z][a-z0-9_-]{1,63}$/.test(options.arm)) throw new Error("semantic benchmark arm identity is invalid.");
+  if (!validArm(options.arm)) throw new Error("semantic benchmark arm identity is invalid.");
   const candidates = new Map<string, SemanticUnderstandingCandidate>();
   let providerTurns = 0;
   for (const benchmarkCase of options.corpus.cases) {
-    const publicCase = publicSemanticBenchmarkCase(benchmarkCase);
-    const output = await options.provider({
-      case_id: benchmarkCase.case_id,
-      prompt: semanticBenchmarkSelectionPrompt(publicCase),
-      public_case: publicCase,
-    });
+    candidates.set(benchmarkCase.case_id, await evaluatePublicCase({ benchmarkCase, provider: options.provider }));
     providerTurns += 1;
-    const selection = parseSemanticBenchmarkSelection(output, publicCase);
-    candidates.set(benchmarkCase.case_id, semanticCandidateFromSelection(publicCase, selection));
   }
+  return armResult(options.arm, options.corpus, candidates, providerTurns);
+}
+
+/**
+ * Provider-backed A/B should not run one complete arm and then the other: any
+ * time/load/cache drift would be confounded with arm identity. Run paired cases
+ * instead, alternating which arm goes first by deterministic corpus index.
+ */
+export async function evaluateSemanticBenchmarkPaired(options: {
+  baseline_arm: string;
+  challenger_arm: string;
+  corpus: SemanticBenchmarkCorpus;
+  baseline_provider: SemanticBenchmarkProvider;
+  challenger_provider: SemanticBenchmarkProvider;
+}): Promise<SemanticBenchmarkPairedResult> {
+  if (!validArm(options.baseline_arm) || !validArm(options.challenger_arm) || options.baseline_arm === options.challenger_arm) throw new Error("semantic benchmark paired arm identities are invalid.");
+  const baselineCandidates = new Map<string, SemanticUnderstandingCandidate>();
+  const challengerCandidates = new Map<string, SemanticUnderstandingCandidate>();
+  const executionOrder: SemanticBenchmarkPairedResult["execution_order"] = [];
+  let baselineTurns = 0;
+  let challengerTurns = 0;
+
+  for (let index = 0; index < options.corpus.cases.length; index += 1) {
+    const benchmarkCase = options.corpus.cases[index]!;
+    const baselineFirst = index % 2 === 0;
+    const firstArm = baselineFirst ? options.baseline_arm : options.challenger_arm;
+    const secondArm = baselineFirst ? options.challenger_arm : options.baseline_arm;
+    executionOrder.push({ case_id: benchmarkCase.case_id, first_arm: firstArm, second_arm: secondArm });
+
+    const runBaseline = async () => {
+      baselineCandidates.set(benchmarkCase.case_id, await evaluatePublicCase({ benchmarkCase, provider: options.baseline_provider }));
+      baselineTurns += 1;
+    };
+    const runChallenger = async () => {
+      challengerCandidates.set(benchmarkCase.case_id, await evaluatePublicCase({ benchmarkCase, provider: options.challenger_provider }));
+      challengerTurns += 1;
+    };
+    if (baselineFirst) {
+      await runBaseline();
+      await runChallenger();
+    } else {
+      await runChallenger();
+      await runBaseline();
+    }
+  }
+
   return {
-    schema_version: "1.0",
-    kind: "semantic-benchmark-arm",
-    arm: options.arm,
-    provider_turns: providerTurns,
-    report: scoreSemanticCorpus(options.corpus, candidates),
+    baseline: armResult(options.baseline_arm, options.corpus, baselineCandidates, baselineTurns),
+    challenger: armResult(options.challenger_arm, options.corpus, challengerCandidates, challengerTurns),
+    execution_order: executionOrder,
   };
 }
 
