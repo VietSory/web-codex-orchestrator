@@ -13,6 +13,7 @@ const MAX_CITATIONS = 32;
 const MAX_PATH_BYTES = 4096;
 const MAX_TEXT_BYTES = 8192;
 const MAX_PROMPT_BYTES = 128 * 1024;
+const REQUIRED_MAINTAINER_CATEGORIES = ["component", "invariant", "risk"] as const;
 
 export type SemanticFindingCategory = "component" | "invariant" | "risk" | "unknown" | "assumption";
 
@@ -138,6 +139,12 @@ function parseFinding(value: unknown, label: string): SemanticChallengeFinding {
   return { finding_id, category: category as SemanticFindingCategory, statement, citations };
 }
 
+function assertMinimumMaintainerCoverage(findings: readonly SemanticChallengeFinding[]): void {
+  const categories = new Set(findings.map((finding) => finding.category));
+  const missing = REQUIRED_MAINTAINER_CATEGORIES.filter((category) => !categories.has(category));
+  if (missing.length > 0) throw new Error(`semantic understanding cannot seal without evidence-backed maintainer coverage for: ${missing.join(", ")}.`);
+}
+
 function challengeEvidencePayload(value: Omit<SemanticChallengeEvidence, "challenge_evidence_sha256"> | SemanticChallengeEvidence): unknown {
   return {
     schema_version: value.schema_version,
@@ -234,6 +241,7 @@ export function parseSemanticChallengeAction(value: unknown, request: SemanticCh
   if (!Array.isArray(envelope.findings) || envelope.findings.length < 1 || envelope.findings.length > MAX_FINDINGS) throw new Error(`semantic understanding envelope.findings must contain 1-${MAX_FINDINGS} items.`);
   const findings = envelope.findings.map((entry, index) => parseFinding(entry, `semantic understanding envelope.findings[${index}]`));
   if (new Set(findings.map((item) => item.finding_id)).size !== findings.length) throw new Error("semantic understanding envelope contains duplicate finding IDs.");
+  assertMinimumMaintainerCoverage(findings);
   assertFindingCitationsObserved(findings, challengeEvidence.evidence_index);
   if (!Array.isArray(envelope.unresolved_questions) || envelope.unresolved_questions.length > 64) throw new Error("semantic understanding envelope.unresolved_questions exceeds its bound.");
   const unresolved_questions = envelope.unresolved_questions.map((entry, index) => boundedText(entry, `semantic understanding envelope.unresolved_questions[${index}]`, 4096));
@@ -257,6 +265,7 @@ export function semanticChallengePrompt(request: SemanticChallengeRequest): stri
     '{"kind":"repository_command","command":<RepositoryCommand>}',
     '{"kind":"semantic_understanding_sealed","envelope":{"schema_version":"1.0","kind":"semantic_understanding_sealed","challenge_id":"...","repository":{...},"original_goal_sha256":"...","findings":[...],"unresolved_questions":[...]}}',
     "Each finding has exactly finding_id, category, statement, citations. category is component, invariant, risk, unknown, or assumption. Non-unknown findings must cite at least one exact read region with path, content_sha256, start_byte and end_byte_exclusive.",
+    "Before sealing, findings must include evidence-backed component, invariant, and risk coverage. A single plausible finding is never sufficient maintainer-grade understanding. Add assumption findings when an unsupported assumption is discovered; preserve unresolved material uncertainty as unknown findings plus unresolved_questions.",
     "Every citation is validated against exact read evidence actually observed in this challenge. Never invent a path, digest, or byte range. Unknown findings must remain explicit in unresolved_questions.",
     "Seal only an understanding of the problem/current system. Never output APPROVE, REVISE, BLOCK, repair operations, implementation operations, candidate paths, or a proposed code change.",
     `Challenge identity: ${request.challenge_id}`,
