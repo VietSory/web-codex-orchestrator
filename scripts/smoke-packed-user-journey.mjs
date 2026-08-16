@@ -175,7 +175,8 @@ try {
   assert(/Setup is complete/.test(first.transcript), "Fresh packed `wco` did not complete setup before opening the prompt.");
   assert(/local ChatGPT\/Codex/i.test(first.transcript), "Fresh packed `wco` did not select zero-config local ChatGPT/Codex.");
   assert(/\/new/.test(first.transcript), "Fresh packed `wco` did not expose the normal slash palette.");
-  assert(!/API key|relay endpoint|tunnel ID|public host|domain setup/i.test(first.transcript), "Fresh normal path leaked advanced infrastructure requirements.");
+  assert(/No API key, relay, tunnel, domain, or cloud setup is required/i.test(first.transcript), "Fresh packed `wco` did not reassure the user that hosted/API infrastructure is unnecessary.");
+  assert(!/(?:API key|relay endpoint|tunnel ID|public host|domain setup)\s*(?:is\s+)?(?:required|needed|:|=)|(?:enter|provide|configure)\s+(?:an?\s+)?(?:API key|relay endpoint|tunnel ID|public host|domain)/i.test(first.transcript), "Fresh normal path requested advanced infrastructure instead of remaining zero-config.");
 
   const configPath = path.join(wcoHome, "config.json");
   const firstConfig = readFileSync(configPath, "utf8");
