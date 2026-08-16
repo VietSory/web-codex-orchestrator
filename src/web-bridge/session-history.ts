@@ -144,22 +144,23 @@ export async function restoreLocalTaskHistoryFocus(
   repositoryId: string,
   session: LocalWorkerSession,
 ): Promise<LocalWorkerSession> {
-  // History JSON itself is never accepted as workflow authority. Resume first
-  // re-attests the canonical run receipt, run ledger, repository base, and exact
-  // bounded artifacts before any current-focus write can occur.
+  // Never treat history JSON itself as workflow authority. Resume first re-attests
+  // the canonical run receipt, run ledger, repository base, and exact bounded
+  // artifacts before any current-focus write can occur.
   if (!validSession(session) || !CURRENT_SESSION_ID.test(session.session_id) || session.repository.repository_id !== repositoryId) throw new Error("WEB_HISTORY_NOT_RESUMABLE: history identity does not match a current durable session for this repository.");
   if (session.state !== "IMPLEMENTATION_REGISTERED" || !session.sealed || !session.run_id || !session.task_archive_path || !session.web_pack_path) {
     throw new Error("WEB_HISTORY_NOT_RESUMABLE: this task did not reach a locally re-attestable implementation checkpoint. Start a new follow-up task instead.");
   }
-  const identity = splitRunId(session.run_id);
+  const runId = session.run_id;
+  const identity = splitRunId(runId);
   const [ledger, run] = await Promise.all([
-    readRunLedger(stateDirectory, session.run_id),
+    readRunLedger(stateDirectory, runId),
     readRunReceipt(stateDirectory, identity.taskId, identity.archiveSha256),
   ]);
-  if (!ledger || ledger.run_id !== session.run_id) throw new Error("WEB_HISTORY_NOT_RESUMABLE: the durable run ledger is missing or no longer matches this task.");
+  if (!ledger || ledger.run_id !== runId) throw new Error("WEB_HISTORY_NOT_RESUMABLE: the durable run ledger is missing or no longer matches this task.");
   if (
     !run ||
-    run.run_id !== session.run_id ||
+    run.run_id !== runId ||
     run.task_id !== identity.taskId ||
     run.archive_sha256 !== identity.archiveSha256 ||
     run.repository_id !== repositoryId ||
@@ -183,15 +184,15 @@ export async function restoreLocalTaskHistoryFocus(
   // start while focus is being switched. If the focus write fails after a pause
   // was cleared, restore the exact pre-resume ledger before surfacing failure.
   const expectedLedgerSha = contentDigest(ledger);
-  return await withTransitionExecutionLock(stateDirectory, session.run_id, async () => {
-    const lockedLedger = await readRunLedger(stateDirectory, session.run_id);
+  return await withTransitionExecutionLock(stateDirectory, runId, async () => {
+    const lockedLedger = await readRunLedger(stateDirectory, runId);
     if (!lockedLedger || contentDigest(lockedLedger) !== expectedLedgerSha) {
       throw new Error("WEB_HISTORY_NOT_RESUMABLE: durable run state changed while history resume was being prepared.");
     }
 
     const isPair = (session.job_mode ?? "PAIR") === "PAIR";
     const resumedLedger = isPair && lockedLedger.paused
-      ? await resumeRun(stateDirectory, session.run_id)
+      ? await resumeRun(stateDirectory, runId)
       : lockedLedger;
     const resumedLedgerSha = contentDigest(resumedLedger);
 
@@ -201,8 +202,8 @@ export async function restoreLocalTaskHistoryFocus(
     } catch (writeError) {
       if (isPair && lockedLedger.paused) {
         try {
-          await withRunLock(stateDirectory, session.run_id, async () => {
-            const current = await readRunLedger(stateDirectory, session.run_id);
+          await withRunLock(stateDirectory, runId, async () => {
+            const current = await readRunLedger(stateDirectory, runId);
             if (!current || contentDigest(current) !== resumedLedgerSha) {
               throw new Error("durable run changed after pause clearance");
             }
