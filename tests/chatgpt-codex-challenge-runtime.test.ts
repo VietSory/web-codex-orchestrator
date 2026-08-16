@@ -38,14 +38,14 @@ function challengeIdentity(jobId: string): BridgeJobIdentity {
   };
 }
 
-test("configured local bridge preserves ChatGptCodexWebBridge compatibility while exposing optional challenge capability", () => {
+test("configured local bridge keeps the normal hot path free of shadow-only provider work", () => {
   const bridge = createConfiguredWebBridge(config(), "/tmp/wco-challenge-factory");
   assert.ok(bridge instanceof ChatGptCodexWebBridge);
-  assert.ok(bridge instanceof ChatGptCodexChallengeWebBridge);
-  assert.equal(isSemanticChallengeAwareWebBridge(bridge), true);
+  assert.equal(bridge instanceof ChatGptCodexChallengeWebBridge, false);
+  assert.equal(isSemanticChallengeAwareWebBridge(bridge), false);
 });
 
-test("authoring returns normal authority while a failing blind challenge starts independently and stays fail-open", async () => {
+test("explicit challenge bridge remains available for semantic evaluation without affecting normal authoring authority", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-challenge-runtime-"));
   try {
     const repositoryPath = path.join(root, "repo");
