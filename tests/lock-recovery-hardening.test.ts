@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -14,21 +14,24 @@ async function temporaryRoot(prefix: string): Promise<string> {
   return await mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
-test("execution lock fails closed on a well-formed stale owner instead of stealing authority", async (t) => {
+test("execution lock safely reclaims a well-formed owner whose process is proven dead", async (t) => {
   const root = await temporaryRoot("wco-execution-lock-stale-");
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(path.join(root, "locks"));
   const target = executionLockPath(root, DIGEST);
   await writeFile(target, STALE, { mode: 0o600 });
+  const staleStat = await lstat(target);
 
-  await assert.rejects(
-    acquireExecutionLock(root, DIGEST),
-    (error: unknown) => error instanceof ExecutionError && error.code === "EXECUTION_LOCKED" && /never auto-steals authority locks/i.test(error.message),
-  );
-  assert.equal(await readFile(target, "utf8"), STALE);
+  const acquired = await acquireExecutionLock(root, DIGEST);
+  const replacement = JSON.parse(await readFile(target, "utf8")) as { pid: number; nonce: string; timestamp: string };
+  const replacementStat = await lstat(target);
+  assert.equal(replacement.pid, process.pid);
+  assert.notEqual(replacement.nonce, "00000000-0000-4000-8000-000000000000");
+  assert.notEqual(replacementStat.ino, staleStat.ino);
+  await acquired.release();
 });
 
-test("two stale-lock contenders both fail without deleting or replacing the stale inode", async (t) => {
+test("two stale-lock contenders serialize recovery so exactly one live owner wins", async (t) => {
   const root = await temporaryRoot("wco-execution-lock-stale-race-");
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(path.join(root, "locks"));
@@ -36,8 +39,14 @@ test("two stale-lock contenders both fail without deleting or replacing the stal
   await writeFile(target, STALE, { mode: 0o600 });
 
   const outcomes = await Promise.allSettled([acquireExecutionLock(root, DIGEST), acquireExecutionLock(root, DIGEST)]);
-  assert.ok(outcomes.every((outcome) => outcome.status === "rejected" && outcome.reason instanceof ExecutionError && outcome.reason.code === "EXECUTION_LOCKED"));
-  assert.equal(await readFile(target, "utf8"), STALE);
+  const fulfilled = outcomes.filter((outcome): outcome is PromiseFulfilledResult<Awaited<ReturnType<typeof acquireExecutionLock>>> => outcome.status === "fulfilled");
+  const rejected = outcomes.filter((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+  assert.equal(fulfilled.length, 1);
+  assert.equal(rejected.length, 1);
+  assert.ok(rejected[0]!.reason instanceof ExecutionError && rejected[0]!.reason.code === "EXECUTION_LOCKED" && /live process/i.test(rejected[0]!.reason.message));
+  const current = JSON.parse(await readFile(target, "utf8")) as { pid: number };
+  assert.equal(current.pid, process.pid);
+  await fulfilled[0]!.value.release();
 });
 
 test("execution lock still rejects a second live owner", async (t) => {
@@ -60,7 +69,7 @@ test("execution lock fails closed on malformed stale state instead of deleting i
 
   await assert.rejects(
     acquireExecutionLock(root, DIGEST),
-    (error: unknown) => error instanceof ExecutionError && error.code === "EXECUTION_LOCKED" && /cannot be reclaimed safely/i.test(error.message),
+    (error: unknown) => error instanceof ExecutionError && error.code === "EXECUTION_LOCKED" && /malformed or unsafe/i.test(error.message),
   );
   assert.equal(await readFile(target, "utf8"), "not-json\n");
 });
