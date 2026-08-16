@@ -36,7 +36,12 @@ export class SemanticChallengeRepositorySession {
       originalGoal: options.request.original_goal,
     });
     this.runtimeId = `semantic-${crypto.createHash("sha256").update(this.requestValue.challenge_id).digest("hex").slice(0, 32)}`;
-    const scope = crypto.createHash("sha256").update(`${this.requestValue.challenge_id}\0${this.requestValue.repository.base_commit}`).digest("hex");
+    const scope = crypto.createHash("sha256").update([
+      this.requestValue.challenge_id,
+      this.requestValue.repository.repository_id,
+      this.requestValue.repository.base_branch,
+      this.requestValue.repository.base_commit,
+    ].join("\0")).digest("hex");
     const coverage = new ReadCoverageStore(path.join(options.stateDirectory, "semantic", "challenge-read-coverage", scope));
     const cache = new ContentAddressedContextCache(path.join(options.stateDirectory, "cache", "semantic-challenge-context"));
     this.reader = new ExactRepositoryReadService(options.repositoryPath, this.requestValue.repository, coverage, {}, cache);
