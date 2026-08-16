@@ -218,7 +218,7 @@ Both modes preserve local mutation authority, deterministic verification, recove
 
 Neither mode automatically merges or releases your code.
 
-While a local task is running, the interactive prompt remains available for safe read/control commands such as `/status`, `/review`, and `/pause`. Status and review output explicitly show **Your action**. If WCO owns the next step, the action is `None — WCO ...`; if WCO needs a decision or the final merge, it tells you exactly what to do.
+While a local task is running, the interactive prompt remains available for safe read/control commands such as `/status`, `/review`, and `/pause`. The slash palette becomes context-aware and shows only commands that are valid while the background worker owns mutation. Runtime guards still enforce the same single-owner rule even if an unavailable command is typed manually. Status and review output explicitly show **Your action**. If WCO owns the next step, the action is `None — WCO ...`; if WCO needs a decision or the final merge, it tells you exactly what to do.
 
 ## What WCO does with a goal
 
@@ -270,7 +270,11 @@ cd /path/to/project
 wco
 ```
 
-Then give WCO a goal.
+Then give WCO a goal. If you already have an unfinished current task, use `/continue` to continue that exact task. If there is no current task, or the current task is already complete, `/continue` does not change focus: type a new follow-up goal, or use `/resume` when you intentionally want to choose a different saved task. `/resume <number>` selects the matching `/history` item after durable re-attestation.
+
+WCO does not trust history display data as workflow authority. Before a historical task becomes current again, WCO re-attests its canonical run receipt, exact durable run ledger, repository/base binding, and bounded WCO-owned task/implementation artifacts. Completed tasks stay completed and should receive a new follow-up goal instead of reopening old authority. Authoring-only, stale, corrupt, mismatched, redirected, or symlinked history stays reference-only.
+
+A blocked current task is still the current task: `/continue` will not silently jump to some older history item. Use `/status`, `/review`, and `/doctor` to resolve the blocker, or use `/resume` explicitly if you intentionally want to switch saved tasks. Switching away from any unfinished current task asks for confirmation first.
 
 Before a local task starts or resumes, WCO uses its existing mode-aware readiness checks so required local prerequisites are caught before normal task execution begins.
 
@@ -283,14 +287,15 @@ Inside the interactive WCO CLI, the normal command-discovery surface is intentio
 ```text
 /new <goal>             start a collaborative PAIR task
 /auto <goal>            start an end-to-end AUTOPILOT task
+/continue               continue only the current unfinished saved task
+/resume                  choose a saved task to resume
+/resume <number>         resume one history item after durable re-attestation
 /status                  show current progress and Your action
 /task                    show current goal and plan state
-/run                     continue the current saved task
 /auth status             show ChatGPT authorization status
 /auth connect            authorize or re-authorize ChatGPT
 /review                  show verification/review/Draft-PR evidence
 /pause                   pause before the next safe step
-/resume                  resume a durable paused run
 /history                 show recent task history
 /history <number>        inspect one history item read-only
 /doctor                  check readiness for the current mode
@@ -299,7 +304,23 @@ Inside the interactive WCO CLI, the normal command-discovery surface is intentio
 /quit                    exit safely
 ```
 
-Starting `/new` or `/auto` while an unfinished task is still in current focus asks for confirmation first. The previous durable history is preserved; history inspection does not create a new mutation/resume authority path.
+`/run` remains accepted as a compatibility alias for continuation, but normal users are taught `/continue` so they do not have to remember a separate `/resume`-then-`/run` sequence.
+
+Starting `/new` or `/auto` while an unfinished task is still in current focus asks for confirmation first. The previous durable history is preserved. `/history` is inspection only; `/resume` is the separate explicit focus-changing action and is allowed only after WCO re-attests durable authority.
+
+The interactive composer follows familiar terminal semantics:
+
+```text
+Ctrl+C              cancel current input; with an active task, request a safe interrupt and keep WCO open
+Ctrl+D              request a safe exit
+Ctrl+J              insert a newline
+Shift+Enter         insert a newline when the terminal reports the modified Enter key
+Up/Down, Ctrl+P/N   browse bounded prompt history for this WCO session
+Ctrl+R              search backward through bounded prompt history
+Ctrl+L              redraw the current composer
+```
+
+Pasted multiline goals and clarifications keep their line breaks instead of being flattened into one line. Background progress may redraw around the composer, but it does not take stdin ownership away from the user.
 
 Advanced/compatibility commands remain accepted for power users and existing integrations but are intentionally hidden from the normal slash palette. The existing shell compatibility surface is unchanged, including:
 
