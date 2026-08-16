@@ -1,62 +1,212 @@
 # Local validation
 
-Use this checklist only after deterministic CI is green for the exact candidate head. Native checks exercise host-specific WSL, Git, sandbox, Codex authentication, and provider integration that GitHub CI intentionally cannot emulate.
+Use this checklist only after deterministic GitHub CI and Advanced bridge compatibility are green for the **exact candidate head**. These checks exercise Linux/WSL, Bubblewrap, the bundled Codex runtime, real ChatGPT authorization, provider behavior, Git/GitHub delivery, restart/recovery, and the packed normal-user flow that GitHub CI cannot fully emulate.
 
-## Environment preflight
+The normal deterministic product path is **Linux/WSL only** for this build. Native Windows/macOS may be used to download files or inspect WSL status, but do not run normal WCO setup/auth/tasks there.
 
-From PowerShell:
+## 1. Linux/WSL environment preflight
+
+If starting from Windows, PowerShell is only used to confirm WSL exists:
 
 ```powershell
 wsl.exe --status
 ```
 
-Then run the remaining commands from the repository root inside WSL:
+Then enter WSL and run every remaining command there from the WCO candidate repository unless a step explicitly says to switch to the separate dogfood repository:
 
 ```bash
 node --version
 npm --version
 git --version
-codex --version
-codex login status
+bwrap --version
+gh auth status
 ```
 
-WCO requires Node.js 22 or newer. The project itself uses the pinned bundled Codex runtime; the global `codex` checks above confirm that the local user authentication/runtime environment is available for native integration.
+Requirements for the normal path:
 
-## Deterministic local gate
+- Node.js 22+
+- npm
+- Git
+- Bubblewrap (`bwrap`)
+- GitHub CLI (`gh`) authenticated before Draft-PR delivery
+- one normal ChatGPT authorization through WCO's bundled official Codex runtime
+
+Do not configure an OpenAI API key, relay, tunnel, domain, Custom GPT, MCP connector, Workspace Agent, or manual ZIP handoff for the normal acceptance path.
+
+## 2. Exact-source deterministic gate
+
+Record the candidate identity first:
+
+```bash
+git rev-parse HEAD
+git status --short
+```
+
+The HEAD must equal the exact GitHub-qualified PR head and the working tree must be clean.
+
+Run:
 
 ```bash
 npm ci
 npm run validate:template
 npm run typecheck
 npm test
+npm run benchmark:context
+npm run benchmark:web-context
+npm run benchmark:prompt-footprint
 npm run test:e2e
 npm run build
 npm run test:cli
+npm run test:user:contract
 npm run pack:check
+npm run pack:smoke
 ```
 
-Every command above must pass before native provider-backed testing.
+`npm run pack:smoke` is a release gate, not a convenience smoke. It packs WCO, installs the tarball without dev dependencies, runs the installed `wco` binary through a real PTY, and exercises fresh/returning use plus blocked prerequisites and terminal-control recovery.
 
-## Native sandbox and Codex gates
+Every command above must pass before provider-backed acceptance.
+
+## 3. Native sandbox and bundled-Codex integration
+
+Run the opt-in host integrations inside Linux/WSL:
 
 ```bash
 WCO_RUN_SANDBOX_INTEGRATION=1 npm run test:native:sandbox
 WCO_RUN_CODEX_INTEGRATION=1 WCO_KEEP_FAILED_INTEGRATION=1 npm run test:native:codex
 ```
 
-The native Codex integration can create provider-backed turns. Keep the failed integration fixture only for diagnosis; successful fixtures are cleaned automatically.
+These tests may create real provider-backed turns. If the Codex integration fails, keep the printed `WCO_FAILED_INTEGRATION_ROOT=` / `WCO_FAILED_INTEGRATION_STATE=` paths only for local diagnosis. Never share tokens, cookies, credential files, `~/.codex`, browser profiles, or other authorization material.
 
-If `test:native:codex` fails, preserve the ordinary test output and the printed `WCO_FAILED_INTEGRATION_ROOT=` / `WCO_FAILED_INTEGRATION_STATE=` paths. Do not share tokens, cookies, credential files, `~/.codex`, or browser-profile data.
+## 4. Authorized semantic-provider benchmark
 
-## Supported Web transport diagnostics
+Run the provider benchmark only after the deterministic/native gates pass:
 
-Use `wco web status` and the transport-aware `wco doctor`. WCO does not support controlled-browser automation, DOM/output extraction, cookies/session scraping or undocumented ChatGPT endpoints. Diagnostic data must never include relay secrets, provider credentials, browser profiles or session state.
+```bash
+npm run benchmark:semantic:provider
+```
 
-## Native context A/B benchmark
+Treat this as task-quality evidence, not merely a latency/token measurement. The benchmark must preserve exact input/evidence binding and report the provider-backed quality/usage evidence required by the benchmark contract. Static prompt byte counts or offline context-cache hits are not substitutes for this gate.
 
-The v0.2 context benchmark is intentionally opt-in and provider-backed. Run it only against an exact `READY_FOR_PUBLISH` executor snapshot after the normal native gates pass. The benchmark must compare the same exact change-set digest with fresh read-only reviewer turns and report provider token usage, latency, and exact-digest approval rate. Offline context-path-byte measurements are not token-cost claims.
-# v0.3 native product dogfood gate
+## 5. Packed normal-user dogfood
 
-After deterministic gates pass, build a tarball and install it in a clean environment. From a different real GitHub repository run `wco`, complete setup, enter one rough goal, and use the configured Senior Architect GPT. Prove contract and implementation arrive without Downloads/manual ZIP transfer; WCO executes verification, Terra/Sol review, Draft PR and Result Bundle; final Web verdict returns without a manual JSON file; the workflow stops before merge. Finally run `/uninstall` (or `wco uninstall --purge --yes`) and verify the target repository, `.git`, remote branch and PR remain intact.
+Build the exact candidate tarball from the clean qualified head:
 
-Record the run ID, Task Bundle SHA, Web Pack SHA, exact base/published commit, Result Bundle SHA, Terra/Sol exact change-set digests, Draft status and uninstall inventory. Provider-backed calls are not part of normal CI.
+```bash
+npm pack
+```
+
+Install that generated `.tgz` **inside Linux/WSL**. Then change to a separate real GitHub repository that is safe for dogfood. Do not run the acceptance task in the WCO source repository itself.
+
+For a clean install, remove/replace any older WCO global installation as appropriate, install the candidate tarball, then confirm the installed CLI responds:
+
+```bash
+npm install -g /absolute/path/to/web-codex-orchestrator-*.tgz
+wco --version
+```
+
+The candidate package can still carry the previous published package version until release identity is deliberately bumped; bind acceptance to the recorded tarball digest and Git HEAD rather than inferring candidate identity from the version string alone.
+
+## 6. Real first-use journey
+
+Inside the separate dogfood repository:
+
+```bash
+cd /path/to/dogfood-repository
+wco
+```
+
+The expected normal-user flow is:
+
+```text
+wco
+  -> Linux/WSL + repository setup/preflight
+  -> official ChatGPT authorization once, if needed
+  -> interactive WCO prompt
+  -> user goal
+  -> exact repository reads
+  -> sealed plan/contract
+  -> Codex implementation proposal
+  -> WCO isolated mutation + deterministic verification/repair
+  -> independent semantic review/revise
+  -> reviewed Draft PR
+  -> READY_FOR_YOU
+  -> human decides whether to merge
+```
+
+A normal user must not be asked for API keys, relay/tunnel/domain setup, Custom GPT configuration, MCP/Workspace Agent setup, internal run IDs, or manual task/result ZIP transfer.
+
+Use a goal large enough to require real repository understanding and verification, not a one-line cosmetic edit. Record the exact goal and the base commit before starting.
+
+## 7. Break the real user flow on purpose
+
+Do not accept only the happy path. Exercise these behaviors through the installed packed `wco` binary where safe:
+
+- start from a repository without a valid remote and verify WCO stops with an actionable recovery message before creating trusted task authority;
+- verify `wco doctor` explains a missing prerequisite rather than exposing an internal error;
+- while composing input, Ctrl+C cancels only the draft and keeps WCO open;
+- Ctrl+D from an empty prompt exits safely;
+- `/pause` stops at a safe boundary and preserves progress;
+- restart `wco` and verify `/continue` continues **only the current saved task**;
+- verify `/resume` opens saved-task selection and does not silently replace `/continue` semantics;
+- when practical, open a second WCO process against the same repository and verify stale focus/confirmation cannot overwrite the current task;
+- interrupt/restart around a durable workflow boundary and verify WCO resumes from receipts instead of replaying an ambiguous provider/mutation action.
+
+Do not deliberately destroy credentials, rewrite remote history, force-push, merge, or release as part of these break tests.
+
+## 8. Draft-PR and review acceptance
+
+The real task is accepted only when all of the following are bound to the same run/change-set:
+
+- exact base commit and repository identity;
+- exact sealed task/acceptance evidence;
+- implementation and verification receipts;
+- independent review evidence, including any revise loop that occurred;
+- exact published commit/remote head;
+- one reviewed **Draft PR**;
+- final state `READY_FOR_YOU`;
+- no automatic merge or release.
+
+Inspect `/status` and `/review` during the task. They must tell the user what WCO is doing and, when applicable, exactly what **Your action** is. A successful run must not require the user to understand internal phase names to proceed.
+
+## 9. Restart/recovery proof
+
+Before calling the candidate locally qualified, perform at least one real restart/recovery check on saved progress. After restarting WCO:
+
+- the same repository/task identity is recovered;
+- `/continue` does not jump to unrelated history;
+- `/resume` requires explicit saved-task choice;
+- already completed provider/mutation/publish authority is not duplicated;
+- the same Draft PR is rediscovered/reused where recovery applies;
+- no second conflicting branch/PR/semantic authority is created.
+
+## 10. Record acceptance evidence
+
+Record at minimum:
+
+```text
+candidate Git HEAD
+tarball filename + SHA-256
+Linux/WSL environment
+Node/npm/Git/Bubblewrap versions
+GitHub auth readiness (never the token)
+provider benchmark result
+real user goal
+repository + exact base commit
+run/task identity
+published commit
+Draft PR URL/status
+verification result
+independent review/final verdict
+restart/recovery result
+/continue and /resume result
+any revise round count
+final READY_FOR_YOU result
+```
+
+Do not record or share ChatGPT/Codex credentials, cookies, browser-profile data, GitHub tokens, relay secrets, or other private authentication material.
+
+## Release boundary
+
+Passing GitHub CI alone means **GitHub-side qualified**, not release-qualified. Passing this entire authorized Linux/WSL checklist is the environment-bound acceptance required before recommending release.
+
+Even after acceptance, WCO must leave the PR as Draft until a human deliberately changes that state. WCO must never merge, tag, release, enable auto-merge, or force-push on behalf of this validation checklist.
