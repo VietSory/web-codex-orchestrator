@@ -8,12 +8,10 @@ import {
   type SemanticUnderstandingEnvelope,
 } from "./blind-challenge.js";
 import { SemanticChallengeRepositorySession } from "./challenge-repository-session.js";
-import {
-  appendSemanticChallengeTrajectoryEvent,
-  readSemanticChallengeTrajectory,
-} from "./challenge-trajectory-store.js";
+import { appendSemanticChallengeTrajectoryEvent, readSemanticChallengeTrajectory } from "./challenge-trajectory-store.js";
 
 const MAX_REMOTE_ACTIONS = 128;
+const SAFE_REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 export interface SemanticChallengeShadowResult {
   challenge_id: string;
@@ -36,6 +34,11 @@ function sameUnderstanding(left: SemanticUnderstandingEnvelope, right: SemanticU
  * action is durably represented by the digest-only trajectory store. The
  * caller decides whether failure is fail-open; this function itself fails
  * closed on provenance, sequencing, evidence, or transport inconsistency.
+ *
+ * Digest-only trajectory receipts intentionally do not claim enough state to
+ * reconstruct an interrupted provider thread or exact in-memory evidence set.
+ * A partial prior trajectory therefore fails closed instead of pretending to
+ * resume. A caller may start a distinct challenge identity for a fresh attempt.
  */
 export async function runSemanticChallengeShadow(options: {
   transport: SemanticChallengeTransport;
@@ -49,25 +52,22 @@ export async function runSemanticChallengeShadow(options: {
     repository: options.request.repository,
     originalGoal: options.request.original_goal,
   });
+  const prior = await readSemanticChallengeTrajectory({ stateDirectory: options.stateDirectory, request });
+  if (prior.length > 0) throw new Error("semantic challenge shadow cannot replay a prior trajectory without exact provider and evidence state.");
+
   const repository = new SemanticChallengeRepositorySession({
     request,
     repositoryPath: options.repositoryPath,
     stateDirectory: options.stateDirectory,
   });
-
-  const prior = await readSemanticChallengeTrajectory({ stateDirectory: options.stateDirectory, request });
-  if (prior.length === 0) {
-    await appendSemanticChallengeTrajectoryEvent({
-      stateDirectory: options.stateDirectory,
-      request,
-      sequence: 1,
-      eventType: "challenge_created",
-      idempotencyKey: "challenge-created",
-      payload: { request_sha256: contentDigest(request) },
-    });
-  } else if (prior[0]?.event_type !== "challenge_created" || prior.at(-1)?.event_type === "understanding_sealed") {
-    throw new Error("semantic challenge shadow trajectory is not resumable.");
-  }
+  await appendSemanticChallengeTrajectoryEvent({
+    stateDirectory: options.stateDirectory,
+    request,
+    sequence: 1,
+    eventType: "challenge_created",
+    idempotencyKey: "challenge-created",
+    payload: { request_sha256: contentDigest(request) },
+  });
 
   const identity = await options.transport.createSemanticChallengeJob(request, `challenge-${request.challenge_id}`);
   if (!identity?.job_id) throw new Error("semantic challenge transport returned an invalid job identity.");
@@ -81,14 +81,12 @@ export async function runSemanticChallengeShadow(options: {
     remoteSequence = action.sequence;
 
     if (action.type === "repository_command") {
+      if (!SAFE_REQUEST_ID.test(action.request_id)) throw new Error("semantic challenge remote request identity is invalid.");
       const parsed = parseSemanticChallengeAction({ kind: "repository_command", command: parseRepositoryCommand(action.command) }, request);
       if (parsed.kind !== "repository_command") throw new Error("semantic challenge repository action changed kind during validation.");
       const delivered = await repository.execute(parsed.command);
-      await options.transport.submitSemanticChallengeRepositoryResult(
-        identity.job_id,
-        delivered as RepositoryCommandResult,
-        `result-${delivered.request_id}`,
-      );
+      const transportResult = { request_id: action.request_id, result: delivered.result } as RepositoryCommandResult;
+      await options.transport.submitSemanticChallengeRepositoryResult(identity.job_id, transportResult, `result-${action.request_id}`);
       const trajectory = await readSemanticChallengeTrajectory({ stateDirectory: options.stateDirectory, request });
       await appendSemanticChallengeTrajectoryEvent({
         stateDirectory: options.stateDirectory,
@@ -98,7 +96,8 @@ export async function runSemanticChallengeShadow(options: {
         idempotencyKey: `observation-${trajectory.length + 1}`,
         payload: {
           remote_sequence: action.sequence,
-          request_id: delivered.request_id,
+          remote_request_id: action.request_id,
+          evidence_request_id: delivered.request_id,
           command_sha256: contentDigest(parsed.command),
           result_sha256: contentDigest(delivered.result),
         },
