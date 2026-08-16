@@ -251,11 +251,13 @@ export class RelayFileStore {
       if (previous) {
         const event = record.events.find((value) => value.idempotency_key === idempotencyKey);
         if (!event || event.type !== type || !event.payload || typeof event.payload !== "object" || Array.isArray(event.payload)) throw new WebBridgeError("RELAY_RECORD_INVALID", "Relay claim idempotency index is inconsistent.");
-        const stored = event.payload as Record<string, unknown>;
-        const storedNonce = stored.claim_nonce;
-        const { claim_nonce: _ignored, ...storedPayload } = stored;
-        if (contentDigest({ type, payload: storedPayload }) !== contentDigest({ type, payload })) throw new WebBridgeError("RELAY_IDEMPOTENCY_CONFLICT", "Conflicting relay claim replay was rejected.");
-        return { event, acquired: storedNonce === claimNonce };
+        const stored = { ...(event.payload as Record<string, unknown>) };
+        delete stored.claim_nonce;
+        if (contentDigest({ type, payload: stored }) !== contentDigest({ type, payload })) throw new WebBridgeError("RELAY_IDEMPOTENCY_CONFLICT", "Conflicting relay claim replay was rejected.");
+        // A durable claim means the external side effect may already have
+        // happened. Replays are therefore never ownership grants, even when a
+        // caller presents the same nonce after an ambiguous local response.
+        return { event, acquired: false };
       }
       if (record.events.length >= this.limits.maximum_events_per_job) throw new WebBridgeError("RELAY_EVENT_LIMIT", "Relay event limit reached.");
       const claimedPayload = { ...payload, claim_nonce: claimNonce };
