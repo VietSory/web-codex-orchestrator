@@ -324,8 +324,10 @@ async function liveSlashComposer(
 
     const onKeypress = (text: string | undefined, key: Keypress): void => {
       if (key.ctrl && key.name === "c") {
-        if (value.length > 0) setValue("");
-        else abort("interrupt");
+        if (value.length > 0) {
+          setValue("");
+          writeExternal("Input cancelled.");
+        } else abort("interrupt");
         return;
       }
       if (key.ctrl && key.name === "d") {
