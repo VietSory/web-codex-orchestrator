@@ -29,7 +29,7 @@ test("challenge repository session builds evidence only from its own exact reads
   const value = await fixture();
   try {
     const session = new SemanticChallengeRepositorySession(value);
-    await assert.rejects(async () => session.buildEvidence(), /before an exact repository observation/);
+    assert.throws(() => session.buildEvidence(), /before an exact repository observation/);
 
     await session.execute({ operation: "summary" });
     const command = { operation: "read" as const, paths: ["src/session.ts"] };
@@ -54,6 +54,46 @@ test("challenge repository session builds evidence only from its own exact reads
   }
 });
 
+test("challenge identity is snapshotted and cannot drift through caller mutation", async () => {
+  const value = await fixture();
+  try {
+    const expectedChallenge = value.request.challenge_id;
+    const expectedCommit = value.request.repository.base_commit;
+    const session = new SemanticChallengeRepositorySession(value);
+    value.request.challenge_id = "mutated-challenge";
+    value.request.repository.base_commit = "f".repeat(40);
+    const exposed = session.request;
+    exposed.challenge_id = "mutated-copy";
+    exposed.repository.base_commit = "e".repeat(40);
+
+    await session.execute({ operation: "read", paths: ["src/session.ts"] });
+    const evidence = session.buildEvidence();
+    assert.equal(evidence.challenge_id, expectedChallenge);
+    assert.equal(evidence.repository.base_commit, expectedCommit);
+    assert.equal(session.request.challenge_id, expectedChallenge);
+    assert.equal(session.request.repository.base_commit, expectedCommit);
+  } finally {
+    await rm(value.root, { recursive: true, force: true });
+  }
+});
+
+test("concurrent challenger reads serialize into unique ordered observation identities", async () => {
+  const value = await fixture();
+  try {
+    const session = new SemanticChallengeRepositorySession(value);
+    const [first, second] = await Promise.all([
+      session.execute({ operation: "summary" }),
+      session.execute({ operation: "tree", maximum_paths: 10 }),
+    ]);
+    assert.deepEqual([first.request_id, second.request_id], ["read-001", "read-002"]);
+    const evidence = session.buildEvidence();
+    assert.deepEqual(evidence.evidence_index.observations.map((item) => item.sequence), [1, 2]);
+    assert.deepEqual(evidence.evidence_index.observations.map((item) => item.request_id), ["read-001", "read-002"]);
+  } finally {
+    await rm(value.root, { recursive: true, force: true });
+  }
+});
+
 test("challenge sessions use distinct evidence ownership for distinct challenge identities", async () => {
   const value = await fixture();
   try {
@@ -69,7 +109,7 @@ test("challenge sessions use distinct evidence ownership for distinct challenge 
     const firstEvidence = first.buildEvidence();
     const secondEvidence = second.buildEvidence();
     assert.notEqual(firstEvidence.challenge_evidence_sha256, secondEvidence.challenge_evidence_sha256);
-    assert.equal(firstEvidence.challenge_id, value.request.challenge_id);
+    assert.equal(firstEvidence.challenge_id, first.request.challenge_id);
     assert.equal(secondEvidence.challenge_id, secondRequest.challenge_id);
   } finally {
     await rm(value.root, { recursive: true, force: true });
