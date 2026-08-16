@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
-import { chmod, lstat, mkdir, open, readdir, realpath, rename, unlink } from "node:fs/promises";
+import { chmod, lstat, open, readdir, realpath, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
+import { ensureCanonicalDirectory } from "../shared/safe-directory.js";
 import { readStableFile } from "../shared/stable-file.js";
 import { WebBridgeError } from "./contracts.js";
 
@@ -17,12 +18,7 @@ function digest(value: Buffer | string): string {
 }
 
 async function safeDirectory(root: string): Promise<string> {
-  const absolute = path.resolve(root);
-  await mkdir(absolute, { recursive: true, mode: 0o700 });
-  const stat = await lstat(absolute);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || await realpath(absolute) !== absolute) {
-    throw new WebBridgeError("WEB_CONTEXT_CACHE_ROOT_UNSAFE", "Context cache root is not a canonical directory.");
-  }
+  const absolute = await ensureCanonicalDirectory(root, "Web context cache");
   await chmod(absolute, 0o700).catch(() => undefined);
   return absolute;
 }
