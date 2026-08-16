@@ -66,6 +66,9 @@ jobs:
       - name: Deterministic context benchmark
         run: npm run benchmark:context
 
+      - name: Deterministic web-context benchmark
+        run: npm run benchmark:web-context
+
       - name: Deterministic prompt footprint guardrail
         run: npm run benchmark:prompt-footprint
 
@@ -77,6 +80,9 @@ jobs:
           path: artifacts/prompt-footprint.json
           if-no-files-found: error
           retention-days: 14
+
+      - name: Deterministic semantic corpus integrity benchmark
+        run: npm run benchmark:semantic
 
       - name: End-to-end workflow test
         run: npm run test:e2e
