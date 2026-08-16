@@ -9,6 +9,8 @@ export const CHATGPT_CODEX_REVIEW_PHASE_MARKER = "WCO_SEMANTIC_PHASE:REVIEW";
 export const CHATGPT_CODEX_CHALLENGE_PHASE_MARKER = "WCO_SEMANTIC_PHASE:CHALLENGE";
 const DEFAULT_PROVIDER_TURN_SECONDS = 900;
 const MAX_PROVIDER_TURN_SECONDS = 3600;
+const MAX_AUDITED_PUBLIC_EVENTS = 256;
+const ALLOWED_PROMPT_ONLY_EVENT_TYPES = new Set(["thread.started", "turn.started", "reasoning", "todo_list", "agent_message", "turn.completed"]);
 type MeasuredProviderUsage = { input_tokens: number; cached_input_tokens: number; output_tokens: number };
 
 function schemaForPrompt(prompt: string): Record<string, unknown> {
@@ -20,6 +22,27 @@ function schemaForPrompt(prompt: string): Record<string, unknown> {
 
 function timeoutError(): Error & { code: string } {
   return Object.assign(new Error("Local ChatGPT/Codex semantic provider turn exceeded its bounded deadline."), { code: "WEB_CHATGPT_CODEX_TURN_TIMEOUT" });
+}
+
+function semanticAuditError(code: string, message: string): Error & { code: string } {
+  return Object.assign(new Error(message), { code });
+}
+
+function assertPromptOnlyProviderEvents(events: AgentTurnResponse["public_events"]): void {
+  if (!events || events.length === 0) throw semanticAuditError("WEB_CHATGPT_CODEX_EVENT_AUDIT_UNAVAILABLE", "Semantic provider did not return its public event audit trail.");
+  if (events.length >= MAX_AUDITED_PUBLIC_EVENTS) throw semanticAuditError("WEB_CHATGPT_CODEX_EVENT_AUDIT_TRUNCATED", "Semantic provider event audit trail reached its truncation bound; later tool activity cannot be excluded.");
+  let turnStarted = 0;
+  let turnCompleted = 0;
+  let agentMessages = 0;
+  let threadStarted = 0;
+  for (const event of events) {
+    if (!ALLOWED_PROMPT_ONLY_EVENT_TYPES.has(event.type)) throw semanticAuditError("WEB_CHATGPT_CODEX_TOOL_ACTIVITY_FORBIDDEN", `Semantic provider observed forbidden local/external tool activity '${event.type}'.`);
+    if (event.type === "thread.started") threadStarted += 1;
+    else if (event.type === "turn.started") turnStarted += 1;
+    else if (event.type === "turn.completed") turnCompleted += 1;
+    else if (event.type === "agent_message") agentMessages += 1;
+  }
+  if (threadStarted > 1 || turnStarted !== 1 || turnCompleted !== 1 || agentMessages < 1) throw semanticAuditError("WEB_CHATGPT_CODEX_EVENT_AUDIT_INVALID", "Semantic provider event lifecycle is incomplete or ambiguous.");
 }
 
 function measuredUsage(usage: AgentTurnResponse["usage"]): MeasuredProviderUsage {
@@ -52,8 +75,9 @@ async function assertBlindChallengeFilesystem(scratchDirectory: string, authorit
 }
 
 /** Read-only/no-network semantic provider adapter with closed phase schema,
- * trusted per-turn deadline, mandatory measurable token usage, and a challenge-
- * specific empty-filesystem boundary before a blind Web-B turn reaches Codex. */
+ * trusted per-turn deadline, mandatory measurable token usage, prompt-only SDK
+ * event attestation, and a challenge-specific empty-filesystem boundary before
+ * a blind Web-B turn reaches Codex. */
 export class ChatGptCodexSemanticClient {
   constructor(private readonly agent: AgentClient, private readonly maximumTurnSeconds = DEFAULT_PROVIDER_TURN_SECONDS) {
     if (!Number.isFinite(maximumTurnSeconds) || maximumTurnSeconds <= 0 || maximumTurnSeconds > MAX_PROVIDER_TURN_SECONDS) throw new Error("WEB_CHATGPT_CODEX_CONFIG_INVALID: semantic turn timeout is outside the trusted 1-3600 second range.");
@@ -70,6 +94,7 @@ export class ChatGptCodexSemanticClient {
     const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
     try {
       const result = await this.agent.turn({ role: "final_reviewer", model: options.profile.model, reasoning_effort: options.profile.reasoning_effort, ...(options.threadId ? { thread_id: options.threadId } : {}), prompt: options.prompt, output_schema: outputSchema, read_only: true, approval_policy: "never", sandbox_mode: "read-only", network_access: false, live_web_search: false, cached_web_search: false, workspace_path: options.scratchDirectory, accepted_bundle_path: options.authorityDirectory, signal });
+      assertPromptOnlyProviderEvents(result.public_events);
       return { thread_id: result.thread_id, output: result.output, usage: measuredUsage(result.usage) };
     } catch (error) {
       if (timeout.aborted && !options.signal?.aborted) throw timeoutError();
