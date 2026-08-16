@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import type { AgentLimits } from "../src/config/contracts.js";
 import { createSemanticChallengeRequest } from "../src/semantic/blind-challenge.js";
@@ -39,9 +42,23 @@ function provider(kind: "repository_command" | "semantic_understanding_sealed", 
   return { protocol_version: "wco-chatgpt-codex-v1", kind, payload_json: JSON.stringify(payload) };
 }
 
-function transportWithAgent(turn: (request: any, call: number) => Promise<any>, customLimits = limits) {
+function blindDirectories() {
+  const root = mkdtempSync(path.join(os.tmpdir(), "wco-provider-challenge-"));
+  const scratchDirectory = path.join(root, "scratch");
+  const authorityDirectory = path.join(root, "authority");
+  mkdirSync(scratchDirectory, { mode: 0o700 });
+  mkdirSync(authorityDirectory, { mode: 0o700 });
+  return { root, scratchDirectory, authorityDirectory };
+}
+
+function transportWithAgent(
+  turn: (request: any, call: number) => Promise<any>,
+  customLimits = limits,
+  extras: { beforeTurn?: () => Promise<void>; now?: () => Date; directories?: ReturnType<typeof blindDirectories> } = {},
+) {
   let calls = 0;
   const requests: any[] = [];
+  const directories = extras.directories ?? blindDirectories();
   const client = new ChatGptCodexSemanticClient({
     async checkAvailability() {},
     async turn(value: any) {
@@ -54,11 +71,12 @@ function transportWithAgent(turn: (request: any, call: number) => Promise<any>, 
     client,
     profile,
     limits: customLimits,
-    scratchDirectory: "/tmp/wco-challenge-scratch",
-    authorityDirectory: "/tmp/wco-challenge-authority",
-    now: () => new Date("2026-08-16T10:00:00.000Z"),
+    scratchDirectory: directories.scratchDirectory,
+    authorityDirectory: directories.authorityDirectory,
+    ...(extras.beforeTurn ? { beforeTurn: extras.beforeTurn } : {}),
+    now: extras.now ?? (() => new Date("2026-08-16T10:00:00.000Z")),
   });
-  return { transport, requests, calls: () => calls };
+  return { transport, requests, directories, calls: () => calls };
 }
 
 test("provider transport keeps the blind challenger phase closed and preserves one provider thread", async () => {
@@ -118,7 +136,7 @@ test("provider transport rejects stale cursors, wrong result identities, and ide
   assert.equal(fixture.calls(), 1);
 });
 
-test("provider transport rejects provider thread drift", async () => {
+test("provider transport rejects provider thread drift and makes the completed provider turn non-replayable", async () => {
   const fixture = transportWithAgent(async (_turn, call) => call === 1
     ? { thread_id: "challenge-thread-1", output: provider("repository_command", { operation: "summary" }), usage }
     : { thread_id: "challenge-thread-2", output: provider("semantic_understanding_sealed", sealed()), usage });
@@ -127,6 +145,8 @@ test("provider transport rejects provider thread drift", async () => {
   if (!first || first.type !== "repository_command") throw new Error("expected repository command");
   await fixture.transport.submitSemanticChallengeRepositoryResult(identity.job_id, { request_id: first.request_id, result: { kind: "summary" } } as any, "result-1");
   await assert.rejects(fixture.transport.waitForSemanticChallengeAction(identity.job_id, 1), /thread identity drifted/i);
+  await assert.rejects(fixture.transport.waitForSemanticChallengeAction(identity.job_id, 1), /ambiguous and cannot be replayed/i);
+  assert.equal(fixture.calls(), 2);
 });
 
 test("provider transport enforces the configured turn budget before another provider side effect", async () => {
@@ -140,26 +160,80 @@ test("provider transport enforces the configured turn budget before another prov
   assert.equal(fixture.calls(), 1);
 });
 
-test("provider transport enforces total wall-clock budget before another provider side effect", async () => {
+test("provider transport enforces its exact public expiry before another provider side effect", async () => {
   let now = Date.parse("2026-08-16T10:00:00.000Z");
-  let calls = 0;
-  const client = new ChatGptCodexSemanticClient({
-    async checkAvailability() {},
-    async turn() {
-      calls += 1;
-      return { thread_id: "challenge-thread-1", output: provider("repository_command", { operation: "summary" }), usage };
+  const fixture = transportWithAgent(
+    async () => ({ thread_id: "challenge-thread-1", output: provider("repository_command", { operation: "summary" }), usage }),
+    { ...limits, maximum_total_seconds: 1 },
+    { now: () => new Date(now) },
+  );
+  const identity = await fixture.transport.createSemanticChallengeJob(request, "challenge-provider-5");
+  assert.equal(Date.parse(identity.expires_at) - Date.parse(identity.created_at), 1_000);
+  now += 1_000;
+  await assert.rejects(fixture.transport.waitForSemanticChallengeAction(identity.job_id, 0), /budget is exhausted/i);
+  assert.equal(fixture.calls(), 0);
+});
+
+test("Web-A candidate bytes in either provider filesystem root fail before a blind challenger turn", async () => {
+  const directories = blindDirectories();
+  const marker = "WEB_A_CANDIDATE_CONTRACT_MUST_NEVER_REACH_WEB_B";
+  writeFileSync(path.join(directories.authorityDirectory, "candidate-contract.json"), marker, "utf8");
+  const fixture = transportWithAgent(
+    async () => { throw new Error("provider must not be called"); },
+    limits,
+    { directories },
+  );
+  const identity = await fixture.transport.createSemanticChallengeJob(request, "challenge-provider-blind-fs");
+  await assert.rejects(fixture.transport.waitForSemanticChallengeAction(identity.job_id, 0), /authority directory must remain empty and challenge-only/i);
+  assert.equal(fixture.calls(), 0);
+});
+
+test("beforeTurn cannot inject Web-A bytes after the first blindness check", async () => {
+  const directories = blindDirectories();
+  let callbackCalls = 0;
+  const fixture = transportWithAgent(
+    async () => { throw new Error("provider must not be called"); },
+    limits,
+    {
+      directories,
+      beforeTurn: async () => {
+        callbackCalls += 1;
+        writeFileSync(path.join(directories.scratchDirectory, "candidate-marker.txt"), "WEB_A_PRIVATE_CANDIDATE", "utf8");
+      },
     },
-  } as any, 60);
-  const transport = new ChatGptCodexSemanticChallengeTransport({
-    client,
-    profile,
-    limits: { ...limits, maximum_total_seconds: 1 },
-    scratchDirectory: "/tmp/wco-challenge-scratch",
-    authorityDirectory: "/tmp/wco-challenge-authority",
-    now: () => new Date(now),
-  });
-  const identity = await transport.createSemanticChallengeJob(request, "challenge-provider-5");
-  now += 1_001;
-  await assert.rejects(transport.waitForSemanticChallengeAction(identity.job_id, 0), /budget is exhausted/i);
-  assert.equal(calls, 0);
+  );
+  const identity = await fixture.transport.createSemanticChallengeJob(request, "challenge-provider-before-turn-fs");
+  await assert.rejects(fixture.transport.waitForSemanticChallengeAction(identity.job_id, 0), /scratch directory must remain empty and challenge-only/i);
+  assert.equal(callbackCalls, 1);
+  assert.equal(fixture.calls(), 0);
+});
+
+test("concurrent and reentrant waits cannot duplicate one provider side effect", async () => {
+  const directories = blindDirectories();
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  let entered!: () => void;
+  const providerEntered = new Promise<void>((resolve) => { entered = resolve; });
+  const fixture = transportWithAgent(async () => {
+    entered();
+    await blocked;
+    return { thread_id: "challenge-thread-1", output: provider("repository_command", { operation: "summary" }), usage };
+  }, limits, { directories });
+  const identity = await fixture.transport.createSemanticChallengeJob(request, "challenge-provider-concurrent");
+  const first = fixture.transport.waitForSemanticChallengeAction(identity.job_id, 0);
+  await providerEntered;
+  await assert.rejects(fixture.transport.waitForSemanticChallengeAction(identity.job_id, 0), /already in flight/i);
+  assert.equal(fixture.calls(), 1);
+  release();
+  const action = await first;
+  assert.equal(action?.sequence, 1);
+  assert.equal(fixture.calls(), 1);
+});
+
+test("provider failure becomes terminal ambiguity instead of a blind retry", async () => {
+  const fixture = transportWithAgent(async () => { throw new Error("provider transport dropped after request"); });
+  const identity = await fixture.transport.createSemanticChallengeJob(request, "challenge-provider-ambiguous");
+  await assert.rejects(fixture.transport.waitForSemanticChallengeAction(identity.job_id, 0), /provider transport dropped/i);
+  await assert.rejects(fixture.transport.waitForSemanticChallengeAction(identity.job_id, 0), /ambiguous and cannot be replayed/i);
+  assert.equal(fixture.calls(), 1);
 });
