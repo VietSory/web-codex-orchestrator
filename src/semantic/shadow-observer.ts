@@ -1,8 +1,9 @@
 import crypto from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { link, lstat, mkdir, open, realpath, rm } from "node:fs/promises";
+import { link, lstat, open, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
+import { ensureCanonicalDirectory } from "../shared/safe-directory.js";
 import { readStableFile } from "../shared/stable-file.js";
 import type { RepositoryBinding } from "../web-bridge/contracts.js";
 import { buildSemanticEvidenceIndex, type SemanticEvidenceObservationInput } from "./evidence-index.js";
@@ -94,19 +95,12 @@ async function assertSafeDirectory(target: string): Promise<void> {
 
 async function ensureSafeReceiptDirectory(stateDirectory: string, repositoryId: string, sessionId: string): Promise<string> {
   const root = path.resolve(stateDirectory);
+  // State root is authority supplied by the caller and must already exist; only
+  // managed descendants may be created by the non-authoritative shadow path.
   await assertSafeDirectory(root);
-  const components = ["bridge", "semantic-shadow", safeRepositoryId(repositoryId), safeSessionId(sessionId)];
-  let current = root;
-  for (const component of components) {
-    current = path.join(current, component);
-    try {
-      await mkdir(current, { mode: 0o700 });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    }
-    await assertSafeDirectory(current);
-  }
-  return current;
+  const directory = await ensureCanonicalDirectory(receiptDirectory(root, repositoryId, sessionId), "semantic shadow receipt");
+  await assertSafeDirectory(root);
+  return directory;
 }
 
 async function syncDirectory(directory: string): Promise<void> {
