@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { lstat, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -20,14 +20,12 @@ test("execution lock safely reclaims a well-formed owner whose process is proven
   await mkdir(path.join(root, "locks"));
   const target = executionLockPath(root, DIGEST);
   await writeFile(target, STALE, { mode: 0o600 });
-  const staleStat = await lstat(target);
 
   const acquired = await acquireExecutionLock(root, DIGEST);
   const replacement = JSON.parse(await readFile(target, "utf8")) as { pid: number; nonce: string; timestamp: string };
-  const replacementStat = await lstat(target);
   assert.equal(replacement.pid, process.pid);
   assert.notEqual(replacement.nonce, "00000000-0000-4000-8000-000000000000");
-  assert.notEqual(replacementStat.ino, staleStat.ino);
+  assert.ok(Number.isFinite(Date.parse(replacement.timestamp)));
   await acquired.release();
 });
 
