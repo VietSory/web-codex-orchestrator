@@ -7,7 +7,7 @@ import test from "node:test";
 import { createSemanticChallengeRequest, type SemanticUnderstandingEnvelope } from "../src/semantic/blind-challenge.js";
 import type { SemanticChallengeRemoteAction, SemanticChallengeTransport } from "../src/semantic/challenge-aware-web-bridge.js";
 import { runSemanticChallengeShadow, runSemanticChallengeShadowIfSupported } from "../src/semantic/challenge-shadow-runner.js";
-import { readSemanticChallengeTrajectory } from "../src/semantic/challenge-trajectory-store.js";
+import { appendSemanticChallengeTrajectoryEvent, readSemanticChallengeTrajectory } from "../src/semantic/challenge-trajectory-store.js";
 import { contentDigest, type RepositoryCommandResult } from "../src/web-bridge/contracts.js";
 import type { WebBridge } from "../src/web-bridge/web-bridge.js";
 
@@ -33,6 +33,7 @@ async function fixture() {
 class EvidenceDrivenTransport implements SemanticChallengeTransport {
   private delivered: RepositoryCommandResult | null = null;
   private sealed: SemanticUnderstandingEnvelope | null = null;
+  deliveredRequestId: string | null = null;
 
   constructor(private readonly request: ReturnType<typeof createSemanticChallengeRequest>) {}
 
@@ -63,20 +64,20 @@ class EvidenceDrivenTransport implements SemanticChallengeTransport {
     return { sequence: 2, type: "semantic_understanding_sealed", envelope: this.sealed };
   }
 
-  async submitSemanticChallengeRepositoryResult(_jobId: string, result: RepositoryCommandResult) { this.delivered = structuredClone(result); }
+  async submitSemanticChallengeRepositoryResult(_jobId: string, result: RepositoryCommandResult) {
+    this.deliveredRequestId = result.request_id;
+    this.delivered = structuredClone(result);
+  }
   async receiveSemanticUnderstanding() { return this.sealed ? structuredClone(this.sealed) : null; }
 }
 
-test("shadow runner owns repository evidence, validates sealed understanding, and persists digest trajectory", async (t) => {
+test("shadow runner owns repository evidence, preserves remote request identity, validates understanding, and persists digest trajectory", async (t) => {
   const value = await fixture();
   t.after(async () => { await rm(value.root, { recursive: true, force: true }); });
-  const result = await runSemanticChallengeShadow({
-    transport: new EvidenceDrivenTransport(value.request),
-    request: value.request,
-    repositoryPath: value.repositoryPath,
-    stateDirectory: value.stateDirectory,
-  });
+  const transport = new EvidenceDrivenTransport(value.request);
+  const result = await runSemanticChallengeShadow({ transport, request: value.request, repositoryPath: value.repositoryPath, stateDirectory: value.stateDirectory });
 
+  assert.equal(transport.deliveredRequestId, "remote-read", "transport correlation must use Web-B's request identity, not the private evidence request ID");
   assert.equal(result.repository_observations, 1);
   assert.equal(result.remote_actions, 2);
   assert.equal(result.trajectory_events, 3);
@@ -97,6 +98,21 @@ test("shadow runner rejects non-advancing remote action sequences before reposit
   await assert.rejects(runSemanticChallengeShadow({ transport, request: value.request, repositoryPath: value.repositoryPath, stateDirectory: value.stateDirectory }), /sequence did not advance/i);
   const trajectory = await readSemanticChallengeTrajectory({ stateDirectory: value.stateDirectory, request: value.request });
   assert.deepEqual(trajectory.map((receipt) => receipt.event_type), ["challenge_created"]);
+});
+
+test("partial digest-only trajectory fails closed instead of pretending provider/evidence replay is exact", async (t) => {
+  const value = await fixture();
+  t.after(async () => { await rm(value.root, { recursive: true, force: true }); });
+  await appendSemanticChallengeTrajectoryEvent({ stateDirectory: value.stateDirectory, request: value.request, sequence: 1, eventType: "challenge_created", idempotencyKey: "challenge-created", payload: { request_sha256: contentDigest(value.request) } });
+  let created = false;
+  const transport: SemanticChallengeTransport = {
+    async createSemanticChallengeJob() { created = true; return { job_id: "must-not-create" }; },
+    async waitForSemanticChallengeAction() { return null; },
+    async submitSemanticChallengeRepositoryResult() {},
+    async receiveSemanticUnderstanding() { return null; },
+  };
+  await assert.rejects(runSemanticChallengeShadow({ transport, request: value.request, repositoryPath: value.repositoryPath, stateDirectory: value.stateDirectory }), /cannot replay a prior trajectory/i);
+  assert.equal(created, false, "no external/provider work may begin after an unreconstructable partial trajectory");
 });
 
 test("ordinary WebBridge does not opt into semantic shadow challenge authority", async (t) => {
