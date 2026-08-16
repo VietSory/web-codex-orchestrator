@@ -84,7 +84,7 @@ async function prepareSessionDirectory(stateDirectory: string): Promise<string> 
   return await ensureCanonicalDirectory(path.join(stateRoot, "bridge", "sessions"), "WCO session storage");
 }
 
-async function currentSessionIdForConfirmation(target: string, repositoryId: string): Promise<string | null> {
+async function readCurrentSessionForConfirmation(target: string, repositoryId: string): Promise<LocalWorkerSession | null> {
   const info = await lstat(target).catch((error: unknown) => {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
@@ -95,7 +95,7 @@ async function currentSessionIdForConfirmation(target: string, repositoryId: str
   try { parsed = JSON.parse(bytes.toString("utf8")) as unknown; }
   catch { throw new Error("WEB_HISTORY_NOT_RESUMABLE: current task focus is not valid JSON."); }
   if (!validSession(parsed) || parsed.repository.repository_id !== repositoryId) throw new Error("WEB_HISTORY_NOT_RESUMABLE: current task focus is not a valid durable session for this repository.");
-  return parsed.session_id;
+  return parsed;
 }
 
 async function pruneForInsert(stateDirectory: string): Promise<string> {
@@ -169,11 +169,9 @@ export async function restoreLocalTaskHistoryFocus(
     const sessionDirectory = await prepareSessionDirectory(stateDirectory);
     const target = currentSessionPath(stateDirectory, repositoryId);
     if (path.dirname(target) !== sessionDirectory) throw new Error("WEB_HISTORY_PATH_UNSAFE: restored session path escaped managed session storage.");
-    if (expectedCurrentSessionId !== undefined) {
-      const currentSessionId = await currentSessionIdForConfirmation(target, repositoryId);
-      if (currentSessionId !== expectedCurrentSessionId) {
-        throw new Error("WEB_SESSION_STALE: current task focus changed after confirmation in another process. Nothing was switched; inspect /status and retry /resume.");
-      }
+    const current = await readCurrentSessionForConfirmation(target, repositoryId);
+    if (expectedCurrentSessionId !== undefined && (current?.session_id ?? null) !== expectedCurrentSessionId) {
+      throw new Error("WEB_SESSION_STALE: current task focus changed after confirmation in another process. Nothing was switched; inspect /status and retry /resume.");
     }
 
     const runId = session.run_id!;
@@ -199,6 +197,7 @@ export async function restoreLocalTaskHistoryFocus(
       assertBoundedStateArtifact(stateDirectory, session.web_pack_path!, "implementation pack"),
     ]);
 
+    if (current && current.session_id !== session.session_id) await archiveLocalTaskHistory(stateDirectory, current);
     const restored: LocalWorkerSession = { ...session, updated_at: new Date().toISOString() };
 
     // Switching focus and clearing a PAIR pause are one logical resume transition.
@@ -225,8 +224,8 @@ export async function restoreLocalTaskHistoryFocus(
         if (isPair && lockedLedger.paused) {
           try {
             await withRunLock(stateDirectory, runId, async () => {
-              const current = await readRunLedger(stateDirectory, runId);
-              if (!current || contentDigest(current) !== resumedLedgerSha) {
+              const currentLedger = await readRunLedger(stateDirectory, runId);
+              if (!currentLedger || contentDigest(currentLedger) !== resumedLedgerSha) {
                 throw new Error("durable run changed after pause clearance");
               }
               await writeRunLedger(stateDirectory, lockedLedger);
