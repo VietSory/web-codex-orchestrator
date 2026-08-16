@@ -9,7 +9,7 @@ import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
 import { ensureCanonicalDirectory } from "../shared/safe-directory.js";
 import { parseChatGptCodexAuthority } from "./chatgpt-codex-authority.js";
 import { ChatGptCodexImplementationClient } from "./chatgpt-codex-implementation-client.js";
-import { chatGptCodexAuthorPrompt, chatGptCodexRepositoryResultPrompt, chatGptCodexReviewPrompt } from "./chatgpt-codex-prompts.js";
+import { chatGptCodexAuthorPrompt, chatGptCodexClarificationPrompt, chatGptCodexRepositoryResultPrompt, chatGptCodexReviewPrompt } from "./chatgpt-codex-prompts.js";
 import { ChatGptCodexSemanticClient } from "./chatgpt-codex-semantic-client.js";
 import { WebBridgeError, contentDigest, parseWebContractEnvelope, parseWebImplementationSubmission, parseWebVerdictEnvelope, type AuthoringEvent, type BridgeConnectionStatus, type BridgeJobIdentity, type FinalReviewRequest, type RepositoryCommandResult, type WebContractEnvelope, type WebImplementationSubmission, type WebVerdictEnvelope } from "./contracts.js";
 import type { PreparedRunAwareWebBridge } from "./prepared-run-aware.js";
@@ -182,7 +182,11 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
     if (lastAuthority?.type === "repository_command" && !latestResult && !latestClarification) return null;
     assertProviderBudget(record.events, this.limits(), true);
     const request = record.request as AuthoringJobRequest;
-    const prompt = latestResult ? chatGptCodexRepositoryResultPrompt(latestResult.payload, request, jobId) : latestClarification ? `${chatGptCodexAuthorPrompt(request, jobId)}\nUser clarification: ${JSON.stringify(latestClarification.payload)}` : chatGptCodexAuthorPrompt(request, jobId);
+    const prompt = latestResult
+      ? chatGptCodexRepositoryResultPrompt(latestResult.payload, request, jobId)
+      : latestClarification
+        ? chatGptCodexClarificationPrompt(latestClarification.payload, request, jobId)
+        : chatGptCodexAuthorPrompt(request, jobId);
     const existingThread = threadId(record.events);
     const inputSha256 = contentDigest({ prompt, thread_id: existingThread ?? null });
     const result = await this.turn(prompt, existingThread, signal, async (claimNonce) => (await this.store.claim(jobId, OWNER, "chatgpt_codex_authoring_reserved", { input_sha256: inputSha256, thread_id: existingThread ?? null }, `author-reserve-${inputSha256}`, claimNonce)).acquired);
