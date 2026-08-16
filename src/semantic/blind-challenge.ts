@@ -1,6 +1,8 @@
 import crypto from "node:crypto";
+import path from "node:path";
 import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
 import { parseRepositoryCommand, type RepositoryBinding, type RepositoryCommand } from "../web-bridge/contracts.js";
+import type { SemanticEvidenceIndex } from "./evidence-index.js";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -96,20 +98,22 @@ function sameRepository(left: RepositoryBinding, right: RepositoryBinding): bool
 
 function safePath(value: unknown, label: string): string {
   const text = boundedText(value, label, MAX_PATH_BYTES);
-  if (text.startsWith("/") || text.includes("\\") || text === "." || text === ".." || text.startsWith("../") || text.includes("/../") || /^[A-Za-z]:/.test(text)) throw new Error(`${label} must be a canonical repository-relative path.`);
+  if (text.startsWith("/") || text.includes("\\") || /^[A-Za-z]:/.test(text)) throw new Error(`${label} must be a canonical repository-relative path.`);
+  const normalized = path.posix.normalize(text);
+  if (normalized !== text || normalized === "." || normalized === ".." || normalized.startsWith("../")) throw new Error(`${label} must be a canonical repository-relative path.`);
   return text;
 }
 
 function parseCitation(value: unknown, label: string): SemanticEvidenceCitation {
   const object = objectValue(value, label);
   exactKeys(object, ["path", "content_sha256", "start_byte", "end_byte_exclusive"], ["path", "content_sha256", "start_byte", "end_byte_exclusive"], label);
-  const path = safePath(object.path, `${label}.path`);
+  const citationPath = safePath(object.path, `${label}.path`);
   const content_sha256 = boundedText(object.content_sha256, `${label}.content_sha256`, 64);
   if (!SHA256.test(content_sha256)) throw new Error(`${label}.content_sha256 must be lowercase SHA-256.`);
   const start_byte = safeInteger(object.start_byte, `${label}.start_byte`);
   const end_byte_exclusive = safeInteger(object.end_byte_exclusive, `${label}.end_byte_exclusive`);
   if (end_byte_exclusive <= start_byte) throw new Error(`${label} must describe a non-empty byte region.`);
-  return { path, content_sha256, start_byte, end_byte_exclusive };
+  return { path: citationPath, content_sha256, start_byte, end_byte_exclusive };
 }
 
 function parseFinding(value: unknown, label: string): SemanticChallengeFinding {
@@ -125,6 +129,35 @@ function parseFinding(value: unknown, label: string): SemanticChallengeFinding {
   return { finding_id, category: category as SemanticFindingCategory, statement, citations };
 }
 
+function assertEvidenceIndexBinding(index: SemanticEvidenceIndex, request: SemanticChallengeRequest): void {
+  if (!index || index.schema_version !== "1.0" || index.kind !== "wco-semantic-evidence-index" || !SHA256.test(index.evidence_index_sha256)) throw new Error("semantic challenge requires a validated evidence index.");
+  if (!sameRepository(index.repository, request.repository)) throw new Error("semantic challenge evidence index repository binding drifted from the challenge.");
+}
+
+function citationKey(citation: SemanticEvidenceCitation): string {
+  return `${citation.path}\u0000${citation.content_sha256}\u0000${citation.start_byte}\u0000${citation.end_byte_exclusive}`;
+}
+
+function observedCitationKeys(index: SemanticEvidenceIndex): Set<string> {
+  const keys = new Set<string>();
+  for (const observation of index.observations) {
+    if (observation.result.kind !== "read") continue;
+    for (const file of observation.result.files) {
+      keys.add(citationKey({ path: file.path, content_sha256: file.content_sha256, start_byte: file.start_byte, end_byte_exclusive: file.end_byte_exclusive }));
+    }
+  }
+  return keys;
+}
+
+function assertFindingCitationsObserved(findings: readonly SemanticChallengeFinding[], index: SemanticEvidenceIndex): void {
+  const observed = observedCitationKeys(index);
+  for (const finding of findings) {
+    for (const citation of finding.citations) {
+      if (!observed.has(citationKey(citation))) throw new Error(`semantic finding '${finding.finding_id}' cites evidence that was not observed by the challenger.`);
+    }
+  }
+}
+
 export function createSemanticChallengeRequest(input: { challengeId: string; repository: RepositoryBinding; originalGoal: string }): SemanticChallengeRequest {
   const challenge_id = safeId(input.challengeId, "challenge_id");
   const repository = parseRepository(input.repository, "repository");
@@ -132,7 +165,7 @@ export function createSemanticChallengeRequest(input: { challengeId: string; rep
   return { schema_version: "1.0", kind: "wco-semantic-blind-challenge", challenge_id, repository, original_goal };
 }
 
-export function parseSemanticChallengeAction(value: unknown, request: SemanticChallengeRequest): SemanticChallengeAction {
+export function parseSemanticChallengeAction(value: unknown, request: SemanticChallengeRequest, evidenceIndex?: SemanticEvidenceIndex): SemanticChallengeAction {
   const object = objectValue(value, "semantic challenge action");
   exactKeys(object, ["kind", "command", "envelope"], ["kind"], "semantic challenge action");
   if (object.kind === "repository_command") {
@@ -141,6 +174,8 @@ export function parseSemanticChallengeAction(value: unknown, request: SemanticCh
   }
   if (object.kind !== "semantic_understanding_sealed") throw new Error("semantic challenge action kind is invalid.");
   if (!("envelope" in object) || "command" in object) throw new Error("semantic_understanding_sealed action must contain envelope only.");
+  if (!evidenceIndex) throw new Error("semantic understanding cannot seal without an exact validated evidence index.");
+  assertEvidenceIndexBinding(evidenceIndex, request);
   const envelope = objectValue(object.envelope, "semantic understanding envelope");
   exactKeys(envelope, ["schema_version", "kind", "challenge_id", "repository", "original_goal_sha256", "findings", "unresolved_questions"], ["schema_version", "kind", "challenge_id", "repository", "original_goal_sha256", "findings", "unresolved_questions"], "semantic understanding envelope");
   if (envelope.schema_version !== "1.0" || envelope.kind !== "semantic_understanding_sealed") throw new Error("semantic understanding envelope version/kind is invalid.");
@@ -153,6 +188,7 @@ export function parseSemanticChallengeAction(value: unknown, request: SemanticCh
   if (!Array.isArray(envelope.findings) || envelope.findings.length < 1 || envelope.findings.length > MAX_FINDINGS) throw new Error(`semantic understanding envelope.findings must contain 1-${MAX_FINDINGS} items.`);
   const findings = envelope.findings.map((entry, index) => parseFinding(entry, `semantic understanding envelope.findings[${index}]`));
   if (new Set(findings.map((item) => item.finding_id)).size !== findings.length) throw new Error("semantic understanding envelope contains duplicate finding IDs.");
+  assertFindingCitationsObserved(findings, evidenceIndex);
   if (!Array.isArray(envelope.unresolved_questions) || envelope.unresolved_questions.length > 64) throw new Error("semantic understanding envelope.unresolved_questions exceeds its bound.");
   const unresolved_questions = envelope.unresolved_questions.map((entry, index) => boundedText(entry, `semantic understanding envelope.unresolved_questions[${index}]`, 4096));
   return {
@@ -174,6 +210,7 @@ export function semanticChallengePrompt(request: SemanticChallengeRequest): stri
     '{"kind":"repository_command","command":<RepositoryCommand>}',
     '{"kind":"semantic_understanding_sealed","envelope":{"schema_version":"1.0","kind":"semantic_understanding_sealed","challenge_id":"...","repository":{...},"original_goal_sha256":"...","findings":[...],"unresolved_questions":[...]}}',
     "Each finding has exactly finding_id, category, statement, citations. category is component, invariant, risk, unknown, or assumption. Non-unknown findings must cite at least one exact read region with path, content_sha256, start_byte and end_byte_exclusive.",
+    "Every citation is validated against exact read evidence actually observed in this challenge. Never invent a path, digest, or byte range.",
     "Seal only an understanding of the problem/current system. Never output APPROVE, REVISE, BLOCK, repair operations, implementation operations, candidate paths, or a proposed code change.",
     `Challenge identity: ${request.challenge_id}`,
     `Repository binding: ${JSON.stringify(request.repository)}`,
