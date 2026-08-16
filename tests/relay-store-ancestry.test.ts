@@ -25,7 +25,7 @@ test("relay store rejects symlinked parent ancestry before creating any outside-
   const store = new RelayFileStore(relayRoot);
   await assert.rejects(
     store.create("authoring", "owner", request, "unsafe-parent", 86_400),
-    /relay store parent.*not canonical/i,
+    /relay store ancestry is not canonical/i,
   );
   assert.deepEqual(await readdir(outside), [], "unsafe ancestry must not create relay or writer-lock paths outside managed state");
 });
