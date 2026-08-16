@@ -122,7 +122,6 @@ export class ChatGptCodexSemanticChallengeTransport implements SemanticChallenge
     limits: AgentLimits;
     scratchDirectory: string;
     authorityDirectory: string;
-    beforeTurn?: () => Promise<void>;
     now?: () => Date;
   }) {}
 
@@ -234,8 +233,6 @@ export class ChatGptCodexSemanticChallengeTransport implements SemanticChallenge
 
     let prompt: string;
     try {
-      await this.assertBlindFilesystem();
-      if (this.options.beforeTurn) await this.options.beforeTurn();
       await this.assertBlindFilesystem();
       prompt = state.pending_result ? followupPrompt(state.pending_result.request_id, state.pending_result) : wirePrompt(state.request);
       delete state.pending_result;
