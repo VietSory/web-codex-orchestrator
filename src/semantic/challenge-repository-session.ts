@@ -14,8 +14,8 @@ const MAX_OBSERVATIONS = 128;
  *
  * The only way to add evidence to this session is to execute the exact bounded
  * repository reader owned by the session. Callers cannot inject arbitrary raw
- * results or reuse Web-A shadow observations. This is the runtime provenance
- * boundary required by the blind challenger contract.
+ * results or reuse Web-A shadow observations. Internal command/result snapshots
+ * never share mutable object identity with values returned to the caller.
  */
 export class SemanticChallengeRepositorySession {
   private readonly reader: ExactRepositoryReadService;
@@ -46,7 +46,12 @@ export class SemanticChallengeRepositorySession {
     const sequence = this.observations.length + 1;
     const request_id = `read-${sequence.toString().padStart(3, "0")}`;
     const result = await this.reader.execute(this.runtimeId, request_id, command);
-    this.observations.push({ sequence, request_id, command, result });
+    this.observations.push({
+      sequence,
+      request_id,
+      command: structuredClone(command),
+      result: structuredClone(result),
+    });
     return { request_id, result };
   }
 
