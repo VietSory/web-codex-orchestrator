@@ -1,4 +1,4 @@
-import { lstat, realpath } from "node:fs/promises";
+import { lstat, mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { acquireTicketFileLock, TicketFileLockError, type TicketFileLockHandle } from "../shared/ticket-file-lock.js";
 import { contentDigest, parseRepositoryCommand, WEB_BRIDGE_PROTOCOL_VERSION, type RepositoryCommandResult } from "../web-bridge/contracts.js";
@@ -29,16 +29,33 @@ function sameUnderstanding(left: SemanticUnderstandingEnvelope, right: SemanticU
   return contentDigest(left) === contentDigest(right);
 }
 
+async function assertSafeDirectory(target: string): Promise<void> {
+  const absolute = path.resolve(target);
+  const info = await lstat(absolute);
+  if (!info.isDirectory() || info.isSymbolicLink() || await realpath(absolute) !== absolute) throw new Error("semantic challenge execution lock ancestry is unsafe.");
+}
+
+async function ensureChallengeExecutionLockDirectory(stateRoot: string, scope: string): Promise<string> {
+  let current = stateRoot;
+  for (const component of ["bridge", "semantic-challenge-execution-locks", scope]) {
+    await assertSafeDirectory(current);
+    current = path.join(current, component);
+    try { await mkdir(current, { mode: 0o700 }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    await assertSafeDirectory(current);
+  }
+  return current;
+}
+
 async function acquireChallengeExecutionLock(stateDirectory: string, request: SemanticChallengeRequest): Promise<TicketFileLockHandle> {
   const stateRoot = path.resolve(stateDirectory);
-  const info = await lstat(stateRoot);
-  if (!info.isDirectory() || info.isSymbolicLink() || await realpath(stateRoot) !== stateRoot) throw new Error("semantic challenge execution state directory is unsafe.");
+  await assertSafeDirectory(stateRoot);
   // The trajectory namespace is repository-id + challenge-id scoped. The
   // execution lock deliberately uses the same collision domain so a drifted
   // branch/commit/goal cannot run an external provider concurrently against
   // the same durable trajectory namespace.
   const scope = contentDigest({ repository_id: request.repository.repository_id, challenge_id: request.challenge_id });
-  const directory = path.join(stateRoot, "bridge", "semantic-challenge-execution-locks", scope);
+  const directory = await ensureChallengeExecutionLockDirectory(stateRoot, scope);
   try {
     return await acquireTicketFileLock(directory, { timeoutMs: 0, pollMs: 25 });
   } catch (error) {
