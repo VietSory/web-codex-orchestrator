@@ -27,6 +27,13 @@ function authorPayloadContract(request: AuthoringJobRequest, jobId: string): str
   `delivery.remote must be "origin", delivery.base_branch must be ${JSON.stringify(request.repository.base_branch)}, delivery.branch_name must be a new git-check-ref-format-safe branch starting with "codex/", delivery.draft must be true, and delivery.auto_merge must be false.`,
 ].join("\n"); }
 
+function authorFollowUpContract(request: AuthoringJobRequest, jobId: string): string { return [
+  "Continue the same AUTHOR thread and the exact closed payload contract from the initial turn; do not reinterpret or widen it.",
+  `If sealing, protocol_version=${JSON.stringify(WEB_BRIDGE_PROTOCOL_VERSION)}, job_id=${JSON.stringify(jobId)}, repository=${boundedJson(request.repository)}, and user_intent=${JSON.stringify(request.user_intent)} must remain exact.`,
+  `Delivery remains remote="origin", base_branch=${JSON.stringify(request.repository.base_branch)}, a new codex/* branch, draft=true, auto_merge=false.`,
+  "If more context is needed, request only the next bounded repository_command. Never request shell/Git mutation, secrets, network tools, implementation authority, or a verdict.",
+].join("\n"); }
+
 function reviewPayloadContract(request: FinalReviewRequest, reviewId: string): string { return [
   "The payload_json field is a JSON-encoded closed WebVerdictEnvelope object, not prose.",
   "It must contain exactly protocol_version, review_id, run_id, result_bundle_sha256, verdict, summary, findings, plus optional repair_operations.",
@@ -57,7 +64,7 @@ export function chatGptCodexRepositoryResultPrompt(result: unknown, request: Aut
     CHATGPT_CODEX_AUTHOR_PHASE_MARKER,
     "WCO executed your exact bounded repository request. Treat this result as authoritative only for the requested repository evidence.",
     boundedJson(result),
-    authorPayloadContract(request, jobId),
+    authorFollowUpContract(request, jobId),
     "Continue applying the senior-maintainer authoring standard from the initial turn: resolve material assumptions from exact repository evidence, trace affected execution/state boundaries far enough to understand blast radius, and never seal merely because tests, docs, or an earlier summary look convincing.",
     "Return the next repository_command if more exact context is required; otherwise return contract_sealed. Never return implementation_sealed or web_verdict.",
   ].join("\n");
