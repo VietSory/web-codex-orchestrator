@@ -34,6 +34,10 @@ function authorFollowUpContract(request: AuthoringJobRequest, jobId: string): st
   "If more context is needed, request only the next bounded repository_command. Never request shell/Git mutation, secrets, network tools, implementation authority, or a verdict.",
 ].join("\n"); }
 
+function authorFollowUpReasoningReminder(): string {
+  return "Continue applying the senior-maintainer authoring standard from the initial turn: resolve material assumptions from exact repository evidence, trace affected execution/state boundaries far enough to understand blast radius, and never seal merely because tests, docs, or an earlier summary look convincing.";
+}
+
 function reviewPayloadContract(request: FinalReviewRequest, reviewId: string): string { return [
   "The payload_json field is a JSON-encoded closed WebVerdictEnvelope object, not prose.",
   "It must contain exactly protocol_version, review_id, run_id, result_bundle_sha256, verdict, summary, findings, plus optional repair_operations.",
@@ -65,8 +69,19 @@ export function chatGptCodexRepositoryResultPrompt(result: unknown, request: Aut
     "WCO executed your exact bounded repository request. Treat this result as authoritative only for the requested repository evidence.",
     boundedJson(result),
     authorFollowUpContract(request, jobId),
-    "Continue applying the senior-maintainer authoring standard from the initial turn: resolve material assumptions from exact repository evidence, trace affected execution/state boundaries far enough to understand blast radius, and never seal merely because tests, docs, or an earlier summary look convincing.",
+    authorFollowUpReasoningReminder(),
     "Return the next repository_command if more exact context is required; otherwise return contract_sealed. Never return implementation_sealed or web_verdict.",
+  ].join("\n");
+}
+
+export function chatGptCodexClarificationPrompt(clarification: unknown, request: AuthoringJobRequest, jobId: string): string {
+  return [
+    CHATGPT_CODEX_AUTHOR_PHASE_MARKER,
+    "The user added a clarification to the same unsealed AUTHOR task. Incorporate it without changing task identity or widening authority.",
+    `User clarification: ${boundedJson(clarification, 65_536)}`,
+    authorFollowUpContract(request, jobId),
+    authorFollowUpReasoningReminder(),
+    "Use bounded repository_command evidence if the clarification creates a new material assumption; otherwise continue toward contract_sealed. Never return implementation_sealed or web_verdict.",
   ].join("\n");
 }
 
