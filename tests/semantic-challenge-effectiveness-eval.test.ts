@@ -19,12 +19,15 @@ function selection(caseId: string, ids: string[]) {
   return { schema_version: "1.0", kind: "semantic-benchmark-selection", case_id: caseId, selected_ids: ids };
 }
 
-test("benchmark provider prompt exposes public evidence but never hidden gold", async () => {
+test("benchmark provider prompt exposes public evidence but never hidden gold or an arm role", async () => {
   const value = await corpus();
   const item = publicSemanticBenchmarkCase(value.cases[0]!);
   const prompt = semanticBenchmarkSelectionPrompt(item);
   assert.match(prompt, new RegExp(item.case_id));
   assert.match(prompt, new RegExp(item.evidence_catalog[0]!.id));
+  assert.match(prompt, /Follow the benchmark role\/policy supplied before this common instruction/);
+  assert.equal(prompt.includes("independent maintainer-grade semantic reviewer"), false);
+  assert.equal(prompt.includes("primary Web-A"), false);
   assert.equal(prompt.includes("required_component_ids"), false);
   assert.equal(prompt.includes("critical_ids"), false);
   assert.equal(prompt.includes("rejected_assumption_ids"), false);
