@@ -31,9 +31,9 @@ test("exact provider reservation has one durable owner across independent store 
   assert.equal(first.event.sequence, second.event.sequence);
   const events = await firstStore.events(identity.job_id, OWNER, 0);
   assert.equal(events.filter((event) => event.type === "chatgpt_codex_authoring_reserved").length, 1);
-  const winnerNonce = (first.acquired ? first.event : second.event).payload as { claim_nonce: string };
-  const replay = await secondStore.claim(identity.job_id, OWNER, "chatgpt_codex_authoring_reserved", payload, "author-reserve-exact", winnerNonce.claim_nonce);
-  assert.equal(replay.acquired, true, "the exact claimant may safely recover an ambiguous claim response without creating a second reservation");
+  const winnerNonce = ((first.acquired ? first.event : second.event).payload as { claim_nonce: string }).claim_nonce;
+  const replay = await secondStore.claim(identity.job_id, OWNER, "chatgpt_codex_authoring_reserved", payload, "author-reserve-exact", winnerNonce);
+  assert.equal(replay.acquired, false, "a durable provider claim can never be reacquired, even by replaying the original nonce");
 });
 
 test("provider claim replay cannot silently retarget the reserved input", async (t) => {
