@@ -57,9 +57,15 @@ class ProviderBenchmarkBudget {
 
   constructor(private readonly limits: AgentLimits) {}
 
-  beforeTurn(): void {
+  turnSignal(): AbortSignal {
     if (this.usage.turns >= this.limits.maximum_total_agent_turns) throw new Error("semantic provider benchmark configured turn budget is exhausted.");
-    if ((Date.now() - this.startedAt) / 1000 >= this.limits.maximum_total_seconds) throw new Error("semantic provider benchmark configured wall-clock budget is exhausted.");
+    const elapsedMs = Date.now() - this.startedAt;
+    const totalMs = this.limits.maximum_total_seconds * 1_000;
+    const remainingTotalMs = totalMs - elapsedMs;
+    if (!Number.isFinite(remainingTotalMs) || remainingTotalMs <= 0) throw new Error("semantic provider benchmark configured wall-clock budget is exhausted.");
+    const configuredTurnMs = this.limits.maximum_turn_seconds * 1_000;
+    const turnMs = Math.max(1, Math.floor(Math.min(configuredTurnMs, remainingTotalMs)));
+    return AbortSignal.timeout(turnMs);
   }
 
   record(input: number, cached: number, output: number): void {
@@ -121,7 +127,6 @@ async function runArm(options: {
     arm: options.arm,
     corpus: options.corpus,
     provider: async ({ prompt }) => {
-      options.budget.beforeTurn();
       const response = await options.client.turn({
         role: "final_reviewer",
         model: options.profile.model,
@@ -136,6 +141,7 @@ async function runArm(options: {
         cached_web_search: false,
         workspace_path: options.scratchDirectory,
         accepted_bundle_path: options.authorityDirectory,
+        signal: options.budget.turnSignal(),
       });
       const input = measured(response.usage?.input_tokens, "input-token");
       const cached = measured(response.usage?.cached_input_tokens, "cached-input-token");
