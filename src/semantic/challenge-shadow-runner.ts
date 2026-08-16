@@ -1,3 +1,6 @@
+import { lstat, realpath } from "node:fs/promises";
+import path from "node:path";
+import { acquireTicketFileLock, TicketFileLockError, type TicketFileLockHandle } from "../shared/ticket-file-lock.js";
 import { contentDigest, parseRepositoryCommand, WEB_BRIDGE_PROTOCOL_VERSION, type RepositoryCommandResult } from "../web-bridge/contracts.js";
 import type { WebBridge } from "../web-bridge/web-bridge.js";
 import { isSemanticChallengeAwareWebBridge, type SemanticChallengeTransport } from "./challenge-aware-web-bridge.js";
@@ -26,6 +29,27 @@ function sameUnderstanding(left: SemanticUnderstandingEnvelope, right: SemanticU
   return contentDigest(left) === contentDigest(right);
 }
 
+async function acquireChallengeExecutionLock(stateDirectory: string, request: SemanticChallengeRequest): Promise<TicketFileLockHandle> {
+  const stateRoot = path.resolve(stateDirectory);
+  const info = await lstat(stateRoot);
+  if (!info.isDirectory() || info.isSymbolicLink() || await realpath(stateRoot) !== stateRoot) throw new Error("semantic challenge execution state directory is unsafe.");
+  // The trajectory namespace is repository-id + challenge-id scoped. The
+  // execution lock deliberately uses the same collision domain so a drifted
+  // branch/commit/goal cannot run an external provider concurrently against
+  // the same durable trajectory namespace.
+  const scope = contentDigest({ repository_id: request.repository.repository_id, challenge_id: request.challenge_id });
+  const directory = path.join(stateRoot, "bridge", "semantic-challenge-execution-locks", scope);
+  try {
+    return await acquireTicketFileLock(directory, { timeoutMs: 0, pollMs: 25 });
+  } catch (error) {
+    if (error instanceof TicketFileLockError) {
+      if (error.code === "TICKET_LOCKED") throw new Error("semantic challenge execution is already active.");
+      throw new Error(`semantic challenge execution lock is invalid: ${error.message}`);
+    }
+    throw error;
+  }
+}
+
 /**
  * Run one independent blind semantic challenge in shadow mode.
  *
@@ -52,87 +76,92 @@ export async function runSemanticChallengeShadow(options: {
     repository: options.request.repository,
     originalGoal: options.request.original_goal,
   });
-  const prior = await readSemanticChallengeTrajectory({ stateDirectory: options.stateDirectory, request });
-  if (prior.length > 0) throw new Error("semantic challenge shadow cannot replay a prior trajectory without exact provider and evidence state.");
+  const executionLock = await acquireChallengeExecutionLock(options.stateDirectory, request);
+  try {
+    const prior = await readSemanticChallengeTrajectory({ stateDirectory: options.stateDirectory, request });
+    if (prior.length > 0) throw new Error("semantic challenge shadow cannot replay a prior trajectory without exact provider and evidence state.");
 
-  const repository = new SemanticChallengeRepositorySession({
-    request,
-    repositoryPath: options.repositoryPath,
-    stateDirectory: options.stateDirectory,
-  });
-  await appendSemanticChallengeTrajectoryEvent({
-    stateDirectory: options.stateDirectory,
-    request,
-    sequence: 1,
-    eventType: "challenge_created",
-    idempotencyKey: "challenge-created",
-    payload: { request_sha256: contentDigest(request) },
-  });
+    const repository = new SemanticChallengeRepositorySession({
+      request,
+      repositoryPath: options.repositoryPath,
+      stateDirectory: options.stateDirectory,
+    });
+    await appendSemanticChallengeTrajectoryEvent({
+      stateDirectory: options.stateDirectory,
+      request,
+      sequence: 1,
+      eventType: "challenge_created",
+      idempotencyKey: "challenge-created",
+      payload: { request_sha256: contentDigest(request) },
+    });
 
-  const identity = await options.transport.createSemanticChallengeJob(request, `challenge-${request.challenge_id}`);
-  if (identity?.protocol_version !== WEB_BRIDGE_PROTOCOL_VERSION || !SAFE_REQUEST_ID.test(identity.job_id)) throw new Error("semantic challenge transport returned an invalid job identity.");
+    const identity = await options.transport.createSemanticChallengeJob(request, `challenge-${request.challenge_id}`);
+    if (identity?.protocol_version !== WEB_BRIDGE_PROTOCOL_VERSION || !SAFE_REQUEST_ID.test(identity.job_id)) throw new Error("semantic challenge transport returned an invalid job identity.");
 
-  let remoteSequence = 0;
-  let remoteActions = 0;
-  const seenRequestIds = new Set<string>();
-  for (; remoteActions < MAX_REMOTE_ACTIONS; remoteActions += 1) {
-    const action = await options.transport.waitForSemanticChallengeAction(identity.job_id, remoteSequence, options.signal);
-    if (!action) throw new Error("semantic challenge transport ended before sealed understanding.");
-    if (!Number.isSafeInteger(action.sequence) || action.sequence !== remoteSequence + 1) throw new Error("semantic challenge remote action sequence must be contiguous.");
-    remoteSequence = action.sequence;
+    let remoteSequence = 0;
+    let remoteActions = 0;
+    const seenRequestIds = new Set<string>();
+    for (; remoteActions < MAX_REMOTE_ACTIONS; remoteActions += 1) {
+      const action = await options.transport.waitForSemanticChallengeAction(identity.job_id, remoteSequence, options.signal);
+      if (!action) throw new Error("semantic challenge transport ended before sealed understanding.");
+      if (!Number.isSafeInteger(action.sequence) || action.sequence !== remoteSequence + 1) throw new Error("semantic challenge remote action sequence must be contiguous.");
+      remoteSequence = action.sequence;
 
-    if (action.type === "repository_command") {
-      if (!SAFE_REQUEST_ID.test(action.request_id)) throw new Error("semantic challenge remote request identity is invalid.");
-      if (seenRequestIds.has(action.request_id)) throw new Error("semantic challenge remote request identity was reused.");
-      seenRequestIds.add(action.request_id);
-      const parsed = parseSemanticChallengeAction({ kind: "repository_command", command: parseRepositoryCommand(action.command) }, request);
-      if (parsed.kind !== "repository_command") throw new Error("semantic challenge repository action changed kind during validation.");
-      const delivered = await repository.execute(parsed.command);
-      const transportResult = { request_id: action.request_id, result: delivered.result } as RepositoryCommandResult;
-      await options.transport.submitSemanticChallengeRepositoryResult(identity.job_id, transportResult, `result-${action.request_id}`);
+      if (action.type === "repository_command") {
+        if (!SAFE_REQUEST_ID.test(action.request_id)) throw new Error("semantic challenge remote request identity is invalid.");
+        if (seenRequestIds.has(action.request_id)) throw new Error("semantic challenge remote request identity was reused.");
+        seenRequestIds.add(action.request_id);
+        const parsed = parseSemanticChallengeAction({ kind: "repository_command", command: parseRepositoryCommand(action.command) }, request);
+        if (parsed.kind !== "repository_command") throw new Error("semantic challenge repository action changed kind during validation.");
+        const delivered = await repository.execute(parsed.command);
+        const transportResult = { request_id: action.request_id, result: delivered.result } as RepositoryCommandResult;
+        await options.transport.submitSemanticChallengeRepositoryResult(identity.job_id, transportResult, `result-${action.request_id}`);
+        const trajectory = await readSemanticChallengeTrajectory({ stateDirectory: options.stateDirectory, request });
+        await appendSemanticChallengeTrajectoryEvent({
+          stateDirectory: options.stateDirectory,
+          request,
+          sequence: trajectory.length + 1,
+          eventType: "repository_observation",
+          idempotencyKey: `observation-${trajectory.length + 1}`,
+          payload: {
+            remote_sequence: action.sequence,
+            remote_request_id: action.request_id,
+            evidence_request_id: delivered.request_id,
+            command_sha256: contentDigest(parsed.command),
+            result_sha256: contentDigest(delivered.result),
+          },
+        });
+        continue;
+      }
+
+      const evidence = repository.buildEvidence();
+      const parsed = parseSemanticChallengeAction({ kind: "semantic_understanding_sealed", envelope: action.envelope }, request, evidence);
+      if (parsed.kind !== "semantic_understanding_sealed") throw new Error("semantic challenge sealed action changed kind during validation.");
+      const received = await options.transport.receiveSemanticUnderstanding(identity.job_id);
+      if (!received || !sameUnderstanding(received, parsed.envelope)) throw new Error("semantic challenge transport sealed understanding does not match its received understanding.");
       const trajectory = await readSemanticChallengeTrajectory({ stateDirectory: options.stateDirectory, request });
       await appendSemanticChallengeTrajectoryEvent({
         stateDirectory: options.stateDirectory,
         request,
         sequence: trajectory.length + 1,
-        eventType: "repository_observation",
-        idempotencyKey: `observation-${trajectory.length + 1}`,
-        payload: {
-          remote_sequence: action.sequence,
-          remote_request_id: action.request_id,
-          evidence_request_id: delivered.request_id,
-          command_sha256: contentDigest(parsed.command),
-          result_sha256: contentDigest(delivered.result),
-        },
+        eventType: "understanding_sealed",
+        idempotencyKey: `understanding-${trajectory.length + 1}`,
+        payload: { understanding_sha256: contentDigest(parsed.envelope), evidence_sha256: evidence.challenge_evidence_sha256 },
       });
-      continue;
+      const finalTrajectory = await readSemanticChallengeTrajectory({ stateDirectory: options.stateDirectory, request });
+      return {
+        challenge_id: request.challenge_id,
+        job_id: identity.job_id,
+        remote_actions: remoteActions + 1,
+        repository_observations: repository.observationCount,
+        trajectory_events: finalTrajectory.length,
+        understanding: parsed.envelope,
+      };
     }
-
-    const evidence = repository.buildEvidence();
-    const parsed = parseSemanticChallengeAction({ kind: "semantic_understanding_sealed", envelope: action.envelope }, request, evidence);
-    if (parsed.kind !== "semantic_understanding_sealed") throw new Error("semantic challenge sealed action changed kind during validation.");
-    const received = await options.transport.receiveSemanticUnderstanding(identity.job_id);
-    if (!received || !sameUnderstanding(received, parsed.envelope)) throw new Error("semantic challenge transport sealed understanding does not match its received understanding.");
-    const trajectory = await readSemanticChallengeTrajectory({ stateDirectory: options.stateDirectory, request });
-    await appendSemanticChallengeTrajectoryEvent({
-      stateDirectory: options.stateDirectory,
-      request,
-      sequence: trajectory.length + 1,
-      eventType: "understanding_sealed",
-      idempotencyKey: `understanding-${trajectory.length + 1}`,
-      payload: { understanding_sha256: contentDigest(parsed.envelope), evidence_sha256: evidence.challenge_evidence_sha256 },
-    });
-    const finalTrajectory = await readSemanticChallengeTrajectory({ stateDirectory: options.stateDirectory, request });
-    return {
-      challenge_id: request.challenge_id,
-      job_id: identity.job_id,
-      remote_actions: remoteActions + 1,
-      repository_observations: repository.observationCount,
-      trajectory_events: finalTrajectory.length,
-      understanding: parsed.envelope,
-    };
+    throw new Error(`semantic challenge exceeded its ${MAX_REMOTE_ACTIONS}-action bound.`);
+  } finally {
+    await executionLock.release();
   }
-  throw new Error(`semantic challenge exceeded its ${MAX_REMOTE_ACTIONS}-action bound.`);
 }
 
 /** Run only when a concrete WebBridge exposes the complete optional capability. */
