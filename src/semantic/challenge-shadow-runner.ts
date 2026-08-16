@@ -75,7 +75,8 @@ async function acquireChallengeExecutionLock(stateDirectory: string, request: Se
  * must become both a digest-chained trajectory receipt and an immutable,
  * byte-stripped evidence snapshot before another remote action can be accepted.
  * Sealing validates citations against the latest durable evidence snapshot, not
- * merely against memory-only evidence.
+ * merely against memory-only evidence. Transport-owned objects are never kept
+ * as mutable internal authority across an await boundary.
  */
 export async function runSemanticChallengeShadow(options: {
   transport: SemanticChallengeTransport;
@@ -108,15 +109,17 @@ export async function runSemanticChallengeShadow(options: {
       payload: { request_sha256: contentDigest(request) },
     });
 
-    const identity = await options.transport.createSemanticChallengeJob(request, `challenge-${request.challenge_id}`);
+    const identity = await options.transport.createSemanticChallengeJob(structuredClone(request), `challenge-${request.challenge_id}`);
     if (identity?.protocol_version !== WEB_BRIDGE_PROTOCOL_VERSION || !SAFE_REQUEST_ID.test(identity.job_id)) throw new Error("semantic challenge transport returned an invalid job identity.");
+    const jobId = identity.job_id;
 
     let remoteSequence = 0;
     let remoteActions = 0;
     const seenRequestIds = new Set<string>();
     for (; remoteActions < MAX_REMOTE_ACTIONS; remoteActions += 1) {
-      const action = await options.transport.waitForSemanticChallengeAction(identity.job_id, remoteSequence, options.signal);
-      if (!action) throw new Error("semantic challenge transport ended before sealed understanding.");
+      const remoteAction = await options.transport.waitForSemanticChallengeAction(jobId, remoteSequence, options.signal);
+      if (!remoteAction) throw new Error("semantic challenge transport ended before sealed understanding.");
+      const action = structuredClone(remoteAction);
       if (!Number.isSafeInteger(action.sequence) || action.sequence !== remoteSequence + 1) throw new Error("semantic challenge remote action sequence must be contiguous.");
       remoteSequence = action.sequence;
 
@@ -129,7 +132,7 @@ export async function runSemanticChallengeShadow(options: {
 
         const delivered = await repository.execute(parsed.command);
         const transportResult = { request_id: action.request_id, result: delivered.result } as RepositoryCommandResult;
-        await options.transport.submitSemanticChallengeRepositoryResult(identity.job_id, transportResult, `result-${action.request_id}`);
+        await options.transport.submitSemanticChallengeRepositoryResult(jobId, transportResult, `result-${action.request_id}`);
 
         const goalBoundEvidence = repository.buildGoalBoundEvidence();
         const trajectory = await readSemanticChallengeTrajectory({ stateDirectory: options.stateDirectory, request });
@@ -157,8 +160,8 @@ export async function runSemanticChallengeShadow(options: {
       }
       const parsed = parseSemanticChallengeAction({ kind: "semantic_understanding_sealed", envelope: action.envelope }, request, durableEvidence.evidence);
       if (parsed.kind !== "semantic_understanding_sealed") throw new Error("semantic challenge sealed action changed kind during validation.");
-      const received = await options.transport.receiveSemanticUnderstanding(identity.job_id);
-      if (!received || !sameUnderstanding(received, parsed.envelope)) throw new Error("semantic challenge transport sealed understanding does not match its received understanding.");
+      const received = await options.transport.receiveSemanticUnderstanding(jobId);
+      if (!received || !sameUnderstanding(structuredClone(received), parsed.envelope)) throw new Error("semantic challenge transport sealed understanding does not match its received understanding.");
       const trajectory = await readSemanticChallengeTrajectory({ stateDirectory: options.stateDirectory, request });
       await appendSemanticChallengeTrajectoryEvent({
         stateDirectory: options.stateDirectory,
@@ -171,7 +174,7 @@ export async function runSemanticChallengeShadow(options: {
       const finalTrajectory = await readSemanticChallengeTrajectory({ stateDirectory: options.stateDirectory, request });
       return {
         challenge_id: request.challenge_id,
-        job_id: identity.job_id,
+        job_id: jobId,
         remote_actions: remoteActions + 1,
         repository_observations: repository.observationCount,
         trajectory_events: finalTrajectory.length,
