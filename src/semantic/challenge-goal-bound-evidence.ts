@@ -35,6 +35,17 @@ function payload(value: Omit<GoalBoundSemanticChallengeEvidence, "goal_bound_evi
   };
 }
 
+export function goalBoundSemanticChallengeEvidenceDigest(request: SemanticChallengeRequest, evidence: SemanticChallengeEvidence): string {
+  return digest({
+    schema_version: "1.0",
+    kind: "wco-semantic-goal-bound-challenge-evidence",
+    challenge_id: request.challenge_id,
+    repository: request.repository,
+    original_goal_sha256: digest(request.original_goal),
+    challenge_evidence_sha256: evidence.challenge_evidence_sha256,
+  });
+}
+
 export function buildGoalBoundSemanticChallengeEvidence(options: {
   request: SemanticChallengeRequest;
   observations: readonly SemanticEvidenceObservationInput[];
@@ -57,5 +68,5 @@ export function assertGoalBoundSemanticChallengeEvidence(value: GoalBoundSemanti
   if (!sameRepository(value.repository, request.repository) || !sameRepository(value.evidence.repository, request.repository)) throw new Error("semantic challenge goal-bound evidence repository binding drifted.");
   const goal = digest(request.original_goal);
   if (value.original_goal_sha256 !== goal) throw new Error("semantic challenge goal-bound evidence original goal drifted.");
-  if (!SHA256.test(value.goal_bound_evidence_sha256) || value.goal_bound_evidence_sha256 !== digest(payload(value))) throw new Error("semantic challenge goal-bound evidence digest is invalid.");
+  if (!SHA256.test(value.goal_bound_evidence_sha256) || value.goal_bound_evidence_sha256 !== digest(payload(value)) || value.goal_bound_evidence_sha256 !== goalBoundSemanticChallengeEvidenceDigest(request, value.evidence)) throw new Error("semantic challenge goal-bound evidence digest is invalid.");
 }
