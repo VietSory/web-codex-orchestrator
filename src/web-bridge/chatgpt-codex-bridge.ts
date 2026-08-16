@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import crypto from "node:crypto";
 import path from "node:path";
 import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
 import type { AgentLimits, TrustedConfig } from "../config/contracts.js";
@@ -6,6 +6,7 @@ import { defaultAgentLimits } from "../execution/budget.js";
 import { readPreparationForExecution } from "../execution/execution-store.js";
 import { ensureChatGptLogin } from "../runtime/chatgpt-login.js";
 import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
+import { ensureCanonicalDirectory } from "../shared/safe-directory.js";
 import { parseChatGptCodexAuthority } from "./chatgpt-codex-authority.js";
 import { ChatGptCodexImplementationClient } from "./chatgpt-codex-implementation-client.js";
 import { chatGptCodexAuthorPrompt, chatGptCodexRepositoryResultPrompt, chatGptCodexReviewPrompt } from "./chatgpt-codex-prompts.js";
@@ -85,6 +86,10 @@ function assertProviderBudget(events: RelayEvents, limits: AgentLimits, beforeTu
   }
 }
 
+function providerBusy(): WebBridgeError {
+  return new WebBridgeError("WEB_CHATGPT_CODEX_PROVIDER_BUSY", "Another WCO process already owns this exact provider turn; refusing a duplicate model call.");
+}
+
 export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBridge {
   private readonly store: RelayFileStore;
   private readonly stateDirectory: string;
@@ -135,14 +140,14 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
     assertProviderBudget(latest, this.limits(), false);
   }
 
-  private async turn(prompt: string, existingThreadId?: string, signal?: AbortSignal, reserve?: () => Promise<void>): Promise<{ thread_id: string; output: unknown; usage: ProviderUsage }> {
+  private async turn(prompt: string, existingThreadId?: string, signal?: AbortSignal, reserve?: (claimNonce: string) => Promise<boolean>): Promise<{ thread_id: string; output: unknown; usage: ProviderUsage }> {
     await this.ensureAuthorizedForProviderTurn();
-    await mkdir(this.scratchDirectory, { recursive: true, mode: 0o700 });
-    await mkdir(this.authorityDirectory, { recursive: true, mode: 0o700 });
+    await ensureCanonicalDirectory(this.scratchDirectory, "ChatGPT/Codex semantic scratch");
+    await ensureCanonicalDirectory(this.authorityDirectory, "ChatGPT/Codex semantic authority");
     const profile = this.config.agents?.final_reviewer;
     if (!profile) throw new WebBridgeError("WEB_CHATGPT_CODEX_CONFIG_INVALID", "Semantic reviewer profile is missing.");
     const client = await this.client();
-    if (reserve) await reserve();
+    if (reserve && !await reserve(crypto.randomUUID())) throw providerBusy();
     return await client.turn({ profile, prompt, scratchDirectory: this.scratchDirectory, authorityDirectory: this.authorityDirectory, ...(existingThreadId ? { threadId: existingThreadId } : {}), ...(signal ? { signal } : {}) });
   }
 
@@ -180,7 +185,7 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
     const prompt = latestResult ? chatGptCodexRepositoryResultPrompt(latestResult.payload, request, jobId) : latestClarification ? `${chatGptCodexAuthorPrompt(request, jobId)}\nUser clarification: ${JSON.stringify(latestClarification.payload)}` : chatGptCodexAuthorPrompt(request, jobId);
     const existingThread = threadId(record.events);
     const inputSha256 = contentDigest({ prompt, thread_id: existingThread ?? null });
-    const result = await this.turn(prompt, existingThread, signal, async () => { await this.store.append(jobId, OWNER, "chatgpt_codex_authoring_reserved", { input_sha256: inputSha256, thread_id: existingThread ?? null }, `author-reserve-${inputSha256}`); });
+    const result = await this.turn(prompt, existingThread, signal, async (claimNonce) => (await this.store.claim(jobId, OWNER, "chatgpt_codex_authoring_reserved", { input_sha256: inputSha256, thread_id: existingThread ?? null }, `author-reserve-${inputSha256}`, claimNonce)).acquired);
     await this.recordProviderUsage(jobId, "author", inputSha256, result.usage);
     await this.store.append(jobId, OWNER, "chatgpt_codex_thread", { thread_id: result.thread_id }, `thread-${contentDigest({ jobId, inputSha256, thread: result.thread_id })}`);
     const authority = parseChatGptCodexAuthority(result.output);
@@ -221,7 +226,8 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
     if (!profile) throw new WebBridgeError("WEB_CHATGPT_CODEX_CONFIG_INVALID", "Harness implementer profile is missing.");
     const client = await this.implementationClient();
     const usageKey = contentDigest({ jobId, runId });
-    await this.store.append(jobId, OWNER, "chatgpt_codex_implementation_reserved", { run_id: runId }, `implementation-reserve-${usageKey}`);
+    const claim = await this.store.claim(jobId, OWNER, "chatgpt_codex_implementation_reserved", { run_id: runId }, `implementation-reserve-${usageKey}`, crypto.randomUUID());
+    if (!claim.acquired) throw providerBusy();
     const proposal = await client.propose({ profile, jobId, runId, workspacePath: preparation.receipt.worktree_path, acceptedBundlePath: preparation.receipt.accepted_bundle_path });
     await this.recordProviderUsage(jobId, "implementation", usageKey, proposal.usage);
     await this.store.append(jobId, OWNER, "implementation_sealed", { submission: proposal.submission }, `implementation-${contentDigest(proposal.submission)}`);
@@ -260,7 +266,7 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
     const request = record.request as FinalReviewRequest;
     const prompt = chatGptCodexReviewPrompt(request, evidence.payload as Record<string, unknown>, reviewId);
     const inputSha256 = contentDigest({ reviewId, prompt });
-    const result = await this.turn(prompt, undefined, signal, async () => { await this.store.append(reviewId, OWNER, "chatgpt_codex_review_reserved", { input_sha256: inputSha256 }, `review-reserve-${inputSha256}`); });
+    const result = await this.turn(prompt, undefined, signal, async (claimNonce) => (await this.store.claim(reviewId, OWNER, "chatgpt_codex_review_reserved", { input_sha256: inputSha256 }, `review-reserve-${inputSha256}`, claimNonce)).acquired);
     await this.recordProviderUsage(reviewId, "review", inputSha256, result.usage);
     await this.store.append(reviewId, OWNER, "chatgpt_codex_review_thread", { thread_id: result.thread_id }, `review-thread-${contentDigest({ reviewId, inputSha256, thread: result.thread_id })}`);
     const authority = parseChatGptCodexAuthority(result.output);
