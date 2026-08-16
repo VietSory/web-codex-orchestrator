@@ -1,0 +1,76 @@
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
+import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
+import type { TrustedConfig } from "../config/contracts.js";
+import { defaultAgentLimits } from "../execution/budget.js";
+import { ensureChatGptLogin } from "../runtime/chatgpt-login.js";
+import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
+import type { SemanticChallengeTransport } from "../semantic/challenge-aware-web-bridge.js";
+import type { SemanticChallengeRequest, SemanticUnderstandingEnvelope } from "../semantic/blind-challenge.js";
+import { ChatGptCodexWebBridge } from "./chatgpt-codex-bridge.js";
+import { ChatGptCodexSemanticChallengeTransport } from "./chatgpt-codex-semantic-challenge-transport.js";
+import { ChatGptCodexSemanticClient } from "./chatgpt-codex-semantic-client.js";
+import { WebBridgeError, type BridgeJobIdentity, type RepositoryCommandResult } from "./contracts.js";
+
+/**
+ * Normal ChatGPT/Codex bridge plus the optional blind semantic-challenge
+ * capability. All existing WebBridge and prepared-run authority stays inherited
+ * unchanged from ChatGptCodexWebBridge; only the four challenge methods below
+ * delegate to an authority-neutral provider transport.
+ */
+export class ChatGptCodexChallengeWebBridge extends ChatGptCodexWebBridge implements SemanticChallengeTransport {
+  private readonly challengeStateDirectory: string;
+  private readonly challengeScratchDirectory: string;
+  private readonly challengeAuthorityDirectory: string;
+  private challengeProviderPromise: Promise<ChatGptCodexSemanticChallengeTransport> | null = null;
+
+  constructor(private readonly challengeConfig: TrustedConfig, bridgeDirectory: string, stateDirectory = path.join(path.dirname(path.resolve(bridgeDirectory)), "state")) {
+    super(challengeConfig, bridgeDirectory, stateDirectory);
+    this.challengeStateDirectory = path.resolve(stateDirectory);
+    const resolvedBridge = path.resolve(bridgeDirectory);
+    this.challengeScratchDirectory = path.join(resolvedBridge, "chatgpt-codex-runtime", "semantic-challenge-scratch");
+    this.challengeAuthorityDirectory = path.join(resolvedBridge, "chatgpt-codex-runtime", "semantic-challenge-authority");
+  }
+
+  private async challengeProvider(): Promise<ChatGptCodexSemanticChallengeTransport> {
+    if (!this.challengeProviderPromise) {
+      this.challengeProviderPromise = (async () => {
+        const profile = this.challengeConfig.agents?.final_reviewer;
+        if (!profile) throw new WebBridgeError("WEB_CHATGPT_CODEX_CONFIG_INVALID", "Semantic challenger profile is missing.");
+        const limits = this.challengeConfig.agents?.limits ?? defaultAgentLimits();
+        const runtime = await resolveCodexRuntime(this.challengeConfig.runtime, this.challengeStateDirectory);
+        const client = new ChatGptCodexSemanticClient(new CodexSdkAgentClient(runtime), limits.maximum_turn_seconds);
+        return new ChatGptCodexSemanticChallengeTransport({
+          client,
+          profile,
+          limits,
+          scratchDirectory: this.challengeScratchDirectory,
+          authorityDirectory: this.challengeAuthorityDirectory,
+          beforeTurn: async () => {
+            const authorized = await ensureChatGptLogin({ config: this.challengeConfig, stateDirectory: this.challengeStateDirectory });
+            if (!authorized) throw new WebBridgeError("CODEX_AUTH_UNAVAILABLE", "ChatGPT authorization is required. Run `wco web connect` in an interactive terminal.");
+            await mkdir(this.challengeScratchDirectory, { recursive: true, mode: 0o700 });
+            await mkdir(this.challengeAuthorityDirectory, { recursive: true, mode: 0o700 });
+          },
+        });
+      })();
+    }
+    return await this.challengeProviderPromise;
+  }
+
+  async createSemanticChallengeJob(request: SemanticChallengeRequest, idempotencyKey: string): Promise<BridgeJobIdentity> {
+    return await (await this.challengeProvider()).createSemanticChallengeJob(request, idempotencyKey);
+  }
+
+  async waitForSemanticChallengeAction(jobId: string, afterSequence: number, signal?: AbortSignal) {
+    return await (await this.challengeProvider()).waitForSemanticChallengeAction(jobId, afterSequence, signal);
+  }
+
+  async submitSemanticChallengeRepositoryResult(jobId: string, result: RepositoryCommandResult, idempotencyKey: string): Promise<void> {
+    await (await this.challengeProvider()).submitSemanticChallengeRepositoryResult(jobId, result, idempotencyKey);
+  }
+
+  async receiveSemanticUnderstanding(jobId: string): Promise<SemanticUnderstandingEnvelope | null> {
+    return await (await this.challengeProvider()).receiveSemanticUnderstanding(jobId);
+  }
+}
