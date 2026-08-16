@@ -9,7 +9,8 @@ import {
 } from "../src/benchmark/semantic-challenge-evaluation.js";
 import { parseSemanticBenchmarkCorpus } from "../src/benchmark/semantic-corpus.js";
 import { loadTrustedConfig } from "../src/config/config-loader.js";
-import type { AgentProfile } from "../src/config/contracts.js";
+import type { AgentLimits, AgentProfile } from "../src/config/contracts.js";
+import { defaultAgentLimits } from "../src/execution/budget.js";
 import { ensureChatGptLogin } from "../src/runtime/chatgpt-login.js";
 import { resolveCodexRuntime } from "../src/runtime/codex-runtime.js";
 import { resolveWcoPaths } from "../src/setup/default-paths.js";
@@ -47,6 +48,29 @@ function addSafe(left: number, right: number, label: string): number {
 function measured(value: number | undefined, label: string): number {
   if (!Number.isSafeInteger(value) || value! < 0) throw new Error(`semantic provider benchmark ${label} usage is missing or invalid.`);
   return value!;
+}
+
+class ProviderBenchmarkBudget {
+  readonly usage: UsageTotals = { turns: 0, input_tokens: 0, cached_input_tokens: 0, output_tokens: 0 };
+  private readonly startedAt = Date.now();
+
+  constructor(private readonly limits: AgentLimits) {}
+
+  beforeTurn(): void {
+    if (this.usage.turns >= this.limits.maximum_total_agent_turns) throw new Error("semantic provider benchmark configured turn budget is exhausted.");
+    if ((Date.now() - this.startedAt) / 1000 >= this.limits.maximum_total_seconds) throw new Error("semantic provider benchmark configured wall-clock budget is exhausted.");
+  }
+
+  record(input: number, cached: number, output: number): void {
+    if (cached > input) throw new Error("semantic provider benchmark cached input usage exceeds total input usage.");
+    this.usage.turns = addSafe(this.usage.turns, 1, "turn count");
+    this.usage.input_tokens = addSafe(this.usage.input_tokens, input, "input tokens");
+    this.usage.cached_input_tokens = addSafe(this.usage.cached_input_tokens, cached, "cached input tokens");
+    this.usage.output_tokens = addSafe(this.usage.output_tokens, output, "output tokens");
+    if (this.usage.input_tokens > this.limits.maximum_total_input_tokens || this.usage.output_tokens > this.limits.maximum_total_output_tokens) {
+      throw new Error("semantic provider benchmark configured token budget is exhausted.");
+    }
+  }
 }
 
 function armPolicy(arm: "author_style" | "independent_challenger"): string {
@@ -88,6 +112,7 @@ async function runArm(options: {
   corpus: ReturnType<typeof parseSemanticBenchmarkCorpus>;
   scratchDirectory: string;
   authorityDirectory: string;
+  budget: ProviderBenchmarkBudget;
 }): Promise<{ result: SemanticBenchmarkArmResult; usage: UsageTotals }> {
   const usage: UsageTotals = { turns: 0, input_tokens: 0, cached_input_tokens: 0, output_tokens: 0 };
   const policy = armPolicy(options.arm);
@@ -95,6 +120,7 @@ async function runArm(options: {
     arm: options.arm,
     corpus: options.corpus,
     provider: async ({ prompt }) => {
+      options.budget.beforeTurn();
       const response = await options.client.turn({
         role: "final_reviewer",
         model: options.profile.model,
@@ -113,11 +139,11 @@ async function runArm(options: {
       const input = measured(response.usage?.input_tokens, "input-token");
       const cached = measured(response.usage?.cached_input_tokens, "cached-input-token");
       const output = measured(response.usage?.output_tokens, "output-token");
-      if (cached > input) throw new Error("semantic provider benchmark cached input usage exceeds total input usage.");
-      usage.turns = addSafe(usage.turns, 1, "turn count");
-      usage.input_tokens = addSafe(usage.input_tokens, input, "input tokens");
-      usage.cached_input_tokens = addSafe(usage.cached_input_tokens, cached, "cached input tokens");
-      usage.output_tokens = addSafe(usage.output_tokens, output, "output tokens");
+      options.budget.record(input, cached, output);
+      usage.turns = addSafe(usage.turns, 1, "arm turn count");
+      usage.input_tokens = addSafe(usage.input_tokens, input, "arm input tokens");
+      usage.cached_input_tokens = addSafe(usage.cached_input_tokens, cached, "arm cached input tokens");
+      usage.output_tokens = addSafe(usage.output_tokens, output, "arm output tokens");
       return response.output;
     },
   });
@@ -130,6 +156,15 @@ const paths = resolveWcoPaths({ ...(flags.configPath ? { configPath: flags.confi
 const config = await loadTrustedConfig(paths.config);
 const profile = config.agents?.final_reviewer;
 if (!profile) throw new Error("Semantic provider benchmark requires the configured final_reviewer profile.");
+const limits = config.agents?.limits ?? defaultAgentLimits();
+
+const corpusPath = path.resolve("tests/fixtures/semantic-understanding/cases.json");
+const corpus = parseSemanticBenchmarkCorpus(JSON.parse(await readFile(corpusPath, "utf8")) as unknown);
+const requiredTurns = corpus.cases.length * 2;
+if (limits.maximum_total_agent_turns < requiredTurns) {
+  throw new Error(`Semantic provider benchmark requires ${requiredTurns} provider turns for two equal arms, but configured maximum_total_agent_turns is ${limits.maximum_total_agent_turns}.`);
+}
+const budget = new ProviderBenchmarkBudget(limits);
 
 const authorized = await ensureChatGptLogin({ config, stateDirectory: paths.state });
 if (!authorized) throw new Error("ChatGPT authorization is required. Run `wco web connect` in an interactive terminal, then retry the semantic provider benchmark.");
@@ -138,8 +173,6 @@ const runtime = await resolveCodexRuntime(config.runtime, paths.state);
 const client = new CodexSdkAgentClient(runtime);
 await client.checkAvailability();
 
-const corpusPath = path.resolve("tests/fixtures/semantic-understanding/cases.json");
-const corpus = parseSemanticBenchmarkCorpus(JSON.parse(await readFile(corpusPath, "utf8")) as unknown);
 const root = await mkdtemp(path.join(os.tmpdir(), "wco-semantic-provider-benchmark-"));
 const scratchDirectory = path.join(root, "scratch");
 const authorityDirectory = path.join(root, "authority");
@@ -147,8 +180,8 @@ await mkdir(scratchDirectory, { mode: 0o700 });
 await mkdir(authorityDirectory, { mode: 0o700 });
 
 try {
-  const author = await runArm({ arm: "author_style", profile, client, corpus, scratchDirectory, authorityDirectory });
-  const challenger = await runArm({ arm: "independent_challenger", profile, client, corpus, scratchDirectory, authorityDirectory });
+  const author = await runArm({ arm: "author_style", profile, client, corpus, scratchDirectory, authorityDirectory, budget });
+  const challenger = await runArm({ arm: "independent_challenger", profile, client, corpus, scratchDirectory, authorityDirectory, budget });
   const comparison = compareSemanticBenchmarkArms(author.result, challenger.result);
   console.log(JSON.stringify({
     benchmark_version: "1.0",
@@ -157,9 +190,10 @@ try {
     model: profile.model,
     reasoning_effort: profile.reasoning_effort,
     corpus_cases: corpus.cases.length,
-    total_provider_turns: author.usage.turns + challenger.usage.turns,
+    total_provider_turns: budget.usage.turns,
     hidden_gold_exposed_to_provider: false,
     lifecycle_mutation: false,
+    total_usage: budget.usage,
     arms: {
       author_style: { ...author.result, usage: author.usage },
       independent_challenger: { ...challenger.result, usage: challenger.usage },
