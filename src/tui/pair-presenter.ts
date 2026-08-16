@@ -26,20 +26,14 @@ export function derivePairStage(snapshot: LifecycleSnapshot): UserStage {
   if (!snapshot.registered_artifact_sha256 || snapshot.executor_state === "ESCALATE_TO_WEB") return "WEB_IMPLEMENTATION";
   if (isExecutorRepairing(snapshot.executor_state)) return "REVISION";
   if (snapshot.executor_state === "REVIEWING_WEB" || snapshot.executor_state === "REVIEWING_TERRA" || snapshot.executor_state === "REVIEWING_SOL") return "TERRA_REVIEW";
-  if (snapshot.executor_state !== "READY_FOR_PUBLISH") {
-    return isExecutorVerifying(snapshot.executor_state) ? "VERIFICATION" : "EXECUTION";
-  }
+  if (snapshot.executor_state !== "READY_FOR_PUBLISH") return isExecutorVerifying(snapshot.executor_state) ? "VERIFICATION" : "EXECUTION";
   if (snapshot.publish_state !== "PUSHED") return "PUBLISHING";
   if (snapshot.draft_pr_state !== "OPEN") return "DRAFT_PR";
   if (!snapshot.result_bundle_ready) return "RESULT_BUNDLE";
-
   if (snapshot.web_code_review_state === "ESCALATED") return "BLOCKED";
   if (snapshot.web_code_review_state !== "APPROVED") return "TERRA_REVIEW";
-
   if (snapshot.web_review_state === "ESCALATED") return "BLOCKED";
-  if (snapshot.web_review_state === "REVISION_REQUESTED") {
-    return snapshot.revision_state === "RESULT_READY" && snapshot.revision_result_ready ? "WEB_FINAL_REVIEW" : "REVISION";
-  }
+  if (snapshot.web_review_state === "REVISION_REQUESTED") return snapshot.revision_state === "RESULT_READY" && snapshot.revision_result_ready ? "WEB_FINAL_REVIEW" : "REVISION";
   if (snapshot.web_review_state === "APPROVED") return "AWAITING_HUMAN";
   return "WEB_FINAL_REVIEW";
 }
@@ -88,8 +82,8 @@ function userAction(stage: UserStage): string {
     case "PUBLISHING":
     case "DRAFT_PR":
     case "RESULT_BUNDLE": return "None — WCO is preparing the reviewed Draft PR";
-    case "PAUSED": return "use /resume, then /run to continue saved progress";
-    default: return "use /run if WCO is not already working";
+    case "PAUSED": return "use /continue to continue saved progress";
+    default: return "use /continue if WCO is not already working";
   }
 }
 
