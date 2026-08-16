@@ -148,6 +148,18 @@ function allTextBelow(directory) {
   return chunks.join("\n");
 }
 
+function recordSmokeFailure(error) {
+  const metricsPath = path.join(root, "artifacts", "packed-cli-process-metrics.json");
+  let metrics = {};
+  try { metrics = JSON.parse(readFileSync(metricsPath, "utf8")); } catch {}
+  metrics.packed_user_journey_failure = {
+    message: error instanceof Error ? error.message : String(error),
+    stack: error instanceof Error ? error.stack ?? null : null,
+  };
+  mkdirSync(path.dirname(metricsPath), { recursive: true });
+  writeFileSync(metricsPath, `${JSON.stringify(metrics, null, 2)}\n`, "utf8");
+}
+
 try {
   const packed = run(npm, ["pack", "--json"]);
   const parsed = JSON.parse(packed.stdout);
@@ -246,6 +258,9 @@ try {
   assert(!existsSync(path.join(splitWco, "config.json")), "Remote-identity failure created trusted config.");
 
   console.log("Packed real-user journey + blocked-prerequisite + terminal-control smoke PASS.");
+} catch (error) {
+  recordSmokeFailure(error);
+  throw error;
 } finally {
   if (tarball) { try { unlinkSync(tarball); } catch {} }
   rmSync(temp, { recursive: true, force: true });
