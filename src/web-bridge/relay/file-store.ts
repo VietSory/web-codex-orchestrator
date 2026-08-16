@@ -24,9 +24,29 @@ export class RelayFileStore {
 
   private async safeRoot(): Promise<string> {
     const absolute = path.resolve(this.root);
-    await mkdir(absolute, { recursive: true, mode: 0o700 });
-    const stat = await lstat(absolute);
+    const parent = path.dirname(absolute);
+    const assertCanonicalDirectory = async (target: string, label: string): Promise<void> => {
+      const stat = await lstat(target).catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new WebBridgeError("RELAY_STORE_ROOT_UNSAFE", `${label} does not exist.`);
+        throw error;
+      });
+      if (!stat.isDirectory() || stat.isSymbolicLink() || await realpath(target) !== target) {
+        throw new WebBridgeError("RELAY_STORE_ROOT_UNSAFE", `${label} is not canonical.`);
+      }
+    };
+
+    await assertCanonicalDirectory(parent, "Relay store parent");
+    let stat = await lstat(absolute).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    });
+    if (!stat) {
+      try { await mkdir(absolute, { mode: 0o700 }); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+      stat = await lstat(absolute);
+    }
     if (!stat.isDirectory() || stat.isSymbolicLink() || await realpath(absolute) !== absolute) throw new WebBridgeError("RELAY_STORE_ROOT_UNSAFE", "Relay store root is not canonical.");
+    await assertCanonicalDirectory(parent, "Relay store parent");
     await chmod(absolute, 0o700).catch(() => undefined);
     return absolute;
   }
