@@ -1,4 +1,4 @@
-import { contentDigest, parseRepositoryCommand, type RepositoryCommandResult } from "../web-bridge/contracts.js";
+import { contentDigest, parseRepositoryCommand, WEB_BRIDGE_PROTOCOL_VERSION, type RepositoryCommandResult } from "../web-bridge/contracts.js";
 import type { WebBridge } from "../web-bridge/web-bridge.js";
 import { isSemanticChallengeAwareWebBridge, type SemanticChallengeTransport } from "./challenge-aware-web-bridge.js";
 import {
@@ -70,18 +70,21 @@ export async function runSemanticChallengeShadow(options: {
   });
 
   const identity = await options.transport.createSemanticChallengeJob(request, `challenge-${request.challenge_id}`);
-  if (!identity?.job_id) throw new Error("semantic challenge transport returned an invalid job identity.");
+  if (identity?.protocol_version !== WEB_BRIDGE_PROTOCOL_VERSION || !SAFE_REQUEST_ID.test(identity.job_id)) throw new Error("semantic challenge transport returned an invalid job identity.");
 
   let remoteSequence = 0;
   let remoteActions = 0;
+  const seenRequestIds = new Set<string>();
   for (; remoteActions < MAX_REMOTE_ACTIONS; remoteActions += 1) {
     const action = await options.transport.waitForSemanticChallengeAction(identity.job_id, remoteSequence, options.signal);
     if (!action) throw new Error("semantic challenge transport ended before sealed understanding.");
-    if (!Number.isSafeInteger(action.sequence) || action.sequence <= remoteSequence) throw new Error("semantic challenge remote action sequence did not advance.");
+    if (!Number.isSafeInteger(action.sequence) || action.sequence !== remoteSequence + 1) throw new Error("semantic challenge remote action sequence must be contiguous.");
     remoteSequence = action.sequence;
 
     if (action.type === "repository_command") {
       if (!SAFE_REQUEST_ID.test(action.request_id)) throw new Error("semantic challenge remote request identity is invalid.");
+      if (seenRequestIds.has(action.request_id)) throw new Error("semantic challenge remote request identity was reused.");
+      seenRequestIds.add(action.request_id);
       const parsed = parseSemanticChallengeAction({ kind: "repository_command", command: parseRepositoryCommand(action.command) }, request);
       if (parsed.kind !== "repository_command") throw new Error("semantic challenge repository action changed kind during validation.");
       const delivered = await repository.execute(parsed.command);
