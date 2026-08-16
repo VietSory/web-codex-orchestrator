@@ -55,17 +55,27 @@ test("semantic SDK turn exposes only the authority kind valid for its closed WCO
   assert.equal(requests[1].network_access, false);
 });
 
-test("semantic prompts expose the closed JSON payload wire contracts", () => {
+test("initial semantic prompt carries the full closed wire tutorial while repository follow-ups stay compact and identity-bound", () => {
   const request = { owner: "local", repository: { repository_id: "repo", base_branch: "main", base_commit: "a".repeat(40) }, user_intent: "change app", ttl_seconds: 60 } as const;
-  for (const prompt of [chatGptCodexAuthorPrompt(request, "job-exact"), chatGptCodexRepositoryResultPrompt({ exact: true }, request, "job-exact")]) {
-    assert.match(prompt, /\{"operation":"summary"\}/);
-    assert.match(prompt, /\{"operation":"read","paths":\["package.json","README.md"\]\}/);
-    assert.match(prompt, /Never put repository_id, commands, argv, shell/);
-    assert.match(prompt, /protocol_version, job_id, repository, user_intent/);
-    assert.match(prompt, /protocol_version must be exactly "wco-web-bridge-v1" and job_id must be exactly "job-exact"/);
-    assert.match(prompt, /sources and risk_policy\.notes are arrays/);
-    assert.match(prompt, /branch starting with "codex\/"/);
-  }
+  const initial = chatGptCodexAuthorPrompt(request, "job-exact");
+  assert.match(initial, /\{"operation":"summary"\}/);
+  assert.match(initial, /\{"operation":"read","paths":\["package.json","README.md"\]\}/);
+  assert.match(initial, /Never put repository_id, commands, argv, shell/);
+  assert.match(initial, /protocol_version, job_id, repository, user_intent/);
+  assert.match(initial, /protocol_version must be exactly "wco-web-bridge-v1" and job_id must be exactly "job-exact"/);
+  assert.match(initial, /sources and risk_policy\.notes are arrays/);
+  assert.match(initial, /branch starting with "codex\/"/);
+
+  const followUp = chatGptCodexRepositoryResultPrompt({ exact: true }, request, "job-exact");
+  assert.match(followUp, /Continue the same AUTHOR thread and the exact closed payload contract from the initial turn/);
+  assert.match(followUp, /protocol_version="wco-web-bridge-v1", job_id="job-exact"/);
+  assert.match(followUp, /repository=\{"repository_id":"repo","base_branch":"main","base_commit":"a{40}"\}/);
+  assert.match(followUp, /user_intent="change app"/);
+  assert.match(followUp, /draft=true, auto_merge=false/);
+  assert.match(followUp, /senior-maintainer authoring standard from the initial turn/);
+  assert.doesNotMatch(followUp, /\{"operation":"summary"\}/);
+  assert.doesNotMatch(followUp, /For kind=contract_sealed, payload_json must be/);
+  assert.ok(Buffer.byteLength(followUp, "utf8") < Buffer.byteLength(initial, "utf8"), "repository-result follow-up must remain smaller than the initial schema/tutorial prompt");
 
   const review = chatGptCodexReviewPrompt({ run_id: `TASK:${"b".repeat(64)}`, result_bundle_sha256: "c".repeat(64), published_commit_sha: "d".repeat(40), pull_request_url: "https://github.com/example/repo/pull/1", review_round: 1 }, { exact: true }, "review-exact");
   assert.match(review, /closed WebVerdictEnvelope/);
