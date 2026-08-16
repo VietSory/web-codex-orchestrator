@@ -33,7 +33,7 @@ import { createPendingFinalReview, type WebReviewPurpose } from "../web-bridge/f
 import { materializeAndSubmitWebVerdict } from "../web-bridge/verdict-materializer.js";
 import { runWebCommand } from "../web-bridge/web-cli.js";
 import type { WebBridge } from "../web-bridge/web-bridge.js";
-import { archiveLocalTaskHistory, listLocalTaskHistory, restoreLocalTaskHistoryFocus } from "../web-bridge/session-history.js";
+import { listLocalTaskHistory, restoreLocalTaskHistoryFocus } from "../web-bridge/session-history.js";
 import { NativeAgentRunGuard } from "../web-bridge/native-agent-run-guard.js";
 import { readNativeOpenAiCredential } from "../web-bridge/native-openai-credential.js";
 import { startNativeTunnel, stopNativeTunnel, type NativeTunnelProcess } from "../web-bridge/native-tunnel-runtime.js";
@@ -200,7 +200,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
   catch {
     firstRun = true;
     io.write("Welcome to WCO\n");
-    io.write("Setting up this Git repository locally. If ChatGPT is not authorized yet, the official Codex sign-in may open once.\n\n");
+    io.write("Checking this project for the normal Linux/WSL workflow. If supported and ChatGPT is not authorized yet, the official Codex sign-in may open once.\n\n");
     const code = await runSetupCommand(["--yes"], process.cwd(), { write: (value) => io.write(value), error: (value) => io.write(value), question: async (prompt) => await io.question(prompt) });
     if (code !== 0) return code;
   }
@@ -430,14 +430,28 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     }
   };
 
-  const startAndDriveTask = async (goal: string, replaceExplicit = false, mode: JobMode = "PAIR", signal?: AbortSignal): Promise<string> => {
+  const startAndDriveTask = async (
+    goal: string,
+    replaceExplicit = false,
+    mode: JobMode = "PAIR",
+    expectedCurrentSessionId?: string | null,
+    signal?: AbortSignal,
+  ): Promise<string> => {
     try {
       assertNotPaused(signal);
       if (!await ensureWebConnected()) return "Task was not started. Use /doctor for the next step, or /auth status to inspect ChatGPT authorization.";
       assertNotPaused(signal);
       if (!bridge) throw new Error("WCO transport is not connected.");
       const selectedReviewer = await readReviewMode(paths.state);
-      latest = await startLocalAuthoring({ bridge, repository: { repository_id: repositoryId, base_branch: detected.base_branch, base_commit: detected.base_commit }, goal, stateDirectory: paths.state, replaceExplicit, mode });
+      latest = await startLocalAuthoring({
+        bridge,
+        repository: { repository_id: repositoryId, base_branch: detected.base_branch, base_commit: detected.base_commit },
+        goal,
+        stateDirectory: paths.state,
+        replaceExplicit,
+        ...(expectedCurrentSessionId !== undefined ? { expectedCurrentSessionId } : {}),
+        mode,
+      });
       io.write("● Goal accepted. WCO is preparing the task safely.\n");
       if (mode === "AUTOPILOT") io.write(`AUTOPILOT reviewer: ${reviewerLabel(selectedReviewer)}\n`);
       if (isNative()) await triggerNativeTurn("author", latest.job_id!);
@@ -490,14 +504,14 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     }
   };
 
-  const launchNewTask = async (goal: string, replaceExplicit: boolean, mode: JobMode): Promise<string> => {
-    if (!isLocal()) return await startAndDriveTask(goal, replaceExplicit, mode);
+  const launchNewTask = async (goal: string, replaceExplicit: boolean, mode: JobMode, expectedCurrentSessionId?: string | null): Promise<string> => {
+    if (!isLocal()) return await startAndDriveTask(goal, replaceExplicit, mode, expectedCurrentSessionId);
     if (!await ensureLocalBackgroundAuthorization()) return "Task was not started. No task state was created.";
     if (!await ensureTaskReadiness(mode, "start")) return "Readiness needs attention. Use /doctor for details.";
     const started = taskSlot.start({
       mode,
       goal,
-      run: async (signal) => await startAndDriveTask(goal, replaceExplicit, mode, signal),
+      run: async (signal) => await startAndDriveTask(goal, replaceExplicit, mode, expectedCurrentSessionId, signal),
       pauseAtSafeBoundary: mode === "PAIR" ? pausePairAtSafeBoundary : requireDurableBackgroundTask,
     });
     if (started.started) latest = null;
@@ -532,16 +546,17 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     return await launchSavedTask();
   };
 
-  const confirmTaskReplacement = async (mode: JobMode): Promise<boolean> => {
+  const confirmTaskReplacement = async (mode: JobMode): Promise<{ confirmed: boolean; expectedCurrentSessionId: string | null }> => {
     latest = await readLocalWorkerSession(paths.state, repositoryId);
-    if (!latest || latest.state === "COMPLETED") return true;
+    const expectedCurrentSessionId = latest?.session_id ?? null;
+    if (!latest || latest.state === "COMPLETED") return { confirmed: true, expectedCurrentSessionId };
     const answer = (await io.question([
       "The current task is still saved:",
       `\"${latest.goal}\"`,
       "",
       `Starting a new ${mode} task will move it out of current focus but keep its durable history. Continue? [y/N] `,
     ].join("\n"))).trim();
-    return /^y(es)?$/i.test(answer);
+    return { confirmed: /^y(es)?$/i.test(answer), expectedCurrentSessionId };
   };
 
   const recentTaskHistory = async (): Promise<LocalWorkerSession[]> => {
@@ -557,6 +572,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
 
   const resumeHistoryItem = async (item: LocalWorkerSession, index: number): Promise<string> => {
     latest = await readLocalWorkerSession(paths.state, repositoryId);
+    const expectedCurrentSessionId = latest?.session_id ?? null;
     if (latest?.session_id === item.session_id) {
       if (item.state === "COMPLETED") return `History #${index} is already complete. Start a new follow-up goal instead of reopening completed authority.`;
       if (item.state === "BLOCKED") return `History #${index} is the current task and needs your attention. Use /status, /review, and /doctor; use /resume only to intentionally choose a different saved task.`;
@@ -577,8 +593,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     }
 
     try {
-      if (latest) await archiveLocalTaskHistory(paths.state, latest);
-      latest = await restoreLocalTaskHistoryFocus(paths.state, repositoryId, item);
+      latest = await restoreLocalTaskHistoryFocus(paths.state, repositoryId, item, expectedCurrentSessionId);
       await clearPairPauseIfNeeded(latest);
     } catch (error) {
       return `History #${index} could not be resumed safely. ${error instanceof Error ? error.message : String(error)}\nCurrent durable runs were not modified.`;
@@ -602,18 +617,8 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
     return "There is no current saved task to continue. Type a new goal, or use /resume to intentionally choose a saved task.";
   };
 
-  const currentTaskIsPaused = async (): Promise<boolean> => {
-    if (!latest?.run_id || latest.state === "COMPLETED") return false;
-    if (localWorkerJobMode(latest) === "PAIR") return Boolean((await readLifecycleSnapshot(paths.state, latest.run_id).catch(() => null))?.paused);
-    return (await readAutopilotReceipt(paths.state, latest.run_id).catch(() => null))?.status === "PAUSED";
-  };
-
   const resumeFromHistory = async (args: string): Promise<string> => {
     latest = await readLocalWorkerSession(paths.state, repositoryId);
-    if (!args && await currentTaskIsPaused()) {
-      if (latest) await clearPairPauseIfNeeded(latest);
-      return await launchSavedTask();
-    }
     const entries = await recentTaskHistory();
     if (entries.length === 0) return "No saved tasks are available to resume.";
     let selected: number;
@@ -725,13 +730,15 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
         if (command === "/help") return { message: commandPalette(background ? LIVE_BACKGROUND_COMMANDS : undefined) };
         if (command === "/new") {
           if (!args) return { message: "Usage: /new <goal>" };
-          if (!await confirmTaskReplacement("PAIR")) return { message: "Current task kept in focus. Nothing changed." };
-          return { message: await launchNewTask(args, true, "PAIR") };
+          const confirmation = await confirmTaskReplacement("PAIR");
+          if (!confirmation.confirmed) return { message: "Current task kept in focus. Nothing changed." };
+          return { message: await launchNewTask(args, true, "PAIR", confirmation.expectedCurrentSessionId) };
         }
         if (command === "/auto") {
           if (!args) return { message: "Usage: /auto <goal>" };
-          if (!await confirmTaskReplacement("AUTOPILOT")) return { message: "Current task kept in focus. Nothing changed." };
-          return { message: await launchNewTask(args, true, "AUTOPILOT") };
+          const confirmation = await confirmTaskReplacement("AUTOPILOT");
+          if (!confirmation.confirmed) return { message: "Current task kept in focus. Nothing changed." };
+          return { message: await launchNewTask(args, true, "AUTOPILOT", confirmation.expectedCurrentSessionId) };
         }
         if (command === "/mode") {
           const current = await readReviewMode(paths.state);
