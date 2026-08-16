@@ -69,3 +69,12 @@ test("provider benchmark runner enforces the prompt-only event audit before acce
   assert.match(source, /provider_local_tool_activity: "rejected_if_observed_or_event_audit_truncated"/);
   assert.equal(source.includes("hidden_gold_exposed_to_provider"), false, "runner must not overclaim filesystem inaccessibility from read-only sandbox mode");
 });
+
+test("provider benchmark runner emits qualification evidence and exits non-zero on a failed semantic/token gate", async () => {
+  const source = await readFile(path.resolve("scripts/benchmark-semantic-provider.mts"), "utf8");
+  assert.match(source, /qualifySemanticProviderBenchmark/);
+  assert.match(source, /const qualification = qualifySemanticProviderBenchmark\(\{/);
+  assert.match(source, /benchmark_version: "1\.3"/);
+  assert.match(source, /\n\s*qualification,\n/);
+  assert.match(source, /if \(!qualification\.pass\)[\s\S]*Semantic provider benchmark qualification failed/);
+});
