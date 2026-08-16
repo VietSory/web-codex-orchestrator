@@ -100,6 +100,14 @@ try:
         wait(b"/new")
         os.write(fd, b"quit\r")
         wait(b"bye")
+    elif mode == "interrupt-exit":
+        wait(b"> ")
+        os.write(fd, b"draft text that should be cancelled")
+        os.write(fd, b"\x03")
+        wait(b"Input cancelled.")
+        wait(b"> ")
+        os.write(fd, b"\x04")
+        wait(b"Goodbye.")
     elif mode == "goal-auth-quit":
         wait(b"> ")
         os.write(fd, b"Change the README heading and add a regression test\r")
@@ -182,6 +190,12 @@ try {
   assert(!/Checking this Git repository and initial WCO setup/.test(second.transcript), "Returning packed `wco` repeated setup.");
   assert(readFileSync(configPath, "utf8") === firstConfig, "Returning packed `wco` rewrote trusted config without a user change.");
 
+  // Real packed terminal controls: cancel draft input without exiting, then safe-exit from an empty prompt.
+  const controls = runPty(bin, project, env, "interrupt-exit");
+  assert(controls.exitCode === 0, `packed Ctrl+C/Ctrl+D flow exited ${controls.exitCode}.\n${controls.transcript}`);
+  assert(/Input cancelled\./.test(controls.transcript), "Packed Ctrl+C did not cancel only the current input buffer.");
+  assert(/Goodbye\./.test(controls.transcript), "Packed Ctrl+D did not complete the safe-exit handshake.");
+
   // Break the auth/readiness boundary as a user would: type a real goal while CI has no ChatGPT authorization.
   const beforeGoalState = allTextBelow(wcoHome);
   const blockedGoal = runPty(bin, project, env, "goal-auth-quit");
@@ -230,7 +244,7 @@ try {
   assert(/Align the Git remote/.test(split.transcript), "Remote-identity block did not give a concrete recovery action.");
   assert(!existsSync(path.join(splitWco, "config.json")), "Remote-identity failure created trusted config.");
 
-  console.log("Packed real-user journey + blocked-prerequisite smoke PASS.");
+  console.log("Packed real-user journey + blocked-prerequisite + terminal-control smoke PASS.");
 } finally {
   if (tarball) { try { unlinkSync(tarball); } catch {} }
   rmSync(temp, { recursive: true, force: true });
