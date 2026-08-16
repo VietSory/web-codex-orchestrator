@@ -45,14 +45,17 @@ const mediumOverhead = bytes(mediumPrompt) - mediumResultBytes;
 // These guardrails measure deterministic UTF-8 prompt footprint only. They do
 // not claim provider token counts, cost, latency, cache behavior, or quality.
 assertBound(bytes(author), 16 * 1024, "initial semantic author prompt");
-assertBound(smallOverhead, 16 * 1024, "repository-result protocol/safety overhead");
-assertBound(mediumOverhead, 16 * 1024, "repository-result protocol/safety overhead");
+assertBound(smallOverhead, 8 * 1024, "repository-result protocol/safety overhead");
+assertBound(mediumOverhead, 8 * 1024, "repository-result protocol/safety overhead");
 if (Math.abs(smallOverhead - mediumOverhead) > 256) {
   throw new Error(`repository-result prompt overhead should stay approximately constant; small=${smallOverhead}, medium=${mediumOverhead}`);
 }
+if (smallPrompt.includes('{"operation":"summary"}') || smallPrompt.includes("For kind=contract_sealed, payload_json must be")) {
+  throw new Error("repository-result follow-up retransmitted the initial-turn schema tutorial instead of a compact continuation reminder.");
+}
 
 const report = {
-  schema_version: "1.0",
+  schema_version: "1.1",
   caveat: "UTF-8 prompt bytes only; not provider token/cost/latency evidence",
   author_prompt_bytes: bytes(author),
   repository_result: {
@@ -62,6 +65,7 @@ const report = {
     medium_result_bytes: mediumResultBytes,
     medium_prompt_bytes: bytes(mediumPrompt),
     medium_protocol_overhead_bytes: mediumOverhead,
+    initial_schema_tutorial_retransmitted: false,
   },
 };
 
