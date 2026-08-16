@@ -1,7 +1,7 @@
 export const SLASH_COMMANDS = [
   ["/new", "PAIR: collaborate on a task and add details before the plan locks: /new <goal>"],
   ["/auto", "AUTOPILOT: run end-to-end unless a decision needs you: /auto <goal>"],
-  ["/continue", "Continue the current task, or the most recent safely resumable task"],
+  ["/continue", "Continue only the current unfinished saved task"],
   ["/resume", "Choose a saved task to resume; /resume <number> resumes a history item"],
   ["/status", "Show current progress and what you need to do"],
   ["/review", "Show checks, review, and Draft PR evidence"],
