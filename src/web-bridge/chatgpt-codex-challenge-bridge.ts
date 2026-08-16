@@ -43,6 +43,15 @@ export class ChatGptCodexChallengeWebBridge extends ChatGptCodexWebBridge implem
         const limits = this.challengeConfig.agents?.limits ?? defaultAgentLimits();
         const runtime = await resolveCodexRuntime(this.challengeConfig.runtime, this.challengeStateDirectory);
         const client = new ChatGptCodexSemanticClient(new CodexSdkAgentClient(runtime), limits.maximum_turn_seconds);
+
+        // The transport deliberately attests that both provider filesystem roots
+        // already exist, are canonical, empty and mutually independent *before*
+        // any auth/provider side effect. Establish the managed roots once here;
+        // later deletion/replacement is allowed to fail closed rather than being
+        // silently recreated by the per-turn callback.
+        await mkdir(this.challengeScratchDirectory, { recursive: true, mode: 0o700 });
+        await mkdir(this.challengeAuthorityDirectory, { recursive: true, mode: 0o700 });
+
         return new ChatGptCodexSemanticChallengeTransport({
           client,
           profile,
@@ -52,8 +61,6 @@ export class ChatGptCodexChallengeWebBridge extends ChatGptCodexWebBridge implem
           beforeTurn: async () => {
             const authorized = await ensureChatGptLogin({ config: this.challengeConfig, stateDirectory: this.challengeStateDirectory });
             if (!authorized) throw new WebBridgeError("CODEX_AUTH_UNAVAILABLE", "ChatGPT authorization is required. Run `wco web connect` in an interactive terminal.");
-            await mkdir(this.challengeScratchDirectory, { recursive: true, mode: 0o700 });
-            await mkdir(this.challengeAuthorityDirectory, { recursive: true, mode: 0o700 });
           },
         });
       })();
