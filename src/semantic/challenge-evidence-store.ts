@@ -4,6 +4,7 @@ import { link, lstat, mkdir, open, readdir, realpath, rm } from "node:fs/promise
 import path from "node:path";
 import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
 import { readStableFile } from "../shared/stable-file.js";
+import { acquireTicketFileLock, TicketFileLockError } from "../shared/ticket-file-lock.js";
 import type { RepositoryBinding } from "../web-bridge/contracts.js";
 import type { SemanticChallengeEvidence, SemanticChallengeRequest } from "./blind-challenge.js";
 
@@ -190,21 +191,22 @@ async function writeCreateOnce(target: string, bytes: Buffer, directory: string)
     await handle.close().catch(() => undefined);
     await rm(temporary, { force: true }).catch(() => undefined);
   }
-  if (linked) return "created";
+  if (linked) {
+    const created = await readStableFile(target, MAX_SNAPSHOT_BYTES);
+    if (!created.bytes.equals(bytes)) throw new Error("semantic challenge evidence snapshot changed after durable create.");
+    return "created";
+  }
   const existing = await readStableFile(target, MAX_SNAPSHOT_BYTES);
   if (!existing.bytes.equals(bytes)) throw new Error("semantic challenge evidence snapshot replay conflicts with immutable evidence.");
   return "replayed";
 }
 
-export async function persistSemanticChallengeEvidenceSnapshot(options: {
+async function persistLocked(options: {
   stateDirectory: string;
   request: SemanticChallengeRequest;
   trajectoryReceiptSha256: string;
   evidence: SemanticChallengeEvidence;
-}): Promise<{ snapshot: SemanticChallengeEvidenceSnapshot; path: string; status: "created" | "replayed" }> {
-  if (!SHA256.test(options.trajectoryReceiptSha256)) throw new Error("semantic challenge evidence snapshot trajectory digest is invalid.");
-  const count = assertEvidenceForRequest(options.evidence, options.request);
-  const directory = await ensureSafeDirectory(options.stateDirectory, options.request);
+}, directory: string, count: number): Promise<{ snapshot: SemanticChallengeEvidenceSnapshot; path: string; status: "created" | "replayed" }> {
   const existing = await listSnapshots(directory, options.request);
   if (count !== existing.length + 1) {
     const replay = existing.find((snapshot) => snapshot.observation_count === count);
@@ -231,6 +233,25 @@ export async function persistSemanticChallengeEvidenceSnapshot(options: {
   const target = path.join(directory, `${String(count).padStart(4, "0")}-${snapshot.evidence.challenge_evidence_sha256}.json`);
   const status = await writeCreateOnce(target, bytes, directory);
   return { snapshot, path: target, status };
+}
+
+export async function persistSemanticChallengeEvidenceSnapshot(options: {
+  stateDirectory: string;
+  request: SemanticChallengeRequest;
+  trajectoryReceiptSha256: string;
+  evidence: SemanticChallengeEvidence;
+}): Promise<{ snapshot: SemanticChallengeEvidenceSnapshot; path: string; status: "created" | "replayed" }> {
+  if (!SHA256.test(options.trajectoryReceiptSha256)) throw new Error("semantic challenge evidence snapshot trajectory digest is invalid.");
+  const count = assertEvidenceForRequest(options.evidence, options.request);
+  const directory = await ensureSafeDirectory(options.stateDirectory, options.request);
+  let lock;
+  try { lock = await acquireTicketFileLock(path.join(directory, ".writer-lock"), { timeoutMs: 10_000, pollMs: 25 }); }
+  catch (error) {
+    if (error instanceof TicketFileLockError) throw new Error(`semantic challenge evidence snapshot writer lock failed: ${error.message}`);
+    throw error;
+  }
+  try { return await persistLocked(options, directory, count); }
+  finally { await lock.release(); }
 }
 
 export async function readLatestSemanticChallengeEvidenceSnapshot(options: {
