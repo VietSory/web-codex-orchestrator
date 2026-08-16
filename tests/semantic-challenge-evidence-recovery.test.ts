@@ -8,6 +8,7 @@ import { createSemanticChallengeRequest } from "../src/semantic/blind-challenge.
 import { persistSemanticChallengeEvidenceSnapshot, readLatestSemanticChallengeEvidenceSnapshot } from "../src/semantic/challenge-evidence-store.js";
 import { SemanticChallengeRepositorySession } from "../src/semantic/challenge-repository-session.js";
 import { appendSemanticChallengeTrajectoryEvent } from "../src/semantic/challenge-trajectory-store.js";
+import { contentDigest } from "../src/web-bridge/contracts.js";
 
 const SECRET = "semantic-recovery-source-secret";
 
@@ -79,6 +80,55 @@ test("challenge evidence survives restart without persisting repository source b
     assert.equal(recovered.observation_count, 1);
     assert.equal(recovered.evidence.challenge_evidence_sha256, persisted.snapshot.evidence.challenge_evidence_sha256);
     assert.equal(recovered.trajectory_receipt_sha256, persisted.snapshot.trajectory_receipt_sha256);
+  } finally {
+    await rm(value.root, { recursive: true, force: true });
+  }
+});
+
+test("self-consistent digest recomputation cannot reintroduce source bytes into recovery evidence", async () => {
+  const value = await fixture();
+  try {
+    const session = new SemanticChallengeRepositorySession(value);
+    await session.execute({ operation: "read", paths: ["src/state.ts"] });
+    const evidence = structuredClone(session.buildEvidence());
+    const observation = evidence.evidence_index.observations[0]!;
+    if (observation.result.kind !== "read") throw new Error("fixture must produce normalized read evidence");
+    const file = observation.result.files[0]! as unknown as Record<string, unknown>;
+    file.content_base64 = Buffer.from(SECRET, "utf8").toString("base64");
+
+    // Make the attack internally self-consistent. Re-hashing must not turn an
+    // unknown/source-bearing normalized field into durable recovery authority.
+    observation.normalized_result_sha256 = contentDigest(observation.result);
+    observation.observation_sha256 = contentDigest({
+      sequence: observation.sequence,
+      request_id: observation.request_id,
+      command_sha256: observation.command_sha256,
+      normalized_result_sha256: observation.normalized_result_sha256,
+    });
+    evidence.evidence_index.evidence_index_sha256 = contentDigest({
+      schema_version: evidence.evidence_index.schema_version,
+      kind: evidence.evidence_index.kind,
+      repository: evidence.evidence_index.repository,
+      observations: evidence.evidence_index.observations,
+    });
+    evidence.challenge_evidence_sha256 = contentDigest({
+      schema_version: evidence.schema_version,
+      kind: evidence.kind,
+      challenge_id: evidence.challenge_id,
+      repository: evidence.repository,
+      evidence_index_sha256: evidence.evidence_index.evidence_index_sha256,
+    });
+
+    await assert.rejects(
+      persistSemanticChallengeEvidenceSnapshot({
+        stateDirectory: value.stateDirectory,
+        request: value.request,
+        trajectoryReceiptSha256: "a".repeat(64),
+        evidence,
+      }),
+      /noncanonical or non-byte-stripped/i,
+    );
+    assert.equal(await readLatestSemanticChallengeEvidenceSnapshot({ stateDirectory: value.stateDirectory, request: value.request }), null);
   } finally {
     await rm(value.root, { recursive: true, force: true });
   }
