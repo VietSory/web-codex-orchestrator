@@ -32,6 +32,10 @@ function stableIdentity(stats: Stats): StableFileIdentity {
   return { dev: stats.dev, ino: stats.ino, size: stats.size, mtimeMs: stats.mtimeMs, ctimeMs: stats.ctimeMs };
 }
 
+function sameInode(left: Stats, right: Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size;
+}
+
 function processIsAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; }
   catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
@@ -90,27 +94,27 @@ async function installAuthorityLock(directory: string, lockPath: string, bytes: 
   const temporary = path.join(directory, `.${path.basename(lockPath)}.${process.pid}.${crypto.randomUUID()}.tmp`);
   let handle: fs.FileHandle | null = null;
   let linked = false;
-  let createdIdentity: StableFileIdentity | null = null;
+  let installedIdentity: StableFileIdentity | null = null;
   try {
     handle = await fs.open(temporary, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);
     await handle.writeFile(bytes);
     await handle.sync();
     const prepared = await handle.stat();
     if (!prepared.isFile() || prepared.size !== bytes.byteLength) throw new OrchestrationError("ORCHESTRATION_LOCK_INVALID", "Prepared run lock is not a complete regular file.");
-    createdIdentity = stableIdentity(prepared);
     await handle.close();
     handle = null;
     try { await fs.link(temporary, lockPath); linked = true; }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") return null; throw error; }
     const installed = await fs.lstat(lockPath);
-    if (installed.isSymbolicLink() || !installed.isFile() || !sameStableFileIdentity(stableIdentity(installed), createdIdentity)) {
+    if (installed.isSymbolicLink() || !installed.isFile() || !sameInode(prepared, installed)) {
       throw new OrchestrationError("ORCHESTRATION_LOCK_INVALID", "Run lock changed while being atomically installed.");
     }
-    return createdIdentity;
+    installedIdentity = stableIdentity(installed);
+    return installedIdentity;
   } catch (error) {
-    if (linked && createdIdentity) {
+    if (linked && installedIdentity) {
       const current = await fs.lstat(lockPath).catch(() => null);
-      if (current && current.isFile() && !current.isSymbolicLink() && sameStableFileIdentity(stableIdentity(current), createdIdentity)) {
+      if (current && current.isFile() && !current.isSymbolicLink() && sameStableFileIdentity(stableIdentity(current), installedIdentity)) {
         await fs.unlink(lockPath).catch(() => undefined);
       }
     }
