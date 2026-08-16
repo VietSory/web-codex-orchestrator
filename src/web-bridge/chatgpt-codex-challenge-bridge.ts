@@ -41,14 +41,20 @@ export class ChatGptCodexChallengeWebBridge extends ChatGptCodexWebBridge implem
         const profile = this.challengeConfig.agents?.final_reviewer;
         if (!profile) throw new WebBridgeError("WEB_CHATGPT_CODEX_CONFIG_INVALID", "Semantic challenger profile is missing.");
         const limits = this.challengeConfig.agents?.limits ?? defaultAgentLimits();
+
+        // Authorization is resolved before provider construction rather than via
+        // a callback immediately before the turn. The provider/client boundary
+        // intentionally has no arbitrary pre-turn callback seam.
+        const authorized = await ensureChatGptLogin({ config: this.challengeConfig, stateDirectory: this.challengeStateDirectory });
+        if (!authorized) throw new WebBridgeError("CODEX_AUTH_UNAVAILABLE", "ChatGPT authorization is required. Run `wco web connect` in an interactive terminal.");
+
         const runtime = await resolveCodexRuntime(this.challengeConfig.runtime, this.challengeStateDirectory);
         const client = new ChatGptCodexSemanticClient(new CodexSdkAgentClient(runtime), limits.maximum_turn_seconds);
 
-        // The transport deliberately attests that both provider filesystem roots
-        // already exist, are canonical, empty and mutually independent *before*
-        // any auth/provider side effect. Establish the managed roots once here;
-        // later deletion/replacement is allowed to fail closed rather than being
-        // silently recreated by the per-turn callback.
+        // The provider and semantic client independently require canonical,
+        // empty, disjoint challenge-only roots before every challenge turn.
+        // Establish them once before transport creation; later replacement,
+        // deletion or contamination fails closed instead of being recreated.
         await mkdir(this.challengeScratchDirectory, { recursive: true, mode: 0o700 });
         await mkdir(this.challengeAuthorityDirectory, { recursive: true, mode: 0o700 });
 
@@ -58,10 +64,6 @@ export class ChatGptCodexChallengeWebBridge extends ChatGptCodexWebBridge implem
           limits,
           scratchDirectory: this.challengeScratchDirectory,
           authorityDirectory: this.challengeAuthorityDirectory,
-          beforeTurn: async () => {
-            const authorized = await ensureChatGptLogin({ config: this.challengeConfig, stateDirectory: this.challengeStateDirectory });
-            if (!authorized) throw new WebBridgeError("CODEX_AUTH_UNAVAILABLE", "ChatGPT authorization is required. Run `wco web connect` in an interactive terminal.");
-          },
         });
       })();
     }
