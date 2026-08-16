@@ -5,7 +5,7 @@ import path from "node:path";
 import { readStableFile, sameStableFileIdentity, type StableFileIdentity } from "../shared/stable-file.js";
 import { acquireTicketFileLock, TicketFileLockError } from "../shared/ticket-file-lock.js";
 
-export type LockCode = "RUN_LOCKED" | "WATCH_LOCKED";
+export type LockCode = "RUN_LOCKED" | "WATCH_LOCKED" | "EXECUTION_LOCKED";
 
 export class LockError extends Error {
   constructor(readonly code: LockCode, message: string) {
