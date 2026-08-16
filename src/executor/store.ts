@@ -198,7 +198,8 @@ export async function readExecutorReceipt(stateDirectory: string, taskId: string
 export async function writeExecutorReceipt(stateDirectory: string, receipt: ExecutorReceipt): Promise<void> { validateReceipt(receipt); const paths = executorPaths(stateDirectory, receipt.task_id, receipt.task_bundle_sha256, receipt.artifact_sha256); await prepareExecutorDirectory(stateDirectory, paths.directory); const bytes = canonicalJsonBuffer(receipt); if (bytes.byteLength > MAX_RECEIPT_BYTES) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor receipt exceeds byte cap."); await writeDurableExecutorStateFile(paths.receipt, bytes, MAX_RECEIPT_BYTES); }
 
 interface ExecutorLockRecord { pid: number; nonce: string; created_at: string; }
-type ExecutorLockInspection = { state: "MISSING" | "MALFORMED" } | { state: "LIVE" | "STALE"; record: ExecutorLockRecord; identity: StableFileIdentity };
+interface ExecutorLockObservation { state: "LIVE" | "STALE"; record: ExecutorLockRecord; identity: StableFileIdentity; }
+type ExecutorLockInspection = { state: "MISSING" | "MALFORMED" } | ExecutorLockObservation;
 export interface ExecutorLock { nonce: string; path: string; identity: StableFileIdentity; }
 
 function executorStableIdentity(stats: Stats): StableFileIdentity { return { dev: stats.dev, ino: stats.ino, size: stats.size, mtimeMs: stats.mtimeMs, ctimeMs: stats.ctimeMs }; }
@@ -225,8 +226,8 @@ async function inspectExecutorLock(lockPath: string): Promise<ExecutorLockInspec
     return after ? { state: "MALFORMED" } : { state: "MISSING" };
   }
 }
-async function reclaimDeadExecutorLock(lockPath: string, observed: Extract<ExecutorLockInspection, { state: "STALE" }>): Promise<void> {
-  if (executorProcessIsAlive(observed.record.pid)) throw new ExecutorError("EXECUTOR_LOCKED", "Executor lock owner became live while stale recovery was being attested.");
+async function reclaimDeadExecutorLock(lockPath: string, observed: ExecutorLockObservation): Promise<void> {
+  if (observed.state !== "STALE" || executorProcessIsAlive(observed.record.pid)) throw new ExecutorError("EXECUTOR_LOCKED", "Executor lock owner is not safely reclaimable.");
   const current = await fs.lstat(lockPath).catch((error: unknown) => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; });
   if (!current) return;
   if (current.isSymbolicLink() || !current.isFile() || !sameStableFileIdentity(executorStableIdentity(current), observed.identity)) throw new ExecutorError("EXECUTOR_LOCKED", "Executor lock changed while stale recovery was being attested.");
