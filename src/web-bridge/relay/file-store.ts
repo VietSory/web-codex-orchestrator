@@ -240,6 +240,34 @@ export class RelayFileStore {
     });
   }
 
+  async claim(jobId: string, owner: string, type: string, payload: Record<string, unknown>, idempotencyKey: string, claimNonce: string): Promise<{ event: RelayStoredEvent; acquired: boolean }> {
+    safeId(idempotencyKey);
+    safeId(claimNonce);
+    if (typeof type !== "string" || type.length < 1 || type.length > 128 || /[\r\n\0]/.test(type)) throw new WebBridgeError("RELAY_RECORD_INVALID", "Relay claim event type is invalid.");
+    return await this.locked(async () => {
+      const record = await this.read(jobId);
+      this.authorize(record, owner);
+      const previous = record.idempotency[`event:${idempotencyKey}`];
+      if (previous) {
+        const event = record.events.find((value) => value.idempotency_key === idempotencyKey);
+        if (!event || event.type !== type || !event.payload || typeof event.payload !== "object" || Array.isArray(event.payload)) throw new WebBridgeError("RELAY_RECORD_INVALID", "Relay claim idempotency index is inconsistent.");
+        const stored = event.payload as Record<string, unknown>;
+        const storedNonce = stored.claim_nonce;
+        const { claim_nonce: _ignored, ...storedPayload } = stored;
+        if (contentDigest({ type, payload: storedPayload }) !== contentDigest({ type, payload })) throw new WebBridgeError("RELAY_IDEMPOTENCY_CONFLICT", "Conflicting relay claim replay was rejected.");
+        return { event, acquired: storedNonce === claimNonce };
+      }
+      if (record.events.length >= this.limits.maximum_events_per_job) throw new WebBridgeError("RELAY_EVENT_LIMIT", "Relay event limit reached.");
+      const claimedPayload = { ...payload, claim_nonce: claimNonce };
+      const digest = contentDigest({ type, payload: claimedPayload });
+      const event: RelayStoredEvent = { sequence: (record.events.at(-1)?.sequence ?? 0) + 1, type, payload: claimedPayload, created_at: this.now().toISOString(), idempotency_key: idempotencyKey, content_sha256: digest };
+      record.events.push(event);
+      record.idempotency[`event:${idempotencyKey}`] = digest;
+      await this.write(record);
+      return { event, acquired: true };
+    });
+  }
+
   async append(jobId: string, owner: string, type: string, payload: unknown, idempotencyKey: string): Promise<RelayStoredEvent> {
     safeId(idempotencyKey);
     if (typeof type !== "string" || type.length < 1 || type.length > 128 || /[\r\n\0]/.test(type)) throw new WebBridgeError("RELAY_RECORD_INVALID", "Relay event type is invalid.");
