@@ -53,19 +53,20 @@ function rounded(value: number): number {
 }
 
 /**
- * Prompt for a benchmark-only independent semantic selection turn.
+ * Role-neutral prompt for one benchmark semantic-selection turn.
  *
  * Hidden gold is intentionally absent. The provider sees only the same public
- * case goal and evidence catalog available to any evaluated arm. Evidence IDs
- * are stable benchmark labels, not workflow authority or repository commands.
+ * case goal and evidence catalog available to any evaluated arm. The caller
+ * supplies the arm-specific author/challenger policy separately so the common
+ * prompt cannot bias one arm toward the other's role.
  */
 export function semanticBenchmarkSelectionPrompt(item: PublicSemanticBenchmarkCase): string {
   return [
-    "WCO_SEMANTIC_BENCHMARK:INDEPENDENT_SELECTION",
-    "Act as an independent maintainer-grade semantic reviewer.",
+    "WCO_SEMANTIC_BENCHMARK:SELECTION",
+    "Follow the benchmark role/policy supplied before this common instruction.",
     "Select only the evidence IDs that are materially required to understand the goal safely.",
     "Include relevant components, invariants, risks, unresolved unknowns, and assumptions that must be rejected.",
-    "Do not select an item merely because it is present. Challenge distractors and unsupported assumptions.",
+    "Do not select an item merely because it is present. Challenge distractors and unsupported assumptions as required by your assigned role.",
     "Return exactly one JSON object: {\"schema_version\":\"1.0\",\"kind\":\"semantic-benchmark-selection\",\"case_id\":<case id>,\"selected_ids\":[...]}.",
     `Public benchmark case: ${JSON.stringify(item)}`,
   ].join("\n");
