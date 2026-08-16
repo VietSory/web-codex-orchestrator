@@ -53,24 +53,21 @@ async function prepareLockDirectory(stateDirectory: string, parentPath: string):
   }
 }
 
-async function inspectExistingLock(lockPath: string): Promise<{
-  state: "missing" | "live" | "stale" | "invalid";
-  identity?: StableFileIdentity;
-}> {
+async function inspectExistingLock(lockPath: string): Promise<"missing" | "live" | "stale" | "invalid"> {
   let before: Stats;
   try { before = await lstat(lockPath); }
   catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { state: "missing" };
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing";
     throw error;
   }
-  if (before.isSymbolicLink() || !before.isFile() || before.size > MAX_LOCK_BYTES) return { state: "invalid" };
+  if (before.isSymbolicLink() || !before.isFile() || before.size > MAX_LOCK_BYTES) return "invalid";
   try {
     const snapshot = await readStableFile(lockPath, MAX_LOCK_BYTES);
     const record = parseLock(snapshot.bytes.toString("utf8"));
-    if (!record) return { state: "invalid" };
-    return { state: processIsAlive(record.pid) ? "live" : "stale", identity: snapshot.identity };
+    if (!record) return "invalid";
+    return processIsAlive(record.pid) ? "live" : "stale";
   } catch {
-    return { state: "invalid" };
+    return "invalid";
   }
 }
 
@@ -104,24 +101,10 @@ export async function acquireExecutionLock(stateDirectory: string, archiveSha256
       await handle?.close().catch(() => undefined);
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const existing = await inspectExistingLock(lockPath);
-      if (existing.state === "missing") continue;
-      if (existing.state === "live") throw new ExecutionError("EXECUTION_LOCKED", "Execution lock is owned by another live process.");
-      if (existing.state !== "stale" || !existing.identity) {
-        throw new ExecutionError("EXECUTION_LOCKED", "Execution lock exists but cannot be reclaimed safely.");
-      }
-      const beforeRemove = await lstat(lockPath).catch((checkError: unknown) => {
-        if ((checkError as NodeJS.ErrnoException).code === "ENOENT") return null;
-        throw checkError;
-      });
-      if (!beforeRemove) continue;
-      if (beforeRemove.isSymbolicLink() || !beforeRemove.isFile() || !sameStableFileIdentity(identity(beforeRemove), existing.identity)) {
-        throw new ExecutionError("EXECUTION_LOCKED", "Stale execution lock changed before recovery.");
-      }
-      try { await rm(lockPath, { force: false }); }
-      catch (removeError) {
-        if ((removeError as NodeJS.ErrnoException).code === "ENOENT") continue;
-        throw new ExecutionError("EXECUTION_LOCKED", `Stale execution lock could not be recovered: ${removeError instanceof Error ? removeError.message : String(removeError)}`);
-      }
+      if (existing === "missing") continue;
+      if (existing === "live") throw new ExecutionError("EXECUTION_LOCKED", "Execution lock is owned by another live process.");
+      if (existing === "stale") throw new ExecutionError("EXECUTION_LOCKED", "Execution lock belongs to a dead process; explicit operator recovery is required because WCO never auto-steals authority locks.");
+      throw new ExecutionError("EXECUTION_LOCKED", "Execution lock exists but cannot be reclaimed safely.");
     }
   }
 
