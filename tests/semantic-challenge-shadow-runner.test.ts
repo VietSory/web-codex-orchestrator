@@ -8,7 +8,7 @@ import { createSemanticChallengeRequest, type SemanticUnderstandingEnvelope } fr
 import type { SemanticChallengeRemoteAction, SemanticChallengeTransport } from "../src/semantic/challenge-aware-web-bridge.js";
 import { runSemanticChallengeShadow, runSemanticChallengeShadowIfSupported } from "../src/semantic/challenge-shadow-runner.js";
 import { appendSemanticChallengeTrajectoryEvent, readSemanticChallengeTrajectory } from "../src/semantic/challenge-trajectory-store.js";
-import { contentDigest, type RepositoryCommandResult } from "../src/web-bridge/contracts.js";
+import { contentDigest, WEB_BRIDGE_PROTOCOL_VERSION, type BridgeJobIdentity, type RepositoryCommandResult } from "../src/web-bridge/contracts.js";
 import type { WebBridge } from "../src/web-bridge/web-bridge.js";
 
 async function fixture() {
@@ -30,6 +30,17 @@ async function fixture() {
   return { root, repositoryPath, stateDirectory, request };
 }
 
+function identity(jobId: string): BridgeJobIdentity {
+  return {
+    protocol_version: WEB_BRIDGE_PROTOCOL_VERSION,
+    job_id: jobId,
+    owner: "semantic-shadow-test",
+    created_at: "2026-01-01T00:00:00.000Z",
+    expires_at: "2026-01-01T01:00:00.000Z",
+    content_sha256: "a".repeat(64),
+  };
+}
+
 class EvidenceDrivenTransport implements SemanticChallengeTransport {
   private delivered: RepositoryCommandResult | null = null;
   private sealed: SemanticUnderstandingEnvelope | null = null;
@@ -37,7 +48,7 @@ class EvidenceDrivenTransport implements SemanticChallengeTransport {
 
   constructor(private readonly request: ReturnType<typeof createSemanticChallengeRequest>) {}
 
-  async createSemanticChallengeJob() { return { job_id: "shadow-job-001" }; }
+  async createSemanticChallengeJob() { return identity("shadow-job-001"); }
 
   async waitForSemanticChallengeAction(_jobId: string, afterSequence: number): Promise<SemanticChallengeRemoteAction | null> {
     if (afterSequence === 0) {
@@ -90,7 +101,7 @@ test("shadow runner rejects non-advancing remote action sequences before reposit
   const value = await fixture();
   t.after(async () => { await rm(value.root, { recursive: true, force: true }); });
   const transport: SemanticChallengeTransport = {
-    async createSemanticChallengeJob() { return { job_id: "bad-sequence-job" }; },
+    async createSemanticChallengeJob() { return identity("bad-sequence-job"); },
     async waitForSemanticChallengeAction() { return { sequence: 0, type: "repository_command", request_id: "bad", command: { operation: "summary" } }; },
     async submitSemanticChallengeRepositoryResult() { throw new Error("must not submit"); },
     async receiveSemanticUnderstanding() { return null; },
@@ -106,7 +117,7 @@ test("partial digest-only trajectory fails closed instead of pretending provider
   await appendSemanticChallengeTrajectoryEvent({ stateDirectory: value.stateDirectory, request: value.request, sequence: 1, eventType: "challenge_created", idempotencyKey: "challenge-created", payload: { request_sha256: contentDigest(value.request) } });
   let created = false;
   const transport: SemanticChallengeTransport = {
-    async createSemanticChallengeJob() { created = true; return { job_id: "must-not-create" }; },
+    async createSemanticChallengeJob() { created = true; return identity("must-not-create"); },
     async waitForSemanticChallengeAction() { return null; },
     async submitSemanticChallengeRepositoryResult() {},
     async receiveSemanticUnderstanding() { return null; },
