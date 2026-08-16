@@ -79,6 +79,14 @@ function assertCurrentSessionIdentity(current: LocalWorkerSession | null, expect
   return current;
 }
 
+function assertExpectedCurrentSession(current: LocalWorkerSession | null, expectedSessionId: string | null | undefined): void {
+  if (expectedSessionId === undefined) return;
+  const actualSessionId = current?.session_id ?? null;
+  if (actualSessionId !== expectedSessionId) {
+    throw new WebBridgeError("WEB_SESSION_STALE", "Current repository task focus changed after confirmation in another process. Nothing was replaced; inspect /status and retry the command.");
+  }
+}
+
 export function localWorkerJobMode(session: Pick<LocalWorkerSession, "job_mode">): JobMode {
   return session.job_mode ?? "PAIR";
 }
@@ -123,11 +131,13 @@ export async function startLocalAuthoring(options: {
   owner?: string;
   now?: () => Date;
   replaceExplicit?: boolean;
+  expectedCurrentSessionId?: string | null;
   mode?: JobMode;
   reviewerSelection?: ReviewerSelection;
 }): Promise<LocalWorkerSession> {
   return await withSessionFocusLock(options.stateDirectory, options.repository.repository_id, async () => {
     const existing = await readLocalWorkerSession(options.stateDirectory, options.repository.repository_id);
+    assertExpectedCurrentSession(existing, options.expectedCurrentSessionId);
     if (existing && existing.state !== "BLOCKED" && existing.state !== "COMPLETED" && !options.replaceExplicit) {
       throw new WebBridgeError("WEB_TASK_ALREADY_ACTIVE", "A task is already active for this repository. Use explicit /new or /auto to replace the local task focus; existing durable runs remain preserved.");
     }
