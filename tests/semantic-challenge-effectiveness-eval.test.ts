@@ -82,7 +82,45 @@ test("comparison reports measurable uplift over a select-everything baseline", a
   assert.ok(comparison.unnecessary_selection_rate_delta < 0);
   assert.equal(comparison.critical_recall_delta, 0, "select-all already recalls critical truth; precision is what must improve");
   assert.equal(comparison.challenger_worse_cases.length, 0);
+  assert.equal(comparison.mixed_cases.length, 0);
   assert.equal(comparison.challenger_better_cases.length, value.cases.length);
+});
+
+test("comparison never calls a quality gain better when critical safety recall regresses", () => {
+  const baseline = {
+    schema_version: "1.0",
+    kind: "semantic-benchmark-arm",
+    arm: "baseline",
+    provider_turns: 1,
+    report: {
+      cases: 1,
+      cases_with_critical_miss: 0,
+      weighted_quality_mean: 0.6,
+      critical_recall_mean: 1,
+      unnecessary_selection_rate_mean: 0.4,
+      samples: [{ case_id: "MIXED_CASE", score: { weighted_quality: 0.6, critical_recall: 1, unnecessary_selection_rate: 0.4 } }],
+    },
+  } as any;
+  const challenger = {
+    schema_version: "1.0",
+    kind: "semantic-benchmark-arm",
+    arm: "challenger",
+    provider_turns: 1,
+    report: {
+      cases: 1,
+      cases_with_critical_miss: 1,
+      weighted_quality_mean: 0.7,
+      critical_recall_mean: 0.75,
+      unnecessary_selection_rate_mean: 0.2,
+      samples: [{ case_id: "MIXED_CASE", score: { weighted_quality: 0.7, critical_recall: 0.75, unnecessary_selection_rate: 0.2 } }],
+    },
+  } as any;
+  const comparison = compareSemanticBenchmarkArms(baseline, challenger);
+  assert.deepEqual(comparison.challenger_better_cases, []);
+  assert.deepEqual(comparison.challenger_worse_cases, []);
+  assert.deepEqual(comparison.mixed_cases, ["MIXED_CASE"]);
+  assert.deepEqual(comparison.unchanged_cases, []);
+  assert.equal(comparison.critical_miss_case_delta, 1);
 });
 
 test("selection parser rejects hidden/non-public IDs, duplicates, and cross-case replay", async () => {
