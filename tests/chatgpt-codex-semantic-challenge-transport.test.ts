@@ -25,6 +25,13 @@ const request = createSemanticChallengeRequest({
   originalGoal: "Understand the repository independently before any implementation authority exists.",
 });
 const usage = { input_tokens: 10, cached_input_tokens: 2, output_tokens: 3 };
+const cleanEvents = [
+  { type: "thread.started", timestamp: "2026-08-16T10:00:00.000Z" },
+  { type: "turn.started", timestamp: "2026-08-16T10:00:00.001Z" },
+  { type: "reasoning", timestamp: "2026-08-16T10:00:00.002Z" },
+  { type: "agent_message", timestamp: "2026-08-16T10:00:00.003Z" },
+  { type: "turn.completed", timestamp: "2026-08-16T10:00:00.004Z" },
+];
 
 function sealed() {
   return {
@@ -64,7 +71,8 @@ function transportWithAgent(
     async turn(value: any) {
       requests.push(value);
       calls += 1;
-      return await turn(value, calls);
+      const response = await turn(value, calls);
+      return { ...response, public_events: response.public_events ?? cleanEvents };
     },
   } as any, 60);
   const transport = new ChatGptCodexSemanticChallengeTransport({
