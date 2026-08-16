@@ -180,7 +180,7 @@ export class ChatGptCodexSemanticChallengeTransport implements SemanticChallenge
     this.recordUsage(state, response.usage);
     if (state.thread_id && response.thread_id !== state.thread_id) throw new Error("semantic challenge provider thread identity drifted.");
     state.thread_id = response.thread_id;
-    state.pending_result = undefined;
+    delete state.pending_result;
 
     const provider = parseProviderEnvelope(response.output);
     const nextSequence = state.sequence + 1;
@@ -210,7 +210,7 @@ export class ChatGptCodexSemanticChallengeTransport implements SemanticChallenge
     if (!expected) throw new Error("semantic challenge provider has no pending repository request.");
     if (result.request_id !== expected) throw new Error("semantic challenge provider repository result request identity mismatched.");
     state.pending_result = structuredClone(result);
-    state.awaiting_result_request_id = undefined;
+    delete state.awaiting_result_request_id;
     state.result_replays.set(idempotencyKey, resultDigest);
   }
 
