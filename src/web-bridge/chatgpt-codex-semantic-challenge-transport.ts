@@ -4,7 +4,7 @@ import type { AgentLimits, AgentProfile } from "../config/contracts.js";
 import { semanticChallengePrompt, createSemanticChallengeRequest, type SemanticChallengeRequest, type SemanticUnderstandingEnvelope } from "../semantic/blind-challenge.js";
 import type { SemanticChallengeRemoteAction, SemanticChallengeTransport } from "../semantic/challenge-aware-web-bridge.js";
 import { contentDigest, parseRepositoryCommand, WEB_BRIDGE_PROTOCOL_VERSION, type BridgeJobIdentity, type RepositoryCommandResult } from "./contracts.js";
-import { CHATGPT_CODEX_PROTOCOL_VERSION } from "./chatgpt-codex-output-schema.js";
+import { CHATGPT_CODEX_CHALLENGE_PAYLOAD_MAX_CHARS, CHATGPT_CODEX_PROTOCOL_VERSION } from "./chatgpt-codex-output-schema.js";
 import { CHATGPT_CODEX_CHALLENGE_PHASE_MARKER, type ChatGptCodexSemanticClient } from "./chatgpt-codex-semantic-client.js";
 
 const OWNER = "local-chatgpt-codex-semantic-challenge";
@@ -47,6 +47,9 @@ function parseProviderEnvelope(value: unknown): { kind: "repository_command" | "
   if (record.protocol_version !== CHATGPT_CODEX_PROTOCOL_VERSION) throw new Error("semantic challenge provider protocol version is invalid.");
   if (!(record.kind === "repository_command" || record.kind === "semantic_understanding_sealed")) throw new Error("semantic challenge provider action kind is invalid.");
   if (typeof record.payload_json !== "string") throw new Error("semantic challenge provider payload_json must be a string.");
+  if (record.payload_json.length > CHATGPT_CODEX_CHALLENGE_PAYLOAD_MAX_CHARS || Buffer.byteLength(record.payload_json, "utf8") > CHATGPT_CODEX_CHALLENGE_PAYLOAD_MAX_CHARS) {
+    throw new Error("semantic challenge provider payload_json exceeds its bounded size.");
+  }
   let payload: unknown;
   try { payload = JSON.parse(record.payload_json); }
   catch { throw new Error("semantic challenge provider payload_json must contain valid JSON."); }
