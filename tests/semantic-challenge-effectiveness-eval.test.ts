@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   compareSemanticBenchmarkArms,
   evaluateSemanticBenchmarkArm,
+  evaluateSemanticBenchmarkPaired,
   parseSemanticBenchmarkSelection,
   semanticBenchmarkSelectionPrompt,
 } from "../src/benchmark/semantic-challenge-evaluation.js";
@@ -151,4 +152,50 @@ test("arm evaluator counts exactly one provider turn per public case and fails c
     /non-public evidence/i,
   );
   assert.equal(turns, 1, "malformed first provider output must stop before spending more benchmark turns");
+});
+
+test("paired evaluator alternates first arm deterministically and gives each arm exactly one turn per case", async () => {
+  const value = await corpus();
+  const calls: string[] = [];
+  const provider = (arm: string) => async ({ case_id, public_case }: any) => {
+    calls.push(`${case_id}:${arm}`);
+    return selection(case_id, [public_case.evidence_catalog[0]!.id]);
+  };
+  const paired = await evaluateSemanticBenchmarkPaired({
+    baseline_arm: "author_style",
+    challenger_arm: "independent_challenger",
+    corpus: value,
+    baseline_provider: provider("author_style"),
+    challenger_provider: provider("independent_challenger"),
+  });
+  assert.equal(paired.baseline.provider_turns, value.cases.length);
+  assert.equal(paired.challenger.provider_turns, value.cases.length);
+  assert.equal(calls.length, value.cases.length * 2);
+  for (let index = 0; index < value.cases.length; index += 1) {
+    const caseId = value.cases[index]!.case_id;
+    const expected = index % 2 === 0
+      ? [`${caseId}:author_style`, `${caseId}:independent_challenger`]
+      : [`${caseId}:independent_challenger`, `${caseId}:author_style`];
+    assert.deepEqual(calls.slice(index * 2, index * 2 + 2), expected);
+    assert.deepEqual(paired.execution_order[index], { case_id: caseId, first_arm: expected[0]!.split(":")[1], second_arm: expected[1]!.split(":")[1] });
+  }
+});
+
+test("paired evaluator stops immediately if the first arm of a pair returns malformed output", async () => {
+  const value = await corpus();
+  let challengerTurns = 0;
+  await assert.rejects(
+    evaluateSemanticBenchmarkPaired({
+      baseline_arm: "author_style",
+      challenger_arm: "independent_challenger",
+      corpus: value,
+      baseline_provider: async ({ case_id }) => selection(case_id, ["FORGED_ID"]),
+      challenger_provider: async ({ case_id, public_case }) => {
+        challengerTurns += 1;
+        return selection(case_id, [public_case.evidence_catalog[0]!.id]);
+      },
+    }),
+    /non-public evidence/i,
+  );
+  assert.equal(challengerTurns, 0, "invalid first provider output must not spend the paired second-arm turn");
 });
