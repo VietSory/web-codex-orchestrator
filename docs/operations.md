@@ -78,18 +78,19 @@ Important commands remain:
 
 - `/status`: current progress and next task state;
 - `/task`: current goal and plan state;
-- `/run`: continue a durable active workflow;
+- `/continue`: continue only the current unfinished saved task; it never switches to history implicitly;
+- `/resume`: explicitly choose a saved/history task to resume; `/resume <number>` selects that history item;
 - `/review`: verification, review and Draft-PR evidence;
-- `/pause` / `/resume`: safe transition control;
+- `/pause`: pause the current task at the next safe boundary while preserving progress;
 - `/doctor`: selected-mode/transport diagnosis;
-- `/web status`: local semantic transport and authorization state;
-- `/history`: bounded repository task history.
+- `/auth status` / `/auth connect`: inspect or renew normal ChatGPT authorization;
+- `/history`: bounded read-only task history.
 
-`wco web status` distinguishes a healthy local runtime from a missing/expired ChatGPT authorization. `wco web connect` is the normal explicit reauthorization command. It never changes the transport profile.
+The legacy `/run` spelling remains parser-compatible for older callers but is intentionally not taught in the normal-user workflow. `wco web status` distinguishes a healthy local runtime from a missing/expired ChatGPT authorization. `wco web connect` is the normal explicit shell reauthorization command and never changes the transport profile.
 
 ## Failure and restart behavior
 
-After terminal loss/process death/restart, run `wco` again. WCO reads durable local state and resumes from completed checkpoints instead of blindly replaying completed authority-bearing model turns.
+After terminal loss/process death/restart, run `wco` again. WCO reads durable local state and resumes from completed checkpoints instead of blindly replaying completed authority-bearing model turns. Use `/continue` to continue the current saved task; use `/resume` only when you deliberately want to select a saved task from history.
 
 Persisted semantic thread identities are conversation bindings only. They never create filesystem, command, Git, verifier, publication or merge authority.
 
