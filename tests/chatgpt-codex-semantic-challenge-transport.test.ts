@@ -87,10 +87,16 @@ test("provider transport keeps the blind challenger phase closed and preserves o
   assert.match(first.request_id, /^remote-001-/);
   await assert.rejects(fixture.transport.waitForSemanticChallengeAction(identity.job_id, 1), /pending repository result/i);
 
-  await fixture.transport.submitSemanticChallengeRepositoryResult(identity.job_id, {
+  const repositoryResult = {
     request_id: first.request_id,
     result: { kind: "summary", repository_id: "repo", base_branch: "main", base_commit: "a".repeat(40), tree_sha: "c".repeat(40) },
-  } as any, "result-1");
+  } as any;
+  await fixture.transport.submitSemanticChallengeRepositoryResult(identity.job_id, repositoryResult, "result-1");
+  await fixture.transport.submitSemanticChallengeRepositoryResult(identity.job_id, structuredClone(repositoryResult), "result-1");
+  await assert.rejects(
+    fixture.transport.submitSemanticChallengeRepositoryResult(identity.job_id, { ...repositoryResult, result: { kind: "summary", tree_sha: "d".repeat(40) } } as any, "result-1"),
+    /idempotency replay conflicts/i,
+  );
 
   const second = await fixture.transport.waitForSemanticChallengeAction(identity.job_id, 1);
   assert.equal(second?.type, "semantic_understanding_sealed");
@@ -132,4 +138,28 @@ test("provider transport enforces the configured turn budget before another prov
   await fixture.transport.submitSemanticChallengeRepositoryResult(identity.job_id, { request_id: first.request_id, result: { kind: "summary" } } as any, "result-1");
   await assert.rejects(fixture.transport.waitForSemanticChallengeAction(identity.job_id, 1), /budget is exhausted/i);
   assert.equal(fixture.calls(), 1);
+});
+
+test("provider transport enforces total wall-clock budget before another provider side effect", async () => {
+  let now = Date.parse("2026-08-16T10:00:00.000Z");
+  let calls = 0;
+  const client = new ChatGptCodexSemanticClient({
+    async checkAvailability() {},
+    async turn() {
+      calls += 1;
+      return { thread_id: "challenge-thread-1", output: provider("repository_command", { operation: "summary" }), usage };
+    },
+  } as any, 60);
+  const transport = new ChatGptCodexSemanticChallengeTransport({
+    client,
+    profile,
+    limits: { ...limits, maximum_total_seconds: 1 },
+    scratchDirectory: "/tmp/wco-challenge-scratch",
+    authorityDirectory: "/tmp/wco-challenge-authority",
+    now: () => new Date(now),
+  });
+  const identity = await transport.createSemanticChallengeJob(request, "challenge-provider-5");
+  now += 1_001;
+  await assert.rejects(transport.waitForSemanticChallengeAction(identity.job_id, 0), /budget is exhausted/i);
+  assert.equal(calls, 0);
 });
