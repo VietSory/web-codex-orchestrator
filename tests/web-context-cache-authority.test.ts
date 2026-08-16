@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -65,4 +65,19 @@ test("context cache has a hard global entry-count bound and keeps the newly inse
   const records = (await readdir(root)).filter((name) => /^[a-f0-9]{64}\.json$/.test(name));
   assert.equal(records.length, 2);
   assert.equal((await cache.get("key-c"))?.toString("utf8"), "c");
+});
+
+test("context cache refuses symlinked ancestry before creating disposable cache state outside WCO", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-context-ancestry-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const outside = path.join(root, "outside");
+  const managed = path.join(root, "managed");
+  await mkdir(outside);
+  await mkdir(managed);
+  const linkedParent = path.join(managed, "linked");
+  await symlink(outside, linkedParent, "dir");
+
+  const cache = new ContentAddressedContextCache(path.join(linkedParent, "cache"));
+  await assert.rejects(cache.put("key", Buffer.from("value")), /unsafe directory component/i);
+  assert.deepEqual(await readdir(outside), [], "cache hardening must not create a child through symlinked ancestry");
 });
