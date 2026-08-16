@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import test from "node:test";
-import { createSemanticChallengeRequest, parseSemanticChallengeAction, semanticChallengePrompt } from "../src/semantic/blind-challenge.js";
-import { buildSemanticEvidenceIndex } from "../src/semantic/evidence-index.js";
+import { buildSemanticChallengeEvidence, createSemanticChallengeRequest, parseSemanticChallengeAction, semanticChallengePrompt } from "../src/semantic/blind-challenge.js";
 
 const repository = {
   repository_id: "repo-1",
@@ -12,45 +11,46 @@ const repository = {
 const source = Buffer.alloc(128, "x");
 const sourceSha = crypto.createHash("sha256").update(source).digest("hex");
 
-function request() {
+function request(challengeId = "challenge-1") {
   return createSemanticChallengeRequest({
-    challengeId: "challenge-1",
+    challengeId,
     repository,
     originalGoal: "Make task continuation safe across restart without silently changing mutation focus.",
   });
 }
 
-function evidenceIndex() {
-  return buildSemanticEvidenceIndex({
-    repository,
-    observations: [{
-      sequence: 1,
-      request_id: "challenge-read-1",
-      command: { operation: "read", regions: [{ path: "src/session.ts", start_byte: 0, end_byte_exclusive: 128 }] },
-      result: {
-        files: [{
-          path: "src/session.ts",
-          content_base64: source.toString("base64"),
-          content_sha256: sourceSha,
-          blob_sha: "d".repeat(40),
-          size_bytes: 128,
-          start_byte: 0,
-          end_byte_exclusive: 128,
-          total_bytes: 128,
-        }],
-        metrics: {
-          context_bytes_prepared: 128,
-          context_bytes_transmitted: 128,
-          repeated_bytes_avoided: 0,
-          files_considered: 1,
-          files_read: 1,
-          regions_read: 1,
-          cache_hits: 0,
-          cache_misses: 1,
-        },
+function rawObservations() {
+  return [{
+    sequence: 1,
+    request_id: "challenge-read-1",
+    command: { operation: "read", regions: [{ path: "src/session.ts", start_byte: 0, end_byte_exclusive: 128 }] },
+    result: {
+      files: [{
+        path: "src/session.ts",
+        content_base64: source.toString("base64"),
+        content_sha256: sourceSha,
+        blob_sha: "d".repeat(40),
+        size_bytes: 128,
+        start_byte: 0,
+        end_byte_exclusive: 128,
+        total_bytes: 128,
+      }],
+      metrics: {
+        context_bytes_prepared: 128,
+        context_bytes_transmitted: 128,
+        repeated_bytes_avoided: 0,
+        files_considered: 1,
+        files_read: 1,
+        regions_read: 1,
+        cache_hits: 0,
+        cache_misses: 1,
       },
-    }],
-  });
+    },
+  }];
+}
+
+function challengeEvidence(active = request()) {
+  return buildSemanticChallengeEvidence({ request: active, observations: rawObservations() });
 }
 
 function citation(path = "src/session.ts") {
@@ -114,41 +114,55 @@ test("repository_command uses the existing closed bounded RepositoryCommand pars
   assert.throws(() => parseSemanticChallengeAction({ kind: "repository_command", command: { operation: "summary" }, candidate_contract: {} }, request()), /unexpected field 'candidate_contract'/);
 });
 
-test("sealed understanding requires exact observed evidence and identity bindings", () => {
+test("sealed understanding requires exact challenge-scoped evidence and identity bindings", () => {
   const active = request();
   const sha = goalSha(active);
-  const index = evidenceIndex();
-  const parsed = parseSemanticChallengeAction(sealed({ original_goal_sha256: sha }), active, index);
+  const evidence = challengeEvidence(active);
+  const parsed = parseSemanticChallengeAction(sealed({ original_goal_sha256: sha }), active, evidence);
   assert.equal(parsed.kind, "semantic_understanding_sealed");
 
-  assert.throws(() => parseSemanticChallengeAction(sealed({ original_goal_sha256: sha }), active), /cannot seal without an exact validated evidence index/);
-  assert.throws(() => parseSemanticChallengeAction(sealed({ original_goal_sha256: "e".repeat(64) }), active, index), /exact original goal/);
-  assert.throws(() => parseSemanticChallengeAction(sealed({ original_goal_sha256: sha, challenge_id: "challenge-other" }), active, index), /another challenge/);
-  assert.throws(() => parseSemanticChallengeAction(sealed({ original_goal_sha256: sha, repository: { ...repository, base_commit: "e".repeat(40) } }), active, index), /repository binding drifted/);
+  assert.throws(() => parseSemanticChallengeAction(sealed({ original_goal_sha256: sha }), active), /cannot seal without exact challenge-scoped evidence/);
+  assert.throws(() => parseSemanticChallengeAction(sealed({ original_goal_sha256: "e".repeat(64) }), active, evidence), /exact original goal/);
+  assert.throws(() => parseSemanticChallengeAction(sealed({ original_goal_sha256: sha, challenge_id: "challenge-other" }), active, evidence), /another challenge/);
+  assert.throws(() => parseSemanticChallengeAction(sealed({ original_goal_sha256: sha, repository: { ...repository, base_commit: "e".repeat(40) } }), active, evidence), /repository binding drifted/);
 });
 
-test("maintainer findings require exact evidence except unresolved unknowns", () => {
+test("evidence receipt cannot be reused across blind challenge identities", () => {
+  const first = request("challenge-1");
+  const second = request("challenge-2");
+  const evidence = challengeEvidence(first);
+  const secondSha = goalSha(second);
+  assert.throws(() => parseSemanticChallengeAction(sealed({ challenge_id: "challenge-2", original_goal_sha256: secondSha }), second, evidence), /evidence belongs to another challenge/);
+});
+
+test("maintainer findings require exact evidence except explicit unresolved unknowns", () => {
   const active = request();
   const sha = goalSha(active);
-  const index = evidenceIndex();
+  const evidence = challengeEvidence(active);
 
   assert.throws(() => parseSemanticChallengeAction(sealed({
     original_goal_sha256: sha,
     findings: [{ finding_id: "F-1", category: "risk", statement: "Restart may duplicate mutation.", citations: [] }],
-  }), active, index), /must cite exact repository evidence/);
+  }), active, evidence), /must cite exact repository evidence/);
+
+  assert.throws(() => parseSemanticChallengeAction(sealed({
+    original_goal_sha256: sha,
+    findings: [{ finding_id: "F-1", category: "unknown", statement: "No restart ownership evidence has been read yet.", citations: [] }],
+    unresolved_questions: [],
+  }), active, evidence), /must preserve unresolved questions/);
 
   const unknown = parseSemanticChallengeAction(sealed({
     original_goal_sha256: sha,
     findings: [{ finding_id: "F-1", category: "unknown", statement: "No restart ownership evidence has been read yet.", citations: [] }],
     unresolved_questions: ["Which durable ledger proves the mutation owner after restart?"],
-  }), active, index);
+  }), active, evidence);
   assert.equal(unknown.kind, "semantic_understanding_sealed");
 });
 
 test("hallucinated but well-formed citations cannot seal", () => {
   const active = request();
   const sha = goalSha(active);
-  const index = evidenceIndex();
+  const evidence = challengeEvidence(active);
   assert.throws(() => parseSemanticChallengeAction(sealed({
     original_goal_sha256: sha,
     findings: [{
@@ -157,30 +171,30 @@ test("hallucinated but well-formed citations cannot seal", () => {
       statement: "A plausible-looking but unread file allegedly controls recovery.",
       citations: [{ ...citation(), path: "src/recovery.ts" }],
     }],
-  }), active, index), /was not observed by the challenger/);
+  }), active, evidence), /was not observed by the challenger/);
 });
 
 test("closed schema rejects verdicts, repair authority, candidate leakage and duplicate findings", () => {
   const active = request();
   const sha = goalSha(active);
-  const index = evidenceIndex();
+  const evidence = challengeEvidence(active);
 
-  assert.throws(() => parseSemanticChallengeAction({ ...sealed({ original_goal_sha256: sha }), verdict: "APPROVE" }, active, index), /unexpected field 'verdict'/);
-  assert.throws(() => parseSemanticChallengeAction(sealed({ original_goal_sha256: sha, candidate_contract: {} }), active, index), /unexpected field 'candidate_contract'/);
-  assert.throws(() => parseSemanticChallengeAction(sealed({ original_goal_sha256: sha, repair_operations: [] }), active, index), /unexpected field 'repair_operations'/);
+  assert.throws(() => parseSemanticChallengeAction({ ...sealed({ original_goal_sha256: sha }), verdict: "APPROVE" }, active, evidence), /unexpected field 'verdict'/);
+  assert.throws(() => parseSemanticChallengeAction(sealed({ original_goal_sha256: sha, candidate_contract: {} }), active, evidence), /unexpected field 'candidate_contract'/);
+  assert.throws(() => parseSemanticChallengeAction(sealed({ original_goal_sha256: sha, repair_operations: [] }), active, evidence), /unexpected field 'repair_operations'/);
   assert.throws(() => parseSemanticChallengeAction(sealed({
     original_goal_sha256: sha,
     findings: [
       { finding_id: "F-1", category: "component", statement: "Session focus is affected.", citations: [citation()] },
       { finding_id: "F-1", category: "risk", statement: "Restart may race focus.", citations: [citation()] },
     ],
-  }), active, index), /duplicate finding IDs/);
+  }), active, evidence), /duplicate finding IDs/);
 });
 
 test("evidence citations reject non-canonical paths, non-SHA digests and empty regions", () => {
   const active = request();
   const sha = goalSha(active);
-  const index = evidenceIndex();
+  const evidence = challengeEvidence(active);
   for (const badCitation of [
     citation("../secret.txt"),
     citation("src//session.ts"),
@@ -191,6 +205,6 @@ test("evidence citations reject non-canonical paths, non-SHA digests and empty r
     assert.throws(() => parseSemanticChallengeAction(sealed({
       original_goal_sha256: sha,
       findings: [{ finding_id: "F-1", category: "component", statement: "Affected component.", citations: [badCitation] }],
-    }), active, index));
+    }), active, evidence));
   }
 });
