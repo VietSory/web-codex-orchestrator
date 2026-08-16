@@ -7,6 +7,17 @@ import { ChatGptCodexSemanticClient } from "../src/web-bridge/chatgpt-codex-sema
 const profile: any = { model: "gpt-5.6-sol", reasoning_effort: "high" };
 const dirs = { scratchDirectory: "/tmp/wco-semantic-scratch", authorityDirectory: "/tmp/wco-semantic-authority" };
 const usage = { input_tokens: 10, cached_input_tokens: 2, output_tokens: 3 };
+const cleanEvents = [
+  { type: "thread.started", timestamp: "2026-01-01T00:00:00.000Z" },
+  { type: "turn.started", timestamp: "2026-01-01T00:00:00.001Z" },
+  { type: "reasoning", timestamp: "2026-01-01T00:00:00.002Z" },
+  { type: "agent_message", timestamp: "2026-01-01T00:00:00.003Z" },
+  { type: "turn.completed", timestamp: "2026-01-01T00:00:00.004Z" },
+];
+
+function authorPrompt(): string {
+  return chatGptCodexAuthorPrompt({ owner: "local", repository: { repository_id: "repo", base_branch: "main", base_commit: "a".repeat(40) }, user_intent: "change app", ttl_seconds: 60 }, "job-1");
+}
 
 function abortingAgent() {
   return {
@@ -27,11 +38,11 @@ test("semantic SDK turn exposes only the authority kind valid for its closed WCO
     async checkAvailability() {},
     async turn(request: any) {
       requests.push(request);
-      return { thread_id: `thread-${requests.length}`, output: { protocol_version: "wco-chatgpt-codex-v1", kind: request.output_schema.properties.kind.enum[0], payload_json: "{}" }, usage };
+      return { thread_id: `thread-${requests.length}`, output: { protocol_version: "wco-chatgpt-codex-v1", kind: request.output_schema.properties.kind.enum[0], payload_json: "{}" }, usage, public_events: cleanEvents };
     },
   } as any);
 
-  const author = await client.turn({ profile, ...dirs, prompt: chatGptCodexAuthorPrompt({ owner: "local", repository: { repository_id: "repo", base_branch: "main", base_commit: "a".repeat(40) }, user_intent: "change app", ttl_seconds: 60 }, "job-1") });
+  const author = await client.turn({ profile, ...dirs, prompt: authorPrompt() });
   const review = await client.turn({ profile, ...dirs, prompt: chatGptCodexReviewPrompt({ run_id: `TASK:${"b".repeat(64)}`, result_bundle_sha256: "c".repeat(64), published_commit_sha: "d".repeat(40), pull_request_url: "https://github.com/example/repo/pull/1", review_round: 1 }, { exact: true }, "review-1") });
 
   assert.deepEqual(requests[0].output_schema.properties.kind.enum, ["repository_command", "contract_sealed"]);
@@ -64,8 +75,29 @@ test("semantic prompts expose the closed JSON payload wire contracts", () => {
 });
 
 test("successful semantic provider output without measurable usage fails closed", async () => {
-  const client = new ChatGptCodexSemanticClient({ async checkAvailability() {}, async turn() { return { thread_id: "thread-1", output: {}, usage: undefined }; } } as any);
-  await assert.rejects(client.turn({ profile, ...dirs, prompt: chatGptCodexAuthorPrompt({ owner: "local", repository: { repository_id: "repo", base_branch: "main", base_commit: "a".repeat(40) }, user_intent: "change app", ttl_seconds: 60 }, "job-1") }), (error: any) => error?.code === "WEB_CHATGPT_CODEX_USAGE_UNAVAILABLE");
+  const client = new ChatGptCodexSemanticClient({ async checkAvailability() {}, async turn() { return { thread_id: "thread-1", output: {}, usage: undefined, public_events: cleanEvents }; } } as any);
+  await assert.rejects(client.turn({ profile, ...dirs, prompt: authorPrompt() }), (error: any) => error?.code === "WEB_CHATGPT_CODEX_USAGE_UNAVAILABLE");
+});
+
+test("semantic provider output without public event evidence fails closed", async () => {
+  const client = new ChatGptCodexSemanticClient({ async checkAvailability() {}, async turn() { return { thread_id: "thread-1", output: {}, usage }; } } as any);
+  await assert.rejects(client.turn({ profile, ...dirs, prompt: authorPrompt() }), (error: any) => error?.code === "WEB_CHATGPT_CODEX_EVENT_AUDIT_UNAVAILABLE");
+});
+
+test("semantic provider rejects local or external tool activity before accepting output", async () => {
+  for (const forbidden of ["command_execution", "file_change", "mcp_tool_call", "web_search", "collab_tool_call", "unknown_future_tool"]) {
+    const client = new ChatGptCodexSemanticClient({
+      async checkAvailability() {},
+      async turn() { return { thread_id: "thread-1", output: {}, usage, public_events: [...cleanEvents.slice(0, -1), { type: forbidden, timestamp: "2026-01-01T00:00:00.004Z" }, cleanEvents.at(-1)!] }; },
+    } as any);
+    await assert.rejects(client.turn({ profile, ...dirs, prompt: authorPrompt() }), (error: any) => error?.code === "WEB_CHATGPT_CODEX_TOOL_ACTIVITY_FORBIDDEN");
+  }
+});
+
+test("semantic provider rejects a public event trail at its truncation boundary", async () => {
+  const events = Array.from({ length: 256 }, (_, index) => ({ type: index === 0 ? "turn.started" : index === 255 ? "turn.completed" : "reasoning", timestamp: "2026-01-01T00:00:00.000Z" }));
+  const client = new ChatGptCodexSemanticClient({ async checkAvailability() {}, async turn() { return { thread_id: "thread-1", output: {}, usage, public_events: events }; } } as any);
+  await assert.rejects(client.turn({ profile, ...dirs, prompt: authorPrompt() }), (error: any) => error?.code === "WEB_CHATGPT_CODEX_EVENT_AUDIT_TRUNCATED");
 });
 
 test("unknown semantic prompt fails before provider invocation", async () => {
@@ -77,7 +109,7 @@ test("unknown semantic prompt fails before provider invocation", async () => {
 
 test("semantic provider turn has a hard local deadline", async () => {
   const client = new ChatGptCodexSemanticClient(abortingAgent(), 0.002);
-  await assert.rejects(client.turn({ profile, ...dirs, prompt: chatGptCodexAuthorPrompt({ owner: "local", repository: { repository_id: "repo", base_branch: "main", base_commit: "a".repeat(40) }, user_intent: "change app", ttl_seconds: 60 }, "job-1") }), (error: any) => error?.code === "WEB_CHATGPT_CODEX_TURN_TIMEOUT");
+  await assert.rejects(client.turn({ profile, ...dirs, prompt: authorPrompt() }), (error: any) => error?.code === "WEB_CHATGPT_CODEX_TURN_TIMEOUT");
 });
 
 test("implementation planner turn has the same hard local deadline", async () => {
@@ -86,8 +118,8 @@ test("implementation planner turn has the same hard local deadline", async () =>
 });
 
 test("trusted timeout range supports configurations above first-run 900 seconds", async () => {
-  const client = new ChatGptCodexSemanticClient({ async checkAvailability() {}, async turn() { return { thread_id: "thread-1", output: { protocol_version: "wco-chatgpt-codex-v1", kind: "repository_command", payload_json: "{}" }, usage }; } } as any, 3600);
-  const result = await client.turn({ profile, ...dirs, prompt: chatGptCodexAuthorPrompt({ owner: "local", repository: { repository_id: "repo", base_branch: "main", base_commit: "a".repeat(40) }, user_intent: "change app", ttl_seconds: 60 }, "job-1") });
+  const client = new ChatGptCodexSemanticClient({ async checkAvailability() {}, async turn() { return { thread_id: "thread-1", output: { protocol_version: "wco-chatgpt-codex-v1", kind: "repository_command", payload_json: "{}" }, usage, public_events: cleanEvents }; } } as any, 3600);
+  const result = await client.turn({ profile, ...dirs, prompt: authorPrompt() });
   assert.deepEqual(result.usage, usage);
   assert.throws(() => new ChatGptCodexSemanticClient({} as any, 3601), /1-3600 second range/i);
 });
@@ -95,7 +127,7 @@ test("trusted timeout range supports configurations above first-run 900 seconds"
 test("external cancellation is not mislabeled as an internal timeout", async () => {
   const controller = new AbortController();
   const client = new ChatGptCodexSemanticClient(abortingAgent(), 1);
-  const promise = client.turn({ profile, ...dirs, prompt: chatGptCodexAuthorPrompt({ owner: "local", repository: { repository_id: "repo", base_branch: "main", base_commit: "a".repeat(40) }, user_intent: "change app", ttl_seconds: 60 }, "job-1"), signal: controller.signal });
+  const promise = client.turn({ profile, ...dirs, prompt: authorPrompt(), signal: controller.signal });
   controller.abort();
   await assert.rejects(promise, (error: any) => error?.code !== "WEB_CHATGPT_CODEX_TURN_TIMEOUT");
 });
