@@ -68,7 +68,7 @@ test("transport cannot mutate the runner's private challenge request", async (t)
       if (afterSequence === 0) return { sequence: 1, type: "repository_command", request_id: "remote-read", command: { operation: "read", paths: ["src/focus.ts"] } };
       if (!delivered) return null;
       sealed = understanding(value.request, delivered);
-      return { sequence: 2, type: "semantic_understanding_sealed", envelope: sealed };
+      return { sequence: 2, type: "semantic_understanding_sealed", envelope: structuredClone(sealed) };
     },
     async submitSemanticChallengeRepositoryResult(_jobId, result) { delivered = structuredClone(result); },
     async receiveSemanticUnderstanding() { return sealed ? structuredClone(sealed) : null; },
@@ -104,7 +104,11 @@ test("job identity and remote actions are snapshotted before transport-owned mut
       }
       if (!delivered) return null;
       sealed = understanding(value.request, delivered);
-      const action: Extract<SemanticChallengeRemoteAction, { type: "semantic_understanding_sealed" }> = { sequence: 2, type: "semantic_understanding_sealed", envelope: sealed };
+      const action: Extract<SemanticChallengeRemoteAction, { type: "semantic_understanding_sealed" }> = {
+        sequence: 2,
+        type: "semantic_understanding_sealed",
+        envelope: structuredClone(sealed),
+      };
       setImmediate(() => { action.envelope.challenge_id = "transport-mutated-seal"; });
       return action;
     },
