@@ -1,9 +1,10 @@
 import type { AgentClient, AgentTurnResponse } from "../agent/contracts.js";
 import type { AgentProfile } from "../config/contracts.js";
-import { CHATGPT_CODEX_AUTHOR_OUTPUT_SCHEMA, CHATGPT_CODEX_REVIEW_OUTPUT_SCHEMA } from "./chatgpt-codex-output-schema.js";
+import { CHATGPT_CODEX_AUTHOR_OUTPUT_SCHEMA, CHATGPT_CODEX_CHALLENGE_OUTPUT_SCHEMA, CHATGPT_CODEX_REVIEW_OUTPUT_SCHEMA } from "./chatgpt-codex-output-schema.js";
 
 export const CHATGPT_CODEX_AUTHOR_PHASE_MARKER = "WCO_SEMANTIC_PHASE:AUTHOR";
 export const CHATGPT_CODEX_REVIEW_PHASE_MARKER = "WCO_SEMANTIC_PHASE:REVIEW";
+export const CHATGPT_CODEX_CHALLENGE_PHASE_MARKER = "WCO_SEMANTIC_PHASE:CHALLENGE";
 const DEFAULT_PROVIDER_TURN_SECONDS = 900;
 const MAX_PROVIDER_TURN_SECONDS = 3600;
 type MeasuredProviderUsage = { input_tokens: number; cached_input_tokens: number; output_tokens: number };
@@ -11,6 +12,7 @@ type MeasuredProviderUsage = { input_tokens: number; cached_input_tokens: number
 function schemaForPrompt(prompt: string): Record<string, unknown> {
   if (prompt.startsWith(`${CHATGPT_CODEX_AUTHOR_PHASE_MARKER}\n`)) return CHATGPT_CODEX_AUTHOR_OUTPUT_SCHEMA as unknown as Record<string, unknown>;
   if (prompt.startsWith(`${CHATGPT_CODEX_REVIEW_PHASE_MARKER}\n`)) return CHATGPT_CODEX_REVIEW_OUTPUT_SCHEMA as unknown as Record<string, unknown>;
+  if (prompt.startsWith(`${CHATGPT_CODEX_CHALLENGE_PHASE_MARKER}\n`)) return CHATGPT_CODEX_CHALLENGE_OUTPUT_SCHEMA as unknown as Record<string, unknown>;
   throw new Error("WEB_CHATGPT_CODEX_PHASE_INVALID: semantic prompt is missing a closed WCO phase marker.");
 }
 
