@@ -133,13 +133,29 @@ test("failed current-focus publication restores the exact pre-resume PAIR ledger
   const before = await readRunLedger(state, session.run_id!);
   assert.ok(before?.paused);
 
-  // Force atomicWriteJson(target) to fail only after the run has been safely
-  // unpaused inside the focus-switch transaction.
   await mkdir(path.join(state, "bridge", "sessions", "repo.json"), { recursive: true });
 
   await assert.rejects(restoreLocalTaskHistoryFocus(state, "repo", session));
   const after = await readRunLedger(state, session.run_id!);
   assert.deepEqual(after, before, "failed focus commit must restore the exact durable PAIR ledger bytes/semantics");
+});
+
+test("history resume refuses a stale confirmation token before changing current focus", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "wco-history-confirmation-race-"));
+  const artifacts = path.join(state, "resume-artifacts");
+  await mkdir(artifacts, { recursive: true });
+  const taskArchive = path.join(artifacts, "task-bundle.zip");
+  const webPack = path.join(artifacts, "web-pack.zip");
+  await Promise.all([writeFile(taskArchive, "task"), writeFile(webPack, "pack")]);
+  const session = durableSession("IMPLEMENTATION_REGISTERED", taskArchive, webPack);
+  await writeCanonicalAuthority(state, session);
+  await restoreLocalTaskHistoryFocus(state, "repo", session);
+
+  await assert.rejects(
+    restoreLocalTaskHistoryFocus(state, "repo", session, null),
+    /current task focus changed after confirmation/i,
+  );
+  assert.equal((await readLocalWorkerSession(state, "repo"))?.session_id, session.session_id);
 });
 
 test("history resume refuses a history record whose repository base no longer matches canonical run authority", async () => {
