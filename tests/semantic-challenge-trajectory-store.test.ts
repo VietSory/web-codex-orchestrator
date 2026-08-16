@@ -77,6 +77,20 @@ test("durable semantic trajectory is append-only, digest chained, replay-safe, a
   assert.equal(disk.includes("SOURCE_BYTES_MUST_NOT_PERSIST"), false, "trajectory receipt must persist payload digest, never payload bytes");
 });
 
+test("trajectory refuses to seal an understanding before repository evidence was observed", async (t) => {
+  const stateDirectory = await temporaryState();
+  t.after(async () => { await rm(stateDirectory, { recursive: true, force: true }); });
+  const challenge = request({ challengeId: "challenge-shallow-seal" });
+
+  await appendSemanticChallengeTrajectoryEvent({ stateDirectory, request: challenge, sequence: 1, eventType: "challenge_created", idempotencyKey: "create", payload: {} });
+  await assert.rejects(
+    appendSemanticChallengeTrajectoryEvent({ stateDirectory, request: challenge, sequence: 2, eventType: "understanding_sealed", idempotencyKey: "seal", payload: { digest: "unsupported" } }),
+    /before repository evidence is observed/i,
+  );
+  const receipts = await readSemanticChallengeTrajectory({ stateDirectory, request: challenge });
+  assert.deepEqual(receipts.map((receipt) => receipt.event_type), ["challenge_created"]);
+});
+
 test("trajectory rejects conflicting replay, gaps, forks, recreation and append-after-seal", async (t) => {
   const stateDirectory = await temporaryState();
   t.after(async () => { await rm(stateDirectory, { recursive: true, force: true }); });
@@ -99,9 +113,10 @@ test("trajectory rejects conflicting replay, gaps, forks, recreation and append-
     appendSemanticChallengeTrajectoryEvent({ stateDirectory, request: challenge, sequence: 2, eventType: "challenge_created", idempotencyKey: "recreate", payload: {} }),
     /cannot recreate/i,
   );
-  await appendSemanticChallengeTrajectoryEvent({ stateDirectory, request: challenge, sequence: 2, eventType: "understanding_sealed", idempotencyKey: "seal", payload: { digest: "sealed" } });
+  await appendSemanticChallengeTrajectoryEvent({ stateDirectory, request: challenge, sequence: 2, eventType: "repository_observation", idempotencyKey: "read", payload: { digest: "observed" } });
+  await appendSemanticChallengeTrajectoryEvent({ stateDirectory, request: challenge, sequence: 3, eventType: "understanding_sealed", idempotencyKey: "seal", payload: { digest: "sealed" } });
   await assert.rejects(
-    appendSemanticChallengeTrajectoryEvent({ stateDirectory, request: challenge, sequence: 3, eventType: "repository_observation", idempotencyKey: "late", payload: {} }),
+    appendSemanticChallengeTrajectoryEvent({ stateDirectory, request: challenge, sequence: 4, eventType: "repository_observation", idempotencyKey: "late", payload: {} }),
     /already sealed/i,
   );
 });
