@@ -80,14 +80,21 @@ test("PAIR clarification preserves single-owner execution by pausing before dura
   assert.match(clarifyBlock, /The plan locked before that detail could be added/);
 });
 
-test("explicit task replacement asks before changing current focus", async () => {
-  const interactive = await text("src/tui/interactive-app.ts");
+test("explicit task replacement confirmation is bound to the exact current session", async () => {
+  const [interactive, localWorker] = await Promise.all([
+    text("src/tui/interactive-app.ts"),
+    text("src/web-bridge/local-worker.ts"),
+  ]);
   assert.match(interactive, /const confirmTaskReplacement = async/);
   assert.match(interactive, /move it out of current focus but keep its durable history/);
+  assert.match(interactive, /expectedCurrentSessionId/);
   const newStart = interactive.indexOf('if (command === "/new")');
   const autoStart = interactive.indexOf('if (command === "/auto")', newStart);
   assert.match(interactive.slice(newStart, autoStart), /confirmTaskReplacement\("PAIR"\)/);
+  assert.match(interactive.slice(newStart, autoStart), /confirmation\.expectedCurrentSessionId/);
   assert.match(interactive.slice(autoStart), /confirmTaskReplacement\("AUTOPILOT"\)/);
+  assert.match(localWorker, /assertExpectedCurrentSession/);
+  assert.match(localWorker, /focus changed after confirmation/i);
 });
 
 test("PAIR status and review stay read-only while presenting durable lifecycle evidence", async () => {
@@ -105,7 +112,7 @@ test("PAIR status and review stay read-only while presenting durable lifecycle e
   assert.doesNotMatch(reviewBlock, /runControlCommand|startAndDriveTask|drivePairHarnessToCodeReview|driveAutopilotJob/);
 });
 
-test("normal status presenters always expose the user's required action", async () => {
+test("normal status presenters always expose the user's required action and teach canonical continuation", async () => {
   const [pair, autopilot] = await Promise.all([
     text("src/tui/pair-presenter.ts"),
     text("src/tui/autopilot-presenter.ts"),
@@ -114,6 +121,8 @@ test("normal status presenters always expose the user's required action", async 
   assert.match(pair, /None — WCO is applying the requested review fixes/);
   assert.match(autopilot, /Your action/);
   assert.match(autopilot, /review the Draft PR and merge when ready/);
+  assert.match(autopilot, /use \/continue to continue/i);
+  assert.doesNotMatch(autopilot, /use \/run to continue/i);
 });
 
 test("history inspection stays read-only while resume is a separate re-attested authority transition", async () => {
@@ -128,27 +137,34 @@ test("history inspection stays read-only while resume is a separate re-attested 
   assert.doesNotMatch(historyBlock, /restoreLocalTaskHistoryFocus|startLocalAuthoring|drivePairHarnessToCodeReview|driveAutopilotJob/);
   assert.match(interactive, /const resumeHistoryItem = async/);
   assert.match(interactive, /restoreLocalTaskHistoryFocus/);
-  assert.match(interactive, /archiveLocalTaskHistory/);
+  assert.match(interactive, /expectedCurrentSessionId/);
+  assert.match(history, /archiveLocalTaskHistory/);
   assert.match(history, /readRunLedger/);
   assert.match(history, /readRunReceipt/);
   assert.match(history, /assertBoundedStateArtifact/);
   assert.match(history, /CURRENT_SESSION_ID/);
+  assert.match(history, /current task focus changed after confirmation/i);
   assert.match(history, /canonical run receipt/i);
   assert.match(history, /repository base/i);
   assert.match(history, /history JSON itself as workflow authority/i);
 });
 
-test("continue is the normal one-step continuation while legacy run stays compatibility-only", async () => {
+test("continue is current-only while resume is always explicit saved-task selection", async () => {
   const [interactive, slash] = await Promise.all([
     text("src/tui/interactive-app.ts"),
     text("src/tui/slash-commands.ts"),
   ]);
-  assert.match(slash, /\/continue/);
+  assert.match(slash, /Continue only the current unfinished saved task/);
+  assert.doesNotMatch(slash, /most recent safely resumable/i);
   assert.match(slash, /\/resume/);
   assert.doesNotMatch(slash.match(/SLASH_COMMANDS = \[[\s\S]*?\] as const/)?.[0] ?? "", /\["\/run"/);
   assert.match(interactive, /command === "\/continue" \|\| command === "\/run"/);
   assert.match(interactive, /const continueBestTask = async/);
-  assert.match(interactive, /const resumeFromHistory = async/);
+  const resumeStart = interactive.indexOf("const resumeFromHistory = async");
+  const displayStart = interactive.indexOf("const displayUserStatus", resumeStart);
+  const resumeBlock = interactive.slice(resumeStart, displayStart);
+  assert.match(resumeBlock, /recentTaskHistory\(\)/);
+  assert.doesNotMatch(resumeBlock, /currentTaskIsPaused|clearPairPauseIfNeeded\(latest\).*launchSavedTask/s);
   assert.match(interactive, /latest\?\.state === "BLOCKED"/);
   assert.match(interactive, /Use \/resume only if you intentionally want to switch/i);
 });
