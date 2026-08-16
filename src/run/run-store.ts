@@ -41,6 +41,14 @@ async function existingDirectoryChain(target: string): Promise<boolean> {
   return true;
 }
 
+async function syncDirectoryMetadata(directory: string): Promise<void> {
+  if (process.platform === "win32") return;
+  const directoryFlag = typeof constants.O_DIRECTORY === "number" ? constants.O_DIRECTORY : 0;
+  const handle = await open(directory, constants.O_RDONLY | directoryFlag);
+  try { await handle.sync(); }
+  finally { await handle.close(); }
+}
+
 export function runDirectory(stateDirectory: string, taskId: string, archiveSha256: string): string {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(taskId) || !/^[0-9a-f]{64}$/.test(archiveSha256)) {
     throw new Error("Run receipt identifiers are unsafe.");
@@ -73,6 +81,7 @@ export async function atomicWriteJson(filePath: string, value: unknown): Promise
     await handle.sync();
     await handle.close();
     await rename(temporary, filePath);
+    await syncDirectoryMetadata(directory);
     committed = true;
   } finally {
     await handle.close().catch(() => undefined);
@@ -91,6 +100,7 @@ export async function atomicWriteText(filePath: string, value: string): Promise<
     await handle.sync();
     await handle.close();
     await rename(temporary, filePath);
+    await syncDirectoryMetadata(directory);
     committed = true;
   } finally {
     await handle.close().catch(() => undefined);
