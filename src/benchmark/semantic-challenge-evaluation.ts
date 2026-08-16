@@ -33,6 +33,7 @@ export interface SemanticBenchmarkComparison {
   unnecessary_selection_rate_delta: number;
   challenger_better_cases: string[];
   challenger_worse_cases: string[];
+  mixed_cases: string[];
   unchanged_cases: string[];
 }
 
@@ -137,11 +138,26 @@ export function compareSemanticBenchmarkArms(baseline: SemanticBenchmarkArmResul
   if (baselineByCase.size !== challengerByCase.size || [...baselineByCase.keys()].some((id) => !challengerByCase.has(id))) throw new Error("semantic benchmark arms contain different case identities.");
   const better: string[] = [];
   const worse: string[] = [];
+  const mixed: string[] = [];
   const unchanged: string[] = [];
   for (const [caseId, base] of baselineByCase) {
     const next = challengerByCase.get(caseId)!;
-    if (next.weighted_quality > base.weighted_quality || (next.weighted_quality === base.weighted_quality && next.critical_recall > base.critical_recall)) better.push(caseId);
-    else if (next.weighted_quality < base.weighted_quality || next.critical_recall < base.critical_recall) worse.push(caseId);
+    const qualityBetterOrEqual = next.weighted_quality >= base.weighted_quality;
+    const criticalBetterOrEqual = next.critical_recall >= base.critical_recall;
+    const selectionBetterOrEqual = next.unnecessary_selection_rate <= base.unnecessary_selection_rate;
+    const qualityWorseOrEqual = next.weighted_quality <= base.weighted_quality;
+    const criticalWorseOrEqual = next.critical_recall <= base.critical_recall;
+    const selectionWorseOrEqual = next.unnecessary_selection_rate >= base.unnecessary_selection_rate;
+    const anyImprovement = next.weighted_quality > base.weighted_quality
+      || next.critical_recall > base.critical_recall
+      || next.unnecessary_selection_rate < base.unnecessary_selection_rate;
+    const anyRegression = next.weighted_quality < base.weighted_quality
+      || next.critical_recall < base.critical_recall
+      || next.unnecessary_selection_rate > base.unnecessary_selection_rate;
+
+    if (qualityBetterOrEqual && criticalBetterOrEqual && selectionBetterOrEqual && anyImprovement) better.push(caseId);
+    else if (qualityWorseOrEqual && criticalWorseOrEqual && selectionWorseOrEqual && anyRegression) worse.push(caseId);
+    else if (anyImprovement && anyRegression) mixed.push(caseId);
     else unchanged.push(caseId);
   }
   return {
@@ -155,6 +171,7 @@ export function compareSemanticBenchmarkArms(baseline: SemanticBenchmarkArmResul
     unnecessary_selection_rate_delta: rounded(challenger.report.unnecessary_selection_rate_mean - baseline.report.unnecessary_selection_rate_mean),
     challenger_better_cases: better,
     challenger_worse_cases: worse,
+    mixed_cases: mixed,
     unchanged_cases: unchanged,
   };
 }
