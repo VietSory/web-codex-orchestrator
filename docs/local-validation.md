@@ -54,6 +54,7 @@ npm test
 npm run benchmark:context
 npm run benchmark:web-context
 npm run benchmark:prompt-footprint
+npm run benchmark:semantic
 npm run test:e2e
 npm run build
 npm run test:cli
@@ -61,6 +62,8 @@ npm run test:user:contract
 npm run pack:check
 npm run pack:smoke
 ```
+
+`npm run benchmark:semantic` is the deterministic hidden-gold corpus/scorer integrity gate. It does not call a provider and does not claim model uplift; it prevents a broken corpus/scorer from being used as release evidence later.
 
 `npm run pack:smoke` is a release gate, not a convenience smoke. It packs WCO, installs the tarball without dev dependencies, runs the installed `wco` binary through a real PTY, and exercises fresh/returning use plus blocked prerequisites and terminal-control recovery.
 
@@ -86,6 +89,10 @@ npm run benchmark:semantic:provider
 ```
 
 Treat this as task-quality evidence, not merely a latency/token measurement. The benchmark must preserve exact input/evidence binding and report the provider-backed quality/usage evidence required by the benchmark contract. Static prompt byte counts or offline context-cache hits are not substitutes for this gate.
+
+The command is fail-closed for release qualification. Its JSON report contains `qualification.pass`, `qualification.reasons`, per-arm usage, token delta, and newly introduced/resolved critical misses. The command must exit successfully with `qualification.pass: true`. It exits non-zero when the independent challenger introduces a new critical miss, regresses aggregate critical recall, regresses aggregate weighted quality, or spends more total provider tokens than the author-style baseline without any measured semantic gain. No arbitrary percentage tolerance is used; the baseline is the quality/safety floor and the configured agent limits remain the absolute resource ceiling.
+
+Because this is one fresh provider sample per case/arm, preserve the exact output as directional evidence rather than claiming statistical certainty or end-to-end task-completion uplift.
 
 ## 5. Packed normal-user dogfood
 
@@ -189,7 +196,7 @@ tarball filename + SHA-256
 Linux/WSL environment
 Node/npm/Git/Bubblewrap versions
 GitHub auth readiness (never the token)
-provider benchmark result
+provider benchmark result + qualification.pass/reasons + per-arm token totals
 real user goal
 repository + exact base commit
 run/task identity
