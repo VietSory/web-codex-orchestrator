@@ -47,13 +47,9 @@ class EvidenceDrivenTransport implements SemanticChallengeTransport {
   deliveredRequestId: string | null = null;
 
   constructor(private readonly request: ReturnType<typeof createSemanticChallengeRequest>) {}
-
   async createSemanticChallengeJob() { return identity("shadow-job-001"); }
-
   async waitForSemanticChallengeAction(_jobId: string, afterSequence: number): Promise<SemanticChallengeRemoteAction | null> {
-    if (afterSequence === 0) {
-      return { sequence: 1, type: "repository_command", request_id: "remote-read", command: { operation: "read", paths: ["src/focus.ts"] } };
-    }
+    if (afterSequence === 0) return { sequence: 1, type: "repository_command", request_id: "remote-read", command: { operation: "read", paths: ["src/focus.ts"] } };
     if (afterSequence !== 1 || !this.delivered) return null;
     const result = this.delivered.result;
     if (result.kind !== "read") throw new Error("expected read result");
@@ -74,11 +70,7 @@ class EvidenceDrivenTransport implements SemanticChallengeTransport {
     };
     return { sequence: 2, type: "semantic_understanding_sealed", envelope: this.sealed };
   }
-
-  async submitSemanticChallengeRepositoryResult(_jobId: string, result: RepositoryCommandResult) {
-    this.deliveredRequestId = result.request_id;
-    this.delivered = structuredClone(result);
-  }
+  async submitSemanticChallengeRepositoryResult(_jobId: string, result: RepositoryCommandResult) { this.deliveredRequestId = result.request_id; this.delivered = structuredClone(result); }
   async receiveSemanticUnderstanding() { return this.sealed ? structuredClone(this.sealed) : null; }
 }
 
@@ -87,7 +79,6 @@ test("shadow runner owns repository evidence, preserves remote request identity,
   t.after(async () => { await rm(value.root, { recursive: true, force: true }); });
   const transport = new EvidenceDrivenTransport(value.request);
   const result = await runSemanticChallengeShadow({ transport, request: value.request, repositoryPath: value.repositoryPath, stateDirectory: value.stateDirectory });
-
   assert.equal(transport.deliveredRequestId, "remote-read", "transport correlation must use Web-B's request identity, not the private evidence request ID");
   assert.equal(result.repository_observations, 1);
   assert.equal(result.remote_actions, 2);
@@ -97,18 +88,38 @@ test("shadow runner owns repository evidence, preserves remote request identity,
   assert.deepEqual(trajectory.map((receipt) => receipt.event_type), ["challenge_created", "repository_observation", "understanding_sealed"]);
 });
 
-test("shadow runner rejects non-advancing remote action sequences before repository mutation", async (t) => {
+test("shadow runner requires contiguous remote action sequences before repository mutation", async (t) => {
   const value = await fixture();
   t.after(async () => { await rm(value.root, { recursive: true, force: true }); });
   const transport: SemanticChallengeTransport = {
     async createSemanticChallengeJob() { return identity("bad-sequence-job"); },
-    async waitForSemanticChallengeAction() { return { sequence: 0, type: "repository_command", request_id: "bad", command: { operation: "summary" } }; },
+    async waitForSemanticChallengeAction() { return { sequence: 2, type: "repository_command", request_id: "bad", command: { operation: "summary" } }; },
     async submitSemanticChallengeRepositoryResult() { throw new Error("must not submit"); },
     async receiveSemanticUnderstanding() { return null; },
   };
-  await assert.rejects(runSemanticChallengeShadow({ transport, request: value.request, repositoryPath: value.repositoryPath, stateDirectory: value.stateDirectory }), /sequence did not advance/i);
+  await assert.rejects(runSemanticChallengeShadow({ transport, request: value.request, repositoryPath: value.repositoryPath, stateDirectory: value.stateDirectory }), /sequence must be contiguous/i);
   const trajectory = await readSemanticChallengeTrajectory({ stateDirectory: value.stateDirectory, request: value.request });
   assert.deepEqual(trajectory.map((receipt) => receipt.event_type), ["challenge_created"]);
+});
+
+test("shadow runner rejects reused remote request identity before a second repository read", async (t) => {
+  const value = await fixture();
+  t.after(async () => { await rm(value.root, { recursive: true, force: true }); });
+  let calls = 0;
+  const transport: SemanticChallengeTransport = {
+    async createSemanticChallengeJob() { return identity("duplicate-request-job"); },
+    async waitForSemanticChallengeAction(_jobId, afterSequence) {
+      calls += 1;
+      if (afterSequence === 0) return { sequence: 1, type: "repository_command", request_id: "same-read", command: { operation: "summary" } };
+      return { sequence: 2, type: "repository_command", request_id: "same-read", command: { operation: "summary" } };
+    },
+    async submitSemanticChallengeRepositoryResult() {},
+    async receiveSemanticUnderstanding() { return null; },
+  };
+  await assert.rejects(runSemanticChallengeShadow({ transport, request: value.request, repositoryPath: value.repositoryPath, stateDirectory: value.stateDirectory }), /request identity was reused/i);
+  assert.equal(calls, 2);
+  const trajectory = await readSemanticChallengeTrajectory({ stateDirectory: value.stateDirectory, request: value.request });
+  assert.deepEqual(trajectory.map((receipt) => receipt.event_type), ["challenge_created", "repository_observation"]);
 });
 
 test("partial digest-only trajectory fails closed instead of pretending provider/evidence replay is exact", async (t) => {
