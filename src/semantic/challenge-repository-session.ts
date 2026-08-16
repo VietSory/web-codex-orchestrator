@@ -5,6 +5,7 @@ import { ContentAddressedContextCache } from "../web-bridge/context-cache.js";
 import { ReadCoverageStore } from "../web-bridge/read-coverage-store.js";
 import { ExactRepositoryReadService } from "../web-bridge/repo-read-service.js";
 import { buildSemanticChallengeEvidence, createSemanticChallengeRequest, type SemanticChallengeEvidence, type SemanticChallengeRequest } from "./blind-challenge.js";
+import { buildGoalBoundSemanticChallengeEvidence, type GoalBoundSemanticChallengeEvidence } from "./challenge-goal-bound-evidence.js";
 import type { SemanticEvidenceObservationInput } from "./evidence-index.js";
 
 const MAX_OBSERVATIONS = 128;
@@ -77,5 +78,10 @@ export class SemanticChallengeRepositorySession {
   buildEvidence(): SemanticChallengeEvidence {
     if (this.observations.length === 0) throw new Error("semantic challenge cannot build evidence before an exact repository observation.");
     return buildSemanticChallengeEvidence({ request: this.requestValue, observations: this.observations });
+  }
+
+  buildGoalBoundEvidence(): GoalBoundSemanticChallengeEvidence {
+    if (this.observations.length === 0) throw new Error("semantic challenge cannot build goal-bound evidence before an exact repository observation.");
+    return buildGoalBoundSemanticChallengeEvidence({ request: this.requestValue, observations: this.observations });
   }
 }
