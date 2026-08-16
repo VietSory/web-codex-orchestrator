@@ -4,7 +4,7 @@ This document is the release acceptance contract for WCO's normal single-user pa
 
 ## End-user steps
 
-After a human maintainer publishes a qualified GitHub Release, the normal user downloads the packaged WCO `.tgz` artifact and installs that exact release once:
+After a human maintainer publishes a qualified GitHub Release, the normal user downloads the packaged WCO `.tgz` artifact and installs that exact release once **inside Linux/WSL**, the supported normal deterministic execution environment for this build:
 
 ```bash
 npm install -g ./web-codex-orchestrator-<version>.tgz
@@ -14,7 +14,9 @@ wco
 
 The GitHub `Source code (zip)` / `Source code (tar.gz)` snapshots are not the normal-user package. Normal users do not clone WCO or run its development build.
 
-On first interactive use only, WCO hands authorization to its **bundled official Codex runtime**, which performs the normal ChatGPT browser sign-in. Codex owns the OAuth callback, credential storage and token refresh lifecycle. WCO never asks the normal user to copy or enter a ChatGPT/OpenAI API key, tunnel ID, runtime key, endpoint, bearer token, cookie, browser profile, MCP connector, Workspace Agent identifier, domain or relay configuration.
+Native Windows/macOS are not normal execution hosts for this build because deterministic verification requires Bubblewrap. If normal setup is attempted there, WCO must fail before setup state, browser authorization, or task state is created and direct the user to Linux/WSL. A package being downloadable/installable on another host must never be presented as proof that the normal deterministic task workflow is supported there.
+
+On first supported interactive use only, WCO hands authorization to its **bundled official Codex runtime**, which performs the normal ChatGPT browser sign-in. Codex owns the OAuth callback, credential storage and token refresh lifecycle. WCO never asks the normal user to copy or enter a ChatGPT/OpenAI API key, tunnel ID, runtime key, endpoint, bearer token, cookie, browser profile, MCP connector, Workspace Agent identifier, domain or relay configuration.
 
 After that authorization succeeds, daily use is only:
 
@@ -32,6 +34,18 @@ Add rate limiting to login and add regression tests.
 Per-task browser interactions = 0. If the provider later expires or revokes the ChatGPT session, WCO may request the same official ChatGPT authorization again; it must never recover by asking for an API key, tunnel, relay, connector or hosted WCO service.
 
 The successful terminal product state is `READY_FOR_YOU` with an exact reviewed Draft PR. The human alone decides merge/release.
+
+## Continuation and saved-task mental model
+
+Normal command semantics are intentionally non-overlapping:
+
+- `/continue` continues **only the current unfinished saved task**. It never changes focus to history implicitly.
+- `/resume` without a number always presents saved-task selection. `/resume <number>` explicitly selects that history item.
+- `/history` is read-only inspection and never changes authority.
+- completed tasks stay complete; new work receives a new task/run identity.
+- switching/replacing current focus asks for confirmation when necessary, and that confirmation is bound to the exact current session inside the cross-process focus lock. If another WCO process changes focus while the prompt is open, the requested switch/replacement fails without applying the stale confirmation to another task.
+
+The legacy `/run` spelling may remain accepted for compatibility, but normal user-facing guidance must teach `/continue` only.
 
 ## Zero-config local transport
 
@@ -72,6 +86,18 @@ Semantic author/reviewer turns have no repository mutation, Git, publish, merge,
 
 The implementation planner proposes bounded file operations only. WCO/Harness validates path policy, content digests, exact preimages, task/run binding and verifier gates before repository mutation can occur. There is no model-controlled direct publish or merge path.
 
+## Normal-path cost and context boundary
+
+Normal provider work must be task-relevant. Research/evaluation components that are shadow-only and cannot affect the user's task outcome must not automatically consume extra provider turns or tokens on every task.
+
+The blind Web-B semantic challenger remains explicit maintainer evaluation infrastructure. It may be instantiated by its benchmark/tests, but it is not part of the zero-config production hot path until independent evidence justifies a product role and the authority/cost contract is deliberately changed.
+
+Semantic authoring uses progressive, bounded repository context rather than full-repository transmission. Exact reads are bound to the sealed Git base and digest receipts. Disposable summaries/indexes and the content-addressed cache may improve localization and digest reuse, but they can never authorize mutation; authoritative content must return to exact Git/file reads and SHA receipts.
+
+The initial semantic-author turn may include the full protocol/schema tutorial. Subsequent exact repository-result turns stay on the same semantic thread and must use a compact identity/safety reminder rather than retransmitting the complete tutorial each time. Local closed-schema validation remains authoritative regardless of prompt compactness.
+
+Provider usage must remain durably measured and bounded by trusted turn/input/output budgets. Deterministic context/prompt/process benchmarks are release gates, but real provider-quality claims require the authorized provider benchmark and may not be inferred from static byte measurements.
+
 ## Forbidden normal-user infrastructure
 
 The normal path must never require the user to configure:
@@ -99,11 +125,9 @@ Optional compatibility profiles may expose some of those concepts only after an 
 
 The normal authorization mechanism is the bundled official Codex ChatGPT login flow. WCO may invoke that flow and verify `login status`; WCO must not parse, duplicate, export or independently persist the resulting ChatGPT OAuth credential.
 
-Fresh first run in CI/headless mode must never open a browser or claim authorization succeeded. Interactive first use may open the official browser authorization exactly once. A failed or interrupted authorization fails closed and can be retried with `wco` or `wco web connect`.
+Fresh first run in CI/headless mode must never open a browser or claim authorization succeeded. Interactive first use on a supported host may open the official browser authorization exactly once. A failed or interrupted authorization fails closed and can be retried with `wco` or `wco web connect`.
 
 ## Exact repository context and recovery
-
-Semantic authoring uses progressive, bounded repository context rather than full-repository transmission. Exact reads are bound to the sealed Git base and digest receipts. Disposable summaries/indexes may improve localization, but they can never authorize mutation; authoritative content must return to exact Git/file reads and SHA receipts.
 
 Provider/model calls that can affect durable authority must be idempotency-bound or fail closed when a crash makes replay ambiguous. Recovery must never silently generate a second conflicting mutation proposal.
 
@@ -123,6 +147,7 @@ copied browser credentials          = 0
 per-task browser interactions       = 0
 per-task authorization/config       = 0
 automatic merge/release             = 0
+shadow-only provider turns/task     = 0
 ```
 
 ## Compatibility profiles
@@ -133,4 +158,4 @@ automatic merge/release             = 0
 
 A release/audit agent must treat any newly introduced mandatory normal-user infrastructure outside this document as a product defect. It must also reject claims of release readiness until the packed zero-config path and a real local one-authorization acceptance have both succeeded.
 
-Local prerequisites remain Node.js 22+, npm, Git, the platform sandbox prerequisites required by the selected execution mode, and GitHub CLI (`gh`) authenticated when Draft-PR delivery is requested.
+Normal local prerequisites are Linux/WSL, Node.js 22+, npm, Git, Bubblewrap, and GitHub CLI (`gh`) authenticated when Draft-PR delivery is requested.
