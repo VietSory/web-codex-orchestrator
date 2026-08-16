@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import { lstat, mkdir, mkdtemp, opendir, readFile, realpath, rm } from "node:fs/promises";
 import os from "node:os";
@@ -5,8 +6,8 @@ import path from "node:path";
 import { CodexSdkAgentClient } from "../src/agent/codex-sdk-client.js";
 import {
   compareSemanticBenchmarkArms,
-  evaluateSemanticBenchmarkArm,
-  type SemanticBenchmarkArmResult,
+  evaluateSemanticBenchmarkPaired,
+  type SemanticBenchmarkProvider,
 } from "../src/benchmark/semantic-challenge-evaluation.js";
 import { parseSemanticBenchmarkCorpus } from "../src/benchmark/semantic-corpus.js";
 import { loadTrustedConfig } from "../src/config/config-loader.js";
@@ -51,6 +52,18 @@ function measured(value: number | undefined, label: string): number {
   return value!;
 }
 
+function sha256(value: string | Buffer): string {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function exactSourceHead(): string {
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  if (!/^[a-f0-9]{40}$/.test(head)) throw new Error("semantic provider benchmark could not attest an exact Git source head.");
+  const dirty = execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], { encoding: "utf8" }).trim();
+  if (dirty.length > 0) throw new Error("semantic provider benchmark requires a clean tracked working tree so its source head is reproducible.");
+  return head;
+}
+
 async function assertEmptyCanonicalDirectory(target: string, label: string): Promise<string> {
   const absolute = path.resolve(target);
   const info = await lstat(absolute).catch(() => null);
@@ -76,13 +89,13 @@ async function assertBenchmarkFilesystem(scratchDirectory: string, authorityDire
 
 class ProviderBenchmarkBudget {
   readonly usage: UsageTotals = { turns: 0, input_tokens: 0, cached_input_tokens: 0, output_tokens: 0 };
-  private readonly startedAt = Date.now();
+  private readonly startedAt = performance.now();
 
   constructor(private readonly limits: AgentLimits) {}
 
   turnSignal(): AbortSignal {
     if (this.usage.turns >= this.limits.maximum_total_agent_turns) throw new Error("semantic provider benchmark configured turn budget is exhausted.");
-    const elapsedMs = Date.now() - this.startedAt;
+    const elapsedMs = performance.now() - this.startedAt;
     const totalMs = this.limits.maximum_total_seconds * 1_000;
     const remainingTotalMs = totalMs - elapsedMs;
     if (!Number.isFinite(remainingTotalMs) || remainingTotalMs <= 0) throw new Error("semantic provider benchmark configured wall-clock budget is exhausted.");
@@ -138,53 +151,51 @@ function parseFlags(args: string[]): { configPath?: string; stateDirectory?: str
   return { ...(configPath ? { configPath } : {}), ...(stateDirectory ? { stateDirectory } : {}) };
 }
 
-async function runArm(options: {
+function createArmProvider(options: {
   arm: "author_style" | "independent_challenger";
   profile: AgentProfile;
   client: CodexSdkAgentClient;
-  corpus: ReturnType<typeof parseSemanticBenchmarkCorpus>;
   scratchDirectory: string;
   authorityDirectory: string;
   budget: ProviderBenchmarkBudget;
-}): Promise<{ result: SemanticBenchmarkArmResult; usage: UsageTotals }> {
+  observedThreadIds: Set<string>;
+}): { provider: SemanticBenchmarkProvider; usage: UsageTotals; policy_sha256: string } {
   const usage: UsageTotals = { turns: 0, input_tokens: 0, cached_input_tokens: 0, output_tokens: 0 };
   const policy = armPolicy(options.arm);
-  const result = await evaluateSemanticBenchmarkArm({
-    arm: options.arm,
-    corpus: options.corpus,
-    provider: async ({ prompt }) => {
-      await assertBenchmarkFilesystem(options.scratchDirectory, options.authorityDirectory);
-      const response = await options.client.turn({
-        role: "final_reviewer",
-        model: options.profile.model,
-        reasoning_effort: options.profile.reasoning_effort,
-        prompt: `${policy}\n\n${prompt}`,
-        output_schema: OUTPUT_SCHEMA as unknown as Record<string, unknown>,
-        read_only: true,
-        approval_policy: "never",
-        sandbox_mode: "read-only",
-        network_access: false,
-        live_web_search: false,
-        cached_web_search: false,
-        workspace_path: options.scratchDirectory,
-        accepted_bundle_path: options.authorityDirectory,
-        signal: options.budget.turnSignal(),
-      });
-      const input = measured(response.usage?.input_tokens, "input-token");
-      const cached = measured(response.usage?.cached_input_tokens, "cached-input-token");
-      const output = measured(response.usage?.output_tokens, "output-token");
-      options.budget.record(input, cached, output);
-      usage.turns = addSafe(usage.turns, 1, "arm turn count");
-      usage.input_tokens = addSafe(usage.input_tokens, input, "arm input tokens");
-      usage.cached_input_tokens = addSafe(usage.cached_input_tokens, cached, "arm cached input tokens");
-      usage.output_tokens = addSafe(usage.output_tokens, output, "arm output tokens");
-      return response.output;
-    },
-  });
-  if (usage.turns !== options.corpus.cases.length || result.provider_turns !== options.corpus.cases.length) throw new Error("semantic provider benchmark did not execute exactly one provider turn per case.");
-  return { result, usage };
+  const provider: SemanticBenchmarkProvider = async ({ prompt }) => {
+    await assertBenchmarkFilesystem(options.scratchDirectory, options.authorityDirectory);
+    const response = await options.client.turn({
+      role: "final_reviewer",
+      model: options.profile.model,
+      reasoning_effort: options.profile.reasoning_effort,
+      prompt: `${policy}\n\n${prompt}`,
+      output_schema: OUTPUT_SCHEMA as unknown as Record<string, unknown>,
+      read_only: true,
+      approval_policy: "never",
+      sandbox_mode: "read-only",
+      network_access: false,
+      live_web_search: false,
+      cached_web_search: false,
+      workspace_path: options.scratchDirectory,
+      accepted_bundle_path: options.authorityDirectory,
+      signal: options.budget.turnSignal(),
+    });
+    if (!response.thread_id || options.observedThreadIds.has(response.thread_id)) throw new Error("semantic provider benchmark requires one fresh provider thread per arm/case turn.");
+    options.observedThreadIds.add(response.thread_id);
+    const input = measured(response.usage?.input_tokens, "input-token");
+    const cached = measured(response.usage?.cached_input_tokens, "cached-input-token");
+    const output = measured(response.usage?.output_tokens, "output-token");
+    options.budget.record(input, cached, output);
+    usage.turns = addSafe(usage.turns, 1, "arm turn count");
+    usage.input_tokens = addSafe(usage.input_tokens, input, "arm input tokens");
+    usage.cached_input_tokens = addSafe(usage.cached_input_tokens, cached, "arm cached input tokens");
+    usage.output_tokens = addSafe(usage.output_tokens, output, "arm output tokens");
+    return response.output;
+  };
+  return { provider, usage, policy_sha256: sha256(policy) };
 }
 
+const sourceHead = exactSourceHead();
 const flags = parseFlags(process.argv.slice(2));
 const paths = resolveWcoPaths({ ...(flags.configPath ? { configPath: flags.configPath } : {}), ...(flags.stateDirectory ? { stateDirectory: flags.stateDirectory } : {}) });
 const config = await loadTrustedConfig(paths.config);
@@ -194,7 +205,7 @@ const limits = config.agents?.limits ?? defaultAgentLimits();
 
 const corpusPath = path.resolve("tests/fixtures/semantic-understanding/cases.json");
 const corpusBytes = await readFile(corpusPath);
-const corpusSha256 = crypto.createHash("sha256").update(corpusBytes).digest("hex");
+const corpusSha256 = sha256(corpusBytes);
 const corpus = parseSemanticBenchmarkCorpus(JSON.parse(corpusBytes.toString("utf8")) as unknown);
 const requiredTurns = corpus.cases.length * 2;
 if (limits.maximum_total_agent_turns < requiredTurns) {
@@ -210,37 +221,57 @@ const client = new CodexSdkAgentClient(runtime);
 await client.checkAvailability();
 
 const root = await mkdtemp(path.join(os.tmpdir(), "wco-semantic-provider-benchmark-"));
-const scratchDirectory = path.join(root, "scratch");
-const authorityDirectory = path.join(root, "authority");
-await mkdir(scratchDirectory, { mode: 0o700 });
-await mkdir(authorityDirectory, { mode: 0o700 });
+const authorRoot = path.join(root, "author-style");
+const challengerRoot = path.join(root, "independent-challenger");
+await mkdir(authorRoot, { mode: 0o700 });
+await mkdir(challengerRoot, { mode: 0o700 });
+const authorScratch = path.join(authorRoot, "scratch");
+const authorAuthority = path.join(authorRoot, "authority");
+const challengerScratch = path.join(challengerRoot, "scratch");
+const challengerAuthority = path.join(challengerRoot, "authority");
+for (const directory of [authorScratch, authorAuthority, challengerScratch, challengerAuthority]) await mkdir(directory, { mode: 0o700 });
 
 try {
-  const author = await runArm({ arm: "author_style", profile, client, corpus, scratchDirectory, authorityDirectory, budget });
-  const challenger = await runArm({ arm: "independent_challenger", profile, client, corpus, scratchDirectory, authorityDirectory, budget });
-  const comparison = compareSemanticBenchmarkArms(author.result, challenger.result);
+  const observedThreadIds = new Set<string>();
+  const author = createArmProvider({ arm: "author_style", profile, client, scratchDirectory: authorScratch, authorityDirectory: authorAuthority, budget, observedThreadIds });
+  const challenger = createArmProvider({ arm: "independent_challenger", profile, client, scratchDirectory: challengerScratch, authorityDirectory: challengerAuthority, budget, observedThreadIds });
+  const paired = await evaluateSemanticBenchmarkPaired({
+    baseline_arm: "author_style",
+    challenger_arm: "independent_challenger",
+    corpus,
+    baseline_provider: author.provider,
+    challenger_provider: challenger.provider,
+  });
+  if (author.usage.turns !== corpus.cases.length || challenger.usage.turns !== corpus.cases.length
+    || paired.baseline.provider_turns !== corpus.cases.length || paired.challenger.provider_turns !== corpus.cases.length) {
+    throw new Error("semantic provider benchmark did not execute exactly one fresh provider turn per case and arm.");
+  }
+  const comparison = compareSemanticBenchmarkArms(paired.baseline, paired.challenger);
   console.log(JSON.stringify({
-    benchmark_version: "1.0",
+    benchmark_version: "1.1",
     kind: "semantic-provider-ab",
     provider: "local-chatgpt-codex",
+    source_head: sourceHead,
     codex_runtime_version: runtime.package_version,
     model: profile.model,
     reasoning_effort: profile.reasoning_effort,
     corpus_cases: corpus.cases.length,
     corpus_sha256: corpusSha256,
-    arm_order: ["author_style", "independent_challenger"],
+    execution_order: paired.execution_order,
+    pairing: "case-paired_alternating-first-arm",
     samples_per_case_per_arm: 1,
+    fresh_provider_thread_per_turn: true,
     total_provider_turns: budget.usage.turns,
     hidden_gold_exposed_to_provider: false,
-    provider_filesystem_context: "empty_disjoint_temporary_roots",
+    provider_filesystem_context: "separate_empty_disjoint_temporary_roots_per_arm",
     lifecycle_mutation: false,
     total_usage: budget.usage,
     arms: {
-      author_style: { ...author.result, usage: author.usage },
-      independent_challenger: { ...challenger.result, usage: challenger.usage },
+      author_style: { ...paired.baseline, usage: author.usage, policy_sha256: author.policy_sha256 },
+      independent_challenger: { ...paired.challenger, usage: challenger.usage, policy_sha256: challenger.policy_sha256 },
     },
     comparison,
-    interpretation: "Provider-backed policy A/B on the same public semantic corpus. One sample per case/arm measures directional independent semantic-selection quality; it does not prove end-to-end task completion or production authority uplift.",
+    interpretation: "Provider-backed paired policy A/B on the same public semantic corpus. Case order alternates which arm runs first to reduce time/load/cache confounding. One fresh provider thread per case/arm measures directional semantic-selection quality; it does not prove end-to-end task completion or production authority uplift.",
   }, null, 2));
 } finally {
   await rm(root, { recursive: true, force: true });
