@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -134,9 +134,26 @@ test("shadow persistence refuses a non-directory managed ancestor", async () => 
     const read = readObservation();
     await assert.rejects(
       persistSemanticShadowObservation({ stateDirectory, sessionId, repository, eventSequence: 0, requestId: "req", command: read.command, result: read.result }),
-      /receipt directory is unsafe/i,
+      /unsafe directory component|receipt directory is unsafe/i,
     );
   } finally {
     await rm(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test("shadow persistence refuses symlinked managed ancestry before any outside-state write", { skip: process.platform === "win32" }, async () => {
+  const stateDirectory = await mkdtemp(path.join(os.tmpdir(), "wco-semantic-shadow-symlink-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "wco-semantic-shadow-outside-"));
+  try {
+    await symlink(outside, path.join(stateDirectory, "bridge"), "dir");
+    const read = readObservation();
+    await assert.rejects(
+      persistSemanticShadowObservation({ stateDirectory, sessionId, repository, eventSequence: 0, requestId: "req", command: read.command, result: read.result }),
+      /unsafe directory component|receipt directory is unsafe/i,
+    );
+    assert.deepEqual(await readdir(outside), []);
+  } finally {
+    await rm(stateDirectory, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   }
 });
