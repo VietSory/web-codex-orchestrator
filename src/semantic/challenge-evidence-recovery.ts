@@ -7,6 +7,11 @@ import {
   type SemanticChallengeEvidenceSnapshot,
 } from "./challenge-evidence-store.js";
 import {
+  assertGoalBoundSemanticChallengeEvidence,
+  goalBoundSemanticChallengeEvidenceDigest,
+  type GoalBoundSemanticChallengeEvidence,
+} from "./challenge-goal-bound-evidence.js";
+import {
   readSemanticChallengeTrajectory,
   type SemanticChallengeTrajectoryReceipt,
 } from "./challenge-trajectory-store.js";
@@ -36,8 +41,9 @@ function trajectoryPayload(receipt: SemanticChallengeTrajectoryReceipt): unknown
   };
 }
 
-function evidenceObservationPayload(evidence: SemanticChallengeEvidence): unknown {
+function evidenceObservationPayload(request: SemanticChallengeRequest, evidence: SemanticChallengeEvidence): unknown {
   return {
+    goal_bound_evidence_sha256: goalBoundSemanticChallengeEvidenceDigest(request, evidence),
     challenge_evidence_sha256: evidence.challenge_evidence_sha256,
     observation_count: evidence.evidence_index.observations.length,
   };
@@ -55,21 +61,23 @@ function assertTrajectoryObservationBinding(options: {
   if (receipt.original_goal_sha256 !== digest(options.request.original_goal)) throw new Error("semantic challenge recovery trajectory original goal drifted.");
   if (receipt.sequence !== count + 1) throw new Error("semantic challenge recovery trajectory sequence does not match evidence observation count.");
   if (!SHA256.test(receipt.receipt_sha256) || receipt.receipt_sha256 !== digest(trajectoryPayload(receipt))) throw new Error("semantic challenge recovery trajectory receipt digest is invalid.");
-  if (receipt.payload_sha256 !== digest(evidenceObservationPayload(options.evidence))) throw new Error("semantic challenge recovery trajectory payload does not bind the exact evidence snapshot.");
+  if (receipt.payload_sha256 !== digest(evidenceObservationPayload(options.request, options.evidence))) throw new Error("semantic challenge recovery trajectory payload does not bind the exact goal-bound evidence snapshot.");
 }
 
 export async function persistTrajectoryBoundSemanticChallengeEvidence(options: {
   stateDirectory: string;
   request: SemanticChallengeRequest;
-  evidence: SemanticChallengeEvidence;
+  goalBoundEvidence: GoalBoundSemanticChallengeEvidence;
   trajectoryReceipt: SemanticChallengeTrajectoryReceipt;
 }): Promise<{ snapshot: SemanticChallengeEvidenceSnapshot; path: string; status: "created" | "replayed" }> {
-  assertTrajectoryObservationBinding({ request: options.request, evidence: options.evidence, receipt: options.trajectoryReceipt });
+  assertGoalBoundSemanticChallengeEvidence(options.goalBoundEvidence, options.request);
+  const evidence = options.goalBoundEvidence.evidence;
+  assertTrajectoryObservationBinding({ request: options.request, evidence, receipt: options.trajectoryReceipt });
   return await persistSemanticChallengeEvidenceSnapshot({
     stateDirectory: options.stateDirectory,
     request: options.request,
     trajectoryReceiptSha256: options.trajectoryReceipt.receipt_sha256,
-    evidence: options.evidence,
+    evidence,
   });
 }
 
@@ -86,6 +94,12 @@ export async function readLatestTrajectoryBoundSemanticChallengeEvidence(options
   return snapshot;
 }
 
-export function semanticChallengeEvidenceTrajectoryPayload(evidence: SemanticChallengeEvidence): unknown {
-  return evidenceObservationPayload(evidence);
+export function semanticChallengeEvidenceTrajectoryPayload(goalBoundEvidence: GoalBoundSemanticChallengeEvidence): unknown {
+  return evidenceObservationPayload({
+    schema_version: "1.0",
+    kind: "wco-semantic-blind-challenge",
+    challenge_id: goalBoundEvidence.challenge_id,
+    repository: goalBoundEvidence.repository,
+    original_goal: "placeholder",
+  }, goalBoundEvidence.evidence);
 }
