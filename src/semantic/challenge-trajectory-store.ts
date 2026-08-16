@@ -154,6 +154,7 @@ async function listReceipts(directory: string, request: SemanticChallengeRequest
     if (!info.isFile() || info.isSymbolicLink() || await realpath(target) !== target) throw new Error("semantic challenge trajectory receipt path is unsafe.");
     receipts.push(await readReceipt(target, request));
   }
+  let repositoryObservationCount = 0;
   for (let index = 0; index < receipts.length; index += 1) {
     const receipt = receipts[index]!;
     if (receipt.sequence !== index + 1) throw new Error("semantic challenge trajectory sequence is not contiguous.");
@@ -161,6 +162,8 @@ async function listReceipts(directory: string, request: SemanticChallengeRequest
     if (receipt.previous_receipt_sha256 !== expectedPrevious) throw new Error("semantic challenge trajectory digest chain is broken.");
     if (receipt.sequence === 1 && receipt.event_type !== "challenge_created") throw new Error("semantic challenge trajectory must begin with challenge_created.");
     if (receipt.sequence > 1 && receipt.event_type === "challenge_created") throw new Error("semantic challenge trajectory cannot create the challenge twice.");
+    if (receipt.event_type === "repository_observation") repositoryObservationCount += 1;
+    if (receipt.event_type === "understanding_sealed" && repositoryObservationCount < 1) throw new Error("semantic challenge trajectory cannot seal understanding before repository evidence is observed.");
     if (index < receipts.length - 1 && receipt.event_type === "understanding_sealed") throw new Error("semantic challenge trajectory cannot continue after sealed understanding.");
   }
   if (new Set(receipts.map((receipt) => receipt.idempotency_key_sha256)).size !== receipts.length) throw new Error("semantic challenge trajectory contains reused idempotency identity.");
@@ -228,6 +231,7 @@ export async function appendSemanticChallengeTrajectoryEvent(options: {
     if (existing.at(-1)?.event_type === "understanding_sealed") throw new Error("semantic challenge trajectory is already sealed.");
     if (sequence === 1 && options.eventType !== "challenge_created") throw new Error("semantic challenge trajectory first event must be challenge_created.");
     if (sequence > 1 && options.eventType === "challenge_created") throw new Error("semantic challenge trajectory cannot recreate a challenge.");
+    if (options.eventType === "understanding_sealed" && !existing.some((receipt) => receipt.event_type === "repository_observation")) throw new Error("semantic challenge trajectory cannot seal understanding before repository evidence is observed.");
 
     const payload = {
       schema_version: "1.0" as const,
