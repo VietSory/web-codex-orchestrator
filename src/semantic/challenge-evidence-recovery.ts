@@ -94,12 +94,7 @@ export async function readLatestTrajectoryBoundSemanticChallengeEvidence(options
   return snapshot;
 }
 
-export function semanticChallengeEvidenceTrajectoryPayload(goalBoundEvidence: GoalBoundSemanticChallengeEvidence): unknown {
-  return evidenceObservationPayload({
-    schema_version: "1.0",
-    kind: "wco-semantic-blind-challenge",
-    challenge_id: goalBoundEvidence.challenge_id,
-    repository: goalBoundEvidence.repository,
-    original_goal: "placeholder",
-  }, goalBoundEvidence.evidence);
+export function semanticChallengeEvidenceTrajectoryPayload(request: SemanticChallengeRequest, goalBoundEvidence: GoalBoundSemanticChallengeEvidence): unknown {
+  assertGoalBoundSemanticChallengeEvidence(goalBoundEvidence, request);
+  return evidenceObservationPayload(request, goalBoundEvidence.evidence);
 }
