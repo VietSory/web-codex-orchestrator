@@ -8,6 +8,7 @@ import { ensureCanonicalDirectory } from "../shared/safe-directory.js";
 import { readStableFile } from "../shared/stable-file.js";
 import { contentDigest, parseWebContractEnvelope } from "./contracts.js";
 import type { LocalWorkerSession } from "./local-worker.js";
+import { withSessionFocusLock } from "./session-focus-lock.js";
 
 const HISTORY_ENTRY_MAX_BYTES = 2 * 1024 * 1024;
 const HISTORY_MAX_FILES = 512;
@@ -119,10 +120,8 @@ export async function archiveLocalTaskHistory(stateDirectory: string, session: L
 
 export async function listLocalTaskHistory(stateDirectory: string, repositoryId: string, limit = 10): Promise<LocalWorkerSession[]> {
   if (!SAFE_HISTORY_ID.test(repositoryId)) throw new Error("WEB_SESSION_ID_INVALID: repository identity is invalid.");
-  const history = historyDirectory(stateDirectory);
-  let names: string[];
-  try { names = await readdir(history); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
+  const history = await prepareHistoryDirectory(stateDirectory);
+  const names = await readdir(history);
   const candidates = names.filter((name) => HISTORY_NAME.test(name));
   if (candidates.length > HISTORY_SCAN_HARD_LIMIT) throw new Error("WEB_HISTORY_LIMIT: session history exceeds its safe bound.");
   const values: LocalWorkerSession[] = [];
@@ -151,72 +150,74 @@ export async function restoreLocalTaskHistoryFocus(
   if (session.state !== "IMPLEMENTATION_REGISTERED" || !session.sealed || !session.run_id || !session.task_archive_path || !session.web_pack_path) {
     throw new Error("WEB_HISTORY_NOT_RESUMABLE: this task did not reach a locally re-attestable implementation checkpoint. Start a new follow-up task instead.");
   }
-  const runId = session.run_id;
-  const identity = splitRunId(runId);
-  const [ledger, run] = await Promise.all([
-    readRunLedger(stateDirectory, runId),
-    readRunReceipt(stateDirectory, identity.taskId, identity.archiveSha256),
-  ]);
-  if (!ledger || ledger.run_id !== runId) throw new Error("WEB_HISTORY_NOT_RESUMABLE: the durable run ledger is missing or no longer matches this task.");
-  if (
-    !run ||
-    run.run_id !== runId ||
-    run.task_id !== identity.taskId ||
-    run.archive_sha256 !== identity.archiveSha256 ||
-    run.repository_id !== repositoryId ||
-    run.base_branch !== session.repository.base_branch ||
-    run.base_commit !== session.repository.base_commit
-  ) {
-    throw new Error("WEB_HISTORY_NOT_RESUMABLE: canonical run receipt authority no longer matches the historical task identity or repository base.");
-  }
-  await Promise.all([
-    assertBoundedStateArtifact(stateDirectory, session.task_archive_path, "task bundle"),
-    assertBoundedStateArtifact(stateDirectory, session.web_pack_path, "implementation pack"),
-  ]);
-
-  const restored: LocalWorkerSession = { ...session, updated_at: new Date().toISOString() };
-  const sessionDirectory = await prepareSessionDirectory(stateDirectory);
-  const target = currentSessionPath(stateDirectory, repositoryId);
-  if (path.dirname(target) !== sessionDirectory) throw new Error("WEB_HISTORY_PATH_UNSAFE: restored session path escaped managed session storage.");
-
-  // Switching focus and clearing a PAIR pause are one logical resume transition.
-  // Hold the same execution lock used by normal transitions so no worker can
-  // start while focus is being switched. If the focus write fails after a pause
-  // was cleared, restore the exact pre-resume ledger before surfacing failure.
-  const expectedLedgerSha = contentDigest(ledger);
-  return await withTransitionExecutionLock(stateDirectory, runId, async () => {
-    const lockedLedger = await readRunLedger(stateDirectory, runId);
-    if (!lockedLedger || contentDigest(lockedLedger) !== expectedLedgerSha) {
-      throw new Error("WEB_HISTORY_NOT_RESUMABLE: durable run state changed while history resume was being prepared.");
+  return await withSessionFocusLock(stateDirectory, repositoryId, async () => {
+    const runId = session.run_id!;
+    const identity = splitRunId(runId);
+    const [ledger, run] = await Promise.all([
+      readRunLedger(stateDirectory, runId),
+      readRunReceipt(stateDirectory, identity.taskId, identity.archiveSha256),
+    ]);
+    if (!ledger || ledger.run_id !== runId) throw new Error("WEB_HISTORY_NOT_RESUMABLE: the durable run ledger is missing or no longer matches this task.");
+    if (
+      !run ||
+      run.run_id !== runId ||
+      run.task_id !== identity.taskId ||
+      run.archive_sha256 !== identity.archiveSha256 ||
+      run.repository_id !== repositoryId ||
+      run.base_branch !== session.repository.base_branch ||
+      run.base_commit !== session.repository.base_commit
+    ) {
+      throw new Error("WEB_HISTORY_NOT_RESUMABLE: canonical run receipt authority no longer matches the historical task identity or repository base.");
     }
+    await Promise.all([
+      assertBoundedStateArtifact(stateDirectory, session.task_archive_path!, "task bundle"),
+      assertBoundedStateArtifact(stateDirectory, session.web_pack_path!, "implementation pack"),
+    ]);
 
-    const isPair = (session.job_mode ?? "PAIR") === "PAIR";
-    const resumedLedger = isPair && lockedLedger.paused
-      ? await resumeRun(stateDirectory, runId)
-      : lockedLedger;
-    const resumedLedgerSha = contentDigest(resumedLedger);
+    const restored: LocalWorkerSession = { ...session, updated_at: new Date().toISOString() };
+    const sessionDirectory = await prepareSessionDirectory(stateDirectory);
+    const target = currentSessionPath(stateDirectory, repositoryId);
+    if (path.dirname(target) !== sessionDirectory) throw new Error("WEB_HISTORY_PATH_UNSAFE: restored session path escaped managed session storage.");
 
-    try {
-      await atomicWriteJson(target, restored);
-      return restored;
-    } catch (writeError) {
-      if (isPair && lockedLedger.paused) {
-        try {
-          await withRunLock(stateDirectory, runId, async () => {
-            const current = await readRunLedger(stateDirectory, runId);
-            if (!current || contentDigest(current) !== resumedLedgerSha) {
-              throw new Error("durable run changed after pause clearance");
-            }
-            await writeRunLedger(stateDirectory, lockedLedger);
-          });
-        } catch (rollbackError) {
-          throw new Error(
-            `WEB_HISTORY_FOCUS_RECOVERY_REQUIRED: current focus was not committed and exact PAIR pause rollback could not be proven: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
-            { cause: writeError },
-          );
-        }
+    // Switching focus and clearing a PAIR pause are one logical resume transition.
+    // Hold the same execution lock used by normal transitions so no worker can
+    // start while focus is being switched. If the focus write fails after a pause
+    // was cleared, restore the exact pre-resume ledger before surfacing failure.
+    const expectedLedgerSha = contentDigest(ledger);
+    return await withTransitionExecutionLock(stateDirectory, runId, async () => {
+      const lockedLedger = await readRunLedger(stateDirectory, runId);
+      if (!lockedLedger || contentDigest(lockedLedger) !== expectedLedgerSha) {
+        throw new Error("WEB_HISTORY_NOT_RESUMABLE: durable run state changed while history resume was being prepared.");
       }
-      throw writeError;
-    }
+
+      const isPair = (session.job_mode ?? "PAIR") === "PAIR";
+      const resumedLedger = isPair && lockedLedger.paused
+        ? await resumeRun(stateDirectory, runId)
+        : lockedLedger;
+      const resumedLedgerSha = contentDigest(resumedLedger);
+
+      try {
+        await atomicWriteJson(target, restored);
+        return restored;
+      } catch (writeError) {
+        if (isPair && lockedLedger.paused) {
+          try {
+            await withRunLock(stateDirectory, runId, async () => {
+              const current = await readRunLedger(stateDirectory, runId);
+              if (!current || contentDigest(current) !== resumedLedgerSha) {
+                throw new Error("durable run changed after pause clearance");
+              }
+              await writeRunLedger(stateDirectory, lockedLedger);
+            });
+          } catch (rollbackError) {
+            throw new Error(
+              `WEB_HISTORY_FOCUS_RECOVERY_REQUIRED: current focus was not committed and exact PAIR pause rollback could not be proven: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+              { cause: writeError },
+            );
+          }
+        }
+        throw writeError;
+      }
+    });
   });
 }
