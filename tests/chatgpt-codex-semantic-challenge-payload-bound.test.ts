@@ -19,6 +19,12 @@ const limits: AgentLimits = {
   maximum_total_input_tokens: 100_000,
   maximum_total_output_tokens: 20_000,
 };
+const cleanEvents = [
+  { type: "thread.started", timestamp: "2026-08-16T10:00:00.000Z" },
+  { type: "turn.started", timestamp: "2026-08-16T10:00:00.001Z" },
+  { type: "agent_message", timestamp: "2026-08-16T10:00:00.002Z" },
+  { type: "turn.completed", timestamp: "2026-08-16T10:00:00.003Z" },
+];
 
 test("challenge schema and local parser both bound provider payload_json", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "wco-challenge-payload-bound-"));
@@ -40,6 +46,7 @@ test("challenge schema and local parser both bound provider payload_json", async
           payload_json: "x".repeat(CHATGPT_CODEX_CHALLENGE_PAYLOAD_MAX_CHARS + 1),
         },
         usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+        public_events: cleanEvents,
       };
     },
   } as any, 60);
