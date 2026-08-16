@@ -13,10 +13,11 @@ import { parseSemanticBenchmarkCorpus } from "../src/benchmark/semantic-corpus.j
 import { loadTrustedConfig } from "../src/config/config-loader.js";
 import type { AgentLimits, AgentProfile } from "../src/config/contracts.js";
 import { defaultAgentLimits } from "../src/execution/budget.js";
+import { createSemanticChallengeRequest, semanticChallengePrompt } from "../src/semantic/blind-challenge.js";
 import { ensureChatGptLogin } from "../src/runtime/chatgpt-login.js";
 import { resolveCodexRuntime } from "../src/runtime/codex-runtime.js";
 import { resolveWcoPaths } from "../src/setup/default-paths.js";
-import { MAINTAINER_AUTHORING_STANDARD, MAINTAINER_REVIEW_STANDARD } from "../src/shared/maintainer-reasoning-standard.js";
+import { MAINTAINER_AUTHORING_STANDARD } from "../src/shared/maintainer-reasoning-standard.js";
 
 const OUTPUT_SCHEMA = {
   type: "object",
@@ -116,6 +117,25 @@ class ProviderBenchmarkBudget {
   }
 }
 
+function runtimeBlindChallengerPolicy(): string {
+  const probe = createSemanticChallengeRequest({
+    challengeId: "benchmark-policy-probe",
+    repository: { repository_id: "benchmark-policy-probe", base_branch: "main", base_commit: "0".repeat(40) },
+    originalGoal: "Benchmark policy probe only.",
+  });
+  const runtimeLines = semanticChallengePrompt(probe).split("\n");
+  const prefixes = [
+    "You are an independent senior-maintainer semantic challenger.",
+    "You have intentionally NOT been shown Web-A's candidate contract",
+    "Your task is to independently determine what the repository currently does",
+    "Trace relevant callers/callees and state/authority boundaries",
+    "Challenge unsupported assumptions.",
+  ];
+  const selected = prefixes.map((prefix) => runtimeLines.find((line) => line.startsWith(prefix)));
+  if (selected.some((line) => !line)) throw new Error("semantic provider benchmark could not derive the exact runtime blind-challenger reasoning policy.");
+  return (selected as string[]).join("\n");
+}
+
 function armPolicy(arm: "author_style" | "independent_challenger"): string {
   const promptOnly = "Benchmark isolation: use only the public benchmark case in this prompt. Do not inspect the filesystem, shell, repository, environment, network, or any external source; do not attempt to discover hidden benchmark truth.";
   if (arm === "author_style") {
@@ -127,10 +147,10 @@ function armPolicy(arm: "author_style" | "independent_challenger"): string {
     ].join("\n");
   }
   return [
-    MAINTAINER_REVIEW_STANDARD,
+    runtimeBlindChallengerPolicy(),
     promptOnly,
-    "Benchmark role: behave like an independent Web-B challenger with no access to Web-A's candidate answer.",
-    "Re-derive the needed understanding from the public evidence catalog, challenge tempting distractors, and reject unsupported assumptions independently.",
+    "Benchmark adaptation: the complete public evidence catalog replaces repository_command exploration for this one-turn selection task. Do not request repository actions.",
+    "Select independently; you have no access to Web-A's candidate selection.",
   ].join("\n");
 }
 
@@ -264,6 +284,7 @@ try {
     total_provider_turns: budget.usage.turns,
     hidden_gold_exposed_to_provider: false,
     provider_filesystem_context: "separate_empty_disjoint_temporary_roots_per_arm",
+    challenger_policy_source: "runtime_semanticChallengePrompt_core",
     lifecycle_mutation: false,
     total_usage: budget.usage,
     arms: {
@@ -271,7 +292,7 @@ try {
       independent_challenger: { ...paired.challenger, usage: challenger.usage, policy_sha256: challenger.policy_sha256 },
     },
     comparison,
-    interpretation: "Provider-backed paired policy A/B on the same public semantic corpus. Case order alternates which arm runs first to reduce time/load/cache confounding. One fresh provider thread per case/arm measures directional semantic-selection quality; it does not prove end-to-end task completion or production authority uplift.",
+    interpretation: "Provider-backed paired policy A/B on the same public semantic corpus. Case order alternates which arm runs first to reduce time/load/cache confounding. The challenger arm derives its maintainer reasoning text from the runtime blind-challenge prompt. One fresh provider thread per case/arm measures directional semantic-selection quality; it does not prove end-to-end task completion or production authority uplift.",
   }, null, 2));
 } finally {
   await rm(root, { recursive: true, force: true });
