@@ -1,15 +1,13 @@
-import type { SemanticChallengeRequest } from "../../semantic/blind-challenge.js";
 import type { AuthoringEvent, BridgeJobIdentity, FinalReviewRequest } from "../contracts.js";
 import type { AuthoringJobRequest } from "../web-bridge.js";
 
-export type RelayJobKind = "authoring" | "final_review" | "semantic_challenge";
-export type RelayJobRequest = AuthoringJobRequest | FinalReviewRequest | SemanticChallengeRequest;
+export type RelayJobKind = "authoring" | "final_review";
 export interface RelayStoredEvent { sequence: number; type: string; payload: unknown; created_at: string; idempotency_key: string; content_sha256: string; }
 export interface RelayJobRecord {
   schema_version: "1.0";
   identity: BridgeJobIdentity;
   kind: RelayJobKind;
-  request: RelayJobRequest;
+  request: AuthoringJobRequest | FinalReviewRequest;
   events: RelayStoredEvent[];
   idempotency: Record<string, string>;
 }
@@ -32,7 +30,6 @@ export function isRelayJobPending(record: RelayJobRecord, nowMs = Date.now()): b
   const expiresAt = Date.parse(record.identity.expires_at);
   if (!Number.isFinite(expiresAt) || expiresAt <= nowMs) return false;
   if (record.kind === "final_review") return !record.events.some((event) => event.type === "web_verdict");
-  if (record.kind === "semantic_challenge") return !record.events.some((event) => event.type === "semantic_understanding_sealed");
   const mode = (record.request as AuthoringJobRequest).orchestration_mode ?? "PAIR";
   if (mode !== "PAIR" && mode !== "AUTOPILOT") return false;
   // Harness-first PAIR and AUTOPILOT both require the original Web author to
