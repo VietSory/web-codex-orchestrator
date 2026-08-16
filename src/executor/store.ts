@@ -237,25 +237,32 @@ async function installExecutorLock(directory: string, lockPath: string, bytes: B
   const temporary = path.join(directory, `.executor-lock.${process.pid}.${crypto.randomUUID()}.tmp`);
   let handle: fs.FileHandle | null = null;
   let linked = false;
-  let installedIdentity: StableFileIdentity | null = null;
+  let temporaryPresent = true;
+  let prepared: Stats | null = null;
   try {
     handle = await fs.open(temporary, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);
     await handle.writeFile(bytes); await handle.sync();
-    const prepared = await handle.stat();
+    prepared = await handle.stat();
     if (!prepared.isFile() || prepared.size !== bytes.byteLength) throw new ExecutorError("EXECUTOR_LOCKED", "Prepared executor lock is incomplete.");
     await handle.close(); handle = null;
     try { await fs.link(temporary, lockPath); linked = true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") return null; throw error; }
+    const linkedStat = await fs.lstat(lockPath);
+    if (linkedStat.isSymbolicLink() || !linkedStat.isFile() || !sameExecutorInode(prepared, linkedStat)) throw new ExecutorError("EXECUTOR_LOCKED", "Executor lock changed while being atomically installed.");
+    await fs.unlink(temporary);
+    temporaryPresent = false;
     const installed = await fs.lstat(lockPath);
-    if (installed.isSymbolicLink() || !installed.isFile() || !sameExecutorInode(prepared, installed)) throw new ExecutorError("EXECUTOR_LOCKED", "Executor lock changed while being atomically installed.");
-    installedIdentity = executorStableIdentity(installed);
-    return installedIdentity;
+    if (installed.isSymbolicLink() || !installed.isFile() || !sameExecutorInode(prepared, installed)) throw new ExecutorError("EXECUTOR_LOCKED", "Executor lock changed after atomic installation.");
+    return executorStableIdentity(installed);
   } catch (error) {
-    if (linked && installedIdentity) {
+    if (linked && prepared) {
       const current = await fs.lstat(lockPath).catch(() => null);
-      if (current && current.isFile() && !current.isSymbolicLink() && sameStableFileIdentity(executorStableIdentity(current), installedIdentity)) await fs.unlink(lockPath).catch(() => undefined);
+      if (current && current.isFile() && !current.isSymbolicLink() && sameExecutorInode(prepared, current)) await fs.unlink(lockPath).catch(() => undefined);
     }
     throw error;
-  } finally { await handle?.close().catch(() => undefined); await fs.unlink(temporary).catch(() => undefined); }
+  } finally {
+    await handle?.close().catch(() => undefined);
+    if (temporaryPresent) await fs.unlink(temporary).catch(() => undefined);
+  }
 }
 
 export async function acquireExecutorLock(stateDirectory: string, taskId: string, taskBundleSha256: string, artifactSha256: string): Promise<ExecutorLock> {
