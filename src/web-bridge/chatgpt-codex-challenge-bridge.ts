@@ -6,23 +6,26 @@ import { defaultAgentLimits } from "../execution/budget.js";
 import { ensureChatGptLogin } from "../runtime/chatgpt-login.js";
 import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
 import type { SemanticChallengeTransport } from "../semantic/challenge-aware-web-bridge.js";
-import type { SemanticChallengeRequest, SemanticUnderstandingEnvelope } from "../semantic/blind-challenge.js";
+import { createSemanticChallengeRequest, type SemanticChallengeRequest, type SemanticUnderstandingEnvelope } from "../semantic/blind-challenge.js";
+import { runSemanticChallengeShadow } from "../semantic/challenge-shadow-runner.js";
 import { ChatGptCodexWebBridge } from "./chatgpt-codex-bridge.js";
 import { ChatGptCodexSemanticChallengeTransport } from "./chatgpt-codex-semantic-challenge-transport.js";
 import { ChatGptCodexSemanticClient } from "./chatgpt-codex-semantic-client.js";
-import { WebBridgeError, type BridgeJobIdentity, type RepositoryCommandResult } from "./contracts.js";
+import { WebBridgeError, contentDigest, type BridgeJobIdentity, type RepositoryCommandResult } from "./contracts.js";
+import type { AuthoringJobRequest } from "./web-bridge.js";
 
 /**
  * Normal ChatGPT/Codex bridge plus the optional blind semantic-challenge
  * capability. All existing WebBridge and prepared-run authority stays inherited
- * unchanged from ChatGptCodexWebBridge; only the four challenge methods below
- * delegate to an authority-neutral provider transport.
+ * unchanged from ChatGptCodexWebBridge. The shadow challenge starts beside normal
+ * authoring but is fail-open and cannot alter the authoring identity or workflow.
  */
 export class ChatGptCodexChallengeWebBridge extends ChatGptCodexWebBridge implements SemanticChallengeTransport {
   private readonly challengeStateDirectory: string;
   private readonly challengeScratchDirectory: string;
   private readonly challengeAuthorityDirectory: string;
   private challengeProviderPromise: Promise<ChatGptCodexSemanticChallengeTransport> | null = null;
+  private readonly challengeRuns = new Set<Promise<void>>();
 
   constructor(private readonly challengeConfig: TrustedConfig, bridgeDirectory: string, stateDirectory = path.join(path.dirname(path.resolve(bridgeDirectory)), "state")) {
     super(challengeConfig, bridgeDirectory, stateDirectory);
@@ -56,6 +59,37 @@ export class ChatGptCodexChallengeWebBridge extends ChatGptCodexWebBridge implem
       })();
     }
     return await this.challengeProviderPromise;
+  }
+
+  private async runAuthoringChallenge(request: AuthoringJobRequest, authoringIdentity: BridgeJobIdentity, repositoryPath: string): Promise<void> {
+    try {
+      const transport = await this.challengeProvider();
+      const challenge = createSemanticChallengeRequest({
+        challengeId: `shadow-${contentDigest({ job_id: authoringIdentity.job_id, repository: request.repository, goal: request.user_intent }).slice(0, 48)}`,
+        repository: request.repository,
+        originalGoal: request.user_intent,
+      });
+      await runSemanticChallengeShadow({
+        transport,
+        request: challenge,
+        repositoryPath,
+        stateDirectory: this.challengeStateDirectory,
+      });
+    } catch {
+      // Deliberately fail-open: this independent challenger is evidence/quality
+      // shadow only and must never change normal authoring or workflow authority.
+    }
+  }
+
+  override async createAuthoringJob(request: AuthoringJobRequest, idempotencyKey: string): Promise<BridgeJobIdentity> {
+    const identity = await super.createAuthoringJob(request, idempotencyKey);
+    const configuredRepository = this.challengeConfig.repositories[request.repository.repository_id];
+    if (configuredRepository) {
+      const run = this.runAuthoringChallenge(request, identity, configuredRepository.path);
+      this.challengeRuns.add(run);
+      void run.finally(() => { this.challengeRuns.delete(run); });
+    }
+    return identity;
   }
 
   async createSemanticChallengeJob(request: SemanticChallengeRequest, idempotencyKey: string): Promise<BridgeJobIdentity> {
