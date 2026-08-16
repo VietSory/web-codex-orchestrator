@@ -1,6 +1,8 @@
 import { lstat, readdir, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
-import { readRunLedger } from "../orchestration/ledger.js";
+import { resumeRun } from "../orchestration/controller.js";
+import { readRunLedger, writeRunLedger } from "../orchestration/ledger.js";
+import { withRunLock, withTransitionExecutionLock } from "../orchestration/run-lock.js";
 import { atomicWriteJson, readRunReceipt } from "../run/run-store.js";
 import { ensureCanonicalDirectory } from "../shared/safe-directory.js";
 import { readStableFile } from "../shared/stable-file.js";
@@ -142,6 +144,9 @@ export async function restoreLocalTaskHistoryFocus(
   repositoryId: string,
   session: LocalWorkerSession,
 ): Promise<LocalWorkerSession> {
+  // History JSON itself is never accepted as workflow authority. Resume first
+  // re-attests the canonical run receipt, run ledger, repository base, and exact
+  // bounded artifacts before any current-focus write can occur.
   if (!validSession(session) || !CURRENT_SESSION_ID.test(session.session_id) || session.repository.repository_id !== repositoryId) throw new Error("WEB_HISTORY_NOT_RESUMABLE: history identity does not match a current durable session for this repository.");
   if (session.state !== "IMPLEMENTATION_REGISTERED" || !session.sealed || !session.run_id || !session.task_archive_path || !session.web_pack_path) {
     throw new Error("WEB_HISTORY_NOT_RESUMABLE: this task did not reach a locally re-attestable implementation checkpoint. Start a new follow-up task instead.");
@@ -161,7 +166,7 @@ export async function restoreLocalTaskHistoryFocus(
     run.base_branch !== session.repository.base_branch ||
     run.base_commit !== session.repository.base_commit
   ) {
-    throw new Error("WEB_HISTORY_NOT_RESUMABLE: canonical run authority no longer matches the historical task identity or repository base.");
+    throw new Error("WEB_HISTORY_NOT_RESUMABLE: canonical run receipt authority no longer matches the historical task identity or repository base.");
   }
   await Promise.all([
     assertBoundedStateArtifact(stateDirectory, session.task_archive_path, "task bundle"),
@@ -172,6 +177,45 @@ export async function restoreLocalTaskHistoryFocus(
   const sessionDirectory = await prepareSessionDirectory(stateDirectory);
   const target = currentSessionPath(stateDirectory, repositoryId);
   if (path.dirname(target) !== sessionDirectory) throw new Error("WEB_HISTORY_PATH_UNSAFE: restored session path escaped managed session storage.");
-  await atomicWriteJson(target, restored);
-  return restored;
+
+  // Switching focus and clearing a PAIR pause are one logical resume transition.
+  // Hold the same execution lock used by normal transitions so no worker can
+  // start while focus is being switched. If the focus write fails after a pause
+  // was cleared, restore the exact pre-resume ledger before surfacing failure.
+  const expectedLedgerSha = contentDigest(ledger);
+  return await withTransitionExecutionLock(stateDirectory, session.run_id, async () => {
+    const lockedLedger = await readRunLedger(stateDirectory, session.run_id);
+    if (!lockedLedger || contentDigest(lockedLedger) !== expectedLedgerSha) {
+      throw new Error("WEB_HISTORY_NOT_RESUMABLE: durable run state changed while history resume was being prepared.");
+    }
+
+    const isPair = (session.job_mode ?? "PAIR") === "PAIR";
+    const resumedLedger = isPair && lockedLedger.paused
+      ? await resumeRun(stateDirectory, session.run_id)
+      : lockedLedger;
+    const resumedLedgerSha = contentDigest(resumedLedger);
+
+    try {
+      await atomicWriteJson(target, restored);
+      return restored;
+    } catch (writeError) {
+      if (isPair && lockedLedger.paused) {
+        try {
+          await withRunLock(stateDirectory, session.run_id, async () => {
+            const current = await readRunLedger(stateDirectory, session.run_id);
+            if (!current || contentDigest(current) !== resumedLedgerSha) {
+              throw new Error("durable run changed after pause clearance");
+            }
+            await writeRunLedger(stateDirectory, lockedLedger);
+          });
+        } catch (rollbackError) {
+          throw new Error(
+            `WEB_HISTORY_FOCUS_RECOVERY_REQUIRED: current focus was not committed and exact PAIR pause rollback could not be proven: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+            { cause: writeError },
+          );
+        }
+      }
+      throw writeError;
+    }
+  });
 }
