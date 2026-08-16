@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
+import { assertPromptOnlySemanticBenchmarkTurn } from "../src/benchmark/semantic-provider-event-policy.js";
 import { createSemanticChallengeRequest, semanticChallengePrompt } from "../src/semantic/blind-challenge.js";
 
 test("provider benchmark challenger derives its reasoning policy from the runtime blind-challenge prompt", async () => {
@@ -23,4 +24,41 @@ test("provider benchmark challenger derives its reasoning policy from the runtim
     "Trace relevant callers/callees and state/authority boundaries",
     "Challenge unsupported assumptions.",
   ]) assert.match(runtime, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("provider benchmark accepts only prompt-only lifecycle events", () => {
+  assert.doesNotThrow(() => assertPromptOnlySemanticBenchmarkTurn([
+    { type: "thread.started" },
+    { type: "turn.started" },
+    { type: "reasoning" },
+    { type: "todo_list" },
+    { type: "agent_message" },
+    { type: "turn.completed" },
+  ]));
+
+  for (const forbidden of ["command_execution", "file_change", "mcp_tool_call", "web_search", "collab_tool_call", "error", "unknown_tool"]) {
+    assert.throws(() => assertPromptOnlySemanticBenchmarkTurn([
+      { type: "thread.started" },
+      { type: "turn.started" },
+      { type: forbidden },
+      { type: "agent_message" },
+      { type: "turn.completed" },
+    ]), /forbidden provider tool\/event/i);
+  }
+});
+
+test("provider benchmark fails closed when the event audit is missing, ambiguous, or may be truncated", () => {
+  assert.throws(() => assertPromptOnlySemanticBenchmarkTurn(undefined), /missing the provider public event audit trail/i);
+  assert.throws(() => assertPromptOnlySemanticBenchmarkTurn([{ type: "thread.started" }, { type: "agent_message" }]), /lifecycle is incomplete or ambiguous/i);
+  assert.throws(
+    () => assertPromptOnlySemanticBenchmarkTurn(Array.from({ length: 256 }, (_, index) => ({ type: index === 0 ? "thread.started" : "reasoning" }))),
+    /truncation bound/i,
+  );
+});
+
+test("provider benchmark runner enforces the prompt-only event audit before accepting output", async () => {
+  const source = await readFile(path.resolve("scripts/benchmark-semantic-provider.mts"), "utf8");
+  assert.match(source, /assertPromptOnlySemanticBenchmarkTurn\(response\.public_events\)/);
+  assert.match(source, /provider_local_tool_activity: "rejected_if_observed_or_event_audit_truncated"/);
+  assert.equal(source.includes("hidden_gold_exposed_to_provider"), false, "runner must not overclaim filesystem inaccessibility from read-only sandbox mode");
 });
