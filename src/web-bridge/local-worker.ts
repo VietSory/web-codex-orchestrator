@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { constants as fsConstants, type Stats } from "node:fs";
-import { lstat, mkdir, open, realpath } from "node:fs/promises";
+import { lstat, open, realpath } from "node:fs/promises";
 import path from "node:path";
 import { DEFAULT_REVIEWER, type ReviewerSelection } from "../agent/reviewer-selection.js";
 import { freezeRunReviewMode, readReviewMode } from "../agent/reviewer-mode-store.js";
@@ -9,6 +9,7 @@ import type { JobMode } from "../orchestration/job-mode.js";
 import { atomicWriteJson } from "../run/run-store.js";
 import { prepareTask } from "../run/preparation-service.js";
 import { persistSemanticShadowObservation } from "../semantic/shadow-observer.js";
+import { ensureCanonicalDirectory } from "../shared/safe-directory.js";
 import { contentDigest, parseWebContractEnvelope, WebBridgeError, type RepositoryBinding, type WebContractEnvelope } from "./contracts.js";
 import type { WebBridge } from "./web-bridge.js";
 import { ExactRepositoryReadService } from "./repo-read-service.js";
@@ -18,6 +19,7 @@ import { materializeWebImplementationPack } from "./web-pack-materializer.js";
 import { ContentAddressedContextCache } from "./context-cache.js";
 import { isPreparedRunAwareWebBridge } from "./prepared-run-aware.js";
 import { archiveLocalTaskHistory } from "./session-history.js";
+import { withSessionFocusLock } from "./session-focus-lock.js";
 
 const SESSION_MAX_BYTES = 2 * 1024 * 1024;
 const SESSION_STATES = new Set(["CREATING", "AUTHORING", "CONTRACT_SEALED", "PREPARED", "IMPLEMENTATION_REGISTERED", "COMPLETED", "BLOCKED"]);
@@ -99,10 +101,13 @@ export async function readLocalWorkerSession(stateDirectory: string, repositoryI
 }
 
 async function save(stateDirectory: string, value: LocalWorkerSession): Promise<void> {
-  await mkdir(path.dirname(sessionPath(stateDirectory, value.repository.repository_id)), { recursive: true, mode: 0o700 });
+  const stateRoot = path.resolve(stateDirectory);
+  const directory = await ensureCanonicalDirectory(path.join(stateRoot, "bridge", "sessions"), "WCO session storage");
+  const target = sessionPath(stateRoot, value.repository.repository_id);
+  if (path.dirname(target) !== directory) throw new WebBridgeError("WEB_SESSION_INVALID", "Local worker session path escaped managed session storage.");
   value.updated_at = new Date().toISOString();
   validateSession(value, value.repository.repository_id);
-  await atomicWriteJson(sessionPath(stateDirectory, value.repository.repository_id), value);
+  await atomicWriteJson(target, value);
 }
 
 export async function startLocalAuthoring(options: {
@@ -116,63 +121,65 @@ export async function startLocalAuthoring(options: {
   mode?: JobMode;
   reviewerSelection?: ReviewerSelection;
 }): Promise<LocalWorkerSession> {
-  const existing = await readLocalWorkerSession(options.stateDirectory, options.repository.repository_id);
-  if (existing && existing.state !== "BLOCKED" && existing.state !== "COMPLETED" && !options.replaceExplicit) {
-    throw new WebBridgeError("WEB_TASK_ALREADY_ACTIVE", "A task is already active for this repository. Use explicit /new or /auto to replace the local task focus; existing durable runs remain preserved.");
-  }
-  if (existing) await archiveLocalTaskHistory(options.stateDirectory, existing);
-
-  const now = options.now?.() ?? new Date();
-  const mode = options.mode ?? "PAIR";
-  const reviewerSelection = options.reviewerSelection ?? await readReviewMode(options.stateDirectory);
-  const session: LocalWorkerSession = {
-    schema_version: "1.0",
-    session_id: crypto.randomUUID(),
-    repository: options.repository,
-    goal: options.goal,
-    job_mode: mode,
-    reviewer_selection: reviewerSelection,
-    job_id: null,
-    last_event_sequence: 0,
-    sealed: false,
-    contract: null,
-    task_archive_path: null,
-    run_id: null,
-    web_pack_path: null,
-    state: "CREATING",
-    created_at: now.toISOString(),
-    updated_at: now.toISOString(),
-  };
-  await save(options.stateDirectory, session);
-
-  let identity;
-  try {
-    identity = await options.bridge.createAuthoringJob({
-      owner: options.owner ?? "local",
-      repository: options.repository,
-      user_intent: options.goal,
-      ttl_seconds: 86_400,
-      orchestration_mode: mode,
-    }, `author-${session.session_id}`);
-  } catch (error) {
-    // Keep the pre-external-call CREATING receipt as a crash-recovery anchor,
-    // but never leave it looking active after a known bridge/auth failure.
-    // BLOCKED is intentionally replaceable by the next normal goal.
-    session.state = "BLOCKED";
-    try {
-      await save(options.stateDirectory, session);
-    } catch (saveError) {
-      throw new WebBridgeError(
-        "WEB_SESSION_RECOVERY_FAILED",
-        `Authoring job creation failed and WCO could not persist the blocked recovery state: ${saveError instanceof Error ? saveError.message : String(saveError)}`,
-      );
+  return await withSessionFocusLock(options.stateDirectory, options.repository.repository_id, async () => {
+    const existing = await readLocalWorkerSession(options.stateDirectory, options.repository.repository_id);
+    if (existing && existing.state !== "BLOCKED" && existing.state !== "COMPLETED" && !options.replaceExplicit) {
+      throw new WebBridgeError("WEB_TASK_ALREADY_ACTIVE", "A task is already active for this repository. Use explicit /new or /auto to replace the local task focus; existing durable runs remain preserved.");
     }
-    throw error;
-  }
-  session.job_id = identity.job_id;
-  session.state = "AUTHORING";
-  await save(options.stateDirectory, session);
-  return session;
+    if (existing) await archiveLocalTaskHistory(options.stateDirectory, existing);
+
+    const now = options.now?.() ?? new Date();
+    const mode = options.mode ?? "PAIR";
+    const reviewerSelection = options.reviewerSelection ?? await readReviewMode(options.stateDirectory);
+    const session: LocalWorkerSession = {
+      schema_version: "1.0",
+      session_id: crypto.randomUUID(),
+      repository: options.repository,
+      goal: options.goal,
+      job_mode: mode,
+      reviewer_selection: reviewerSelection,
+      job_id: null,
+      last_event_sequence: 0,
+      sealed: false,
+      contract: null,
+      task_archive_path: null,
+      run_id: null,
+      web_pack_path: null,
+      state: "CREATING",
+      created_at: now.toISOString(),
+      updated_at: now.toISOString(),
+    };
+    await save(options.stateDirectory, session);
+
+    let identity;
+    try {
+      identity = await options.bridge.createAuthoringJob({
+        owner: options.owner ?? "local",
+        repository: options.repository,
+        user_intent: options.goal,
+        ttl_seconds: 86_400,
+        orchestration_mode: mode,
+      }, `author-${session.session_id}`);
+    } catch (error) {
+      // Keep the pre-external-call CREATING receipt as a crash-recovery anchor,
+      // but never leave it looking active after a known bridge/auth failure.
+      // BLOCKED is intentionally replaceable by the next normal goal.
+      session.state = "BLOCKED";
+      try {
+        await save(options.stateDirectory, session);
+      } catch (saveError) {
+        throw new WebBridgeError(
+          "WEB_SESSION_RECOVERY_FAILED",
+          `Authoring job creation failed and WCO could not persist the blocked recovery state: ${saveError instanceof Error ? saveError.message : String(saveError)}`,
+        );
+      }
+      throw error;
+    }
+    session.job_id = identity.job_id;
+    session.state = "AUTHORING";
+    await save(options.stateDirectory, session);
+    return session;
+  });
 }
 
 export async function appendLocalClarification(options: { bridge: WebBridge; session: LocalWorkerSession; value: string; stateDirectory: string }): Promise<void> {
