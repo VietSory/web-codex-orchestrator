@@ -62,6 +62,14 @@ function citation(path = "src/session.ts") {
   };
 }
 
+function maintainerFindings() {
+  return [
+    { finding_id: "COMPONENT", category: "component", statement: "Session focus is an affected component.", citations: [citation()] },
+    { finding_id: "INVARIANT", category: "invariant", statement: "Historical convenience state must not become mutation authority.", citations: [citation()] },
+    { finding_id: "RISK", category: "risk", statement: "Restart can change semantic focus if durable authority is not re-attested.", citations: [citation()] },
+  ];
+}
+
 function sealed(overrides: Record<string, unknown> = {}) {
   return {
     kind: "semantic_understanding_sealed",
@@ -71,9 +79,7 @@ function sealed(overrides: Record<string, unknown> = {}) {
       challenge_id: "challenge-1",
       repository,
       original_goal_sha256: "c".repeat(64),
-      findings: [
-        { finding_id: "F-1", category: "invariant", statement: "Historical convenience state must not become mutation authority.", citations: [citation()] },
-      ],
+      findings: maintainerFindings(),
       unresolved_questions: [],
       ...overrides,
     },
@@ -100,6 +106,8 @@ test("blind prompt grants repository exploration but no verdict or implementatio
   assert.match(prompt, /callers\/callees/);
   assert.match(prompt, /tests and docs as evidence, never as proof/);
   assert.match(prompt, /intentionally NOT been shown Web-A's candidate contract/);
+  assert.match(prompt, /component, invariant, and risk coverage/);
+  assert.match(prompt, /single plausible finding is never sufficient/);
   assert.match(prompt, /Every citation is validated against exact read evidence/);
   assert.match(prompt, /Never output APPROVE, REVISE, BLOCK/);
   assert.doesNotMatch(prompt, /Here is Web-A's candidate/);
@@ -147,16 +155,37 @@ test("maintainer findings require exact evidence except explicit unresolved unkn
 
   assert.throws(() => parseSemanticChallengeAction(sealed({
     original_goal_sha256: sha,
-    findings: [{ finding_id: "F-1", category: "unknown", statement: "No restart ownership evidence has been read yet.", citations: [] }],
+    findings: [
+      ...maintainerFindings(),
+      { finding_id: "UNKNOWN", category: "unknown", statement: "No restart ownership evidence has been read yet.", citations: [] },
+    ],
     unresolved_questions: [],
   }), active, evidence), /must preserve unresolved questions/);
 
   const unknown = parseSemanticChallengeAction(sealed({
     original_goal_sha256: sha,
-    findings: [{ finding_id: "F-1", category: "unknown", statement: "No restart ownership evidence has been read yet.", citations: [] }],
+    findings: [
+      ...maintainerFindings(),
+      { finding_id: "UNKNOWN", category: "unknown", statement: "No restart ownership evidence has been read yet.", citations: [] },
+    ],
     unresolved_questions: ["Which durable ledger proves the mutation owner after restart?"],
   }), active, evidence);
   assert.equal(unknown.kind, "semantic_understanding_sealed");
+});
+
+test("shallow evidence-backed understanding cannot seal without component invariant and risk coverage", () => {
+  const active = request();
+  const sha = goalSha(active);
+  const evidence = challengeEvidence(active);
+  for (const findings of [
+    [{ finding_id: "ONLY_COMPONENT", category: "component", statement: "Session focus is affected.", citations: [citation()] }],
+    [
+      { finding_id: "COMPONENT", category: "component", statement: "Session focus is affected.", citations: [citation()] },
+      { finding_id: "INVARIANT", category: "invariant", statement: "Mutation authority must remain durable.", citations: [citation()] },
+    ],
+  ]) {
+    assert.throws(() => parseSemanticChallengeAction(sealed({ original_goal_sha256: sha, findings }), active, evidence), /cannot seal without evidence-backed maintainer coverage/);
+  }
 });
 
 test("hallucinated but well-formed citations cannot seal", () => {
@@ -165,12 +194,15 @@ test("hallucinated but well-formed citations cannot seal", () => {
   const evidence = challengeEvidence(active);
   assert.throws(() => parseSemanticChallengeAction(sealed({
     original_goal_sha256: sha,
-    findings: [{
-      finding_id: "F-1",
-      category: "risk",
-      statement: "A plausible-looking but unread file allegedly controls recovery.",
-      citations: [{ ...citation(), path: "src/recovery.ts" }],
-    }],
+    findings: [
+      ...maintainerFindings().filter((finding) => finding.category !== "risk"),
+      {
+        finding_id: "FABRICATED_RISK",
+        category: "risk",
+        statement: "A plausible-looking but unread file allegedly controls recovery.",
+        citations: [{ ...citation(), path: "src/recovery.ts" }],
+      },
+    ],
   }), active, evidence), /was not observed by the challenger/);
 });
 
