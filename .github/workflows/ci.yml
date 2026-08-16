@@ -92,14 +92,20 @@ jobs:
         run: npm run pack:check
 
       - name: Clean-install packed CLI without dev dependencies
-        run: npm run pack:smoke
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p artifacts
+          npm run pack:smoke 2>&1 | tee artifacts/packed-cli-smoke.log
 
       - name: Upload packed CLI process metrics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: packed-cli-process-metrics
-          path: artifacts/packed-cli-process-metrics.json
+          path: |
+            artifacts/packed-cli-process-metrics.json
+            artifacts/packed-cli-smoke.log
           if-no-files-found: error
           retention-days: 14
 
