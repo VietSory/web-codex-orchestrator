@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { buildSemanticEvidenceIndex } from "../src/semantic/evidence-index.js";
 import { ExactRepositoryReadService } from "../src/web-bridge/repo-read-service.js";
 import { ReadCoverageStore } from "../src/web-bridge/read-coverage-store.js";
@@ -16,7 +16,7 @@ function git(cwd: string, args: string[]): string {
 const emptySha256 = crypto.createHash("sha256").update(Buffer.alloc(0)).digest("hex");
 const emptyBlob = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391";
 
-async function fixture(t: Parameters<typeof test>[1] extends (arg: infer T) => unknown ? T : never) {
+async function fixture(t: TestContext) {
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-semantic-empty-read-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));
   const repo = path.join(root, "repo");
