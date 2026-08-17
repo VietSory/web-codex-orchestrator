@@ -9,6 +9,8 @@ import { WebBridgeError } from "./contracts.js";
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const GIT_OID = /^[a-f0-9]{40}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
+const EMPTY_GIT_BLOB_OID = crypto.createHash("sha1").update(Buffer.from("blob 0\0", "utf8")).digest("hex");
+const EMPTY_CONTENT_SHA256 = crypto.createHash("sha256").update(Buffer.alloc(0)).digest("hex");
 const MAX_STORE_BYTES = 64 * 1024 * 1024;
 const MAX_PATH_BYTES = 4_096;
 const MAX_READ_BYTES = 8_388_608;
@@ -47,6 +49,7 @@ function validateReceipt(value: unknown, expectedJobId?: string): ReadCoverageRe
   const totalBytes = receipt.total_bytes as number;
   const emptyExactRead = totalBytes === 0 && startByte === 0 && endByte === 0;
   if (startByte < 0 || totalBytes < 0 || totalBytes > MAX_READ_BYTES || (!emptyExactRead && endByte <= startByte) || endByte > totalBytes || (totalBytes === 0 && !emptyExactRead)) throw new WebBridgeError("WEB_READ_RECEIPT_INVALID", "Read receipt byte range is inconsistent.");
+  if (emptyExactRead && (receipt.blob_sha !== EMPTY_GIT_BLOB_OID || receipt.content_sha256 !== EMPTY_CONTENT_SHA256)) throw new WebBridgeError("WEB_READ_RECEIPT_INVALID", "Zero-byte read receipt is not bound to the canonical empty Git blob and content digest.");
   if (typeof receipt.observed_at !== "string" || !Number.isFinite(Date.parse(receipt.observed_at))) throw new WebBridgeError("WEB_READ_RECEIPT_INVALID", "Read receipt timestamp is invalid.");
   return receipt as unknown as ReadCoverageReceipt;
 }
