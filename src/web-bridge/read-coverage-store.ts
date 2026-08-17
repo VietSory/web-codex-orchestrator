@@ -41,7 +41,12 @@ function validateReceipt(value: unknown, expectedJobId?: string): ReadCoverageRe
   if (typeof receipt.base_commit !== "string" || !GIT_OID.test(receipt.base_commit) || typeof receipt.blob_sha !== "string" || !GIT_OID.test(receipt.blob_sha) || typeof receipt.content_sha256 !== "string" || !SHA256.test(receipt.content_sha256)) throw new WebBridgeError("WEB_READ_RECEIPT_INVALID", "Read receipt digest binding is invalid.");
   if (typeof receipt.path !== "string" || Buffer.byteLength(receipt.path, "utf8") > MAX_PATH_BYTES) throw new WebBridgeError("WEB_READ_RECEIPT_INVALID", "Read receipt path is invalid.");
   try { assertRepositoryRelativePath(receipt.path); } catch { throw new WebBridgeError("WEB_READ_RECEIPT_INVALID", "Read receipt path is not repository-relative."); }
-  if (!Number.isSafeInteger(receipt.start_byte) || !Number.isSafeInteger(receipt.end_byte_exclusive) || !Number.isSafeInteger(receipt.total_bytes) || (receipt.start_byte as number) < 0 || (receipt.total_bytes as number) < 1 || (receipt.total_bytes as number) > MAX_READ_BYTES || (receipt.end_byte_exclusive as number) <= (receipt.start_byte as number) || (receipt.end_byte_exclusive as number) > (receipt.total_bytes as number)) throw new WebBridgeError("WEB_READ_RECEIPT_INVALID", "Read receipt byte range is inconsistent.");
+  if (!Number.isSafeInteger(receipt.start_byte) || !Number.isSafeInteger(receipt.end_byte_exclusive) || !Number.isSafeInteger(receipt.total_bytes)) throw new WebBridgeError("WEB_READ_RECEIPT_INVALID", "Read receipt byte range is inconsistent.");
+  const startByte = receipt.start_byte as number;
+  const endByte = receipt.end_byte_exclusive as number;
+  const totalBytes = receipt.total_bytes as number;
+  const emptyExactRead = totalBytes === 0 && startByte === 0 && endByte === 0;
+  if (startByte < 0 || totalBytes < 0 || totalBytes > MAX_READ_BYTES || (!emptyExactRead && endByte <= startByte) || endByte > totalBytes || (totalBytes === 0 && !emptyExactRead)) throw new WebBridgeError("WEB_READ_RECEIPT_INVALID", "Read receipt byte range is inconsistent.");
   if (typeof receipt.observed_at !== "string" || !Number.isFinite(Date.parse(receipt.observed_at))) throw new WebBridgeError("WEB_READ_RECEIPT_INVALID", "Read receipt timestamp is invalid.");
   return receipt as unknown as ReadCoverageReceipt;
 }
