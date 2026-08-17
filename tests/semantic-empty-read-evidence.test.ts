@@ -5,6 +5,12 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
+import { canonicalJsonBuffer } from "../src/result-bundle/canonical-json.js";
+import {
+  buildSemanticChallengeEvidence,
+  createSemanticChallengeRequest,
+  parseSemanticChallengeAction,
+} from "../src/semantic/blind-challenge.js";
 import { buildSemanticEvidenceIndex } from "../src/semantic/evidence-index.js";
 import { ExactRepositoryReadService } from "../src/web-bridge/repo-read-service.js";
 import { ReadCoverageStore } from "../src/web-bridge/read-coverage-store.js";
@@ -117,5 +123,44 @@ test("semantic evidence does not generalize the empty-file exception to arbitrar
   assert.throws(
     () => buildSemanticEvidenceIndex({ repository, observations: [{ sequence: 0, request_id: "req-non-empty-total", command, result }] }),
     /byte range\/size is inconsistent/i,
+  );
+});
+
+test("sealed semantic understanding may cite observed canonical zero-byte evidence but not an unobserved zero range", async (t) => {
+  const { repository, reader } = await fixture(t);
+  const request = createSemanticChallengeRequest({
+    challengeId: "challenge-empty-citation",
+    repository,
+    originalGoal: "Determine whether empty.txt is intentionally empty without inventing unseen content.",
+  });
+  const command = { operation: "read" as const, paths: ["empty.txt"] };
+  const result = await reader.execute("job-seal-empty", "req-seal-empty", command);
+  const evidence = buildSemanticChallengeEvidence({
+    request,
+    observations: [{ sequence: 1, request_id: "req-seal-empty", command, result }],
+  });
+  const citation = { path: "empty.txt", content_sha256: emptySha256, start_byte: 0, end_byte_exclusive: 0 };
+  const findings = [
+    { finding_id: "component-empty", category: "component", statement: "The observed component is the exact empty.txt blob.", citations: [citation] },
+    { finding_id: "invariant-empty", category: "invariant", statement: "The observed file currently contains zero bytes.", citations: [citation] },
+    { finding_id: "risk-empty", category: "risk", statement: "Inventing content for this file would contradict the exact repository evidence.", citations: [citation] },
+  ];
+  const envelope = {
+    schema_version: "1.0",
+    kind: "semantic_understanding_sealed",
+    challenge_id: request.challenge_id,
+    repository,
+    original_goal_sha256: crypto.createHash("sha256").update(canonicalJsonBuffer(request.original_goal)).digest("hex"),
+    findings,
+    unresolved_questions: [],
+  };
+  const action = parseSemanticChallengeAction({ kind: "semantic_understanding_sealed", envelope }, request, evidence);
+  assert.equal(action.kind, "semantic_understanding_sealed");
+
+  const forged = structuredClone(envelope);
+  forged.findings[0]!.citations[0]!.path = "not-observed-empty.txt";
+  assert.throws(
+    () => parseSemanticChallengeAction({ kind: "semantic_understanding_sealed", envelope: forged }, request, evidence),
+    /was not observed by the challenger/i,
   );
 });
