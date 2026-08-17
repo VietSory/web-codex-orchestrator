@@ -13,6 +13,8 @@ const MAX_PATH_METADATA_BYTES = 4_194_304;
 const MAX_PREPARED_CONTEXT_BYTES = 4_194_304;
 const MAX_TRANSMITTED_CONTEXT_BYTES = 65_536;
 const MAX_TRANSMITTED_BASE64_CHARS = 100_000;
+const EMPTY_GIT_BLOB_OID = crypto.createHash("sha1").update(Buffer.from("blob 0\0", "utf8")).digest("hex");
+const EMPTY_CONTENT_SHA256 = crypto.createHash("sha256").update(Buffer.alloc(0)).digest("hex");
 const SENSITIVE_PATHS = [
   /(^|\/)\.env($|\.)/i,
   /(^|\/)[^/]*\.(pem|key)$/i,
@@ -256,13 +258,15 @@ function normalizeReadResult(value: unknown, command: Extract<RepositoryCommand,
     const filePath = safeRepositoryPath(item.path, `read result.files[${index}].path`);
     const contentSha = sha256(item.content_sha256, `read result.files[${index}].content_sha256`);
     const blobSha = gitSha(item.blob_sha, `read result.files[${index}].blob_sha`);
-    const size = safeInteger(item.size_bytes, `read result.files[${index}].size_bytes`, 1, 1_048_576);
+    const size = safeInteger(item.size_bytes, `read result.files[${index}].size_bytes`, 0, 1_048_576);
     const start = safeInteger(item.start_byte, `read result.files[${index}].start_byte`, 0, 1_048_575);
-    const end = safeInteger(item.end_byte_exclusive, `read result.files[${index}].end_byte_exclusive`, 1, 1_048_576);
-    const total = safeInteger(item.total_bytes, `read result.files[${index}].total_bytes`, 1, 1_048_576);
-    if (end <= start || end - start !== size || end > total) throw new Error(`read result.files[${index}] byte range/size is inconsistent.`);
-
+    const end = safeInteger(item.end_byte_exclusive, `read result.files[${index}].end_byte_exclusive`, 0, 1_048_576);
+    const total = safeInteger(item.total_bytes, `read result.files[${index}].total_bytes`, 0, 1_048_576);
     const wanted = expected[index]!;
+    const emptyWholeFile = wanted.end === -1 && size === 0 && start === 0 && end === 0 && total === 0;
+    if ((!emptyWholeFile && end <= start) || end - start !== size || end > total) throw new Error(`read result.files[${index}] byte range/size is inconsistent.`);
+    if (emptyWholeFile && (blobSha !== EMPTY_GIT_BLOB_OID || contentSha !== EMPTY_CONTENT_SHA256)) throw new Error(`read result.files[${index}] zero-byte evidence is not bound to canonical empty Git/content digests.`);
+
     const endMatches = wanted.end === -1 ? end === total : end === wanted.end;
     if (filePath !== wanted.path || start !== wanted.start || !endMatches) throw new Error(`read result.files[${index}] does not bind the exact requested path/region.`);
     const knownContentSha = command.known_content_sha256?.[wanted.reference_key];
@@ -272,9 +276,14 @@ function normalizeReadResult(value: unknown, command: Extract<RepositoryCommand,
     let content_reference: string | null = null;
     let content_transmitted = false;
     if (contentBase64.length === 0) {
-      if (typeof item.content_ref !== "string" || item.content_ref !== `sha256:${contentSha}`) throw new Error(`read result.files[${index}] empty content requires an exact SHA-256 content_ref.`);
-      if (knownContentSha !== contentSha) throw new Error(`read result.files[${index}] content_ref is not justified by the exact known-content command digest.`);
-      content_reference = item.content_ref;
+      if (emptyWholeFile && item.content_ref === undefined) {
+        if (knownContentSha === contentSha) throw new Error(`read result.files[${index}] transmitted empty bytes contradict the exact known-content command digest.`);
+        content_transmitted = true;
+      } else {
+        if (typeof item.content_ref !== "string" || item.content_ref !== `sha256:${contentSha}`) throw new Error(`read result.files[${index}] empty content requires an exact SHA-256 content_ref.`);
+        if (knownContentSha !== contentSha) throw new Error(`read result.files[${index}] content_ref is not justified by the exact known-content command digest.`);
+        content_reference = item.content_ref;
+      }
     } else {
       if (item.content_ref !== undefined) throw new Error(`read result.files[${index}] cannot carry content_ref with transmitted bytes.`);
       if (knownContentSha === contentSha) throw new Error(`read result.files[${index}] transmitted bytes contradict the exact known-content command digest.`);

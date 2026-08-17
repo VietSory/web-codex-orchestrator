@@ -122,7 +122,7 @@ function parseCitation(value: unknown, label: string): SemanticEvidenceCitation 
   if (!SHA256.test(content_sha256)) throw new Error(`${label}.content_sha256 must be lowercase SHA-256.`);
   const start_byte = safeInteger(object.start_byte, `${label}.start_byte`);
   const end_byte_exclusive = safeInteger(object.end_byte_exclusive, `${label}.end_byte_exclusive`);
-  if (end_byte_exclusive <= start_byte) throw new Error(`${label} must describe a non-empty byte region.`);
+  if (end_byte_exclusive < start_byte) throw new Error(`${label} byte range must not end before it starts.`);
   return { path: citationPath, content_sha256, start_byte, end_byte_exclusive };
 }
 
