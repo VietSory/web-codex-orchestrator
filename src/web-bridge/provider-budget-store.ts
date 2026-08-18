@@ -86,6 +86,15 @@ function directoryFor(stateDirectory: string, runId: string): string {
   return path.join(path.resolve(stateDirectory), "bridge", "provider-budget", taskId, archiveSha);
 }
 
+async function canonicalBudgetDirectory(stateDirectory: string, runId: string): Promise<string> {
+  try {
+    return await ensureCanonicalDirectory(directoryFor(stateDirectory, runId), "ChatGPT/Codex provider budget state");
+  } catch (error) {
+    if (error instanceof WebBridgeError) throw error;
+    throw new WebBridgeError("WEB_CHATGPT_CODEX_BUDGET_STATE_INVALID", `Provider budget directory is unsafe: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 async function readReceiptFromDirectory(directory: string, runId: string): Promise<ProviderBudgetReceipt | null> {
   const target = path.join(directory, "usage.json");
   const info = await lstat(target).catch((error: unknown) => {
@@ -116,19 +125,10 @@ export function providerBudgetUsage(receipt: { entries: ProviderBudgetEntry[] })
 }
 
 export async function readProviderBudgetUsage(stateDirectory: string, runId: string): Promise<ProviderBudgetUsage> {
-  const directory = directoryFor(stateDirectory, runId);
-  const parent = path.dirname(directory);
-  const parentInfo = await lstat(parent).catch((error: unknown) => {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  });
-  if (!parentInfo) return { turns: 0, input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, duration_ms: 0 };
-  const directoryInfo = await lstat(directory).catch((error: unknown) => {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  });
-  if (!directoryInfo) return { turns: 0, input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, duration_ms: 0 };
-  if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) throw new WebBridgeError("WEB_CHATGPT_CODEX_BUDGET_STATE_INVALID", "Provider budget directory is unsafe.");
+  // Reads attest the complete state ancestry with the same primitive as writes.
+  // Creating an empty canonical budget directory is non-authoritative and avoids
+  // a weaker "read-only" path that could traverse a symlinked intermediate.
+  const directory = await canonicalBudgetDirectory(stateDirectory, runId);
   const receipt = await readReceiptFromDirectory(directory, runId);
   return receipt ? providerBudgetUsage(receipt) : { turns: 0, input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, duration_ms: 0 };
 }
@@ -143,7 +143,7 @@ export async function recordProviderBudgetUsage(options: {
 }): Promise<ProviderBudgetUsage> {
   const measurement = validateMeasurement(options.measurement);
   if (typeof options.key !== "string" || options.key.length < 1 || options.key.length > 512 || /[\r\n\0]/.test(options.key)) throw new WebBridgeError("WEB_CHATGPT_CODEX_BUDGET_STATE_INVALID", "Provider budget idempotency key is invalid.");
-  const directory = await ensureCanonicalDirectory(directoryFor(options.stateDirectory, options.runId), "ChatGPT/Codex provider budget state");
+  const directory = await canonicalBudgetDirectory(options.stateDirectory, options.runId);
   let lock;
   try { lock = await acquireTicketFileLock(path.join(directory, ".locks"), { timeoutMs: 10_000, pollMs: 25 }); }
   catch (error) {
