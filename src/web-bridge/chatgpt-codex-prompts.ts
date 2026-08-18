@@ -70,7 +70,14 @@ function inspectionRequirement(): string { return [
 function containsExactSourceReadResult(result: unknown): boolean {
   if (!result || typeof result !== "object" || Array.isArray(result)) return false;
   const files = (result as Record<string, unknown>).files;
-  return Array.isArray(files) && files.length > 0;
+  if (!Array.isArray(files) || files.length === 0) return false;
+  // The mandatory inspection gate is about source the reviewer actually saw in
+  // this semantic thread. A digest-only content_ref/cache hit proves identity,
+  // but it does not prove that source bytes were delivered for review.
+  return files.some((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    return typeof (value as Record<string, unknown>).content_utf8 === "string";
+  });
 }
 
 export function chatGptCodexAuthorPrompt(request: AuthoringJobRequest, jobId: string): string {
@@ -134,17 +141,20 @@ export function chatGptCodexReviewPrompt(request: FinalReviewRequest, evidence: 
  * large Result Bundle evidence intentionally stays in the thread instead of
  * being retransmitted on every lookup, keeping exact-context review cheaper
  * than manual full-context copy/paste loops. A non-source lookup (summary,
- * tree, or search) remains inspection-only; only a durable exact read result
- * opens the normal verdict-capable review schema.
+ * tree, search, binary payload, or digest-only content_ref) remains
+ * inspection-only; only a durable exact UTF-8 source payload delivered to the
+ * reviewer opens the normal verdict-capable review schema.
  */
-export function chatGptCodexReviewRepositoryResultPrompt(result: unknown, request: FinalReviewRequest, reviewId: string, inspectionRequired = !containsExactSourceReadResult(result)): string {
+export function chatGptCodexReviewRepositoryResultPrompt(result: unknown, request: FinalReviewRequest, reviewId: string, inspectionRequired?: boolean): string {
+  const semanticResult = prepareRepositoryResultForSemanticPrompt(result);
+  const sourceInspectionRequired = inspectionRequired ?? !containsExactSourceReadResult(semanticResult);
   return [
-    inspectionRequired ? CHATGPT_CODEX_REVIEW_INSPECTION_PHASE_MARKER : CHATGPT_CODEX_REVIEW_PHASE_MARKER,
+    sourceInspectionRequired ? CHATGPT_CODEX_REVIEW_INSPECTION_PHASE_MARKER : CHATGPT_CODEX_REVIEW_PHASE_MARKER,
     "Continue the same REVIEW thread. WCO executed your bounded read-only repository request against the exact published commit from the initial review.",
-    `Repository result: ${boundedJson(prepareRepositoryResultForSemanticPrompt(result), 192_000)}`,
+    `Repository result: ${boundedJson(semanticResult, 192_000)}`,
     "Keep applying the senior-maintainer review standard from the initial turn. Do not inherit implementation claims or treat green tests as proof.",
-    inspectionRequired ? inspectionRequirement() : "Allowed actions remain repository_command or web_verdict. Request another bounded lookup only for a still-material unresolved question; otherwise decide the verdict now.",
+    sourceInspectionRequired ? inspectionRequirement() : "Allowed actions remain repository_command or web_verdict. Request another bounded lookup only for a still-material unresolved question; otherwise decide the verdict now.",
     reviewRepositoryContract(request),
-    ...(inspectionRequired ? [] : [reviewPayloadContract(request, reviewId)]),
+    ...(sourceInspectionRequired ? [] : [reviewPayloadContract(request, reviewId)]),
   ].join("\n");
 }
