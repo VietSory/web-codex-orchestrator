@@ -46,9 +46,6 @@ async function pairCodeReviewGate(options: { bridge: WebBridge; runId: string; s
     if (await codeReviewBindsCanonicalResult(options.stateDirectory, options.runId, review)) {
       throw new WebBridgeError("WEB_CODE_REVIEW_REVISION_REQUIRED", "Independent Web code review requested a bounded repair before final intent review can start.");
     }
-    // The old REVISE authority belongs to a previous exact Result generation.
-    // After Harness repair + same-PR republish, require a fresh independent
-    // code-review job instead of treating the old terminal state as current.
     return await createPendingCodeReview(options);
   }
   if (review?.state === "ESCALATED") throw new WebBridgeError("WEB_CODE_REVIEW_ESCALATED", "Independent Web code review escalated a consequential decision before final intent review.");
@@ -66,13 +63,6 @@ async function nextFinalReviewRound(stateDirectory: string, runId: string): Prom
   return next;
 }
 
-/**
- * Create the next Web review required by policy and return its explicit role.
- * Callers must never infer that every pending review is the original-Web final
- * review: PAIR may first require an independent code-review job. Final intent
- * review selects the exact Result Bundle generation implied by durable review
- * history: round 1 uses immutable Phase 6, rounds 2..4 use revision bundles.
- */
 export async function createPendingFinalReview(options: { bridge: WebBridge; runId: string; stateDirectory: string }): Promise<PendingWebReview> {
   const split = options.runId.lastIndexOf(":");
   const archiveSha = options.runId.slice(split + 1);
@@ -86,8 +76,15 @@ export async function createPendingFinalReview(options: { bridge: WebBridge; run
   const receipt = verified.receipt;
   if (!receipt.archive_sha256) throw new WebBridgeError("WEB_FINAL_REVIEW_NOT_READY", "Selected Result Bundle is not ready; no review job was created.");
   const request = { run_id: options.runId, result_bundle_sha256: receipt.archive_sha256, published_commit_sha: receipt.published_commit_sha, pull_request_url: receipt.pull_request.url, review_round: reviewRound };
-  const identity = await options.bridge.createFinalReviewJob(request, `final-review-${contentDigest({ purpose: "final_intent_review", request })}`);
+
+  // Keep the stable generic WebBridge evidence transport unchanged. Providers
+  // with tighter semantic context limits may inspect/preflight this exact payload
+  // before durable review authority is created, without affecting other bridges.
   const evidence = await readBoundedResultEvidence(verified.archivePath, verified.manifest);
-  await options.bridge.submitFinalReviewEvidence(identity.job_id, { purpose: "final_intent_review", binding: request, entries: evidence }, `final-evidence-${receipt.archive_sha256}`);
+  const payload = { purpose: "final_intent_review", binding: request, entries: evidence };
+  await options.bridge.preflightFinalReviewEvidence?.(payload);
+
+  const identity = await options.bridge.createFinalReviewJob(request, `final-review-${contentDigest({ purpose: "final_intent_review", request })}`);
+  await options.bridge.submitFinalReviewEvidence(identity.job_id, payload, `final-evidence-${receipt.archive_sha256}`);
   return { ...identity, purpose: "final_intent_review" };
 }

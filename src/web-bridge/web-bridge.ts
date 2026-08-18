@@ -9,6 +9,8 @@ export interface WebBridge {
   submitClarification(jobId: string, text: string, idempotencyKey: string): Promise<void>;
   receiveSealedContract(jobId: string): Promise<WebContractEnvelope | null>;
   receiveWebImplementation(jobId: string): Promise<WebImplementationSubmission | null>;
+  /** Optional provider-specific preflight. It must not create durable authority. */
+  preflightFinalReviewEvidence?(evidence: Record<string, unknown>): Promise<void>;
   createFinalReviewJob(request: FinalReviewRequest, idempotencyKey: string): Promise<BridgeJobIdentity>;
   submitFinalReviewEvidence(reviewId: string, evidence: Record<string, unknown>, idempotencyKey: string): Promise<void>;
   waitForVerdict(reviewId: string, signal?: AbortSignal): Promise<WebVerdictEnvelope | null>;
