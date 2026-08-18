@@ -14,7 +14,7 @@ test("oversized durable review lookup degrades to a digest-bound retry receipt i
   const paths = Array.from({ length: 2_500 }, (_, index) => `src/generated/${String(index).padStart(4, "0")}-${"x".repeat(96)}.ts`);
   const exactResult = { paths, truncated: false };
 
-  const prompt = chatGptCodexReviewRepositoryResultPrompt(exactResult, request, "review-oversize", false);
+  const prompt = chatGptCodexReviewRepositoryResultPrompt(exactResult, request, "review-oversize");
 
   assert.match(prompt, /^WCO_SEMANTIC_PHASE:REVIEW_INSPECTION\n/);
   assert.match(prompt, /"repository_result_oversized":true/);
