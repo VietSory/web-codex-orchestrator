@@ -1,5 +1,6 @@
 import { MAINTAINER_AUTHORING_STANDARD, MAINTAINER_REVIEW_STANDARD } from "../shared/maintainer-reasoning-standard.js";
 import { WEB_BRIDGE_PROTOCOL_VERSION, type FinalReviewRequest } from "./contracts.js";
+import { assertChatGptCodexReviewEvidenceBinding } from "./chatgpt-codex-review-evidence.js";
 import { CHATGPT_CODEX_AUTHOR_PHASE_MARKER, CHATGPT_CODEX_REVIEW_PHASE_MARKER } from "./chatgpt-codex-semantic-client.js";
 import type { AuthoringJobRequest } from "./web-bridge.js";
 
@@ -86,6 +87,7 @@ export function chatGptCodexClarificationPrompt(clarification: unknown, request:
 }
 
 export function chatGptCodexReviewPrompt(request: FinalReviewRequest, evidence: Record<string, unknown>, reviewId: string): string {
+  assertChatGptCodexReviewEvidenceBinding(request, evidence);
   return [
     CHATGPT_CODEX_REVIEW_PHASE_MARKER,
     "You are WCO's independent semantic reviewer. You have no mutation, shell, Git, publish, or merge authority.",
