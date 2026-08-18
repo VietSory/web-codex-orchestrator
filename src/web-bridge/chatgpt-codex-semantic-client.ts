@@ -51,6 +51,23 @@ function assertPromptOnlyProviderEvents(events: AgentTurnResponse["public_events
   if (threadStarted > 1 || turnStarted !== 1 || turnCompleted !== 1 || agentMessages < 1) throw semanticAuditError("WEB_CHATGPT_CODEX_EVENT_AUDIT_INVALID", "Semantic provider event lifecycle is incomplete or ambiguous.");
 }
 
+function assertPhaseOutputKind(output: unknown, schema: Record<string, unknown>): void {
+  if (!output || typeof output !== "object" || Array.isArray(output)) {
+    throw semanticAuditError("WEB_CHATGPT_CODEX_PHASE_OUTPUT_INVALID", "Semantic provider output is not an object for the selected WCO phase.");
+  }
+  const properties = schema.properties;
+  const kindSchema = properties && typeof properties === "object" && !Array.isArray(properties)
+    ? (properties as Record<string, unknown>).kind
+    : undefined;
+  const allowedKinds = kindSchema && typeof kindSchema === "object" && !Array.isArray(kindSchema)
+    ? (kindSchema as Record<string, unknown>).enum
+    : undefined;
+  const kind = (output as Record<string, unknown>).kind;
+  if (!Array.isArray(allowedKinds) || typeof kind !== "string" || !allowedKinds.includes(kind)) {
+    throw semanticAuditError("WEB_CHATGPT_CODEX_PHASE_OUTPUT_INVALID", `Semantic provider returned authority kind '${String(kind)}' outside the selected WCO phase.`);
+  }
+}
+
 function measuredUsage(usage: AgentTurnResponse["usage"]): MeasuredProviderUsage {
   const input = usage?.input_tokens, cached = usage?.cached_input_tokens, output = usage?.output_tokens;
   if (![input, cached, output].every((value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0)) throw Object.assign(new Error("Local ChatGPT/Codex semantic provider did not return valid token usage."), { code: "WEB_CHATGPT_CODEX_USAGE_UNAVAILABLE" });
@@ -82,10 +99,10 @@ async function assertBlindChallengeFilesystem(scratchDirectory: string, authorit
 
 /** Read-only/no-network semantic provider adapter with closed phase schema,
  * trusted per-turn deadline, mandatory measurable token usage, prompt-only SDK
- * event attestation, exact continuation-thread identity, context-only author
- * recovery, an inspection-only independent-review phase before verdict
- * authority, and a challenge-specific empty-filesystem boundary before a blind
- * Web-B turn reaches Codex. */
+ * event attestation, exact continuation-thread identity, local phase-authority
+ * revalidation, context-only author recovery, an inspection-only independent-
+ * review phase before verdict authority, and a challenge-specific empty-
+ * filesystem boundary before a blind Web-B turn reaches Codex. */
 export class ChatGptCodexSemanticClient {
   constructor(private readonly agent: AgentClient, private readonly maximumTurnSeconds = DEFAULT_PROVIDER_TURN_SECONDS) {
     if (!Number.isFinite(maximumTurnSeconds) || maximumTurnSeconds <= 0 || maximumTurnSeconds > MAX_PROVIDER_TURN_SECONDS) throw new Error("WEB_CHATGPT_CODEX_CONFIG_INVALID: semantic turn timeout is outside the trusted 1-3600 second range.");
@@ -106,6 +123,7 @@ export class ChatGptCodexSemanticClient {
       if (options.threadId && result.thread_id !== options.threadId) {
         throw semanticAuditError("WEB_CHATGPT_CODEX_THREAD_DRIFT", "Semantic provider continuation returned a different thread identity; WCO refuses to trust context continuity.");
       }
+      assertPhaseOutputKind(result.output, outputSchema);
       return { thread_id: result.thread_id, output: result.output, usage: measuredUsage(result.usage) };
     } catch (error) {
       if (timeout.aborted && !options.signal?.aborted) throw timeoutError();
