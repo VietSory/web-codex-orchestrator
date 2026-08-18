@@ -151,7 +151,10 @@ test("provider transport rejects provider thread drift and makes the completed p
   const first = await fixture.transport.waitForSemanticChallengeAction(identity.job_id, 0);
   if (!first || first.type !== "repository_command") throw new Error("expected repository command");
   await fixture.transport.submitSemanticChallengeRepositoryResult(identity.job_id, { request_id: first.request_id, result: { kind: "summary" } } as any, "result-1");
-  await assert.rejects(fixture.transport.waitForSemanticChallengeAction(identity.job_id, 1), /thread identity drifted/i);
+  await assert.rejects(
+    fixture.transport.waitForSemanticChallengeAction(identity.job_id, 1),
+    (error: any) => error?.code === "WEB_CHATGPT_CODEX_THREAD_DRIFT",
+  );
   await assert.rejects(fixture.transport.waitForSemanticChallengeAction(identity.job_id, 1), /ambiguous and cannot be replayed/i);
   assert.equal(fixture.calls(), 2);
 });
