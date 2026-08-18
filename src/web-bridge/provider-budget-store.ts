@@ -126,9 +126,6 @@ export function providerBudgetUsage(receipt: { entries: ProviderBudgetEntry[] })
 }
 
 export async function readProviderBudgetUsage(stateDirectory: string, runId: string): Promise<ProviderBudgetUsage> {
-  // Reads attest the complete state ancestry with the same primitive as writes.
-  // Creating an empty canonical budget directory is non-authoritative and avoids
-  // a weaker "read-only" path that could traverse a symlinked intermediate.
   const directory = await canonicalBudgetDirectory(stateDirectory, runId);
   const receipt = await readReceiptFromDirectory(directory, runId);
   return receipt ? providerBudgetUsage(receipt) : { turns: 0, input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, duration_ms: 0 };
@@ -151,6 +148,9 @@ export async function recordProviderBudgetUsage(options: {
     if (error instanceof TicketFileLockError) throw new WebBridgeError(error.code === "TICKET_LOCKED" ? "WEB_CHATGPT_CODEX_BUDGET_LOCKED" : "WEB_CHATGPT_CODEX_BUDGET_STATE_INVALID", error.message);
     throw error;
   }
+
+  let result: ProviderBudgetUsage | undefined;
+  let operationError: unknown;
   try {
     const receipt = await readReceiptFromDirectory(directory, options.runId) ?? { schema_version: "1.0" as const, kind: "wco-provider-budget" as const, run_id: options.runId, entries: [] };
     const existing = receipt.entries.find((entry) => entry.key === options.key);
@@ -161,14 +161,24 @@ export async function recordProviderBudgetUsage(options: {
         && existing.output_tokens === measurement.output_tokens
         && existing.duration_ms === measurement.duration_ms;
       if (!same) throw new WebBridgeError("WEB_CHATGPT_CODEX_BUDGET_STATE_INVALID", "Provider budget idempotency key was replayed with different measured usage.");
-      return providerBudgetUsage(receipt);
+      result = providerBudgetUsage(receipt);
+    } else {
+      if (receipt.entries.length >= MAX_ENTRIES) throw new WebBridgeError("WEB_CHATGPT_CODEX_BUDGET_STATE_INVALID", "Provider budget receipt exceeds its bounded turn journal.");
+      receipt.entries.push({ key: options.key, phase: options.phase, ...measurement, recorded_at: (options.now?.() ?? new Date()).toISOString() });
+      validateReceipt(receipt, options.runId);
+      await atomicWriteJson(path.join(directory, "usage.json"), receipt);
+      result = providerBudgetUsage(receipt);
     }
-    if (receipt.entries.length >= MAX_ENTRIES) throw new WebBridgeError("WEB_CHATGPT_CODEX_BUDGET_STATE_INVALID", "Provider budget receipt exceeds its bounded turn journal.");
-    receipt.entries.push({ key: options.key, phase: options.phase, ...measurement, recorded_at: (options.now?.() ?? new Date()).toISOString() });
-    validateReceipt(receipt, options.runId);
-    await atomicWriteJson(path.join(directory, "usage.json"), receipt);
-    return providerBudgetUsage(receipt);
-  } finally {
-    await lock.release().catch(() => undefined);
+  } catch (error) {
+    operationError = error;
   }
+
+  try { await lock.release(); }
+  catch (releaseError) {
+    if (operationError === undefined) {
+      operationError = new WebBridgeError("WEB_CHATGPT_CODEX_BUDGET_LOCK_RELEASE_FAILED", `Provider budget mutation completed but writer lock could not be released safely: ${releaseError instanceof Error ? releaseError.message : String(releaseError)}`);
+    }
+  }
+  if (operationError !== undefined) throw operationError;
+  return result as ProviderBudgetUsage;
 }
