@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { WebBridgeError } from "./contracts.js";
+import { WebBridgeError, contentDigest, type FinalReviewRequest } from "./contracts.js";
 
 export const MAX_CHATGPT_CODEX_REVIEW_EVIDENCE_JSON_BYTES = 480 * 1024;
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -10,6 +10,19 @@ function object(value: unknown, label: string): Record<string, unknown> {
     throw new WebBridgeError("WEB_RESULT_EVIDENCE_INVALID", `${label} must be an object.`);
   }
   return value as Record<string, unknown>;
+}
+
+function productionShape(evidence: Record<string, unknown>): boolean {
+  const keys = Object.keys(evidence);
+  const hasProductionField = keys.some((key) => key === "purpose" || key === "binding" || key === "entries");
+  if (!hasProductionField) return false;
+  if (keys.length !== 3 || !keys.includes("purpose") || !keys.includes("binding") || !keys.includes("entries")) {
+    throw new WebBridgeError("WEB_RESULT_EVIDENCE_INVALID", "Review evidence has an incomplete production transport shape.");
+  }
+  if (evidence.purpose !== "independent_code_review" && evidence.purpose !== "final_intent_review") {
+    throw new WebBridgeError("WEB_RESULT_EVIDENCE_INVALID", "Review evidence has an invalid purpose.");
+  }
+  return true;
 }
 
 function exactUtf8(bytes: Buffer, label: string): string {
@@ -61,6 +74,15 @@ function semanticEntry(path: string, value: unknown): { content_utf8: string; sh
   return { content_utf8: exactUtf8(bytes, `Review evidence '${path}'`), sha256: digest, size_bytes: bytes.byteLength };
 }
 
+/** Production evidence must describe the same immutable review request stored by the relay. */
+export function assertChatGptCodexReviewEvidenceBinding(request: FinalReviewRequest, evidence: Record<string, unknown>): void {
+  if (!productionShape(evidence)) return;
+  const binding = object(evidence.binding, "Review evidence binding");
+  if (contentDigest(binding) !== contentDigest(request)) {
+    throw new WebBridgeError("WEB_CHATGPT_CODEX_BINDING_MISMATCH", "Semantic review evidence is bound to a different review request/result generation.");
+  }
+}
+
 /**
  * Convert the production Result-evidence transport into exact readable local
  * semantic context without changing the generic WebBridge wire contract.
@@ -71,16 +93,8 @@ function semanticEntry(path: string, value: unknown): { content_utf8: string; sh
  * shape instead of silently treating a malformed envelope as legacy evidence.
  */
 export function prepareChatGptCodexReviewEvidence(evidence: Record<string, unknown>): Record<string, unknown> {
-  const keys = Object.keys(evidence);
-  const hasProductionField = keys.some((key) => key === "purpose" || key === "binding" || key === "entries");
-  if (!hasProductionField) return assertBounded(evidence);
+  if (!productionShape(evidence)) return assertBounded(evidence);
 
-  if (keys.length !== 3 || !keys.includes("purpose") || !keys.includes("binding") || !keys.includes("entries")) {
-    throw new WebBridgeError("WEB_RESULT_EVIDENCE_INVALID", "Review evidence has an incomplete production transport shape.");
-  }
-  if (evidence.purpose !== "independent_code_review" && evidence.purpose !== "final_intent_review") {
-    throw new WebBridgeError("WEB_RESULT_EVIDENCE_INVALID", "Review evidence has an invalid purpose.");
-  }
   const binding = object(evidence.binding, "Review evidence binding");
   const entries = object(evidence.entries, "Review evidence entries");
   const readableEntries: Record<string, { content_utf8: string; sha256: string; size_bytes: number }> = {};
