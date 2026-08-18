@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ChatGptCodexImplementationClient } from "../src/web-bridge/chatgpt-codex-implementation-client.js";
-import { chatGptCodexAuthorPrompt, chatGptCodexRepositoryResultPrompt, chatGptCodexReviewPrompt } from "../src/web-bridge/chatgpt-codex-prompts.js";
+import { chatGptCodexAuthorPrompt, chatGptCodexRepositoryResultPrompt, chatGptCodexReviewPrompt, chatGptCodexReviewRepositoryResultPrompt } from "../src/web-bridge/chatgpt-codex-prompts.js";
 import { ChatGptCodexSemanticClient } from "../src/web-bridge/chatgpt-codex-semantic-client.js";
 
 const profile: any = { model: "gpt-5.6-sol", reasoning_effort: "high" };
@@ -46,7 +46,7 @@ test("semantic SDK turn exposes only the authority kind valid for its closed WCO
   const review = await client.turn({ profile, ...dirs, prompt: chatGptCodexReviewPrompt({ run_id: `TASK:${"b".repeat(64)}`, result_bundle_sha256: "c".repeat(64), published_commit_sha: "d".repeat(40), pull_request_url: "https://github.com/example/repo/pull/1", review_round: 1 }, { exact: true }, "review-1") });
 
   assert.deepEqual(requests[0].output_schema.properties.kind.enum, ["repository_command", "contract_sealed"]);
-  assert.deepEqual(requests[1].output_schema.properties.kind.enum, ["web_verdict"]);
+  assert.deepEqual(requests[1].output_schema.properties.kind.enum, ["repository_command", "web_verdict"]);
   assert.deepEqual(author.usage, usage);
   assert.deepEqual(review.usage, usage);
   assert.equal(requests[0].read_only, true);
@@ -77,11 +77,22 @@ test("initial semantic prompt carries the full closed wire tutorial while reposi
   assert.doesNotMatch(followUp, /For kind=contract_sealed, payload_json must be/);
   assert.ok(Buffer.byteLength(followUp, "utf8") < Buffer.byteLength(initial, "utf8"), "repository-result follow-up must remain smaller than the initial schema/tutorial prompt");
 
-  const review = chatGptCodexReviewPrompt({ run_id: `TASK:${"b".repeat(64)}`, result_bundle_sha256: "c".repeat(64), published_commit_sha: "d".repeat(40), pull_request_url: "https://github.com/example/repo/pull/1", review_round: 1 }, { exact: true }, "review-exact");
+  const reviewRequest = { run_id: `TASK:${"b".repeat(64)}`, result_bundle_sha256: "c".repeat(64), published_commit_sha: "d".repeat(40), pull_request_url: "https://github.com/example/repo/pull/1", review_round: 1 } as const;
+  const review = chatGptCodexReviewPrompt(reviewRequest, { exact: true, large_evidence_marker: "x".repeat(8_192) }, "review-exact");
+  assert.match(review, /kind=repository_command/);
+  assert.match(review, /exact immutable published commit/);
+  assert.match(review, new RegExp(reviewRequest.published_commit_sha));
   assert.match(review, /closed WebVerdictEnvelope/);
   assert.match(review, /Only REVISE may include repair_operations/);
   assert.match(review, /create_file, replace_file, or delete_file/);
   assert.match(review, /review_id must be exactly "review-exact"/);
+
+  const reviewFollowUp = chatGptCodexReviewRepositoryResultPrompt({ matches: ["src/caller.ts"] }, reviewRequest, "review-exact");
+  assert.match(reviewFollowUp, /Continue the same REVIEW thread/);
+  assert.match(reviewFollowUp, /src\/caller\.ts/);
+  assert.doesNotMatch(reviewFollowUp, /large_evidence_marker/);
+  assert.doesNotMatch(reviewFollowUp, /Exact review evidence:/);
+  assert.ok(Buffer.byteLength(reviewFollowUp, "utf8") < Buffer.byteLength(review, "utf8"), "review repository follow-up must not retransmit the full initial Result Bundle evidence");
 });
 
 test("successful semantic provider output without measurable usage fails closed", async () => {
