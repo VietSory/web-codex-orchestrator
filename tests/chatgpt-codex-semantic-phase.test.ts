@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { ChatGptCodexImplementationClient } from "../src/web-bridge/chatgpt-codex-implementation-client.js";
 import { chatGptCodexAuthorPrompt, chatGptCodexRepositoryResultPrompt, chatGptCodexReviewPrompt, chatGptCodexReviewRepositoryResultPrompt } from "../src/web-bridge/chatgpt-codex-prompts.js";
@@ -55,6 +56,51 @@ test("semantic SDK turn exposes only the authority kind valid for its closed WCO
   assert.equal(requests[1].network_access, false);
 });
 
+test("production independent code review cannot expose verdict authority until an exact source read completed", async () => {
+  const requests: any[] = [];
+  const client = new ChatGptCodexSemanticClient({
+    async checkAvailability() {},
+    async turn(request: any) {
+      requests.push(request);
+      return { thread_id: `inspection-thread-${requests.length}`, output: { protocol_version: "wco-chatgpt-codex-v1", kind: request.output_schema.properties.kind.enum[0], payload_json: "{}" }, usage, public_events: cleanEvents };
+    },
+  } as any);
+  const reviewRequest = { run_id: `TASK:${"e".repeat(64)}`, result_bundle_sha256: "f".repeat(64), published_commit_sha: "1".repeat(40), pull_request_url: "https://github.com/example/repo/pull/2", review_round: 1 } as const;
+  const evidence = { purpose: "independent_code_review", binding: reviewRequest, entries: {} } as const;
+
+  const initial = chatGptCodexReviewPrompt(reviewRequest, evidence, "review-inspection");
+  await client.turn({ profile, ...dirs, prompt: initial });
+  assert.match(initial, /^WCO_SEMANTIC_PHASE:REVIEW_INSPECTION\n/);
+  assert.deepEqual(requests[0].output_schema.properties.kind.enum, ["repository_command"]);
+  assert.doesNotMatch(initial, /For kind=web_verdict/);
+
+  const locator = chatGptCodexReviewRepositoryResultPrompt({ matches: ["src/caller.ts"] }, reviewRequest, "review-inspection");
+  await client.turn({ profile, ...dirs, prompt: locator });
+  assert.match(locator, /^WCO_SEMANTIC_PHASE:REVIEW_INSPECTION\n/);
+  assert.deepEqual(requests[1].output_schema.properties.kind.enum, ["repository_command"]);
+
+  const source = Buffer.from("export function caller() { return preserveInvariant(); }\n", "utf8");
+  const exactRead = {
+    files: [{
+      path: "src/caller.ts",
+      content_base64: source.toString("base64"),
+      content_sha256: createHash("sha256").update(source).digest("hex"),
+      blob_sha: "2".repeat(40),
+      size_bytes: source.byteLength,
+      start_byte: 0,
+      end_byte_exclusive: source.byteLength,
+      total_bytes: source.byteLength,
+    }],
+  };
+  const afterRead = chatGptCodexReviewRepositoryResultPrompt(exactRead, reviewRequest, "review-inspection");
+  await client.turn({ profile, ...dirs, prompt: afterRead });
+  assert.match(afterRead, /^WCO_SEMANTIC_PHASE:REVIEW\n/);
+  assert.deepEqual(requests[2].output_schema.properties.kind.enum, ["repository_command", "web_verdict"]);
+  assert.match(afterRead, /For kind=web_verdict/);
+  assert.match(afterRead, /content_utf8/);
+  assert.doesNotMatch(afterRead, /content_base64/);
+});
+
 test("initial semantic prompt carries the full closed wire tutorial while repository follow-ups stay compact and identity-bound", () => {
   const request = { owner: "local", repository: { repository_id: "repo", base_branch: "main", base_commit: "a".repeat(40) }, user_intent: "change app", ttl_seconds: 60 } as const;
   const initial = chatGptCodexAuthorPrompt(request, "job-exact");
@@ -92,6 +138,7 @@ test("initial semantic prompt carries the full closed wire tutorial while reposi
   assert.match(reviewFollowUp, /src\/caller\.ts/);
   assert.doesNotMatch(reviewFollowUp, /large_evidence_marker/);
   assert.doesNotMatch(reviewFollowUp, /Exact review evidence:/);
+  assert.doesNotMatch(reviewFollowUp, /For kind=web_verdict/);
   assert.ok(Buffer.byteLength(reviewFollowUp, "utf8") < Buffer.byteLength(review, "utf8"), "review repository follow-up must not retransmit the full initial Result Bundle evidence");
 });
 
