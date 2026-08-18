@@ -14,7 +14,7 @@ import { ChatGptCodexSemanticClient } from "./chatgpt-codex-semantic-client.js";
 import { WebBridgeError, contentDigest, parseWebContractEnvelope, parseWebImplementationSubmission, parseWebVerdictEnvelope, type AuthoringEvent, type BridgeConnectionStatus, type BridgeJobIdentity, type FinalReviewRequest, type RepositoryCommandResult, type WebContractEnvelope, type WebImplementationSubmission, type WebVerdictEnvelope } from "./contracts.js";
 import type { PreparedRunAwareWebBridge } from "./prepared-run-aware.js";
 import { RelayFileStore } from "./relay/file-store.js";
-import { toAuthoringEvent } from "./relay/protocol.js";
+import { toAuthoringEvent, type RelayJobRecord } from "./relay/protocol.js";
 import type { AuthoringJobRequest, WebBridge } from "./web-bridge.js";
 
 const OWNER = "local-chatgpt-codex";
@@ -34,6 +34,12 @@ function preparedRunId(events: RelayEvents): string | null {
   const event = events.slice().reverse().find((value) => value.type === "chatgpt_codex_prepared_run");
   const value = event?.payload as { run_id?: unknown } | undefined;
   return typeof value?.run_id === "string" ? value.run_id : null;
+}
+
+function relayRunId(record: RelayJobRecord): string | null {
+  if (record.kind === "authoring") return preparedRunId(record.events);
+  const runId = (record.request as FinalReviewRequest).run_id;
+  return typeof runId === "string" ? runId : null;
 }
 
 function hasUnresolvedReservation(events: RelayEvents, reservationType: string, completionTypes: readonly string[]): boolean {
@@ -107,6 +113,25 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
 
   private limits(): AgentLimits { return this.config.agents?.limits ?? defaultAgentLimits(); }
 
+  private async providerBudgetEventsForRun(runId: string): Promise<RelayEvents> {
+    const records = await this.store.list(OWNER);
+    return records.filter((record) => relayRunId(record) === runId).flatMap((record) => record.events);
+  }
+
+  private async providerBudgetEventsForJob(jobId: string, current?: RelayJobRecord): Promise<RelayEvents> {
+    const record = current ?? await this.store.get(jobId, OWNER);
+    const runId = relayRunId(record);
+    return runId ? await this.providerBudgetEventsForRun(runId) : record.events;
+  }
+
+  private async assertProviderBudgetForJob(jobId: string, current: RelayJobRecord, beforeTurn: boolean): Promise<void> {
+    assertProviderBudget(await this.providerBudgetEventsForJob(jobId, current), this.limits(), beforeTurn);
+  }
+
+  private async assertProviderBudgetForRun(runId: string, beforeTurn: boolean): Promise<void> {
+    assertProviderBudget(await this.providerBudgetEventsForRun(runId), this.limits(), beforeTurn);
+  }
+
   private async rawAgent(): Promise<CodexSdkAgentClient> {
     const runtime = await resolveCodexRuntime(this.config.runtime, this.stateDirectory);
     return new CodexSdkAgentClient(runtime);
@@ -136,8 +161,8 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
     if (cached > input) throw new WebBridgeError("WEB_CHATGPT_CODEX_USAGE_INVALID", "Provider cached-input usage exceeds total input usage.");
     const payload = { phase, input_tokens: input, cached_input_tokens: cached, output_tokens: output };
     await this.store.append(jobId, OWNER, PROVIDER_USAGE_EVENT, payload, `usage-${phase}-${key.slice(0, 96)}`);
-    const latest = await this.store.events(jobId, OWNER, 0);
-    assertProviderBudget(latest, this.limits(), false);
+    const latest = await this.store.get(jobId, OWNER);
+    await this.assertProviderBudgetForJob(jobId, latest, false);
   }
 
   private async turn(prompt: string, existingThreadId?: string, signal?: AbortSignal, reserve?: (claimNonce: string) => Promise<boolean>): Promise<{ thread_id: string; output: unknown; usage: ProviderUsage }> {
@@ -180,7 +205,7 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
     const latestResult = record.events.slice().reverse().find((event) => event.type === "repository_command_result" && (!lastAuthority || event.sequence > lastAuthority.sequence));
     const latestClarification = record.events.slice().reverse().find((event) => event.type === "user_clarification" && (!lastAuthority || event.sequence > lastAuthority.sequence));
     if (lastAuthority?.type === "repository_command" && !latestResult && !latestClarification) return null;
-    assertProviderBudget(record.events, this.limits(), true);
+    await this.assertProviderBudgetForJob(jobId, record, true);
     const request = record.request as AuthoringJobRequest;
     const prompt = latestResult
       ? chatGptCodexRepositoryResultPrompt(latestResult.payload, request, jobId)
@@ -223,7 +248,7 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
     if (!runId) return null;
     if (!record.events.some((event) => event.type === "contract_sealed")) throw new WebBridgeError("WEB_CHATGPT_CODEX_PHASE_INVALID", "Implementation proposal requires a sealed semantic contract.");
     if (record.events.some((event) => event.type === "chatgpt_codex_implementation_reserved")) throw new WebBridgeError("WEB_CHATGPT_CODEX_AMBIGUOUS_IMPLEMENTATION", "A prior implementation provider turn may have started without a durable result; WCO refuses to replay an ambiguous mutation proposal.");
-    assertProviderBudget(record.events, this.limits(), true);
+    await this.assertProviderBudgetForJob(jobId, record, true);
     await this.ensureAuthorizedForProviderTurn();
     const preparation = await readPreparationForExecution(this.stateDirectory, runId);
     const profile = this.config.agents?.implementer;
@@ -255,7 +280,14 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
     await this.store.append(jobId, OWNER, "chatgpt_codex_prepared_run", { run_id: runId }, idempotencyKey);
   }
 
-  async createFinalReviewJob(request: FinalReviewRequest, idempotencyKey: string): Promise<BridgeJobIdentity> { return await this.store.create("final_review", OWNER, request, idempotencyKey, 86_400); }
+  async createFinalReviewJob(request: FinalReviewRequest, idempotencyKey: string): Promise<BridgeJobIdentity> {
+    // A review job is a new relay record, not a new task budget. Charge all
+    // durable provider usage already bound to this run before creating more
+    // authority so exhausted tasks cannot accumulate orphan review jobs.
+    await this.assertProviderBudgetForRun(request.run_id, true);
+    return await this.store.create("final_review", OWNER, request, idempotencyKey, 86_400);
+  }
+
   async submitFinalReviewEvidence(reviewId: string, evidence: Record<string, unknown>, idempotencyKey: string): Promise<void> { await this.store.append(reviewId, OWNER, "final_review_evidence", evidence, idempotencyKey); }
 
   async waitForVerdict(reviewId: string, signal?: AbortSignal): Promise<WebVerdictEnvelope | null> {
@@ -266,7 +298,7 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
     const evidence = record.events.slice().reverse().find((value) => value.type === "final_review_evidence");
     if (!evidence) return null;
     if (hasUnresolvedReservation(record.events, "chatgpt_codex_review_reserved", ["web_verdict"])) throw new WebBridgeError("WEB_CHATGPT_CODEX_AMBIGUOUS_REVIEW", "A prior semantic review turn may have completed without a durable verdict; WCO refuses to replay an ambiguous authority-bearing review.");
-    assertProviderBudget(record.events, this.limits(), true);
+    await this.assertProviderBudgetForJob(reviewId, record, true);
     const request = record.request as FinalReviewRequest;
     const prompt = chatGptCodexReviewPrompt(request, evidence.payload as Record<string, unknown>, reviewId);
     const inputSha256 = contentDigest({ reviewId, prompt });
