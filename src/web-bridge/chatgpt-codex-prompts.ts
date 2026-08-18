@@ -2,6 +2,7 @@ import { MAINTAINER_AUTHORING_STANDARD, MAINTAINER_REVIEW_STANDARD } from "../sh
 import { WEB_BRIDGE_PROTOCOL_VERSION, type FinalReviewRequest } from "./contracts.js";
 import { assertChatGptCodexReviewEvidenceBinding } from "./chatgpt-codex-review-evidence.js";
 import { CHATGPT_CODEX_AUTHOR_PHASE_MARKER, CHATGPT_CODEX_REVIEW_PHASE_MARKER } from "./chatgpt-codex-semantic-client.js";
+import { prepareRepositoryResultForSemanticPrompt } from "./repository-result-semantic-context.js";
 import type { AuthoringJobRequest } from "./web-bridge.js";
 
 function boundedJson(value: unknown, maximum = 512_000): string {
@@ -40,11 +41,23 @@ function authorFollowUpReasoningReminder(): string {
 }
 
 function reviewPayloadContract(request: FinalReviewRequest, reviewId: string): string { return [
-  "The payload_json field is a JSON-encoded closed WebVerdictEnvelope object, not prose.",
+  "For kind=web_verdict, payload_json is a JSON-encoded closed WebVerdictEnvelope object, not prose.",
   "It must contain exactly protocol_version, review_id, run_id, result_bundle_sha256, verdict, summary, findings, plus optional repair_operations.",
   `protocol_version must be exactly ${JSON.stringify(WEB_BRIDGE_PROTOCOL_VERSION)}, review_id must be exactly ${JSON.stringify(reviewId)}, run_id must be exactly ${JSON.stringify(request.run_id)}, and result_bundle_sha256 must be exactly ${JSON.stringify(request.result_bundle_sha256)}.`,
   "verdict is APPROVE, REVISE, or BLOCK. Each finding has exactly id, severity, description; severity is blocking or non_blocking.",
   "Only REVISE may include repair_operations. Each repair operation has exactly op_id, kind, path, preimage_sha256, postimage_base64, postimage_sha256; kind is create_file, replace_file, or delete_file.",
+].join("\n"); }
+
+function reviewRepositoryContract(request: FinalReviewRequest): string { return [
+  "If exact change evidence is insufficient to resolve a material code question, return kind=repository_command instead of guessing or approving.",
+  `Every review repository_command is executed read-only against the exact immutable published commit ${JSON.stringify(request.published_commit_sha)}; it can never change repository state or review authority.`,
+  "repository_command payload_json must be exactly one of these closed shapes:",
+  '{"operation":"summary"}',
+  '{"operation":"tree"} or {"operation":"tree","prefix":"src","maximum_paths":100}.',
+  '{"operation":"search","query":"symbolName"} or the same object with optional integer maximum_matches.',
+  '{"operation":"read","paths":["src/file.ts"]}; optional known_content_sha256 maps paths to lowercase SHA-256.',
+  '{"operation":"read","regions":[{"path":"src/file.ts","start_byte":0,"end_byte_exclusive":4096}]}; optional known_content_sha256 maps paths to lowercase SHA-256.',
+  "Request only the smallest exact search/read needed to trace changed behavior, callers, invariants, error paths, recovery/concurrency boundaries, or missing tests. Never request shell, Git mutation, secrets, network tools, publish, or merge authority.",
 ].join("\n"); }
 
 export function chatGptCodexAuthorPrompt(request: AuthoringJobRequest, jobId: string): string {
@@ -68,7 +81,7 @@ export function chatGptCodexRepositoryResultPrompt(result: unknown, request: Aut
   return [
     CHATGPT_CODEX_AUTHOR_PHASE_MARKER,
     "WCO executed your exact bounded repository request. Treat this result as authoritative only for the requested repository evidence.",
-    boundedJson(result),
+    boundedJson(prepareRepositoryResultForSemanticPrompt(result)),
     authorFollowUpContract(request, jobId),
     authorFollowUpReasoningReminder(),
     "Return the next repository_command if more exact context is required; otherwise return contract_sealed. Never return implementation_sealed or web_verdict.",
@@ -93,10 +106,29 @@ export function chatGptCodexReviewPrompt(request: FinalReviewRequest, evidence: 
     "You are WCO's independent semantic reviewer. You have no mutation, shell, Git, publish, or merge authority.",
     MAINTAINER_REVIEW_STANDARD,
     "When this evidence is for independent_code_review, independently derive correctness from the exact change evidence instead of inheriting the author's conclusions. When it is for final_intent_review, re-check the final result against the original user intent, frozen architecture/acceptance authority, and end-to-end behavior even if an earlier reviewer approved.",
-    "Review only the exact bounded evidence below and return exactly one web_verdict provider envelope.",
-    "APPROVE only when the final Draft PR evidence satisfies the sealed intent and verification. REVISE/BLOCK must contain concrete bounded findings.",
+    "Allowed review actions are repository_command or web_verdict only. If a material correctness question depends on unchanged/out-of-diff code, do not guess from the diff: request the minimum exact repository context first.",
+    reviewRepositoryContract(request),
+    "APPROVE only when the final Draft PR evidence satisfies the sealed intent and verification and no material question remains unresolved. REVISE/BLOCK must contain concrete bounded findings.",
     reviewPayloadContract(request, reviewId),
     `Review request: ${boundedJson(request)}`,
     `Exact review evidence: ${boundedJson(evidence)}`,
+  ].join("\n");
+}
+
+/**
+ * Continue the same provider thread after one bounded repository lookup. The
+ * large Result Bundle evidence intentionally stays in the thread instead of
+ * being retransmitted on every lookup, keeping exact-context review cheaper
+ * than manual full-context copy/paste loops.
+ */
+export function chatGptCodexReviewRepositoryResultPrompt(result: unknown, request: FinalReviewRequest, reviewId: string): string {
+  return [
+    CHATGPT_CODEX_REVIEW_PHASE_MARKER,
+    "Continue the same REVIEW thread. WCO executed your bounded read-only repository request against the exact published commit from the initial review.",
+    `Repository result: ${boundedJson(prepareRepositoryResultForSemanticPrompt(result), 192_000)}`,
+    "Keep applying the senior-maintainer review standard from the initial turn. Do not inherit implementation claims or treat green tests as proof.",
+    "Allowed actions remain repository_command or web_verdict. Request another bounded lookup only for a still-material unresolved question; otherwise decide the verdict now.",
+    reviewRepositoryContract(request),
+    reviewPayloadContract(request, reviewId),
   ].join("\n");
 }
