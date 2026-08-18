@@ -1,10 +1,11 @@
 import { MAINTAINER_AUTHORING_STANDARD, MAINTAINER_REVIEW_STANDARD } from "../shared/maintainer-reasoning-standard.js";
 import { WEB_BRIDGE_PROTOCOL_VERSION, contentDigest, type FinalReviewRequest } from "./contracts.js";
 import { assertChatGptCodexReviewEvidenceBinding, requiresExactSourceInspection } from "./chatgpt-codex-review-evidence.js";
-import { CHATGPT_CODEX_AUTHOR_PHASE_MARKER, CHATGPT_CODEX_REVIEW_INSPECTION_PHASE_MARKER, CHATGPT_CODEX_REVIEW_PHASE_MARKER } from "./chatgpt-codex-semantic-client.js";
+import { CHATGPT_CODEX_AUTHOR_CONTEXT_PHASE_MARKER, CHATGPT_CODEX_AUTHOR_PHASE_MARKER, CHATGPT_CODEX_REVIEW_INSPECTION_PHASE_MARKER, CHATGPT_CODEX_REVIEW_PHASE_MARKER } from "./chatgpt-codex-semantic-client.js";
 import { prepareRepositoryResultForSemanticPrompt } from "./repository-result-semantic-context.js";
 import type { AuthoringJobRequest } from "./web-bridge.js";
 
+const CHATGPT_CODEX_AUTHOR_REPOSITORY_RESULT_MAX_BYTES = 480_000;
 export const CHATGPT_CODEX_REVIEW_REPOSITORY_RESULT_MAX_BYTES = 192_000;
 
 function boundedJson(value: unknown, maximum = 512_000): string {
@@ -38,8 +39,33 @@ function authorFollowUpContract(request: AuthoringJobRequest, jobId: string): st
   "If more context is needed, request only the next bounded repository_command. Never request shell/Git mutation, secrets, network tools, implementation authority, or a verdict.",
 ].join("\n"); }
 
+function authorContextRecoveryContract(request: AuthoringJobRequest, jobId: string): string { return [
+  "Continue the same AUTHOR thread and repository binding from the initial turn; do not reinterpret or widen it.",
+  `job_id remains ${JSON.stringify(jobId)}, repository remains ${boundedJson(request.repository)}, and user_intent remains ${JSON.stringify(request.user_intent)}.`,
+  "The exact durable repository result was too large to include in this semantic turn. This receipt is not repository evidence and cannot justify sealing a contract.",
+  "Return repository_command only, using the same closed bounded repository-command shapes from the initial AUTHOR contract, to request a narrower tree/search or smaller exact read.",
+  "Never return contract_sealed, implementation_sealed, web_verdict, shell/Git mutation, secrets, network tools, publish, or merge authority in this recovery phase.",
+].join("\n"); }
+
 function authorFollowUpReasoningReminder(): string {
   return "Continue applying the senior-maintainer authoring standard from the initial turn: resolve material assumptions from exact repository evidence, trace affected execution/state boundaries far enough to understand blast radius, and never seal merely because tests, docs, or an earlier summary look convincing.";
+}
+
+function prepareAuthorRepositoryResult(result: unknown): { semanticResult: unknown; oversized: boolean } {
+  const semanticResult = prepareRepositoryResultForSemanticPrompt(result);
+  const encoded = JSON.stringify(semanticResult);
+  const sizeBytes = Buffer.byteLength(encoded, "utf8");
+  if (sizeBytes <= CHATGPT_CODEX_AUTHOR_REPOSITORY_RESULT_MAX_BYTES) return { semanticResult, oversized: false };
+  return {
+    semanticResult: {
+      repository_result_oversized: true,
+      exact_result_sha256: contentDigest(semanticResult),
+      exact_result_json_bytes: sizeBytes,
+      semantic_result_limit_bytes: CHATGPT_CODEX_AUTHOR_REPOSITORY_RESULT_MAX_BYTES,
+      instruction: "The exact durable repository result is too large for one AUTHOR follow-up. Request fewer paths, a narrower tree/search, or smaller exact read regions.",
+    },
+    oversized: true,
+  };
 }
 
 function reviewPayloadContract(request: FinalReviewRequest, reviewId: string): string { return [
@@ -127,13 +153,18 @@ export function chatGptCodexAuthorPrompt(request: AuthoringJobRequest, jobId: st
 }
 
 export function chatGptCodexRepositoryResultPrompt(result: unknown, request: AuthoringJobRequest, jobId: string): string {
+  const prepared = prepareAuthorRepositoryResult(result);
   return [
-    CHATGPT_CODEX_AUTHOR_PHASE_MARKER,
-    "WCO executed your exact bounded repository request. Treat this result as authoritative only for the requested repository evidence.",
-    boundedJson(prepareRepositoryResultForSemanticPrompt(result)),
-    authorFollowUpContract(request, jobId),
+    prepared.oversized ? CHATGPT_CODEX_AUTHOR_CONTEXT_PHASE_MARKER : CHATGPT_CODEX_AUTHOR_PHASE_MARKER,
+    prepared.oversized
+      ? "WCO durably executed your bounded repository request, but the exact result cannot fit in one semantic follow-up. The digest-bound receipt below is not source evidence."
+      : "WCO executed your exact bounded repository request. Treat this result as authoritative only for the requested repository evidence.",
+    boundedJson(prepared.semanticResult, CHATGPT_CODEX_AUTHOR_REPOSITORY_RESULT_MAX_BYTES),
+    prepared.oversized ? authorContextRecoveryContract(request, jobId) : authorFollowUpContract(request, jobId),
     authorFollowUpReasoningReminder(),
-    "Return the next repository_command if more exact context is required; otherwise return contract_sealed. Never return implementation_sealed or web_verdict.",
+    prepared.oversized
+      ? "Return repository_command only to recover narrower exact context. Do not seal on an omitted result."
+      : "Return the next repository_command if more exact context is required; otherwise return contract_sealed. Never return implementation_sealed or web_verdict.",
   ].join("\n");
 }
 
