@@ -27,8 +27,9 @@ function semanticFile(value: unknown): unknown {
   // only the immutable reference instead of retransmitting an empty base64
   // field that could be mistaken for the exact file contents.
   if (file.content_ref !== undefined) {
-    if (typeof file.content_ref !== "string" || !file.content_ref.startsWith("sha256:") || file.content_base64 !== "") {
-      throw new WebBridgeError("WEB_REPOSITORY_CONTEXT_INVALID", "Repository context reference is malformed.");
+    const expectedReference = `sha256:${file.content_sha256}`;
+    if (file.content_ref !== expectedReference || file.content_base64 !== "") {
+      throw new WebBridgeError("WEB_REPOSITORY_CONTEXT_INVALID", "Repository context reference is malformed or not bound to the exact content digest.");
     }
     const { content_base64: _encoded, ...rest } = file;
     return rest;
