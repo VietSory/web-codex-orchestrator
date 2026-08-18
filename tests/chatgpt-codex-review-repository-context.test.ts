@@ -7,7 +7,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { prepareTask } from "../src/run/preparation-service.js";
 import { ChatGptCodexWebBridge } from "../src/web-bridge/chatgpt-codex-bridge.js";
-import { WEB_BRIDGE_PROTOCOL_VERSION, type WebContractEnvelope, type WebVerdictEnvelope } from "../src/web-bridge/contracts.js";
+import { WEB_BRIDGE_PROTOCOL_VERSION, type FinalReviewRequest, type WebContractEnvelope, type WebVerdictEnvelope } from "../src/web-bridge/contracts.js";
 import { materializeTaskBundle } from "../src/web-bridge/task-contract-materializer.js";
 
 const run = promisify(execFile);
@@ -18,7 +18,11 @@ function providerEnvelope(kind: "repository_command" | "web_verdict", payload: u
   return { protocol_version: PROVIDER_PROTOCOL, kind, payload_json: JSON.stringify(payload) };
 }
 
-async function fixture() {
+function independentEvidence(request: FinalReviewRequest) {
+  return { purpose: "independent_code_review", binding: request, entries: {} };
+}
+
+async function fixture(callerText = "caller invariant: app must start with published-before\n") {
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-review-context-"));
   const repo = path.join(root, "repo");
   const remote = path.join(root, "remote.git");
@@ -31,7 +35,7 @@ async function fixture() {
   await run("git", ["config", "user.name", "WCO Review Test"], { cwd: repo });
   await run("git", ["config", "user.email", "wco-review@example.invalid"], { cwd: repo });
   await writeFile(path.join(repo, "app.txt"), "published-before\n");
-  await writeFile(path.join(repo, "caller.txt"), "caller invariant: app must start with published-before\n");
+  await writeFile(path.join(repo, "caller.txt"), callerText);
   await writeFile(path.join(repo, "package.json"), JSON.stringify({ name: "review-context-fixture", private: true, scripts: { test: "node --test" } }));
   await run("git", ["add", "."], { cwd: repo });
   await run("git", ["commit", "-m", "base"], { cwd: repo });
@@ -81,21 +85,22 @@ async function fixture() {
   return { repo, state, bridgeDirectory, config, prepared, base };
 }
 
-test("reviewer can inspect immutable out-of-diff source and keeps large evidence in the existing thread", async () => {
+test("production independent reviewer inspects immutable source before verdict and keeps large evidence in the existing thread", async () => {
   const item = await fixture();
   const bridge = new ChatGptCodexWebBridge(item.config, item.bridgeDirectory, item.state);
   const target = bridge as any;
   target.ensureAuthorizedForProviderTurn = async () => undefined;
 
   const resultBundleSha = "b".repeat(64);
-  const review = await bridge.createFinalReviewJob({
+  const request: FinalReviewRequest = {
     run_id: item.prepared.run_id,
     result_bundle_sha256: resultBundleSha,
     published_commit_sha: item.base,
     pull_request_url: "https://github.com/example/repo/pull/1",
     review_round: 1,
-  }, "review-context-create");
-  await bridge.submitFinalReviewEvidence(review.job_id, { exact_result: true, large_evidence_marker: "z".repeat(32_768) }, "review-context-evidence");
+  };
+  const review = await bridge.createFinalReviewJob(request, "review-context-create");
+  await bridge.submitFinalReviewEvidence(review.job_id, { ...independentEvidence(request), entries: {} }, "review-context-evidence");
 
   // Mutable local state must not affect semantic review evidence. The reviewer
   // is required to read the exact immutable published commit instead.
@@ -129,19 +134,84 @@ test("reviewer can inspect immutable out-of-diff source and keeps large evidence
   const secondPrompt = prompts[1];
   assert.ok(firstPrompt);
   assert.ok(secondPrompt);
+  assert.match(firstPrompt.prompt, /^WCO_SEMANTIC_PHASE:REVIEW_INSPECTION\n/);
+  assert.doesNotMatch(firstPrompt.prompt, /For kind=web_verdict/);
+  assert.match(secondPrompt.prompt, /^WCO_SEMANTIC_PHASE:REVIEW\n/);
   assert.equal(firstPrompt.threadId, undefined);
   assert.equal(secondPrompt.threadId, "review-context-thread", "bounded repository evidence must continue the same review thread");
   assert.match(secondPrompt.prompt, /published-before/);
   assert.doesNotMatch(secondPrompt.prompt, /tampered-working-tree/);
-  assert.doesNotMatch(secondPrompt.prompt, /large_evidence_marker/);
   assert.doesNotMatch(secondPrompt.prompt, /Exact review evidence:/);
-  assert.ok(Buffer.byteLength(secondPrompt.prompt, "utf8") < Buffer.byteLength(firstPrompt.prompt, "utf8"), "follow-up must not retransmit the large initial review evidence");
+  assert.ok(Buffer.byteLength(secondPrompt.prompt, "utf8") < Buffer.byteLength(firstPrompt.prompt, "utf8"), "follow-up must not retransmit the initial Result Bundle evidence");
 
   const restarted = new ChatGptCodexWebBridge(item.config, item.bridgeDirectory, item.state);
   (restarted as any).ensureAuthorizedForProviderTurn = async () => undefined;
   (restarted as any).semantic = { async checkAvailability() {}, async turn() { throw new Error("sealed verdict must replay without provider call"); } };
   assert.deepEqual(await restarted.waitForVerdict(review.job_id), verdict);
 });
+
+for (const scenario of [
+  { name: "hidden out-of-diff defect", caller: "HIDDEN_BUG: caller requires transaction rollback on failure\n", expected: "REVISE" as const },
+  { name: "clean twin", caller: "CLEAN: caller preserves transaction rollback on failure\n", expected: "APPROVE" as const },
+]) {
+  test(`independent review qualification distinguishes ${scenario.name} after exact immutable inspection`, async () => {
+    const item = await fixture(scenario.caller);
+    const bridge = new ChatGptCodexWebBridge(item.config, item.bridgeDirectory, item.state);
+    const target = bridge as any;
+    target.ensureAuthorizedForProviderTurn = async () => undefined;
+    const resultBundleSha = scenario.expected === "REVISE" ? "d".repeat(64) : "e".repeat(64);
+    const request: FinalReviewRequest = {
+      run_id: item.prepared.run_id,
+      result_bundle_sha256: resultBundleSha,
+      published_commit_sha: item.base,
+      pull_request_url: "https://github.com/example/repo/pull/qualification",
+      review_round: 1,
+    };
+    const review = await bridge.createFinalReviewJob(request, `review-${scenario.expected.toLowerCase()}-create`);
+    await bridge.submitFinalReviewEvidence(review.job_id, independentEvidence(request), `review-${scenario.expected.toLowerCase()}-evidence`);
+
+    let calls = 0;
+    target.semantic = {
+      async checkAvailability() {},
+      async turn(options: any) {
+        calls += 1;
+        if (calls === 1) {
+          assert.match(options.prompt, /^WCO_SEMANTIC_PHASE:REVIEW_INSPECTION\n/);
+          return { thread_id: `qualification-${scenario.expected}`, output: providerEnvelope("repository_command", { operation: "read", paths: ["caller.txt"] }), usage: PROVIDER_USAGE };
+        }
+        assert.equal(calls, 2);
+        assert.match(options.prompt, /^WCO_SEMANTIC_PHASE:REVIEW\n/);
+        assert.match(options.prompt, new RegExp(scenario.expected === "REVISE" ? "HIDDEN_BUG" : "CLEAN"));
+        const verdict: WebVerdictEnvelope = scenario.expected === "REVISE"
+          ? {
+              protocol_version: WEB_BRIDGE_PROTOCOL_VERSION,
+              review_id: review.job_id,
+              run_id: item.prepared.run_id,
+              result_bundle_sha256: resultBundleSha,
+              verdict: "REVISE",
+              summary: "Exact caller evidence exposes a blocking invariant conflict.",
+              findings: [{ id: "HIDDEN-CALLER-001", severity: "blocking", description: "The unchanged caller requires rollback behavior that the candidate evidence does not establish." }],
+            }
+          : {
+              protocol_version: WEB_BRIDGE_PROTOCOL_VERSION,
+              review_id: review.job_id,
+              run_id: item.prepared.run_id,
+              result_bundle_sha256: resultBundleSha,
+              verdict: "APPROVE",
+              summary: "Exact caller evidence preserves the relevant rollback invariant.",
+              findings: [],
+            };
+        return { thread_id: `qualification-${scenario.expected}`, output: providerEnvelope("web_verdict", verdict), usage: PROVIDER_USAGE };
+      },
+    };
+
+    const verdict = await bridge.waitForVerdict(review.job_id);
+    assert.equal(verdict?.verdict, scenario.expected);
+    assert.equal(calls, 2, "qualification must converge after one exact inspection rather than loop or reject everything");
+    if (scenario.expected === "REVISE") assert.match(verdict?.findings[0]?.description ?? "", /caller|rollback/i);
+    else assert.deepEqual(verdict?.findings, []);
+  });
+}
 
 test("review exact-repository lookup loop is bounded instead of consuming provider turns forever", async () => {
   const item = await fixture();
