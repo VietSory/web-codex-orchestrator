@@ -5,23 +5,27 @@ import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
 import type { AgentLimits, TrustedConfig } from "../config/contracts.js";
 import { defaultAgentLimits } from "../execution/budget.js";
 import { readPreparationForExecution } from "../execution/execution-store.js";
+import { readRunReceipt } from "../run/run-store.js";
 import { ensureChatGptLogin } from "../runtime/chatgpt-login.js";
 import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
 import { ensureCanonicalDirectory } from "../shared/safe-directory.js";
 import { parseChatGptCodexAuthority } from "./chatgpt-codex-authority.js";
 import { ChatGptCodexImplementationClient } from "./chatgpt-codex-implementation-client.js";
-import { chatGptCodexAuthorPrompt, chatGptCodexClarificationPrompt, chatGptCodexRepositoryResultPrompt, chatGptCodexReviewPrompt } from "./chatgpt-codex-prompts.js";
+import { chatGptCodexAuthorPrompt, chatGptCodexClarificationPrompt, chatGptCodexRepositoryResultPrompt, chatGptCodexReviewPrompt, chatGptCodexReviewRepositoryResultPrompt } from "./chatgpt-codex-prompts.js";
 import { prepareChatGptCodexReviewEvidence } from "./chatgpt-codex-review-evidence.js";
 import { ChatGptCodexSemanticClient } from "./chatgpt-codex-semantic-client.js";
-import { WebBridgeError, contentDigest, parseWebContractEnvelope, parseWebImplementationSubmission, parseWebVerdictEnvelope, type AuthoringEvent, type BridgeConnectionStatus, type BridgeJobIdentity, type FinalReviewRequest, type RepositoryCommandResult, type WebContractEnvelope, type WebImplementationSubmission, type WebVerdictEnvelope } from "./contracts.js";
+import { WebBridgeError, contentDigest, parseWebContractEnvelope, parseWebImplementationSubmission, parseWebVerdictEnvelope, type AuthoringEvent, type BridgeConnectionStatus, type BridgeJobIdentity, type FinalReviewRequest, type RepositoryCommand, type RepositoryCommandResult, type WebContractEnvelope, type WebImplementationSubmission, type WebVerdictEnvelope } from "./contracts.js";
 import type { PreparedRunAwareWebBridge } from "./prepared-run-aware.js";
 import { readProviderBudgetUsage, recordProviderBudgetUsage, type ProviderBudgetPhase, type ProviderBudgetUsage } from "./provider-budget-store.js";
+import { ReadCoverageStore } from "./read-coverage-store.js";
 import { RelayFileStore } from "./relay/file-store.js";
 import { toAuthoringEvent, type RelayJobRecord } from "./relay/protocol.js";
+import { ExactRepositoryReadService } from "./repo-read-service.js";
 import type { AuthoringJobRequest, WebBridge } from "./web-bridge.js";
 
 const OWNER = "local-chatgpt-codex";
 const PROVIDER_USAGE_EVENT = "chatgpt_codex_provider_usage";
+const MAX_REVIEW_REPOSITORY_COMMANDS = 8;
 export const CHATGPT_CODEX_AUTH_REQUIRED_ACCOUNT = "ChatGPT authorization required";
 
 type RelayEvents = Awaited<ReturnType<RelayFileStore["events"]>>;
@@ -29,6 +33,12 @@ type ProviderUsage = { input_tokens: number; cached_input_tokens: number; output
 
 function threadId(events: RelayEvents): string | undefined {
   const event = events.slice().reverse().find((value) => value.type === "chatgpt_codex_thread");
+  const value = event?.payload as { thread_id?: unknown } | undefined;
+  return typeof value?.thread_id === "string" ? value.thread_id : undefined;
+}
+
+function reviewThreadId(events: RelayEvents): string | undefined {
+  const event = events.slice().reverse().find((value) => value.type === "chatgpt_codex_review_thread");
   const value = event?.payload as { thread_id?: unknown } | undefined;
   return typeof value?.thread_id === "string" ? value.thread_id : undefined;
 }
@@ -217,6 +227,28 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
     return await client.turn({ profile, prompt, scratchDirectory: this.scratchDirectory, authorityDirectory: this.authorityDirectory, ...(existingThreadId ? { threadId: existingThreadId } : {}), ...(signal ? { signal } : {}) });
   }
 
+  private async executeReviewRepositoryCommand(reviewId: string, request: FinalReviewRequest, requestId: string, command: RepositoryCommand): Promise<unknown> {
+    const separator = request.run_id.lastIndexOf(":");
+    const taskId = separator > 0 ? request.run_id.slice(0, separator) : "";
+    const archiveSha256 = separator > 0 ? request.run_id.slice(separator + 1) : "";
+    if (!taskId || !/^[a-f0-9]{64}$/.test(archiveSha256) || !/^[a-f0-9]{40}$/.test(request.published_commit_sha)) {
+      throw new WebBridgeError("WEB_CHATGPT_CODEX_REVIEW_REPOSITORY_INVALID", "Review repository lookup is not bound to a valid immutable run/published commit.");
+    }
+    const run = await readRunReceipt(this.stateDirectory, taskId, archiveSha256);
+    if (!run || run.run_id !== request.run_id) throw new WebBridgeError("WEB_CHATGPT_CODEX_REVIEW_REPOSITORY_INVALID", "Canonical run receipt is unavailable for exact review repository lookup.");
+    const coverage = new ReadCoverageStore(path.join(this.stateDirectory, "bridge", "review-read-coverage"));
+    const reader = new ExactRepositoryReadService(
+      run.repository_path,
+      { repository_id: run.repository_id, base_branch: run.base_branch, base_commit: request.published_commit_sha },
+      coverage,
+    );
+    // Coverage request IDs are attempt-specific so a crash after the immutable
+    // Git read but before relay-result persistence can be retried safely. The
+    // relay request_id remains the durable semantic-command identity.
+    const coverageRequestId = `review-read-${contentDigest({ reviewId, requestId, attempt: crypto.randomUUID() }).slice(0, 24)}`;
+    return await reader.execute(reviewId, coverageRequestId, command);
+  }
+
   async createAuthoringJob(request: AuthoringJobRequest, idempotencyKey: string): Promise<BridgeJobIdentity> {
     // In the normal interactive product path, complete (or refresh) the one
     // official ChatGPT authorization boundary before durable task creation.
@@ -345,27 +377,55 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
   async submitFinalReviewEvidence(reviewId: string, evidence: Record<string, unknown>, idempotencyKey: string): Promise<void> { await this.store.append(reviewId, OWNER, "final_review_evidence", evidence, idempotencyKey); }
 
   async waitForVerdict(reviewId: string, signal?: AbortSignal): Promise<WebVerdictEnvelope | null> {
-    const record = await this.store.get(reviewId, OWNER);
-    if (record.kind !== "final_review") throw new WebBridgeError("WEB_JOB_KIND_INVALID", "Requested job is not a final review job.");
-    const existing = record.events.slice().reverse().find((value) => value.type === "web_verdict");
-    if (existing) return parseWebVerdictEnvelope((existing.payload as { verdict?: unknown }).verdict ?? existing.payload);
-    const evidence = record.events.slice().reverse().find((value) => value.type === "final_review_evidence");
-    if (!evidence) return null;
-    if (hasUnresolvedReservation(record.events, "chatgpt_codex_review_reserved", ["web_verdict"])) throw new WebBridgeError("WEB_CHATGPT_CODEX_AMBIGUOUS_REVIEW", "A prior semantic review turn may have completed without a durable verdict; WCO refuses to replay an ambiguous authority-bearing review.");
-    await this.assertProviderBudgetForJob(reviewId, record, true);
-    const request = record.request as FinalReviewRequest;
-    const readableEvidence = prepareChatGptCodexReviewEvidence(evidence.payload as Record<string, unknown>);
-    const prompt = chatGptCodexReviewPrompt(request, readableEvidence, reviewId);
-    const inputSha256 = contentDigest({ reviewId, prompt });
-    const started = performance.now();
-    const result = await this.turn(prompt, undefined, signal, async (claimNonce) => (await this.store.claim(reviewId, OWNER, "chatgpt_codex_review_reserved", { input_sha256: inputSha256 }, `review-reserve-${inputSha256}`, claimNonce)).acquired);
-    await this.recordProviderUsage(reviewId, "review", inputSha256, result.usage, elapsedMilliseconds(started));
-    await this.store.append(reviewId, OWNER, "chatgpt_codex_review_thread", { thread_id: result.thread_id }, `review-thread-${contentDigest({ reviewId, inputSha256, thread: result.thread_id })}`);
-    const authority = parseChatGptCodexAuthority(result.output);
-    if (authority.kind !== "web_verdict") throw new WebBridgeError("WEB_CHATGPT_CODEX_PHASE_INVALID", "Final review must return a Web verdict.");
-    if (authority.value.review_id !== reviewId || authority.value.run_id !== request.run_id || authority.value.result_bundle_sha256 !== request.result_bundle_sha256) throw new WebBridgeError("WEB_CHATGPT_CODEX_BINDING_MISMATCH", "Semantic verdict is stale or bound to another review/run/result bundle.");
-    await this.store.append(reviewId, OWNER, "web_verdict", { verdict: authority.value }, `semantic-${contentDigest(result.output)}`);
-    return authority.value;
+    for (;;) {
+      const record = await this.store.get(reviewId, OWNER);
+      if (record.kind !== "final_review") throw new WebBridgeError("WEB_JOB_KIND_INVALID", "Requested job is not a final review job.");
+      const existing = record.events.slice().reverse().find((value) => value.type === "web_verdict");
+      if (existing) return parseWebVerdictEnvelope((existing.payload as { verdict?: unknown }).verdict ?? existing.payload);
+      const evidence = record.events.slice().reverse().find((value) => value.type === "final_review_evidence");
+      if (!evidence) return null;
+
+      const request = record.request as FinalReviewRequest;
+      const repositoryCommands = record.events.filter((event) => event.type === "review_repository_command");
+      if (repositoryCommands.length > MAX_REVIEW_REPOSITORY_COMMANDS) throw new WebBridgeError("WEB_CHATGPT_CODEX_REVIEW_CONTEXT_BUDGET", "Independent review exceeded its bounded exact-repository lookup budget.");
+      const latestCommand = repositoryCommands.at(-1);
+      if (latestCommand) {
+        const commandPayload = latestCommand.payload as { request_id?: unknown; command?: unknown };
+        if (typeof commandPayload.request_id !== "string") throw new WebBridgeError("WEB_CHATGPT_CODEX_REVIEW_STATE_INVALID", "Durable review repository command lacks its request identity.");
+        const matchingResult = record.events.slice().reverse().find((event) => event.type === "review_repository_command_result" && (event.payload as { request_id?: unknown } | undefined)?.request_id === commandPayload.request_id);
+        if (!matchingResult) {
+          const authority = parseChatGptCodexAuthority({ protocol_version: "wco-chatgpt-codex-v1", kind: "repository_command", payload_json: JSON.stringify(commandPayload.command) });
+          if (authority.kind !== "repository_command") throw new WebBridgeError("WEB_CHATGPT_CODEX_REVIEW_STATE_INVALID", "Durable review repository command is malformed.");
+          const result = await this.executeReviewRepositoryCommand(reviewId, request, commandPayload.request_id, authority.value);
+          await this.store.append(reviewId, OWNER, "review_repository_command_result", { request_id: commandPayload.request_id, result }, `review-repo-result-${contentDigest({ reviewId, request_id: commandPayload.request_id, result })}`);
+          continue;
+        }
+      }
+
+      if (hasUnresolvedReservation(record.events, "chatgpt_codex_review_reserved", ["review_repository_command", "web_verdict"])) throw new WebBridgeError("WEB_CHATGPT_CODEX_AMBIGUOUS_REVIEW", "A prior semantic review turn may have completed without durable review authority; WCO refuses to replay it blindly.");
+      await this.assertProviderBudgetForJob(reviewId, record, true);
+      const latestRepositoryResult = record.events.slice().reverse().find((event) => event.type === "review_repository_command_result");
+      const prompt = latestRepositoryResult
+        ? chatGptCodexReviewRepositoryResultPrompt((latestRepositoryResult.payload as { result?: unknown }).result, request, reviewId)
+        : chatGptCodexReviewPrompt(request, prepareChatGptCodexReviewEvidence(evidence.payload as Record<string, unknown>), reviewId);
+      const existingThread = reviewThreadId(record.events);
+      const inputSha256 = contentDigest({ reviewId, prompt, thread_id: existingThread ?? null });
+      const started = performance.now();
+      const result = await this.turn(prompt, existingThread, signal, async (claimNonce) => (await this.store.claim(reviewId, OWNER, "chatgpt_codex_review_reserved", { input_sha256: inputSha256, thread_id: existingThread ?? null }, `review-reserve-${inputSha256}`, claimNonce)).acquired);
+      await this.recordProviderUsage(reviewId, "review", inputSha256, result.usage, elapsedMilliseconds(started));
+      await this.store.append(reviewId, OWNER, "chatgpt_codex_review_thread", { thread_id: result.thread_id }, `review-thread-${contentDigest({ reviewId, inputSha256, thread: result.thread_id })}`);
+      const authority = parseChatGptCodexAuthority(result.output);
+      if (authority.kind === "repository_command") {
+        if (repositoryCommands.length >= MAX_REVIEW_REPOSITORY_COMMANDS) throw new WebBridgeError("WEB_CHATGPT_CODEX_REVIEW_CONTEXT_BUDGET", `Independent review may request at most ${MAX_REVIEW_REPOSITORY_COMMANDS} bounded exact-repository lookups before deciding.`);
+        const requestId = `review-repo-${contentDigest({ reviewId, ordinal: repositoryCommands.length + 1, command: authority.value }).slice(0, 24)}`;
+        await this.store.append(reviewId, OWNER, "review_repository_command", { request_id: requestId, command: authority.value }, `semantic-${contentDigest(result.output)}`);
+        continue;
+      }
+      if (authority.kind !== "web_verdict") throw new WebBridgeError("WEB_CHATGPT_CODEX_PHASE_INVALID", "Final review can only request exact repository context or return a Web verdict.");
+      if (authority.value.review_id !== reviewId || authority.value.run_id !== request.run_id || authority.value.result_bundle_sha256 !== request.result_bundle_sha256) throw new WebBridgeError("WEB_CHATGPT_CODEX_BINDING_MISMATCH", "Semantic verdict is stale or bound to another review/run/result bundle.");
+      await this.store.append(reviewId, OWNER, "web_verdict", { verdict: authority.value }, `semantic-${contentDigest(result.output)}`);
+      return authority.value;
+    }
   }
 
   async getConnectionStatus(): Promise<BridgeConnectionStatus> {
