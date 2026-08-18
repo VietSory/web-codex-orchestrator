@@ -141,15 +141,19 @@ function caseRepository(name: CaseName): VirtualRepository {
     ? `import { resolveRetryDelay } from "./retry-policy.js";\nexport function run(job: { retryDelayMs?: number }) {\n  const delay = resolveRetryDelay(job.retryDelayMs);\n  if (delay === null) return { status: "retry-disabled" };\n  return { status: "scheduled", delay };\n}\n`
     : `import { resolveRetryDelay } from "./retry-policy.js";\nexport function run(job: { retryDelayMs?: number; retryEnabled?: boolean }) {\n  if (job.retryEnabled === false) return { status: "retry-disabled" };\n  return { status: "scheduled", delay: resolveRetryDelay(job.retryDelayMs) };\n}\n`;
   return {
-    "src/retry-policy.ts": `export function resolveRetryDelay(value?: number | null): number {\n  return value ?? 0;\n}\n`,
+    "src/retry-policy.ts": name === "hidden_defect"
+      ? `export function resolveRetryDelay(value?: number | null): number {\n  return value ?? 0;\n}\n`
+      : `export function resolveRetryDelay(value?: number): number {\n  return value ?? 0;\n}\n`,
     "src/worker.ts": worker,
     "tests/retry-policy.test.ts": `import { resolveRetryDelay } from "../src/retry-policy.js";\n// Candidate helper tests pass: omitted delay is now immediate.\nif (resolveRetryDelay(undefined) !== 0) throw new Error("expected immediate retry");\n`,
     "package.json": JSON.stringify({ name: "review-quality-fixture", private: true, type: "module" }, null, 2),
   };
 }
 
-function reviewEvidence(request: FinalReviewRequest) {
-  const diff = `diff --git a/src/retry-policy.ts b/src/retry-policy.ts\n--- a/src/retry-policy.ts\n+++ b/src/retry-policy.ts\n@@\n-export function resolveRetryDelay(value?: number | null): number | null {\n-  return value ?? null;\n+export function resolveRetryDelay(value?: number | null): number {\n+  return value ?? 0;\n }\n`;
+function reviewEvidence(request: FinalReviewRequest, name: CaseName) {
+  const hiddenDefectDiff = `diff --git a/src/retry-policy.ts b/src/retry-policy.ts\n--- a/src/retry-policy.ts\n+++ b/src/retry-policy.ts\n@@\n-export function resolveRetryDelay(value?: number | null): number | null {\n-  return value ?? null;\n+export function resolveRetryDelay(value?: number | null): number {\n+  return value ?? 0;\n }\n`;
+  const cleanTwinDiff = `diff --git a/src/retry-policy.ts b/src/retry-policy.ts\n--- a/src/retry-policy.ts\n+++ b/src/retry-policy.ts\n@@\n export function resolveRetryDelay(value?: number): number {\n-  return value ?? 1_000;\n+  return value ?? 0;\n }\n`;
+  const diff = name === "hidden_defect" ? hiddenDefectDiff : cleanTwinDiff;
   return prepareChatGptCodexReviewEvidence({
     purpose: "independent_code_review",
     binding: request,
@@ -179,7 +183,7 @@ async function runCase(options: {
     review_round: 1,
   };
   const repository = caseRepository(options.name);
-  let prompt = chatGptCodexReviewPrompt(request, reviewEvidence(request), reviewId);
+  let prompt = chatGptCodexReviewPrompt(request, reviewEvidence(request, options.name), reviewId);
   let threadId: string | undefined;
   const usage: Usage = { turns: 0, input_tokens: 0, cached_input_tokens: 0, output_tokens: 0 };
   let repositoryCommands = 0;
