@@ -76,8 +76,8 @@ async function assertBlindChallengeFilesystem(scratchDirectory: string, authorit
 
 /** Read-only/no-network semantic provider adapter with closed phase schema,
  * trusted per-turn deadline, mandatory measurable token usage, prompt-only SDK
- * event attestation, and a challenge-specific empty-filesystem boundary before
- * a blind Web-B turn reaches Codex. */
+ * event attestation, exact continuation-thread identity, and a challenge-
+ * specific empty-filesystem boundary before a blind Web-B turn reaches Codex. */
 export class ChatGptCodexSemanticClient {
   constructor(private readonly agent: AgentClient, private readonly maximumTurnSeconds = DEFAULT_PROVIDER_TURN_SECONDS) {
     if (!Number.isFinite(maximumTurnSeconds) || maximumTurnSeconds <= 0 || maximumTurnSeconds > MAX_PROVIDER_TURN_SECONDS) throw new Error("WEB_CHATGPT_CODEX_CONFIG_INVALID: semantic turn timeout is outside the trusted 1-3600 second range.");
@@ -95,6 +95,9 @@ export class ChatGptCodexSemanticClient {
     try {
       const result = await this.agent.turn({ role: "final_reviewer", model: options.profile.model, reasoning_effort: options.profile.reasoning_effort, ...(options.threadId ? { thread_id: options.threadId } : {}), prompt: options.prompt, output_schema: outputSchema, read_only: true, approval_policy: "never", sandbox_mode: "read-only", network_access: false, live_web_search: false, cached_web_search: false, workspace_path: options.scratchDirectory, accepted_bundle_path: options.authorityDirectory, signal });
       assertPromptOnlyProviderEvents(result.public_events);
+      if (options.threadId && result.thread_id !== options.threadId) {
+        throw semanticAuditError("WEB_CHATGPT_CODEX_THREAD_DRIFT", "Semantic provider continuation returned a different thread identity; WCO refuses to trust context continuity.");
+      }
       return { thread_id: result.thread_id, output: result.output, usage: measuredUsage(result.usage) };
     } catch (error) {
       if (timeout.aborted && !options.signal?.aborted) throw timeoutError();
