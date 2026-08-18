@@ -1,5 +1,6 @@
 import { lstat } from "node:fs/promises";
 import path from "node:path";
+import { TRUSTED_CONFIG_HARD_LIMITS } from "../config/config-validator.js";
 import { atomicWriteJson } from "../run/run-store.js";
 import { ensureCanonicalDirectory } from "../shared/safe-directory.js";
 import { acquireTicketFileLock, TicketFileLockError } from "../shared/ticket-file-lock.js";
@@ -7,7 +8,7 @@ import { readStableFile } from "../shared/stable-file.js";
 import { WebBridgeError } from "./contracts.js";
 
 const MAX_RECEIPT_BYTES = 256 * 1024;
-const MAX_ENTRIES = 64;
+const MAX_ENTRIES = TRUSTED_CONFIG_HARD_LIMITS.agents.maximum_total_agent_turns;
 const SHA256 = /^[a-f0-9]{64}$/;
 
 export type ProviderBudgetPhase = "author" | "implementation" | "review";
