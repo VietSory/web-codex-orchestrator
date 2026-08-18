@@ -16,41 +16,14 @@ const SELECTED = new Set([
 ]);
 const MAX_ENTRY_BYTES = 4_194_304;
 const MAX_AGGREGATE_BYTES = 16_777_216;
-export const MAX_SEMANTIC_REVIEW_EVIDENCE_JSON_BYTES = 480 * 1024;
 
 export interface ResultReviewEvidenceEntry {
-  content_utf8: string;
+  content_base64: string;
   sha256: string;
   size_bytes: number;
 }
 
 export type ResultReviewEvidence = Record<string, ResultReviewEvidenceEntry>;
-
-export function exactUtf8ReviewContent(bytes: Buffer, label = "Result evidence"): string {
-  const text = bytes.toString("utf8");
-  if (!Buffer.from(text, "utf8").equals(bytes)) {
-    throw new WebBridgeError("WEB_RESULT_EVIDENCE_INVALID", `${label} is not valid exact UTF-8 text.`);
-  }
-  return text;
-}
-
-export function assertSemanticReviewEvidenceBounded(value: unknown): void {
-  let encoded: string | undefined;
-  try {
-    encoded = JSON.stringify(value);
-  } catch {
-    throw new WebBridgeError("WEB_RESULT_EVIDENCE_INVALID", "Semantic review evidence is not JSON-serializable.");
-  }
-  if (encoded === undefined) {
-    throw new WebBridgeError("WEB_RESULT_EVIDENCE_INVALID", "Semantic review evidence is not JSON-serializable.");
-  }
-  if (Buffer.byteLength(encoded, "utf8") > MAX_SEMANTIC_REVIEW_EVIDENCE_JSON_BYTES) {
-    throw new WebBridgeError(
-      "WEB_RESULT_REVIEW_CONTEXT_LIMIT",
-      "Exact review evidence exceeds the bounded semantic-review context. Split the change into a smaller reviewable task; WCO refuses to truncate evidence and approve from partial context.",
-    );
-  }
-}
 
 export async function readBoundedResultEvidence(
   archivePath: string,
@@ -114,16 +87,8 @@ export async function readBoundedResultEvidence(
               return;
             }
 
-            let content: string;
-            try {
-              content = exactUtf8ReviewContent(bytes, entry.fileName);
-            } catch (decodeError) {
-              fail(decodeError);
-              return;
-            }
-
             aggregate += size;
-            result[entry.fileName] = { content_utf8: content, sha256: digest, size_bytes: size };
+            result[entry.fileName] = { content_base64: bytes.toString("base64"), sha256: digest, size_bytes: size };
             zip.readEntry();
           });
         });
