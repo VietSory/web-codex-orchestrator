@@ -22,14 +22,18 @@ function providerSchema(kinds: readonly string[], payloadMaxLength?: number) {
  * The normal local transport is phase-separated on purpose. The semantic
  * author may only request exact repository context or seal a contract; it can
  * never author implementation/mutation authority. The independent reviewer
- * may only return a review verdict. The blind challenger may only request
- * bounded repository context or seal a non-authoritative understanding.
+ * may request bounded exact repository context for the immutable published
+ * commit or return a review verdict; it never receives direct repository,
+ * shell, network, Git, publish, or mutation authority. The blind challenger
+ * may only request bounded repository context or seal a non-authoritative
+ * understanding.
  */
 export const CHATGPT_CODEX_AUTHOR_KINDS = ["repository_command", "contract_sealed"] as const;
+export const CHATGPT_CODEX_REVIEW_KINDS = ["repository_command", "web_verdict"] as const;
 export const CHATGPT_CODEX_REVIEW_KIND = "web_verdict" as const;
 export const CHATGPT_CODEX_CHALLENGE_KINDS = ["repository_command", "semantic_understanding_sealed"] as const;
 export const CHATGPT_CODEX_AUTHOR_OUTPUT_SCHEMA = providerSchema(CHATGPT_CODEX_AUTHOR_KINDS);
-export const CHATGPT_CODEX_REVIEW_OUTPUT_SCHEMA = providerSchema([CHATGPT_CODEX_REVIEW_KIND] as const);
+export const CHATGPT_CODEX_REVIEW_OUTPUT_SCHEMA = providerSchema(CHATGPT_CODEX_REVIEW_KINDS);
 export const CHATGPT_CODEX_CHALLENGE_OUTPUT_SCHEMA = providerSchema(CHATGPT_CODEX_CHALLENGE_KINDS, CHATGPT_CODEX_CHALLENGE_PAYLOAD_MAX_CHARS);
 
 /**
