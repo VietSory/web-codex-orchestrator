@@ -4,7 +4,7 @@ import path from "node:path";
 import { atomicWriteJson } from "../run/run-store.js";
 import { loadAndVerifyResultBundle, type LoadedResultBundle } from "../web-review/result-bundle-review-reader.js";
 import { contentDigest, parseWebVerdictEnvelope, WebBridgeError, type BridgeJobIdentity, type WebVerdictEnvelope } from "./contracts.js";
-import { assertSemanticReviewEvidenceBounded, readBoundedResultEvidence } from "./result-evidence-reader.js";
+import { readBoundedResultEvidence } from "./result-evidence-reader.js";
 import type { WebBridge } from "./web-bridge.js";
 
 export type WebCodeReviewState = "PENDING" | "APPROVED" | "REVISION_REQUESTED" | "ESCALATED";
@@ -204,12 +204,9 @@ export async function createPendingCodeReview(options: { bridge: WebBridge; runI
     review_round: newest.reviewRound,
   };
 
-  // Exact evidence is decoded and byte-qualified before creating relay/review
-  // authority. If the whole review cannot fit, fail closed without an orphan
-  // PENDING receipt/job and never substitute a truncated diff.
   const evidence = await readBoundedResultEvidence(newest.archivePath, newest.manifest);
   const payload = { purpose: "independent_code_review", binding: request, entries: evidence };
-  assertSemanticReviewEvidenceBounded(payload);
+  await options.bridge.preflightFinalReviewEvidence?.(payload);
 
   const identity = await options.bridge.createFinalReviewJob(request, `code-review-${contentDigest({ purpose: "independent_code_review", request })}`);
   if (existing?.state === "PENDING" && identity.job_id !== existing.review_job_id) throw new WebBridgeError("WEB_CODE_REVIEW_REPLAY_CONFLICT", "Relay idempotency returned a different code-review job identity.");
