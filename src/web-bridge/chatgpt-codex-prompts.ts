@@ -5,7 +5,7 @@ import { CHATGPT_CODEX_AUTHOR_PHASE_MARKER, CHATGPT_CODEX_REVIEW_INSPECTION_PHAS
 import { prepareRepositoryResultForSemanticPrompt } from "./repository-result-semantic-context.js";
 import type { AuthoringJobRequest } from "./web-bridge.js";
 
-const REVIEW_REPOSITORY_RESULT_MAX_BYTES = 192_000;
+export const CHATGPT_CODEX_REVIEW_REPOSITORY_RESULT_MAX_BYTES = 192_000;
 
 function boundedJson(value: unknown, maximum = 512_000): string {
   const encoded = JSON.stringify(value);
@@ -86,7 +86,7 @@ function prepareReviewRepositoryResult(result: unknown): { semanticResult: unkno
   const semanticResult = prepareRepositoryResultForSemanticPrompt(result);
   const encoded = JSON.stringify(semanticResult);
   const sizeBytes = Buffer.byteLength(encoded, "utf8");
-  if (sizeBytes <= REVIEW_REPOSITORY_RESULT_MAX_BYTES) return { semanticResult, oversized: false };
+  if (sizeBytes <= CHATGPT_CODEX_REVIEW_REPOSITORY_RESULT_MAX_BYTES) return { semanticResult, oversized: false };
 
   // The exact result is already durable in relay state, but replaying an
   // oversized result verbatim would make every resume fail at prompt creation.
@@ -97,11 +97,16 @@ function prepareReviewRepositoryResult(result: unknown): { semanticResult: unkno
       repository_result_oversized: true,
       exact_result_sha256: contentDigest(semanticResult),
       exact_result_json_bytes: sizeBytes,
-      semantic_result_limit_bytes: REVIEW_REPOSITORY_RESULT_MAX_BYTES,
+      semantic_result_limit_bytes: CHATGPT_CODEX_REVIEW_REPOSITORY_RESULT_MAX_BYTES,
       instruction: "The exact durable repository result is too large for one semantic follow-up. Request fewer paths, a narrower tree/search, or smaller exact read regions.",
     },
     oversized: true,
   };
+}
+
+export function chatGptCodexReviewRepositoryResultSatisfiesInspection(result: unknown): boolean {
+  const prepared = prepareReviewRepositoryResult(result);
+  return !prepared.oversized && containsExactSourceReadResult(prepared.semanticResult);
 }
 
 export function chatGptCodexAuthorPrompt(request: AuthoringJobRequest, jobId: string): string {
@@ -166,8 +171,9 @@ export function chatGptCodexReviewPrompt(request: FinalReviewRequest, evidence: 
  * being retransmitted on every lookup, keeping exact-context review cheaper
  * than manual full-context copy/paste loops. A non-source lookup (summary,
  * tree, search, binary payload, digest-only content_ref, or oversize receipt)
- * remains inspection-only; only a durable exact UTF-8 source payload delivered
- * to the reviewer opens the normal verdict-capable review schema.
+ * remains inspection-only unless the same review thread already has durable
+ * proof of an earlier exact source inspection. Only an exact UTF-8 source
+ * payload actually delivered to the reviewer can establish that proof.
  */
 export function chatGptCodexReviewRepositoryResultPrompt(result: unknown, request: FinalReviewRequest, reviewId: string, inspectionRequired?: boolean): string {
   const prepared = prepareReviewRepositoryResult(result);
@@ -175,7 +181,7 @@ export function chatGptCodexReviewRepositoryResultPrompt(result: unknown, reques
   return [
     sourceInspectionRequired ? CHATGPT_CODEX_REVIEW_INSPECTION_PHASE_MARKER : CHATGPT_CODEX_REVIEW_PHASE_MARKER,
     "Continue the same REVIEW thread. WCO executed your bounded read-only repository request against the exact published commit from the initial review.",
-    `Repository result: ${boundedJson(prepared.semanticResult, REVIEW_REPOSITORY_RESULT_MAX_BYTES)}`,
+    `Repository result: ${boundedJson(prepared.semanticResult, CHATGPT_CODEX_REVIEW_REPOSITORY_RESULT_MAX_BYTES)}`,
     "Keep applying the senior-maintainer review standard from the initial turn. Do not inherit implementation claims or treat green tests as proof.",
     sourceInspectionRequired ? inspectionRequirement() : "Allowed actions remain repository_command or web_verdict. Request another bounded lookup only for a still-material unresolved question; otherwise decide the verdict now.",
     reviewRepositoryContract(request),
