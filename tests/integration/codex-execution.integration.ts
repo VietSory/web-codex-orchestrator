@@ -42,7 +42,10 @@ test(
       await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
       await writeFile(`${fixture.bundle}/REQUEST.md`, "Add a pure add(a, b) function to src/index.mjs and test it.\n");
       await writeFile(`${fixture.bundle}/PLAN.md`, "Implement the smallest pure function change and verify it deterministically.\n");
-      await writeFile(`${fixture.bundle}/RULES.md`, "Do not commit, push, execute payloads, or use network access.\n");
+      await writeFile(
+        `${fixture.bundle}/RULES.md`,
+        "The implementation agent must not commit, push, execute payloads, or use network access. A later trusted publication stage owns any configured commit and push after verification and review.\n",
+      );
       await writeFile(`${fixture.bundle}/acceptance.json`, `${JSON.stringify({
         criteria: [{
           id: "AC-001",
