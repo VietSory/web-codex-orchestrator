@@ -123,8 +123,9 @@ export class ChatGptCodexSemanticClient {
       if (options.threadId && result.thread_id !== options.threadId) {
         throw semanticAuditError("WEB_CHATGPT_CODEX_THREAD_DRIFT", "Semantic provider continuation returned a different thread identity; WCO refuses to trust context continuity.");
       }
+      const usage = measuredUsage(result.usage);
       assertPhaseOutputKind(result.output, outputSchema);
-      return { thread_id: result.thread_id, output: result.output, usage: measuredUsage(result.usage) };
+      return { thread_id: result.thread_id, output: result.output, usage };
     } catch (error) {
       if (timeout.aborted && !options.signal?.aborted) throw timeoutError();
       throw error;
