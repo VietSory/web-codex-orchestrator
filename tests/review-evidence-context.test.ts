@@ -7,6 +7,8 @@ import {
   MAX_CHATGPT_CODEX_REVIEW_EVIDENCE_JSON_BYTES,
   prepareChatGptCodexReviewEvidence,
 } from "../src/web-bridge/chatgpt-codex-review-evidence.js";
+import { chatGptCodexReviewPrompt } from "../src/web-bridge/chatgpt-codex-prompts.js";
+import type { FinalReviewRequest } from "../src/web-bridge/contracts.js";
 
 function transportEntry(bytes: Buffer) {
   return {
@@ -21,6 +23,16 @@ function payload(bytes: Buffer) {
     purpose: "independent_code_review",
     binding: { run_id: "TASK-TEST:" + "a".repeat(64) },
     entries: { "repository/diff.patch": transportEntry(bytes) },
+  };
+}
+
+function reviewRequest(): FinalReviewRequest {
+  return {
+    run_id: `TASK-TEST:${"a".repeat(64)}`,
+    result_bundle_sha256: "b".repeat(64),
+    published_commit_sha: "c".repeat(40),
+    pull_request_url: "https://github.com/example/repo/pull/1",
+    review_round: 1,
   };
 }
 
@@ -47,6 +59,24 @@ test("local semantic review revalidates transport digest and canonical base64", 
   const nonCanonical = payload(exact) as any;
   nonCanonical.entries["repository/diff.patch"].content_base64 += "\n";
   assert.throws(() => prepareChatGptCodexReviewEvidence(nonCanonical), (error: any) => error?.code === "WEB_RESULT_EVIDENCE_INVALID");
+});
+
+test("legacy generic review evidence remains compatible but bounded", () => {
+  const legacy = { exact_result: true, run_id: `TASK-LEGACY:${"d".repeat(64)}` };
+  assert.deepEqual(prepareChatGptCodexReviewEvidence(legacy), legacy);
+});
+
+test("production semantic review evidence must bind the exact immutable review request", () => {
+  const request = reviewRequest();
+  const exact = Buffer.from("+bound\n", "utf8");
+  const readable = prepareChatGptCodexReviewEvidence({ ...payload(exact), binding: request });
+  assert.doesNotThrow(() => chatGptCodexReviewPrompt(request, readable, "review-bound"));
+
+  const stale = { ...readable, binding: { ...request, review_round: 2 } };
+  assert.throws(
+    () => chatGptCodexReviewPrompt(request, stale, "review-bound"),
+    (error: any) => error?.code === "WEB_CHATGPT_CODEX_BINDING_MISMATCH",
+  );
 });
 
 test("ChatGPT/Codex semantic context fails closed instead of truncating exact evidence", () => {
