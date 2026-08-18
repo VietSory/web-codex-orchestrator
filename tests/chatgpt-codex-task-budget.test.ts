@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -54,7 +54,7 @@ function config() {
   } as any;
 }
 
-test("semantic provider budget is task-wide while idempotent review recovery remains available", async () => {
+test("semantic provider budget survives relay pruning while idempotent review recovery remains available", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-task-budget-"));
   const bridgeDirectory = path.join(root, "bridge");
   const stateDirectory = path.join(root, "state");
@@ -102,7 +102,7 @@ test("semantic provider budget is task-wide while idempotent review recovery rem
     review_round: 1,
   };
   const review = await restarted.createFinalReviewJob(reviewRequest, "review-task-budget");
-  await restarted.submitFinalReviewEvidence(review.job_id, { purpose: "final_intent_review", exact: true }, "review-evidence-task-budget");
+  await restarted.submitFinalReviewEvidence(review.job_id, { exact_result: true, run_id: runId }, "review-evidence-task-budget");
   const verdict: WebVerdictEnvelope = {
     protocol_version: WEB_BRIDGE_PROTOCOL_VERSION,
     review_id: review.job_id,
@@ -126,9 +126,13 @@ test("semantic provider budget is task-wide while idempotent review recovery rem
   assert.deepEqual(await restarted.waitForVerdict(review.job_id), verdict);
   assert.equal(providerTurns, 2);
 
-  // Simulate recovery after the provider verdict became durable but before a
-  // higher-level receipt adopted it: replaying the same job must remain legal
-  // even though the task has now consumed its full turn budget.
+  // The canonical run ledger must retain authoring usage even after the relay
+  // record that originally carried it is gone (the same condition TTL pruning
+  // eventually creates). Budget authority must not depend on relay retention.
+  await unlink(path.join(bridgeDirectory, "chatgpt-codex", `${identity.job_id}.json`));
+
+  // Recovery after a durable verdict remains non-consuming: replaying the same
+  // job and adopting the existing verdict must still work at the budget limit.
   const recovery = new ChatGptCodexWebBridge(trusted, bridgeDirectory, stateDirectory);
   const replayed = await recovery.createFinalReviewJob(reviewRequest, "review-task-budget");
   assert.equal(replayed.job_id, review.job_id);
