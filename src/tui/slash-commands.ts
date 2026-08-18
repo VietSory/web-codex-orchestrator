@@ -1,12 +1,12 @@
 export const SLASH_COMMANDS = [
   ["/new", "PAIR: collaborate on a task and add details before the plan locks: /new <goal>"],
   ["/auto", "AUTOPILOT: run end-to-end unless a decision needs you: /auto <goal>"],
+  ["/continue", "Continue only the current unfinished saved task"],
+  ["/resume", "Choose a saved task to resume; /resume <number> resumes a history item"],
   ["/status", "Show current progress and what you need to do"],
-  ["/run", "Continue the current saved task"],
   ["/review", "Show checks, review, and Draft PR evidence"],
   ["/history", "Show recent tasks; /history <number> shows details"],
   ["/pause", "Pause before the next safe step"],
-  ["/resume", "Resume a durable paused run"],
   ["/task", "Show the current goal and plan state"],
   ["/auth status", "Show ChatGPT authorization status"],
   ["/auth connect", "Authorize or reconnect ChatGPT"],
@@ -31,11 +31,15 @@ export function canonicalSlashCommand(value: string): string {
   return trimmed;
 }
 
-export function slashCommandSuggestions(value: string): SlashCommandSuggestion[] {
+function commandAllowed(command: SlashCommandName, allowedCommands?: ReadonlySet<string>): boolean {
+  return !allowedCommands || allowedCommands.has(command);
+}
+
+export function slashCommandSuggestions(value: string, allowedCommands?: ReadonlySet<string>): SlashCommandSuggestion[] {
   const input = value.trimStart().toLowerCase();
   if (!input.startsWith("/")) return [];
   return SLASH_COMMANDS
-    .filter(([command]) => command.toLowerCase().startsWith(input))
+    .filter(([command]) => commandAllowed(command, allowedCommands) && command.toLowerCase().startsWith(input))
     .map(([command, description]) => ({ command, description }));
 }
 
@@ -51,6 +55,9 @@ export function parseInteractiveInput(value: string, state: { active: boolean; s
   return { kind: "sealed_block", goal: input };
 }
 
-export function commandPalette(): string {
-  return SLASH_COMMANDS.map(([command, description]) => `${command.padEnd(16)} ${description}`).join("\n");
+export function commandPalette(allowedCommands?: ReadonlySet<string>): string {
+  return SLASH_COMMANDS
+    .filter(([command]) => commandAllowed(command, allowedCommands))
+    .map(([command, description]) => `${command.padEnd(16)} ${description}`)
+    .join("\n");
 }

@@ -1,12 +1,24 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { ChatGptCodexImplementationClient } from "../src/web-bridge/chatgpt-codex-implementation-client.js";
-import { chatGptCodexAuthorPrompt, chatGptCodexRepositoryResultPrompt, chatGptCodexReviewPrompt } from "../src/web-bridge/chatgpt-codex-prompts.js";
+import { chatGptCodexAuthorPrompt, chatGptCodexRepositoryResultPrompt, chatGptCodexReviewPrompt, chatGptCodexReviewRepositoryResultPrompt } from "../src/web-bridge/chatgpt-codex-prompts.js";
 import { ChatGptCodexSemanticClient } from "../src/web-bridge/chatgpt-codex-semantic-client.js";
 
 const profile: any = { model: "gpt-5.6-sol", reasoning_effort: "high" };
 const dirs = { scratchDirectory: "/tmp/wco-semantic-scratch", authorityDirectory: "/tmp/wco-semantic-authority" };
 const usage = { input_tokens: 10, cached_input_tokens: 2, output_tokens: 3 };
+const cleanEvents = [
+  { type: "thread.started", timestamp: "2026-01-01T00:00:00.000Z" },
+  { type: "turn.started", timestamp: "2026-01-01T00:00:00.001Z" },
+  { type: "reasoning", timestamp: "2026-01-01T00:00:00.002Z" },
+  { type: "agent_message", timestamp: "2026-01-01T00:00:00.003Z" },
+  { type: "turn.completed", timestamp: "2026-01-01T00:00:00.004Z" },
+];
+
+function authorPrompt(): string {
+  return chatGptCodexAuthorPrompt({ owner: "local", repository: { repository_id: "repo", base_branch: "main", base_commit: "a".repeat(40) }, user_intent: "change app", ttl_seconds: 60 }, "job-1");
+}
 
 function abortingAgent() {
   return {
@@ -27,15 +39,15 @@ test("semantic SDK turn exposes only the authority kind valid for its closed WCO
     async checkAvailability() {},
     async turn(request: any) {
       requests.push(request);
-      return { thread_id: `thread-${requests.length}`, output: { protocol_version: "wco-chatgpt-codex-v1", kind: request.output_schema.properties.kind.enum[0], payload_json: "{}" }, usage };
+      return { thread_id: `thread-${requests.length}`, output: { protocol_version: "wco-chatgpt-codex-v1", kind: request.output_schema.properties.kind.enum[0], payload_json: "{}" }, usage, public_events: cleanEvents };
     },
   } as any);
 
-  const author = await client.turn({ profile, ...dirs, prompt: chatGptCodexAuthorPrompt({ owner: "local", repository: { repository_id: "repo", base_branch: "main", base_commit: "a".repeat(40) }, user_intent: "change app", ttl_seconds: 60 }, "job-1") });
+  const author = await client.turn({ profile, ...dirs, prompt: authorPrompt() });
   const review = await client.turn({ profile, ...dirs, prompt: chatGptCodexReviewPrompt({ run_id: `TASK:${"b".repeat(64)}`, result_bundle_sha256: "c".repeat(64), published_commit_sha: "d".repeat(40), pull_request_url: "https://github.com/example/repo/pull/1", review_round: 1 }, { exact: true }, "review-1") });
 
   assert.deepEqual(requests[0].output_schema.properties.kind.enum, ["repository_command", "contract_sealed"]);
-  assert.deepEqual(requests[1].output_schema.properties.kind.enum, ["web_verdict"]);
+  assert.deepEqual(requests[1].output_schema.properties.kind.enum, ["repository_command", "web_verdict"]);
   assert.deepEqual(author.usage, usage);
   assert.deepEqual(review.usage, usage);
   assert.equal(requests[0].read_only, true);
@@ -44,28 +56,116 @@ test("semantic SDK turn exposes only the authority kind valid for its closed WCO
   assert.equal(requests[1].network_access, false);
 });
 
-test("semantic prompts expose the closed JSON payload wire contracts", () => {
-  const request = { owner: "local", repository: { repository_id: "repo", base_branch: "main", base_commit: "a".repeat(40) }, user_intent: "change app", ttl_seconds: 60 } as const;
-  for (const prompt of [chatGptCodexAuthorPrompt(request, "job-exact"), chatGptCodexRepositoryResultPrompt({ exact: true }, request, "job-exact")]) {
-    assert.match(prompt, /\{"operation":"summary"\}/);
-    assert.match(prompt, /\{"operation":"read","paths":\["package.json","README.md"\]\}/);
-    assert.match(prompt, /Never put repository_id, commands, argv, shell/);
-    assert.match(prompt, /protocol_version, job_id, repository, user_intent/);
-    assert.match(prompt, /protocol_version must be exactly "wco-web-bridge-v1" and job_id must be exactly "job-exact"/);
-    assert.match(prompt, /sources and risk_policy\.notes are arrays/);
-    assert.match(prompt, /branch starting with "codex\/"/);
-  }
+test("production independent code review cannot expose verdict authority until an exact source read completed", async () => {
+  const requests: any[] = [];
+  const client = new ChatGptCodexSemanticClient({
+    async checkAvailability() {},
+    async turn(request: any) {
+      requests.push(request);
+      return { thread_id: `inspection-thread-${requests.length}`, output: { protocol_version: "wco-chatgpt-codex-v1", kind: request.output_schema.properties.kind.enum[0], payload_json: "{}" }, usage, public_events: cleanEvents };
+    },
+  } as any);
+  const reviewRequest = { run_id: `TASK:${"e".repeat(64)}`, result_bundle_sha256: "f".repeat(64), published_commit_sha: "1".repeat(40), pull_request_url: "https://github.com/example/repo/pull/2", review_round: 1 } as const;
+  const evidence = { purpose: "independent_code_review", binding: reviewRequest, entries: {} } as const;
 
-  const review = chatGptCodexReviewPrompt({ run_id: `TASK:${"b".repeat(64)}`, result_bundle_sha256: "c".repeat(64), published_commit_sha: "d".repeat(40), pull_request_url: "https://github.com/example/repo/pull/1", review_round: 1 }, { exact: true }, "review-exact");
+  const initial = chatGptCodexReviewPrompt(reviewRequest, evidence, "review-inspection");
+  await client.turn({ profile, ...dirs, prompt: initial });
+  assert.match(initial, /^WCO_SEMANTIC_PHASE:REVIEW_INSPECTION\n/);
+  assert.deepEqual(requests[0].output_schema.properties.kind.enum, ["repository_command"]);
+  assert.doesNotMatch(initial, /For kind=web_verdict/);
+
+  const locator = chatGptCodexReviewRepositoryResultPrompt({ matches: ["src/caller.ts"] }, reviewRequest, "review-inspection");
+  await client.turn({ profile, ...dirs, prompt: locator });
+  assert.match(locator, /^WCO_SEMANTIC_PHASE:REVIEW_INSPECTION\n/);
+  assert.deepEqual(requests[1].output_schema.properties.kind.enum, ["repository_command"]);
+
+  const source = Buffer.from("export function caller() { return preserveInvariant(); }\n", "utf8");
+  const exactRead = {
+    files: [{
+      path: "src/caller.ts",
+      content_base64: source.toString("base64"),
+      content_sha256: createHash("sha256").update(source).digest("hex"),
+      blob_sha: "2".repeat(40),
+      size_bytes: source.byteLength,
+      start_byte: 0,
+      end_byte_exclusive: source.byteLength,
+      total_bytes: source.byteLength,
+    }],
+  };
+  const afterRead = chatGptCodexReviewRepositoryResultPrompt(exactRead, reviewRequest, "review-inspection");
+  await client.turn({ profile, ...dirs, prompt: afterRead });
+  assert.match(afterRead, /^WCO_SEMANTIC_PHASE:REVIEW\n/);
+  assert.deepEqual(requests[2].output_schema.properties.kind.enum, ["repository_command", "web_verdict"]);
+  assert.match(afterRead, /For kind=web_verdict/);
+  assert.match(afterRead, /content_utf8/);
+  assert.doesNotMatch(afterRead, /content_base64/);
+});
+
+test("initial semantic prompt carries the full closed wire tutorial while repository follow-ups stay compact and identity-bound", () => {
+  const request = { owner: "local", repository: { repository_id: "repo", base_branch: "main", base_commit: "a".repeat(40) }, user_intent: "change app", ttl_seconds: 60 } as const;
+  const initial = chatGptCodexAuthorPrompt(request, "job-exact");
+  assert.match(initial, /\{"operation":"summary"\}/);
+  assert.match(initial, /\{"operation":"read","paths":\["package.json","README.md"\]\}/);
+  assert.match(initial, /Never put repository_id, commands, argv, shell/);
+  assert.match(initial, /protocol_version, job_id, repository, user_intent/);
+  assert.match(initial, /protocol_version must be exactly "wco-web-bridge-v1" and job_id must be exactly "job-exact"/);
+  assert.match(initial, /sources and risk_policy\.notes are arrays/);
+  assert.match(initial, /branch starting with "codex\/"/);
+
+  const followUp = chatGptCodexRepositoryResultPrompt({ exact: true }, request, "job-exact");
+  assert.match(followUp, /Continue the same AUTHOR thread and the exact closed payload contract from the initial turn/);
+  assert.match(followUp, /protocol_version="wco-web-bridge-v1", job_id="job-exact"/);
+  assert.match(followUp, /repository=\{"repository_id":"repo","base_branch":"main","base_commit":"a{40}"\}/);
+  assert.match(followUp, /user_intent="change app"/);
+  assert.match(followUp, /draft=true, auto_merge=false/);
+  assert.match(followUp, /senior-maintainer authoring standard from the initial turn/);
+  assert.doesNotMatch(followUp, /\{"operation":"summary"\}/);
+  assert.doesNotMatch(followUp, /For kind=contract_sealed, payload_json must be/);
+  assert.ok(Buffer.byteLength(followUp, "utf8") < Buffer.byteLength(initial, "utf8"), "repository-result follow-up must remain smaller than the initial schema/tutorial prompt");
+
+  const reviewRequest = { run_id: `TASK:${"b".repeat(64)}`, result_bundle_sha256: "c".repeat(64), published_commit_sha: "d".repeat(40), pull_request_url: "https://github.com/example/repo/pull/1", review_round: 1 } as const;
+  const review = chatGptCodexReviewPrompt(reviewRequest, { exact: true, large_evidence_marker: "x".repeat(8_192) }, "review-exact");
+  assert.match(review, /kind=repository_command/);
+  assert.match(review, /exact immutable published commit/);
+  assert.match(review, new RegExp(reviewRequest.published_commit_sha));
   assert.match(review, /closed WebVerdictEnvelope/);
   assert.match(review, /Only REVISE may include repair_operations/);
   assert.match(review, /create_file, replace_file, or delete_file/);
   assert.match(review, /review_id must be exactly "review-exact"/);
+
+  const reviewFollowUp = chatGptCodexReviewRepositoryResultPrompt({ matches: ["src/caller.ts"] }, reviewRequest, "review-exact");
+  assert.match(reviewFollowUp, /Continue the same REVIEW thread/);
+  assert.match(reviewFollowUp, /src\/caller\.ts/);
+  assert.doesNotMatch(reviewFollowUp, /large_evidence_marker/);
+  assert.doesNotMatch(reviewFollowUp, /Exact review evidence:/);
+  assert.doesNotMatch(reviewFollowUp, /For kind=web_verdict/);
+  assert.ok(Buffer.byteLength(reviewFollowUp, "utf8") < Buffer.byteLength(review, "utf8"), "review repository follow-up must not retransmit the full initial Result Bundle evidence");
 });
 
 test("successful semantic provider output without measurable usage fails closed", async () => {
-  const client = new ChatGptCodexSemanticClient({ async checkAvailability() {}, async turn() { return { thread_id: "thread-1", output: {}, usage: undefined }; } } as any);
-  await assert.rejects(client.turn({ profile, ...dirs, prompt: chatGptCodexAuthorPrompt({ owner: "local", repository: { repository_id: "repo", base_branch: "main", base_commit: "a".repeat(40) }, user_intent: "change app", ttl_seconds: 60 }, "job-1") }), (error: any) => error?.code === "WEB_CHATGPT_CODEX_USAGE_UNAVAILABLE");
+  const client = new ChatGptCodexSemanticClient({ async checkAvailability() {}, async turn() { return { thread_id: "thread-1", output: {}, usage: undefined, public_events: cleanEvents }; } } as any);
+  await assert.rejects(client.turn({ profile, ...dirs, prompt: authorPrompt() }), (error: any) => error?.code === "WEB_CHATGPT_CODEX_USAGE_UNAVAILABLE");
+});
+
+test("semantic provider output without public event evidence fails closed", async () => {
+  const client = new ChatGptCodexSemanticClient({ async checkAvailability() {}, async turn() { return { thread_id: "thread-1", output: {}, usage }; } } as any);
+  await assert.rejects(client.turn({ profile, ...dirs, prompt: authorPrompt() }), (error: any) => error?.code === "WEB_CHATGPT_CODEX_EVENT_AUDIT_UNAVAILABLE");
+});
+
+test("semantic provider rejects local or external tool activity before accepting output", async () => {
+  for (const forbidden of ["command_execution", "file_change", "mcp_tool_call", "web_search", "collab_tool_call", "unknown_future_tool"]) {
+    const client = new ChatGptCodexSemanticClient({
+      async checkAvailability() {},
+      async turn() { return { thread_id: "thread-1", output: {}, usage, public_events: [...cleanEvents.slice(0, -1), { type: forbidden, timestamp: "2026-01-01T00:00:00.004Z" }, cleanEvents.at(-1)!] }; },
+    } as any);
+    await assert.rejects(client.turn({ profile, ...dirs, prompt: authorPrompt() }), (error: any) => error?.code === "WEB_CHATGPT_CODEX_TOOL_ACTIVITY_FORBIDDEN");
+  }
+});
+
+test("semantic provider rejects a public event trail at its truncation boundary", async () => {
+  const events = Array.from({ length: 256 }, (_, index) => ({ type: index === 0 ? "turn.started" : index === 255 ? "turn.completed" : "reasoning", timestamp: "2026-01-01T00:00:00.000Z" }));
+  const client = new ChatGptCodexSemanticClient({ async checkAvailability() {}, async turn() { return { thread_id: "thread-1", output: {}, usage, public_events: events }; } } as any);
+  await assert.rejects(client.turn({ profile, ...dirs, prompt: authorPrompt() }), (error: any) => error?.code === "WEB_CHATGPT_CODEX_EVENT_AUDIT_TRUNCATED");
 });
 
 test("unknown semantic prompt fails before provider invocation", async () => {
@@ -77,7 +177,7 @@ test("unknown semantic prompt fails before provider invocation", async () => {
 
 test("semantic provider turn has a hard local deadline", async () => {
   const client = new ChatGptCodexSemanticClient(abortingAgent(), 0.002);
-  await assert.rejects(client.turn({ profile, ...dirs, prompt: chatGptCodexAuthorPrompt({ owner: "local", repository: { repository_id: "repo", base_branch: "main", base_commit: "a".repeat(40) }, user_intent: "change app", ttl_seconds: 60 }, "job-1") }), (error: any) => error?.code === "WEB_CHATGPT_CODEX_TURN_TIMEOUT");
+  await assert.rejects(client.turn({ profile, ...dirs, prompt: authorPrompt() }), (error: any) => error?.code === "WEB_CHATGPT_CODEX_TURN_TIMEOUT");
 });
 
 test("implementation planner turn has the same hard local deadline", async () => {
@@ -86,8 +186,8 @@ test("implementation planner turn has the same hard local deadline", async () =>
 });
 
 test("trusted timeout range supports configurations above first-run 900 seconds", async () => {
-  const client = new ChatGptCodexSemanticClient({ async checkAvailability() {}, async turn() { return { thread_id: "thread-1", output: { protocol_version: "wco-chatgpt-codex-v1", kind: "repository_command", payload_json: "{}" }, usage }; } } as any, 3600);
-  const result = await client.turn({ profile, ...dirs, prompt: chatGptCodexAuthorPrompt({ owner: "local", repository: { repository_id: "repo", base_branch: "main", base_commit: "a".repeat(40) }, user_intent: "change app", ttl_seconds: 60 }, "job-1") });
+  const client = new ChatGptCodexSemanticClient({ async checkAvailability() {}, async turn() { return { thread_id: "thread-1", output: { protocol_version: "wco-chatgpt-codex-v1", kind: "repository_command", payload_json: "{}" }, usage, public_events: cleanEvents }; } } as any, 3600);
+  const result = await client.turn({ profile, ...dirs, prompt: authorPrompt() });
   assert.deepEqual(result.usage, usage);
   assert.throws(() => new ChatGptCodexSemanticClient({} as any, 3601), /1-3600 second range/i);
 });
@@ -95,7 +195,7 @@ test("trusted timeout range supports configurations above first-run 900 seconds"
 test("external cancellation is not mislabeled as an internal timeout", async () => {
   const controller = new AbortController();
   const client = new ChatGptCodexSemanticClient(abortingAgent(), 1);
-  const promise = client.turn({ profile, ...dirs, prompt: chatGptCodexAuthorPrompt({ owner: "local", repository: { repository_id: "repo", base_branch: "main", base_commit: "a".repeat(40) }, user_intent: "change app", ttl_seconds: 60 }, "job-1"), signal: controller.signal });
+  const promise = client.turn({ profile, ...dirs, prompt: authorPrompt(), signal: controller.signal });
   controller.abort();
   await assert.rejects(promise, (error: any) => error?.code !== "WEB_CHATGPT_CODEX_TURN_TIMEOUT");
 });

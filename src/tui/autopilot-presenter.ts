@@ -35,7 +35,7 @@ export function formatAutopilotOutcome(receipt: AutopilotJobReceipt, draftPrUrl:
     return [
       "AUTOPILOT · Paused",
       "Progress      saved",
-      "Your action   use /run to continue saved progress",
+      "Your action   use /continue to continue saved progress",
     ].join("\n");
   }
   if (receipt.status === "NEEDS_YOU") {
@@ -49,6 +49,6 @@ export function formatAutopilotOutcome(receipt: AutopilotJobReceipt, draftPrUrl:
   return [
     formatAutopilotStatus(receipt),
     `Reason        ${receipt.reason ?? "WCO stopped before the task was ready for you."}`,
-    "Your action   use /run to continue from saved progress",
+    "Your action   use /continue to continue from saved progress",
   ].join("\n");
 }

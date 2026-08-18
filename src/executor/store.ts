@@ -1,7 +1,10 @@
+import { constants as fsConstants, type Stats } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { canonicalJsonBuffer } from "../result-bundle/canonical-json.js";
+import { readStableFile, sameStableFileIdentity, type StableFileIdentity } from "../shared/stable-file.js";
+import { acquireTicketFileLock, TicketFileLockError } from "../shared/ticket-file-lock.js";
 import { ExecutorError, type ExecutorReceipt, type ExecutorState } from "./contracts.js";
 import { executorPaths, prepareExecutorDirectory } from "./paths.js";
 import { readStableExecutorStateFile, writeDurableExecutorStateFile } from "./state-io.js";
@@ -193,6 +196,102 @@ export async function readExecutorReceipt(stateDirectory: string, taskId: string
   const receipt = parsed as ExecutorReceipt; validateReceipt(receipt); return receipt;
 }
 export async function writeExecutorReceipt(stateDirectory: string, receipt: ExecutorReceipt): Promise<void> { validateReceipt(receipt); const paths = executorPaths(stateDirectory, receipt.task_id, receipt.task_bundle_sha256, receipt.artifact_sha256); await prepareExecutorDirectory(stateDirectory, paths.directory); const bytes = canonicalJsonBuffer(receipt); if (bytes.byteLength > MAX_RECEIPT_BYTES) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor receipt exceeds byte cap."); await writeDurableExecutorStateFile(paths.receipt, bytes, MAX_RECEIPT_BYTES); }
-export interface ExecutorLock { nonce: string; path: string; }
-export async function acquireExecutorLock(stateDirectory: string, taskId: string, taskBundleSha256: string, artifactSha256: string): Promise<ExecutorLock> { const paths = executorPaths(stateDirectory, taskId, taskBundleSha256, artifactSha256); await prepareExecutorDirectory(stateDirectory, paths.directory); const nonce = crypto.randomBytes(24).toString("hex"); const bytes = canonicalJsonBuffer({ pid: process.pid, nonce, created_at: new Date().toISOString() }); let handle: fs.FileHandle | null = null; try { handle = await fs.open(paths.lock, "wx", 0o600); await handle.writeFile(bytes); await handle.sync(); } catch (error) { await handle?.close().catch(() => undefined); if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new ExecutorError("EXECUTOR_LOCKED", "Executor artifact is already locked; stale locks are never auto-stolen."); throw error; } await handle.close(); return { nonce, path: paths.lock }; }
-export async function releaseExecutorLock(lock: ExecutorLock): Promise<void> { let bytes: Buffer; try { bytes = await readStableExecutorStateFile(lock.path, MAX_LOCK_BYTES); } catch { return; } let parsed: unknown; try { parsed = JSON.parse(bytes.toString("utf8")); } catch { return; } if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || (parsed as { nonce?: unknown }).nonce !== lock.nonce) return; await fs.unlink(lock.path).catch(() => undefined); }
+
+interface ExecutorLockRecord { pid: number; nonce: string; created_at: string; }
+interface ExecutorLockObservation { state: "LIVE" | "STALE"; record: ExecutorLockRecord; identity: StableFileIdentity; }
+type ExecutorLockInspection = { state: "MISSING" | "MALFORMED" } | ExecutorLockObservation;
+export interface ExecutorLock { nonce: string; path: string; identity: StableFileIdentity; }
+
+function executorStableIdentity(stats: Stats): StableFileIdentity { return { dev: stats.dev, ino: stats.ino, size: stats.size, mtimeMs: stats.mtimeMs, ctimeMs: stats.ctimeMs }; }
+function sameExecutorInode(left: Stats, right: Stats): boolean { return left.dev === right.dev && left.ino === right.ino && left.size === right.size; }
+function executorProcessIsAlive(pid: number): boolean { try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; } }
+function parseExecutorLock(bytes: Buffer): ExecutorLockRecord | null {
+  let parsed: unknown; try { parsed = JSON.parse(bytes.toString("utf8")) as unknown; } catch { return null; }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const value = parsed as Partial<ExecutorLockRecord>;
+  if (!Number.isSafeInteger(value.pid) || (value.pid ?? 0) <= 0 || typeof value.nonce !== "string" || !/^[a-f0-9]{48}$/.test(value.nonce) || typeof value.created_at !== "string" || !Number.isFinite(Date.parse(value.created_at))) return null;
+  return value as ExecutorLockRecord;
+}
+async function inspectExecutorLock(lockPath: string): Promise<ExecutorLockInspection> {
+  const info = await fs.lstat(lockPath).catch((error: unknown) => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; });
+  if (!info) return { state: "MISSING" };
+  if (info.isSymbolicLink() || !info.isFile() || info.size > MAX_LOCK_BYTES) return { state: "MALFORMED" };
+  try {
+    const snapshot = await readStableFile(lockPath, MAX_LOCK_BYTES);
+    const record = parseExecutorLock(snapshot.bytes);
+    if (!record) return { state: "MALFORMED" };
+    return { state: executorProcessIsAlive(record.pid) ? "LIVE" : "STALE", record, identity: snapshot.identity };
+  } catch {
+    const after = await fs.lstat(lockPath).catch((error: unknown) => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; });
+    return after ? { state: "MALFORMED" } : { state: "MISSING" };
+  }
+}
+async function reclaimDeadExecutorLock(lockPath: string, observed: ExecutorLockObservation): Promise<void> {
+  if (observed.state !== "STALE" || executorProcessIsAlive(observed.record.pid)) throw new ExecutorError("EXECUTOR_LOCKED", "Executor lock owner is not safely reclaimable.");
+  const current = await fs.lstat(lockPath).catch((error: unknown) => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; });
+  if (!current) return;
+  if (current.isSymbolicLink() || !current.isFile() || !sameStableFileIdentity(executorStableIdentity(current), observed.identity)) throw new ExecutorError("EXECUTOR_LOCKED", "Executor lock changed while stale recovery was being attested.");
+  await fs.unlink(lockPath);
+}
+async function installExecutorLock(directory: string, lockPath: string, bytes: Buffer): Promise<StableFileIdentity | null> {
+  const temporary = path.join(directory, `.executor-lock.${process.pid}.${crypto.randomUUID()}.tmp`);
+  let handle: fs.FileHandle | null = null;
+  let linked = false;
+  let temporaryPresent = true;
+  let prepared: Stats | null = null;
+  try {
+    handle = await fs.open(temporary, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);
+    await handle.writeFile(bytes); await handle.sync();
+    prepared = await handle.stat();
+    if (!prepared.isFile() || prepared.size !== bytes.byteLength) throw new ExecutorError("EXECUTOR_LOCKED", "Prepared executor lock is incomplete.");
+    await handle.close(); handle = null;
+    try { await fs.link(temporary, lockPath); linked = true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") return null; throw error; }
+    const linkedStat = await fs.lstat(lockPath);
+    if (linkedStat.isSymbolicLink() || !linkedStat.isFile() || !sameExecutorInode(prepared, linkedStat)) throw new ExecutorError("EXECUTOR_LOCKED", "Executor lock changed while being atomically installed.");
+    await fs.unlink(temporary);
+    temporaryPresent = false;
+    const installed = await fs.lstat(lockPath);
+    if (installed.isSymbolicLink() || !installed.isFile() || !sameExecutorInode(prepared, installed)) throw new ExecutorError("EXECUTOR_LOCKED", "Executor lock changed after atomic installation.");
+    return executorStableIdentity(installed);
+  } catch (error) {
+    if (linked && prepared) {
+      const current = await fs.lstat(lockPath).catch(() => null);
+      if (current && current.isFile() && !current.isSymbolicLink() && sameExecutorInode(prepared, current)) await fs.unlink(lockPath).catch(() => undefined);
+    }
+    throw error;
+  } finally {
+    await handle?.close().catch(() => undefined);
+    if (temporaryPresent) await fs.unlink(temporary).catch(() => undefined);
+  }
+}
+
+export async function acquireExecutorLock(stateDirectory: string, taskId: string, taskBundleSha256: string, artifactSha256: string): Promise<ExecutorLock> {
+  const paths = executorPaths(stateDirectory, taskId, taskBundleSha256, artifactSha256); await prepareExecutorDirectory(stateDirectory, paths.directory);
+  let guard;
+  try { guard = await acquireTicketFileLock(path.join(paths.directory, "executor-lock-acquire"), { timeoutMs: 5_000, pollMs: 25 }); }
+  catch (error) {
+    if (error instanceof TicketFileLockError) throw new ExecutorError("EXECUTOR_LOCKED", `Executor lock acquisition could not be serialized safely: ${error.message}`);
+    throw error;
+  }
+  try {
+    const observed = await inspectExecutorLock(paths.lock);
+    if (observed.state === "LIVE") throw new ExecutorError("EXECUTOR_LOCKED", "Executor artifact is already locked by another live process.");
+    if (observed.state === "MALFORMED") throw new ExecutorError("EXECUTOR_LOCKED", "Executor lock is malformed or unsafe; explicit operator recovery is required.");
+    if (observed.state === "STALE") await reclaimDeadExecutorLock(paths.lock, observed);
+    const nonce = crypto.randomBytes(24).toString("hex");
+    const bytes = canonicalJsonBuffer({ pid: process.pid, nonce, created_at: new Date().toISOString() } satisfies ExecutorLockRecord);
+    const installedIdentity = await installExecutorLock(paths.directory, paths.lock, bytes);
+    if (!installedIdentity) throw new ExecutorError("EXECUTOR_LOCKED", "Executor artifact lock changed during serialized acquisition.");
+    return { nonce, path: paths.lock, identity: installedIdentity };
+  } finally { await guard.release().catch(() => undefined); }
+}
+export async function releaseExecutorLock(lock: ExecutorLock): Promise<void> {
+  try {
+    const snapshot = await readStableFile(lock.path, MAX_LOCK_BYTES);
+    const current = parseExecutorLock(snapshot.bytes);
+    if (!current || current.pid !== process.pid || current.nonce !== lock.nonce || !sameStableFileIdentity(snapshot.identity, lock.identity)) return;
+    const beforeRemove = await fs.lstat(lock.path);
+    if (beforeRemove.isSymbolicLink() || !beforeRemove.isFile() || !sameStableFileIdentity(executorStableIdentity(beforeRemove), lock.identity)) return;
+    await fs.unlink(lock.path);
+  } catch { return; }
+}

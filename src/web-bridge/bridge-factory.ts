@@ -17,6 +17,11 @@ export function createConfiguredWebBridge(config: TrustedConfig, bridgeDirectory
   const mode = config.web_bridge?.mode ?? "chatgpt_codex";
 
   if (mode === "chatgpt_codex") {
+    // Keep the normal hot path limited to provider work that can affect the
+    // user's task. The blind Web-B challenger is qualified research/evaluation
+    // infrastructure and remains directly constructible by its benchmark/tests,
+    // but it is shadow-only and therefore must not spend extra provider turns,
+    // tokens, filesystem work, or authorization latency on every normal task.
     return new ChatGptCodexWebBridge(config, bridgeDirectory, stateDirectory);
   }
   if (mode === "managed_actions") {

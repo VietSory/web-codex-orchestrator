@@ -1,8 +1,8 @@
 import crypto from "node:crypto";
-import { constants as fsConstants } from "node:fs";
-import { lstat, mkdir, open, readdir, realpath, unlink } from "node:fs/promises";
+import { constants as fsConstants, type Stats } from "node:fs";
+import { lstat, link, mkdir, open, readdir, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
-import { readStableFile } from "./stable-file.js";
+import { readStableFile, sameStableFileIdentity, type StableFileIdentity } from "./stable-file.js";
 
 const MAX_LOCK_BYTES = 16 * 1024;
 const TICKET_NAME = /^(\d{1,12})\.lock$/;
@@ -12,6 +12,11 @@ interface TicketBody {
   pid: number;
   nonce: string;
   created_at: string;
+}
+
+interface TicketObservation {
+  body: TicketBody;
+  identity: StableFileIdentity;
 }
 
 export interface TicketFileLockHandle {
@@ -44,11 +49,28 @@ function processIsAlive(pid: number): boolean {
   catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
 }
 
+function sameInode(left: Stats, right: Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size;
+}
+
+function statsIdentity(stats: Stats): StableFileIdentity {
+  return { dev: stats.dev, ino: stats.ino, size: stats.size, mtimeMs: stats.mtimeMs, ctimeMs: stats.ctimeMs };
+}
+
 async function canonicalLockDirectory(directory: string): Promise<string> {
   const absolute = path.resolve(directory);
-  await mkdir(absolute, { recursive: true, mode: 0o700 });
+  const parent = path.dirname(absolute);
+  const parentInfo = await lstat(parent).catch((error: unknown) => {
+    throw new TicketFileLockError("TICKET_LOCK_INVALID", `Ticket lock parent is unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  if (!parentInfo.isDirectory() || parentInfo.isSymbolicLink() || await realpath(parent) !== parent) {
+    throw new TicketFileLockError("TICKET_LOCK_INVALID", "Ticket lock parent directory is unsafe.");
+  }
+  try { await mkdir(absolute, { mode: 0o700 }); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
   const info = await lstat(absolute);
   if (!info.isDirectory() || info.isSymbolicLink() || await realpath(absolute) !== absolute) throw new TicketFileLockError("TICKET_LOCK_INVALID", "Ticket lock directory is unsafe.");
+  if (await realpath(parent) !== parent) throw new TicketFileLockError("TICKET_LOCK_INVALID", "Ticket lock parent changed during directory creation.");
   return absolute;
 }
 
@@ -66,18 +88,18 @@ async function ticketNames(directory: string): Promise<Array<{ name: string; seq
   return tickets.sort((a, b) => a.sequence - b.sequence);
 }
 
-async function readTicketIfPresent(ticketPath: string): Promise<TicketBody | null> {
+async function readTicketIfPresent(ticketPath: string): Promise<TicketObservation | null> {
   const before = await lstat(ticketPath).catch((error: unknown) => {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   });
   if (!before) return null;
   if (!before.isFile() || before.isSymbolicLink() || before.size > MAX_LOCK_BYTES) throw new TicketFileLockError("TICKET_LOCK_INVALID", "Ticket lock path is unsafe or exceeds its bound.");
-  try { return parseTicket((await readStableFile(ticketPath, MAX_LOCK_BYTES)).bytes); }
-  catch (error) {
+  try {
+    const snapshot = await readStableFile(ticketPath, MAX_LOCK_BYTES);
+    return { body: parseTicket(snapshot.bytes), identity: snapshot.identity };
+  } catch (error) {
     if (error instanceof TicketFileLockError) throw error;
-    // A legitimate owner may release after readdir/lstat but before or during
-    // stable open. Treat only a now-missing path as a normal queue race.
     const after = await lstat(ticketPath).catch((checkError: unknown) => {
       if ((checkError as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw checkError;
@@ -87,30 +109,64 @@ async function readTicketIfPresent(ticketPath: string): Promise<TicketBody | nul
   }
 }
 
-async function allocateTicket(directory: string): Promise<{ path: string; sequence: number; body: TicketBody }> {
+async function unlinkObservedTicket(ticketPath: string, observed: TicketObservation): Promise<void> {
+  const current = await lstat(ticketPath).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  });
+  if (!current) return;
+  if (!current.isFile() || current.isSymbolicLink() || !sameStableFileIdentity(statsIdentity(current), observed.identity)) {
+    throw new TicketFileLockError("TICKET_LOCK_INVALID", "Ticket lock changed before safe removal.");
+  }
+  await unlink(ticketPath);
+}
+
+async function allocateTicket(directory: string): Promise<{ path: string; sequence: number; body: TicketBody; identity: StableFileIdentity }> {
   const nonce = crypto.randomUUID();
+  const parent = path.dirname(directory);
   while (true) {
     const tickets = await ticketNames(directory);
     const sequence = (tickets.at(-1)?.sequence ?? 0) + 1;
     if (!Number.isSafeInteger(sequence) || sequence > 999_999_999_999) throw new TicketFileLockError("TICKET_LOCK_INVALID", "Ticket lock sequence exhausted its safe bound.");
     const ticketPath = path.join(directory, `${sequence}.lock`);
+    const temporary = path.join(parent, `.${path.basename(directory)}.${process.pid}.${nonce}.${sequence}.ticket.tmp`);
     const body: TicketBody = { version: "1.0", pid: process.pid, nonce, created_at: new Date().toISOString() };
-    let handle;
+    const bytes = Buffer.from(`${JSON.stringify(body)}\n`, "utf8");
+    if (bytes.byteLength > MAX_LOCK_BYTES) throw new TicketFileLockError("TICKET_LOCK_INVALID", "Ticket lock record exceeds its safe bound.");
+    let handle: Awaited<ReturnType<typeof open>> | null = null;
+    let linked = false;
+    let temporaryPresent = true;
+    let prepared: Stats | null = null;
     try {
-      handle = await open(ticketPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);
-      await handle.writeFile(`${JSON.stringify(body)}\n`, "utf8");
-      // Ticket files coordinate live processes only; they intentionally do not
-      // need crash-persistent fsync durability. The durable relay record still
-      // fsyncs separately before authority can advance.
+      handle = await open(temporary, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);
+      await handle.writeFile(bytes);
+      await handle.sync();
+      prepared = await handle.stat();
+      if (!prepared.isFile() || prepared.size !== bytes.byteLength) throw new TicketFileLockError("TICKET_LOCK_INVALID", "Prepared ticket lock is incomplete.");
       await handle.close();
+      handle = null;
+      try { await link(temporary, ticketPath); linked = true; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+        throw error;
+      }
+      const linkedStat = await lstat(ticketPath);
+      if (linkedStat.isSymbolicLink() || !linkedStat.isFile() || !sameInode(prepared, linkedStat)) throw new TicketFileLockError("TICKET_LOCK_INVALID", "Ticket lock changed while being atomically installed.");
+      await unlink(temporary);
+      temporaryPresent = false;
       const observed = await readTicketIfPresent(ticketPath);
-      if (!observed || observed.pid !== body.pid || observed.nonce !== body.nonce) throw new TicketFileLockError("TICKET_LOCK_INVALID", "Ticket lock changed during allocation.");
-      return { path: ticketPath, sequence, body };
+      if (!observed || observed.body.pid !== body.pid || observed.body.nonce !== body.nonce) throw new TicketFileLockError("TICKET_LOCK_INVALID", "Ticket lock changed during allocation.");
+      return { path: ticketPath, sequence, body, identity: observed.identity };
     } catch (error) {
-      await handle?.close().catch(() => undefined);
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
-      if (error instanceof TicketFileLockError) await unlink(ticketPath).catch(() => undefined);
+      if (linked && prepared) {
+        const current = await lstat(ticketPath).catch(() => null);
+        if (current && current.isFile() && !current.isSymbolicLink() && sameInode(prepared, current)) await unlink(ticketPath).catch(() => undefined);
+      }
+      if (error instanceof TicketFileLockError) throw error;
       throw error;
+    } finally {
+      await handle?.close().catch(() => undefined);
+      if (temporaryPresent) await unlink(temporary).catch(() => undefined);
     }
   }
 }
@@ -128,9 +184,8 @@ export async function acquireTicketFileLock(directory: string, options: { timeou
     if (released) return;
     const current = await readTicketIfPresent(own.path);
     if (!current) { released = true; return; }
-    if (current.pid !== own.body.pid || current.nonce !== own.body.nonce) throw new TicketFileLockError("TICKET_LOCK_INVALID", "Ticket lock ownership changed before release.");
-    try { await unlink(own.path); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    if (current.body.pid !== own.body.pid || current.body.nonce !== own.body.nonce || !sameStableFileIdentity(current.identity, own.identity)) throw new TicketFileLockError("TICKET_LOCK_INVALID", "Ticket lock ownership changed before release.");
+    await unlinkObservedTicket(own.path, current);
     released = true;
   };
 
@@ -141,12 +196,10 @@ export async function acquireTicketFileLock(directory: string, options: { timeou
       for (const ticket of tickets) {
         if (ticket.sequence >= own.sequence) break;
         const ticketPath = path.join(root, ticket.name);
-        const body = await readTicketIfPresent(ticketPath);
-        if (!body) continue;
-        if (processIsAlive(body.pid)) { blockedByLiveOlder = true; break; }
-        // The filename cannot be reused while our higher sequence ticket exists,
-        // so deleting this exact dead predecessor cannot unlink a new owner.
-        await unlink(ticketPath).catch((error: unknown) => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; });
+        const observed = await readTicketIfPresent(ticketPath);
+        if (!observed) continue;
+        if (processIsAlive(observed.body.pid)) { blockedByLiveOlder = true; break; }
+        await unlinkObservedTicket(ticketPath, observed);
       }
       if (!blockedByLiveOlder) return { ticketPath: own.path, sequence: own.sequence, release };
       if (Date.now() - started >= timeoutMs) throw new TicketFileLockError("TICKET_LOCKED", `Ticket lock remained busy for ${timeoutMs}ms.`);

@@ -24,9 +24,43 @@ export class RelayFileStore {
 
   private async safeRoot(): Promise<string> {
     const absolute = path.resolve(this.root);
-    await mkdir(absolute, { recursive: true, mode: 0o700 });
-    const stat = await lstat(absolute);
-    if (!stat.isDirectory() || stat.isSymbolicLink() || await realpath(absolute) !== absolute) throw new WebBridgeError("RELAY_STORE_ROOT_UNSAFE", "Relay store root is not canonical.");
+    const assertCanonicalDirectory = async (target: string): Promise<void> => {
+      const stat = await lstat(target);
+      if (!stat.isDirectory() || stat.isSymbolicLink() || await realpath(target) !== target) {
+        throw new WebBridgeError("RELAY_STORE_ROOT_UNSAFE", `Relay store ancestry is not canonical: ${target}`);
+      }
+    };
+
+    const missing: string[] = [];
+    let current = absolute;
+    while (true) {
+      const stat = await lstat(current).catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error;
+      });
+      if (stat) {
+        if (!stat.isDirectory() || stat.isSymbolicLink() || await realpath(current) !== current) {
+          throw new WebBridgeError("RELAY_STORE_ROOT_UNSAFE", `Relay store ancestry is not canonical: ${current}`);
+        }
+        break;
+      }
+      const parent = path.dirname(current);
+      if (parent === current) throw new WebBridgeError("RELAY_STORE_ROOT_UNSAFE", "Relay store has no canonical existing ancestor.");
+      missing.push(path.basename(current));
+      current = parent;
+    }
+
+    for (const segment of missing.reverse()) {
+      await assertCanonicalDirectory(current);
+      const next = path.join(current, segment);
+      try { await mkdir(next, { mode: 0o700 }); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+      await assertCanonicalDirectory(current);
+      await assertCanonicalDirectory(next);
+      current = next;
+    }
+
+    await assertCanonicalDirectory(absolute);
     await chmod(absolute, 0o700).catch(() => undefined);
     return absolute;
   }
@@ -203,6 +237,36 @@ export class RelayFileStore {
       const record: RelayJobRecord = { schema_version: "1.0", identity, kind, request, events: [], idempotency: { [`create:${idempotencyKey}`]: requestDigest } };
       await this.write(record);
       return identity;
+    });
+  }
+
+  async claim(jobId: string, owner: string, type: string, payload: Record<string, unknown>, idempotencyKey: string, claimNonce: string): Promise<{ event: RelayStoredEvent; acquired: boolean }> {
+    safeId(idempotencyKey);
+    safeId(claimNonce);
+    if (typeof type !== "string" || type.length < 1 || type.length > 128 || /[\r\n\0]/.test(type)) throw new WebBridgeError("RELAY_RECORD_INVALID", "Relay claim event type is invalid.");
+    return await this.locked(async () => {
+      const record = await this.read(jobId);
+      this.authorize(record, owner);
+      const previous = record.idempotency[`event:${idempotencyKey}`];
+      if (previous) {
+        const event = record.events.find((value) => value.idempotency_key === idempotencyKey);
+        if (!event || event.type !== type || !event.payload || typeof event.payload !== "object" || Array.isArray(event.payload)) throw new WebBridgeError("RELAY_RECORD_INVALID", "Relay claim idempotency index is inconsistent.");
+        const stored = { ...(event.payload as Record<string, unknown>) };
+        delete stored.claim_nonce;
+        if (contentDigest({ type, payload: stored }) !== contentDigest({ type, payload })) throw new WebBridgeError("RELAY_IDEMPOTENCY_CONFLICT", "Conflicting relay claim replay was rejected.");
+        // A durable claim means the external side effect may already have
+        // happened. Replays are therefore never ownership grants, even when a
+        // caller presents the same nonce after an ambiguous local response.
+        return { event, acquired: false };
+      }
+      if (record.events.length >= this.limits.maximum_events_per_job) throw new WebBridgeError("RELAY_EVENT_LIMIT", "Relay event limit reached.");
+      const claimedPayload = { ...payload, claim_nonce: claimNonce };
+      const digest = contentDigest({ type, payload: claimedPayload });
+      const event: RelayStoredEvent = { sequence: (record.events.at(-1)?.sequence ?? 0) + 1, type, payload: claimedPayload, created_at: this.now().toISOString(), idempotency_key: idempotencyKey, content_sha256: digest };
+      record.events.push(event);
+      record.idempotency[`event:${idempotencyKey}`] = digest;
+      await this.write(record);
+      return { event, acquired: true };
     });
   }
 

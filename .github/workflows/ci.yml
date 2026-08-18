@@ -66,6 +66,27 @@ jobs:
       - name: Deterministic context benchmark
         run: npm run benchmark:context
 
+      - name: Deterministic web-context benchmark
+        run: npm run benchmark:web-context
+
+      - name: Deterministic prompt footprint guardrail
+        run: npm run benchmark:prompt-footprint
+
+      - name: Upload prompt footprint evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prompt-footprint
+          path: artifacts/prompt-footprint.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Deterministic review relay efficiency benchmark
+        run: npm run benchmark:relay-efficiency
+
+      - name: Deterministic semantic corpus integrity benchmark
+        run: npm run benchmark:semantic
+
       - name: End-to-end workflow test
         run: npm run test:e2e
         timeout-minutes: 2
@@ -81,6 +102,15 @@ jobs:
 
       - name: Clean-install packed CLI without dev dependencies
         run: npm run pack:smoke
+
+      - name: Upload packed CLI process metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: packed-cli-process-metrics
+          path: artifacts/packed-cli-process-metrics.json
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Zero-config daily-user contract
         run: npm run test:user:contract

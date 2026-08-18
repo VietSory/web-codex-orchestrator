@@ -66,7 +66,8 @@ export class ExactRepositoryReadService {
       }
       if (content.byteLength > this.limits.maximum_file_bytes) throw new WebBridgeError("WEB_REPOSITORY_READ_LIMIT", "File read response exceeds byte bounds.");
       const end = region.end_byte_exclusive === -1 ? content.byteLength : region.end_byte_exclusive;
-      if (region.start_byte >= end || end > content.byteLength) throw new WebBridgeError("WEB_REPOSITORY_REGION_INVALID", "Repository byte range is outside the exact blob.");
+      const emptyWholeFile = region.end_byte_exclusive === -1 && region.start_byte === 0 && content.byteLength === 0;
+      if ((!emptyWholeFile && region.start_byte >= end) || end > content.byteLength) throw new WebBridgeError("WEB_REPOSITORY_REGION_INVALID", "Repository byte range is outside the exact blob.");
       const selected = content.subarray(region.start_byte, end);
       if (total + selected.byteLength > this.limits.maximum_total_bytes) throw new WebBridgeError("WEB_REPOSITORY_READ_LIMIT", "Region read response exceeds byte bounds.");
       total += selected.byteLength; metrics.files_read = new Set([...files.map((file) => file.path), item]).size; metrics.regions_read += 1; metrics.context_bytes_prepared += selected.byteLength;

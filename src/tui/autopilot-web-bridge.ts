@@ -45,6 +45,12 @@ export function withFinalReviewNotification(
       await bridge.receiveSealedContract(jobId),
     receiveWebImplementation: async (jobId: string): Promise<WebImplementationSubmission | null> =>
       await bridge.receiveWebImplementation(jobId),
+    ...(bridge.preflightFinalReviewEvidence
+      ? {
+          preflightFinalReviewEvidence: async (evidence: Record<string, unknown>): Promise<void> =>
+            await bridge.preflightFinalReviewEvidence!(evidence),
+        }
+      : {}),
     createFinalReviewJob: async (request: FinalReviewRequest, key: string): Promise<BridgeJobIdentity> =>
       await bridge.createFinalReviewJob(request, key),
     submitFinalReviewEvidence: async (reviewId: string, evidence: Record<string, unknown>, key: string): Promise<void> =>

@@ -1,28 +1,24 @@
-import { randomUUID } from "node:crypto";
-import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile, realpath, rm } from "node:fs/promises";
+import { lstat, mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
+import { acquireExclusiveLock, LockError } from "../run/locks.js";
 import { ExecutionError } from "./errors.js";
 
 export interface ExecutionLockHandle { path: string; release(): Promise<void>; }
 
-const MAX_LOCK_BYTES = 16 * 1024;
-
-interface ExecutionLockRecord {
-  pid: number;
-  nonce: string;
-  timestamp: string;
-}
-
-function parseLock(raw: string): ExecutionLockRecord | null {
-  try {
-    const value = JSON.parse(raw) as Partial<ExecutionLockRecord>;
-    if (!Number.isInteger(value.pid) || Number(value.pid) <= 0) return null;
-    if (typeof value.nonce !== "string" || value.nonce.length < 16 || value.nonce.length > 256) return null;
-    if (typeof value.timestamp !== "string" || !Number.isFinite(Date.parse(value.timestamp))) return null;
-    return { pid: Number(value.pid), nonce: value.nonce, timestamp: value.timestamp };
-  } catch {
-    return null;
+async function prepareLockDirectory(stateDirectory: string, parentPath: string): Promise<void> {
+  const stateRoot = path.resolve(stateDirectory);
+  let stateInfo;
+  try { stateInfo = await lstat(stateRoot); }
+  catch (error) { throw new ExecutionError("EXECUTION_LOCKED", `Execution state directory is unavailable: ${error instanceof Error ? error.message : String(error)}`); }
+  if (stateInfo.isSymbolicLink() || !stateInfo.isDirectory() || await realpath(stateRoot) !== stateRoot) {
+    throw new ExecutionError("EXECUTION_LOCKED", "Execution state directory is unsafe.");
+  }
+  if (path.dirname(parentPath) !== stateRoot) throw new ExecutionError("EXECUTION_LOCKED", "Execution lock directory escapes the state root.");
+  try { await mkdir(parentPath, { mode: 0o700 }); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+  const parent = await lstat(parentPath);
+  if (parent.isSymbolicLink() || !parent.isDirectory() || await realpath(parentPath) !== parentPath) {
+    throw new ExecutionError("EXECUTION_LOCKED", "Execution lock directory is unsafe.");
   }
 }
 
@@ -32,42 +28,12 @@ export function executionLockPath(stateDirectory: string, archiveSha256: string)
 
 export async function acquireExecutionLock(stateDirectory: string, archiveSha256: string): Promise<ExecutionLockHandle> {
   const lockPath = executionLockPath(stateDirectory, archiveSha256);
-  const parentPath = path.dirname(lockPath);
-  await mkdir(parentPath, { recursive: true, mode: 0o700 });
-  const parent = await lstat(parentPath);
-  if (parent.isSymbolicLink() || !parent.isDirectory() || await realpath(parentPath) !== parentPath) {
-    throw new ExecutionError("EXECUTION_LOCKED", "Execution lock directory is unsafe.");
-  }
-
-  const pid = process.pid;
-  const nonce = randomUUID();
-  let handle;
+  await prepareLockDirectory(stateDirectory, path.dirname(lockPath));
   try {
-    handle = await open(lockPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
-    await handle.writeFile(`${JSON.stringify({ pid, nonce, timestamp: new Date().toISOString() } satisfies ExecutionLockRecord)}\n`, "utf8");
-    await handle.sync();
-    await handle.close();
+    const lock = await acquireExclusiveLock(lockPath, "EXECUTION_LOCKED");
+    return { path: lock.path, release: async () => await lock.release() };
   } catch (error) {
-    await handle?.close().catch(() => undefined);
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new ExecutionError("EXECUTION_LOCKED", "Execution lock already exists.");
+    if (error instanceof LockError) throw new ExecutionError("EXECUTION_LOCKED", error.message);
     throw error;
   }
-
-  let released = false;
-  return {
-    path: lockPath,
-    async release() {
-      if (released) return;
-      released = true;
-      try {
-        const info = await lstat(lockPath);
-        if (info.isSymbolicLink() || !info.isFile() || info.size > MAX_LOCK_BYTES) return;
-        const current = parseLock(await readFile(lockPath, "utf8"));
-        if (current?.pid !== pid || current.nonce !== nonce) return;
-        await rm(lockPath, { force: false });
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      }
-    },
-  };
 }

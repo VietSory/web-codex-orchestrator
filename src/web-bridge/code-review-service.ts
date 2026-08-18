@@ -203,10 +203,14 @@ export async function createPendingCodeReview(options: { bridge: WebBridge; runI
     pull_request_url: newest.receipt.pull_request.url,
     review_round: newest.reviewRound,
   };
+
+  const evidence = await readBoundedResultEvidence(newest.archivePath, newest.manifest);
+  const payload = { purpose: "independent_code_review", binding: request, entries: evidence };
+  await options.bridge.preflightFinalReviewEvidence?.(payload);
+
   const identity = await options.bridge.createFinalReviewJob(request, `code-review-${contentDigest({ purpose: "independent_code_review", request })}`);
   if (existing?.state === "PENDING" && identity.job_id !== existing.review_job_id) throw new WebBridgeError("WEB_CODE_REVIEW_REPLAY_CONFLICT", "Relay idempotency returned a different code-review job identity.");
-  const evidence = await readBoundedResultEvidence(newest.archivePath, newest.manifest);
-  await options.bridge.submitFinalReviewEvidence(identity.job_id, { purpose: "independent_code_review", binding: request, entries: evidence }, `code-evidence-${newest.receipt.archive_sha256}`);
+  await options.bridge.submitFinalReviewEvidence(identity.job_id, payload, `code-evidence-${newest.receipt.archive_sha256}`);
 
   const now = (options.now?.() ?? new Date()).toISOString();
   const receipt: WebCodeReviewReceipt = existing?.state === "PENDING" ? existing : {

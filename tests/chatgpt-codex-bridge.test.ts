@@ -233,6 +233,9 @@ test("final-review provider failure after reservation is fail-closed and never r
   let providerTurns = 0; const target = item.bridge as any; target.ensureAuthorizedForProviderTurn = async () => undefined;
   target.semantic = { async checkAvailability() {}, async turn() { providerTurns += 1; throw new Error("review provider interrupted after reservation"); } };
   await assert.rejects(() => item.bridge.waitForVerdict(review.job_id), /review provider interrupted after reservation/);
-  await assert.rejects(() => item.bridge.waitForVerdict(review.job_id), /WEB_CHATGPT_CODEX_AMBIGUOUS_REVIEW|ambiguous authority-bearing review/i);
+  await assert.rejects(
+    () => item.bridge.waitForVerdict(review.job_id),
+    (error: any) => error?.code === "WEB_CHATGPT_CODEX_AMBIGUOUS_REVIEW",
+  );
   assert.equal(providerTurns, 1);
 });

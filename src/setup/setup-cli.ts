@@ -10,10 +10,32 @@ export interface SetupCommandIo {
   question?(prompt: string): Promise<string>;
 }
 
+export interface SetupExecutionHostStatus {
+  severity: "ok" | "warn";
+  value: string;
+  guidance?: string;
+}
+
 const defaultIo: SetupCommandIo = {
   write: (value) => process.stdout.write(value),
   error: (value) => process.stderr.write(value),
 };
+
+export function setupExecutionHostStatus(platform: NodeJS.Platform = process.platform): SetupExecutionHostStatus {
+  if (platform === "linux") return { severity: "ok", value: "Linux/WSL verification supported" };
+  if (platform === "win32") {
+    return {
+      severity: "warn",
+      value: "native Windows host; normal task verification requires Linux/WSL",
+      guidance: "Open this project from WSL and run `wco` there. This build uses Bubblewrap for deterministic filesystem/network isolation and does not start the normal setup/auth/task workflow on native Windows.",
+    };
+  }
+  return {
+    severity: "warn",
+    value: `${platform} host; normal task verification requires Linux/WSL`,
+    guidance: "Run WCO from a Linux/WSL environment before normal setup. This build uses Bubblewrap for deterministic filesystem/network isolation and does not start the normal setup/auth/task workflow on this native host.",
+  };
+}
 
 function friendlySetupError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -35,7 +57,12 @@ function friendlySetupError(error: unknown): string {
   return message;
 }
 
-export async function runSetupCommand(args: string[], cwd = process.cwd(), suppliedIo: SetupCommandIo = defaultIo): Promise<number> {
+export async function runSetupCommand(
+  args: string[],
+  cwd = process.cwd(),
+  suppliedIo: SetupCommandIo = defaultIo,
+  platform: NodeJS.Platform = process.platform,
+): Promise<number> {
   let yes = false, overwrite = false, configPath: string | undefined, stateDirectory: string | undefined;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
@@ -50,6 +77,13 @@ export async function runSetupCommand(args: string[], cwd = process.cwd(), suppl
       return 2;
     }
   }
+
+  const executionHost = setupExecutionHostStatus(platform);
+  if (executionHost.severity !== "ok") {
+    suppliedIo.error(`${executionHost.value}\n${executionHost.guidance ?? "Use Linux/WSL for the normal WCO workflow."}\nNo WCO setup, ChatGPT authorization, or task state was created.\n`);
+    return 1;
+  }
+
   if (!yes) {
     let owned: ReturnType<typeof readline.createInterface> | undefined;
     const question = suppliedIo.question ?? (process.stdin.isTTY && process.stdout.isTTY ? (() => {
@@ -69,6 +103,7 @@ export async function runSetupCommand(args: string[], cwd = process.cwd(), suppl
     suppliedIo.write("Checking this Git repository and initial WCO setup…\n");
     const result = await performFirstRunSetup({ cwd, ...(configPath ? { configPath } : {}), ...(stateDirectory ? { stateDirectory } : {}), overwrite });
     const checks: Array<["ok" | "warn", string, string]> = [["ok", "Git repository", result.repository.github_repository ?? result.repository.root]];
+    checks.push([executionHost.severity, "Execution host", executionHost.value]);
     let codex = "authorization pending";
     try { const runtime = await resolveCodexRuntime(result.config.runtime, result.paths.state); await new CodexSdkAgentClient(runtime).checkAvailability(); codex = `ChatGPT authenticated (${runtime.package_version})`; } catch { /* reported below */ }
     let github = "not configured";
@@ -78,7 +113,7 @@ export async function runSetupCommand(args: string[], cwd = process.cwd(), suppl
     const explicitMode = result.config.web_bridge?.mode;
     const transport = explicitMode ? `${explicitMode} (advanced override)` : "local ChatGPT/Codex";
     checks.push([explicitMode ? "warn" : "ok", "Transport", transport]);
-    suppliedIo.write(`\nWeb Codex Orchestrator v0.3 setup\n\n${checks.map(([severity, label, value]) => `${severity === "ok" ? "✓" : "!"} ${label.padEnd(16)} ${value}`).join("\n")}\n`);
+    suppliedIo.write(`\nWeb Codex Orchestrator setup\n\n${checks.map(([severity, label, value]) => `${severity === "ok" ? "✓" : "!"} ${label.padEnd(16)} ${value}`).join("\n")}\n`);
     if (codex === "authorization pending" && !explicitMode) {
       suppliedIo.write("\nSetup is complete. On the first interactive `wco` run, the official Codex sign-in will request ChatGPT authorization if needed. No API key, relay, tunnel, domain, or cloud setup is required. WCO performs the full mode readiness check before starting a task.\n");
     } else if (!explicitMode) {

@@ -9,6 +9,8 @@ import { WebBridgeError } from "./contracts.js";
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const GIT_OID = /^[a-f0-9]{40}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
+const EMPTY_GIT_BLOB_OID = crypto.createHash("sha1").update(Buffer.from("blob 0\0", "utf8")).digest("hex");
+const EMPTY_CONTENT_SHA256 = crypto.createHash("sha256").update(Buffer.alloc(0)).digest("hex");
 const MAX_STORE_BYTES = 64 * 1024 * 1024;
 const MAX_PATH_BYTES = 4_096;
 const MAX_READ_BYTES = 8_388_608;
@@ -41,7 +43,13 @@ function validateReceipt(value: unknown, expectedJobId?: string): ReadCoverageRe
   if (typeof receipt.base_commit !== "string" || !GIT_OID.test(receipt.base_commit) || typeof receipt.blob_sha !== "string" || !GIT_OID.test(receipt.blob_sha) || typeof receipt.content_sha256 !== "string" || !SHA256.test(receipt.content_sha256)) throw new WebBridgeError("WEB_READ_RECEIPT_INVALID", "Read receipt digest binding is invalid.");
   if (typeof receipt.path !== "string" || Buffer.byteLength(receipt.path, "utf8") > MAX_PATH_BYTES) throw new WebBridgeError("WEB_READ_RECEIPT_INVALID", "Read receipt path is invalid.");
   try { assertRepositoryRelativePath(receipt.path); } catch { throw new WebBridgeError("WEB_READ_RECEIPT_INVALID", "Read receipt path is not repository-relative."); }
-  if (!Number.isSafeInteger(receipt.start_byte) || !Number.isSafeInteger(receipt.end_byte_exclusive) || !Number.isSafeInteger(receipt.total_bytes) || (receipt.start_byte as number) < 0 || (receipt.total_bytes as number) < 1 || (receipt.total_bytes as number) > MAX_READ_BYTES || (receipt.end_byte_exclusive as number) <= (receipt.start_byte as number) || (receipt.end_byte_exclusive as number) > (receipt.total_bytes as number)) throw new WebBridgeError("WEB_READ_RECEIPT_INVALID", "Read receipt byte range is inconsistent.");
+  if (!Number.isSafeInteger(receipt.start_byte) || !Number.isSafeInteger(receipt.end_byte_exclusive) || !Number.isSafeInteger(receipt.total_bytes)) throw new WebBridgeError("WEB_READ_RECEIPT_INVALID", "Read receipt byte range is inconsistent.");
+  const startByte = receipt.start_byte as number;
+  const endByte = receipt.end_byte_exclusive as number;
+  const totalBytes = receipt.total_bytes as number;
+  const emptyExactRead = totalBytes === 0 && startByte === 0 && endByte === 0;
+  if (startByte < 0 || totalBytes < 0 || totalBytes > MAX_READ_BYTES || (!emptyExactRead && endByte <= startByte) || endByte > totalBytes || (totalBytes === 0 && !emptyExactRead)) throw new WebBridgeError("WEB_READ_RECEIPT_INVALID", "Read receipt byte range is inconsistent.");
+  if (emptyExactRead && (receipt.blob_sha !== EMPTY_GIT_BLOB_OID || receipt.content_sha256 !== EMPTY_CONTENT_SHA256)) throw new WebBridgeError("WEB_READ_RECEIPT_INVALID", "Zero-byte read receipt is not bound to the canonical empty Git blob and content digest.");
   if (typeof receipt.observed_at !== "string" || !Number.isFinite(Date.parse(receipt.observed_at))) throw new WebBridgeError("WEB_READ_RECEIPT_INVALID", "Read receipt timestamp is invalid.");
   return receipt as unknown as ReadCoverageReceipt;
 }
