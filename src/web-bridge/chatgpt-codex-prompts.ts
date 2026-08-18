@@ -202,13 +202,12 @@ export function chatGptCodexReviewPrompt(request: FinalReviewRequest, evidence: 
  * being retransmitted on every lookup, keeping exact-context review cheaper
  * than manual full-context copy/paste loops. A non-source lookup (summary,
  * tree, search, binary payload, digest-only content_ref, or oversize receipt)
- * remains inspection-only unless the same review thread already has durable
- * proof of an earlier exact source inspection. Only an exact UTF-8 source
- * payload actually delivered to the reviewer can establish that proof.
+ * remains inspection-only. Only an exact UTF-8 source payload actually
+ * delivered to the reviewer can open the verdict-capable review phase.
  */
-export function chatGptCodexReviewRepositoryResultPrompt(result: unknown, request: FinalReviewRequest, reviewId: string, inspectionRequired?: boolean): string {
+export function chatGptCodexReviewRepositoryResultPrompt(result: unknown, request: FinalReviewRequest, reviewId: string): string {
   const prepared = prepareReviewRepositoryResult(result);
-  const sourceInspectionRequired = prepared.oversized || (inspectionRequired ?? !containsExactSourceReadResult(prepared.semanticResult));
+  const sourceInspectionRequired = prepared.oversized || !containsExactSourceReadResult(prepared.semanticResult);
   return [
     sourceInspectionRequired ? CHATGPT_CODEX_REVIEW_INSPECTION_PHASE_MARKER : CHATGPT_CODEX_REVIEW_PHASE_MARKER,
     "Continue the same REVIEW thread. WCO executed your bounded read-only repository request against the exact published commit from the initial review.",
