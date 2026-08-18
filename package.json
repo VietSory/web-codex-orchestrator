@@ -59,10 +59,11 @@
     "benchmark:context": "tsx scripts/benchmark-smart-context.mts",
     "benchmark:web-context": "tsx scripts/benchmark-web-context.mts",
     "benchmark:prompt-footprint": "tsx scripts/benchmark-prompt-footprint.mts",
+    "benchmark:relay-efficiency": "tsx scripts/benchmark-relay-efficiency.mts",
     "benchmark:native:context": "tsx scripts/benchmark-native-context.mts",
     "benchmark:semantic": "tsx scripts/benchmark-semantic-corpus.mts",
     "benchmark:semantic:provider": "tsx scripts/benchmark-semantic-provider.mts",
-    "check": "npm run lock:check && npm run validate:template && npm run typecheck && npm test && npm run benchmark:context && npm run benchmark:web-context && npm run benchmark:prompt-footprint && npm run benchmark:semantic && npm run test:e2e && npm run build && npm run test:cli && npm run test:user:contract",
+    "check": "npm run lock:check && npm run validate:template && npm run typecheck && npm test && npm run benchmark:context && npm run benchmark:web-context && npm run benchmark:prompt-footprint && npm run benchmark:relay-efficiency && npm run benchmark:semantic && npm run test:e2e && npm run build && npm run test:cli && npm run test:user:contract",
     "pack:check": "npm pack --dry-run --json",
     "pack:smoke": "node scripts/capture-packed-cli-metrics.mjs && node scripts/smoke-packed-user-journey.mjs",
     "prepack": "npm run build"
