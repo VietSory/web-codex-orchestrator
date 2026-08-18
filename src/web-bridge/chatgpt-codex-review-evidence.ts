@@ -4,6 +4,7 @@ import { WebBridgeError, contentDigest, type FinalReviewRequest } from "./contra
 export const MAX_CHATGPT_CODEX_REVIEW_EVIDENCE_JSON_BYTES = 480 * 1024;
 const SHA256 = /^[a-f0-9]{64}$/;
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const PRODUCTION_FIELDS = ["purpose", "binding", "entries"] as const;
 
 function object(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -14,10 +15,14 @@ function object(value: unknown, label: string): Record<string, unknown> {
 
 function productionShape(evidence: Record<string, unknown>): boolean {
   const keys = Object.keys(evidence);
-  const hasProductionField = keys.some((key) => key === "purpose" || key === "binding" || key === "entries");
-  if (!hasProductionField) return false;
-  if (keys.length !== 3 || !keys.includes("purpose") || !keys.includes("binding") || !keys.includes("entries")) {
-    throw new WebBridgeError("WEB_RESULT_EVIDENCE_INVALID", "Review evidence has an incomplete production transport shape.");
+  const present = PRODUCTION_FIELDS.filter((key) => keys.includes(key));
+  // WebBridge historically accepts generic bounded JSON evidence. A generic
+  // caller may legitimately use one field named "purpose" (or another single
+  // reserved word), so one coincidental field is not enough to reinterpret the
+  // object as the newer production Result-evidence envelope.
+  if (present.length <= 1) return false;
+  if (present.length !== PRODUCTION_FIELDS.length || keys.length !== PRODUCTION_FIELDS.length) {
+    throw new WebBridgeError("WEB_RESULT_EVIDENCE_INVALID", "Review evidence has an incomplete or widened production transport shape.");
   }
   if (evidence.purpose !== "independent_code_review" && evidence.purpose !== "final_intent_review") {
     throw new WebBridgeError("WEB_RESULT_EVIDENCE_INVALID", "Review evidence has an invalid purpose.");
@@ -86,11 +91,7 @@ export function assertChatGptCodexReviewEvidenceBinding(request: FinalReviewRequ
 /**
  * Convert the production Result-evidence transport into exact readable local
  * semantic context without changing the generic WebBridge wire contract.
- *
- * Older/direct WebBridge callers may still submit a generic JSON evidence
- * object. Preserve that compatibility, but keep it bounded. If any production
- * envelope discriminator is present, require the complete closed production
- * shape instead of silently treating a malformed envelope as legacy evidence.
+ * Older/direct callers keep generic bounded JSON compatibility.
  */
 export function prepareChatGptCodexReviewEvidence(evidence: Record<string, unknown>): Record<string, unknown> {
   if (!productionShape(evidence)) return assertBounded(evidence);
