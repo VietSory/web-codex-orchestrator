@@ -6,7 +6,7 @@ import { contentDigest, WebBridgeError, type BridgeJobIdentity } from "./contrac
 import type { WebBridge } from "./web-bridge.js";
 import { loadAndVerifyResultBundle } from "../web-review/result-bundle-review-reader.js";
 import { getWebReviewStatus } from "../web-review/web-review-service.js";
-import { readBoundedResultEvidence } from "./result-evidence-reader.js";
+import { assertSemanticReviewEvidenceBounded, readBoundedResultEvidence } from "./result-evidence-reader.js";
 import { assertCodeReviewApprovedForCurrentResult, createPendingCodeReview, readWebCodeReviewReceipt, type WebCodeReviewReceipt } from "./code-review-service.js";
 
 export type WebReviewPurpose = "independent_code_review" | "final_intent_review";
@@ -86,8 +86,15 @@ export async function createPendingFinalReview(options: { bridge: WebBridge; run
   const receipt = verified.receipt;
   if (!receipt.archive_sha256) throw new WebBridgeError("WEB_FINAL_REVIEW_NOT_READY", "Selected Result Bundle is not ready; no review job was created.");
   const request = { run_id: options.runId, result_bundle_sha256: receipt.archive_sha256, published_commit_sha: receipt.published_commit_sha, pull_request_url: receipt.pull_request.url, review_round: reviewRound };
-  const identity = await options.bridge.createFinalReviewJob(request, `final-review-${contentDigest({ purpose: "final_intent_review", request })}`);
+
+  // Build and byte-check the exact semantic payload before creating durable
+  // review authority. Oversized evidence must fail without leaving an orphan
+  // pending review job, and WCO must never truncate evidence to obtain a verdict.
   const evidence = await readBoundedResultEvidence(verified.archivePath, verified.manifest);
-  await options.bridge.submitFinalReviewEvidence(identity.job_id, { purpose: "final_intent_review", binding: request, entries: evidence }, `final-evidence-${receipt.archive_sha256}`);
+  const payload = { purpose: "final_intent_review", binding: request, entries: evidence };
+  assertSemanticReviewEvidenceBounded(payload);
+
+  const identity = await options.bridge.createFinalReviewJob(request, `final-review-${contentDigest({ purpose: "final_intent_review", request })}`);
+  await options.bridge.submitFinalReviewEvidence(identity.job_id, payload, `final-evidence-${receipt.archive_sha256}`);
   return { ...identity, purpose: "final_intent_review" };
 }
