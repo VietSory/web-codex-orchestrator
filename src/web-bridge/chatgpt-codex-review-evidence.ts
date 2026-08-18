@@ -28,6 +28,13 @@ function productionShape(evidence: Record<string, unknown>): boolean {
   return true;
 }
 
+/** Production independent code review is the authority boundary that must
+ * inspect immutable source before a clean APPROVE can become possible. Generic
+ * legacy evidence and final-intent review retain their existing behavior. */
+export function requiresExactSourceInspection(evidence: Record<string, unknown>): boolean {
+  return productionShape(evidence) && evidence.purpose === "independent_code_review";
+}
+
 function exactUtf8(bytes: Buffer, label: string): string {
   const text = bytes.toString("utf8");
   if (!Buffer.from(text, "utf8").equals(bytes)) {

@@ -53,6 +53,7 @@ npm run typecheck
 npm test
 npm run benchmark:context
 npm run benchmark:web-context
+npm run benchmark:relay-efficiency
 npm run benchmark:prompt-footprint
 npm run benchmark:semantic
 npm run test:e2e
@@ -62,6 +63,8 @@ npm run test:user:contract
 npm run pack:check
 npm run pack:smoke
 ```
+
+`npm run benchmark:relay-efficiency` compares WCO's bounded/cache-aware context transfer with an explicit naive/manual full-context retransmission baseline. It is context-transfer evidence only: byte counts must never be presented as provider-token counts or task-quality evidence.
 
 `npm run benchmark:semantic` is the deterministic hidden-gold corpus/scorer integrity gate. It does not call a provider and does not claim model uplift; it prevents a broken corpus/scorer from being used as release evidence later.
 
@@ -80,19 +83,22 @@ WCO_RUN_CODEX_INTEGRATION=1 WCO_KEEP_FAILED_INTEGRATION=1 npm run test:native:co
 
 These tests may create real provider-backed turns. If the Codex integration fails, keep the printed `WCO_FAILED_INTEGRATION_ROOT=` / `WCO_FAILED_INTEGRATION_STATE=` paths only for local diagnosis. Never share tokens, cookies, credential files, `~/.codex`, browser profiles, or other authorization material.
 
-## 4. Authorized semantic-provider benchmark
+## 4. Authorized provider quality and review-value benchmarks
 
-Run the provider benchmark only after the deterministic/native gates pass:
+Run both provider benchmarks only after the deterministic/native gates pass:
 
 ```bash
 npm run benchmark:semantic:provider
+npm run benchmark:review:provider
 ```
 
-Treat this as task-quality evidence, not merely a latency/token measurement. The benchmark must preserve exact input/evidence binding and report the provider-backed quality/usage evidence required by the benchmark contract. Static prompt byte counts or offline context-cache hits are not substitutes for this gate.
+`npm run benchmark:semantic:provider` is task-understanding/token evidence, not merely a latency measurement. It must preserve exact input/evidence binding and report the provider-backed quality/usage evidence required by the benchmark contract. Static prompt byte counts or offline context-cache hits are not substitutes for this gate.
 
-The command is fail-closed for release qualification. Its JSON report contains `qualification.pass`, `qualification.reasons`, per-arm usage, token delta, and newly introduced/resolved critical misses. The command must exit successfully with `qualification.pass: true`. It exits non-zero when the independent challenger introduces a new critical miss, regresses aggregate critical recall, regresses aggregate weighted quality, or spends more total provider tokens than the author-style baseline without any measured semantic gain. No arbitrary percentage tolerance is used; the baseline is the quality/safety floor and the configured agent limits remain the absolute resource ceiling.
+The semantic-provider command is fail-closed for release qualification. Its JSON report contains `qualification.pass`, `qualification.reasons`, per-arm usage, token delta, and newly introduced/resolved critical misses. The command must exit successfully with `qualification.pass: true`. It exits non-zero when the independent challenger introduces a new critical miss, regresses aggregate critical recall, regresses aggregate weighted quality, or spends more total provider tokens than the author-style baseline without any measured semantic gain. No arbitrary percentage tolerance is used; the baseline is the quality/safety floor and the configured agent limits remain the absolute resource ceiling.
 
-Because this is one fresh provider sample per case/arm, preserve the exact output as directional evidence rather than claiming statistical certainty or end-to-end task-completion uplift.
+`npm run benchmark:review:provider` is the independent-review value gate. It presents a realistic changed implementation whose visible direct test passes while an unchanged caller contains the hidden regression surface, plus a clean twin that should not be rejected merely because the reviewer is adversarial. Release qualification requires the provider reviewer to request exact immutable repository source as needed, return `REVISE` for the hidden-caller defect, return `APPROVE` for the clean twin, stay within the bounded lookup/turn budget, and exit successfully. A reviewer that merely trusts green tests/diff evidence, or one that blindly rejects everything, fails this gate.
+
+Because these are fresh provider samples rather than a statistically large trial, preserve the exact outputs as directional release evidence rather than claiming universal model superiority. Both commands must pass on the exact candidate used for dogfood.
 
 ## 5. Packed normal-user dogfood
 
@@ -140,9 +146,11 @@ wco
   -> human decides whether to merge
 ```
 
-A normal user must not be asked for API keys, relay/tunnel/domain setup, Custom GPT configuration, MCP/Workspace Agent setup, internal run IDs, or manual task/result ZIP transfer.
+A normal user must not be asked for API keys, relay/tunnel/domain setup, Custom GPT configuration, MCP/Workspace Agent setup, internal run IDs, manual task/result ZIP transfer, or manual ChatGPT↔Codex payload relay.
 
-Use a goal large enough to require real repository understanding and verification, not a one-line cosmetic edit. Record the exact goal and the base commit before starting.
+**User-value acceptance requires `manual ChatGPT↔Codex payload copy/paste = 0`.** The user may enter the original goal, answer a genuine clarification, inspect status/review evidence, and make the final human merge decision. The user must not have to copy model prompts, repository context, implementation payloads, test output, review findings, repair instructions, or result bundles from one agent/interface into another. If such a handoff is required to finish the task, the dogfood run fails even if a Draft PR is eventually produced.
+
+Use a goal large enough to require real repository understanding, unchanged-caller/call-graph reasoning, verification, and at least one meaningful independent review decision, not a one-line cosmetic edit. Record the exact goal and the base commit before starting.
 
 ## 7. Break the real user flow on purpose
 
@@ -167,13 +175,16 @@ The real task is accepted only when all of the following are bound to the same r
 - exact base commit and repository identity;
 - exact sealed task/acceptance evidence;
 - implementation and verification receipts;
-- independent review evidence, including any revise loop that occurred;
+- independent review evidence, including exact immutable source inspection when required and any revise loop that occurred;
 - exact published commit/remote head;
 - one reviewed **Draft PR**;
 - final state `READY_FOR_YOU`;
+- manual ChatGPT↔Codex payload copy/paste count is exactly `0`;
 - no automatic merge or release.
 
 Inspect `/status` and `/review` during the task. They must tell the user what WCO is doing and, when applicable, exactly what **Your action** is. A successful run must not require the user to understand internal phase names to proceed.
+
+Do not count a run as successful merely because the Draft PR is created or automated tests are green. Inspect the final Draft PR from the user's perspective and confirm that the independent review actually challenged the implementation, resolved material findings before approval, and left no known blocking defect in the accepted goal. Any material bug discovered during this acceptance returns the candidate to code/review qualification; it is not waived as a dogfood inconvenience.
 
 ## 9. Restart/recovery proof
 
@@ -196,14 +207,17 @@ tarball filename + SHA-256
 Linux/WSL environment
 Node/npm/Git/Bubblewrap versions
 GitHub auth readiness (never the token)
-provider benchmark result + qualification.pass/reasons + per-arm token totals
+semantic provider benchmark result + qualification.pass/reasons + per-arm token totals
+review provider benchmark result + hidden-caller verdict + clean-twin verdict + lookup/turn/token totals
+relay-efficiency context-transfer result + declared baseline (never label bytes as tokens)
+manual ChatGPT↔Codex payload copy/paste count (must be 0)
 real user goal
 repository + exact base commit
 run/task identity
 published commit
 Draft PR URL/status
 verification result
-independent review/final verdict
+independent review/final verdict + exact-source lookup evidence
 restart/recovery result
 /continue and /resume result
 any revise round count
@@ -215,5 +229,7 @@ Do not record or share ChatGPT/Codex credentials, cookies, browser-profile data,
 ## Release boundary
 
 Passing GitHub CI alone means **GitHub-side qualified**, not release-qualified. Passing this entire authorized Linux/WSL checklist is the environment-bound acceptance required before recommending release.
+
+The release-value claim is deliberately narrower than “WCO is universally better than every possible manual workflow.” Qualification means that, on the declared baselines and real dogfood task, WCO reduced repeated context relay, stayed within measured provider token/quality gates, independently detected the hidden-caller regression without rejecting the clean twin, completed the task with zero manual inter-agent payload copy/paste, and produced a reviewed Draft PR with no known blocking defect. Broader superiority claims require broader evidence.
 
 Even after acceptance, WCO must leave the PR as Draft until a human deliberately changes that state. WCO must never merge, tag, release, enable auto-merge, or force-push on behalf of this validation checklist.

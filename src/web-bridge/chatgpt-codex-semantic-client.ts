@@ -2,9 +2,11 @@ import { lstat, opendir, realpath } from "node:fs/promises";
 import path from "node:path";
 import type { AgentClient, AgentTurnResponse } from "../agent/contracts.js";
 import type { AgentProfile } from "../config/contracts.js";
-import { CHATGPT_CODEX_AUTHOR_OUTPUT_SCHEMA, CHATGPT_CODEX_CHALLENGE_OUTPUT_SCHEMA, CHATGPT_CODEX_REVIEW_OUTPUT_SCHEMA } from "./chatgpt-codex-output-schema.js";
+import { CHATGPT_CODEX_AUTHOR_CONTEXT_OUTPUT_SCHEMA, CHATGPT_CODEX_AUTHOR_OUTPUT_SCHEMA, CHATGPT_CODEX_CHALLENGE_OUTPUT_SCHEMA, CHATGPT_CODEX_REVIEW_INSPECTION_OUTPUT_SCHEMA, CHATGPT_CODEX_REVIEW_OUTPUT_SCHEMA } from "./chatgpt-codex-output-schema.js";
 
+export const CHATGPT_CODEX_AUTHOR_CONTEXT_PHASE_MARKER = "WCO_SEMANTIC_PHASE:AUTHOR_CONTEXT";
 export const CHATGPT_CODEX_AUTHOR_PHASE_MARKER = "WCO_SEMANTIC_PHASE:AUTHOR";
+export const CHATGPT_CODEX_REVIEW_INSPECTION_PHASE_MARKER = "WCO_SEMANTIC_PHASE:REVIEW_INSPECTION";
 export const CHATGPT_CODEX_REVIEW_PHASE_MARKER = "WCO_SEMANTIC_PHASE:REVIEW";
 export const CHATGPT_CODEX_CHALLENGE_PHASE_MARKER = "WCO_SEMANTIC_PHASE:CHALLENGE";
 const DEFAULT_PROVIDER_TURN_SECONDS = 900;
@@ -14,7 +16,11 @@ const ALLOWED_PROMPT_ONLY_EVENT_TYPES = new Set(["thread.started", "turn.started
 type MeasuredProviderUsage = { input_tokens: number; cached_input_tokens: number; output_tokens: number };
 
 function schemaForPrompt(prompt: string): Record<string, unknown> {
+  // AUTHOR_CONTEXT must be checked before AUTHOR because its marker starts with
+  // the same semantic prefix but has a stricter repository-command-only schema.
+  if (prompt.startsWith(`${CHATGPT_CODEX_AUTHOR_CONTEXT_PHASE_MARKER}\n`)) return CHATGPT_CODEX_AUTHOR_CONTEXT_OUTPUT_SCHEMA as unknown as Record<string, unknown>;
   if (prompt.startsWith(`${CHATGPT_CODEX_AUTHOR_PHASE_MARKER}\n`)) return CHATGPT_CODEX_AUTHOR_OUTPUT_SCHEMA as unknown as Record<string, unknown>;
+  if (prompt.startsWith(`${CHATGPT_CODEX_REVIEW_INSPECTION_PHASE_MARKER}\n`)) return CHATGPT_CODEX_REVIEW_INSPECTION_OUTPUT_SCHEMA as unknown as Record<string, unknown>;
   if (prompt.startsWith(`${CHATGPT_CODEX_REVIEW_PHASE_MARKER}\n`)) return CHATGPT_CODEX_REVIEW_OUTPUT_SCHEMA as unknown as Record<string, unknown>;
   if (prompt.startsWith(`${CHATGPT_CODEX_CHALLENGE_PHASE_MARKER}\n`)) return CHATGPT_CODEX_CHALLENGE_OUTPUT_SCHEMA as unknown as Record<string, unknown>;
   throw new Error("WEB_CHATGPT_CODEX_PHASE_INVALID: semantic prompt is missing a closed WCO phase marker.");
@@ -43,6 +49,23 @@ function assertPromptOnlyProviderEvents(events: AgentTurnResponse["public_events
     else if (event.type === "agent_message") agentMessages += 1;
   }
   if (threadStarted > 1 || turnStarted !== 1 || turnCompleted !== 1 || agentMessages < 1) throw semanticAuditError("WEB_CHATGPT_CODEX_EVENT_AUDIT_INVALID", "Semantic provider event lifecycle is incomplete or ambiguous.");
+}
+
+function assertPhaseOutputKind(output: unknown, schema: Record<string, unknown>): void {
+  if (!output || typeof output !== "object" || Array.isArray(output)) {
+    throw semanticAuditError("WEB_CHATGPT_CODEX_PHASE_OUTPUT_INVALID", "Semantic provider output is not an object for the selected WCO phase.");
+  }
+  const properties = schema.properties;
+  const kindSchema = properties && typeof properties === "object" && !Array.isArray(properties)
+    ? (properties as Record<string, unknown>).kind
+    : undefined;
+  const allowedKinds = kindSchema && typeof kindSchema === "object" && !Array.isArray(kindSchema)
+    ? (kindSchema as Record<string, unknown>).enum
+    : undefined;
+  const kind = (output as Record<string, unknown>).kind;
+  if (!Array.isArray(allowedKinds) || typeof kind !== "string" || !allowedKinds.includes(kind)) {
+    throw semanticAuditError("WEB_CHATGPT_CODEX_PHASE_OUTPUT_INVALID", `Semantic provider returned authority kind '${String(kind)}' outside the selected WCO phase.`);
+  }
 }
 
 function measuredUsage(usage: AgentTurnResponse["usage"]): MeasuredProviderUsage {
@@ -76,8 +99,10 @@ async function assertBlindChallengeFilesystem(scratchDirectory: string, authorit
 
 /** Read-only/no-network semantic provider adapter with closed phase schema,
  * trusted per-turn deadline, mandatory measurable token usage, prompt-only SDK
- * event attestation, and a challenge-specific empty-filesystem boundary before
- * a blind Web-B turn reaches Codex. */
+ * event attestation, exact continuation-thread identity, local phase-authority
+ * revalidation, context-only author recovery, an inspection-only independent-
+ * review phase before verdict authority, and a challenge-specific empty-
+ * filesystem boundary before a blind Web-B turn reaches Codex. */
 export class ChatGptCodexSemanticClient {
   constructor(private readonly agent: AgentClient, private readonly maximumTurnSeconds = DEFAULT_PROVIDER_TURN_SECONDS) {
     if (!Number.isFinite(maximumTurnSeconds) || maximumTurnSeconds <= 0 || maximumTurnSeconds > MAX_PROVIDER_TURN_SECONDS) throw new Error("WEB_CHATGPT_CODEX_CONFIG_INVALID: semantic turn timeout is outside the trusted 1-3600 second range.");
@@ -95,7 +120,12 @@ export class ChatGptCodexSemanticClient {
     try {
       const result = await this.agent.turn({ role: "final_reviewer", model: options.profile.model, reasoning_effort: options.profile.reasoning_effort, ...(options.threadId ? { thread_id: options.threadId } : {}), prompt: options.prompt, output_schema: outputSchema, read_only: true, approval_policy: "never", sandbox_mode: "read-only", network_access: false, live_web_search: false, cached_web_search: false, workspace_path: options.scratchDirectory, accepted_bundle_path: options.authorityDirectory, signal });
       assertPromptOnlyProviderEvents(result.public_events);
-      return { thread_id: result.thread_id, output: result.output, usage: measuredUsage(result.usage) };
+      if (options.threadId && result.thread_id !== options.threadId) {
+        throw semanticAuditError("WEB_CHATGPT_CODEX_THREAD_DRIFT", "Semantic provider continuation returned a different thread identity; WCO refuses to trust context continuity.");
+      }
+      const usage = measuredUsage(result.usage);
+      assertPhaseOutputKind(result.output, outputSchema);
+      return { thread_id: result.thread_id, output: result.output, usage };
     } catch (error) {
       if (timeout.aborted && !options.signal?.aborted) throw timeoutError();
       throw error;
