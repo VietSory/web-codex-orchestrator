@@ -2,9 +2,10 @@ import { lstat, opendir, realpath } from "node:fs/promises";
 import path from "node:path";
 import type { AgentClient, AgentTurnResponse } from "../agent/contracts.js";
 import type { AgentProfile } from "../config/contracts.js";
-import { CHATGPT_CODEX_AUTHOR_OUTPUT_SCHEMA, CHATGPT_CODEX_CHALLENGE_OUTPUT_SCHEMA, CHATGPT_CODEX_REVIEW_OUTPUT_SCHEMA } from "./chatgpt-codex-output-schema.js";
+import { CHATGPT_CODEX_AUTHOR_OUTPUT_SCHEMA, CHATGPT_CODEX_CHALLENGE_OUTPUT_SCHEMA, CHATGPT_CODEX_REVIEW_INSPECTION_OUTPUT_SCHEMA, CHATGPT_CODEX_REVIEW_OUTPUT_SCHEMA } from "./chatgpt-codex-output-schema.js";
 
 export const CHATGPT_CODEX_AUTHOR_PHASE_MARKER = "WCO_SEMANTIC_PHASE:AUTHOR";
+export const CHATGPT_CODEX_REVIEW_INSPECTION_PHASE_MARKER = "WCO_SEMANTIC_PHASE:REVIEW_INSPECTION";
 export const CHATGPT_CODEX_REVIEW_PHASE_MARKER = "WCO_SEMANTIC_PHASE:REVIEW";
 export const CHATGPT_CODEX_CHALLENGE_PHASE_MARKER = "WCO_SEMANTIC_PHASE:CHALLENGE";
 const DEFAULT_PROVIDER_TURN_SECONDS = 900;
@@ -15,6 +16,7 @@ type MeasuredProviderUsage = { input_tokens: number; cached_input_tokens: number
 
 function schemaForPrompt(prompt: string): Record<string, unknown> {
   if (prompt.startsWith(`${CHATGPT_CODEX_AUTHOR_PHASE_MARKER}\n`)) return CHATGPT_CODEX_AUTHOR_OUTPUT_SCHEMA as unknown as Record<string, unknown>;
+  if (prompt.startsWith(`${CHATGPT_CODEX_REVIEW_INSPECTION_PHASE_MARKER}\n`)) return CHATGPT_CODEX_REVIEW_INSPECTION_OUTPUT_SCHEMA as unknown as Record<string, unknown>;
   if (prompt.startsWith(`${CHATGPT_CODEX_REVIEW_PHASE_MARKER}\n`)) return CHATGPT_CODEX_REVIEW_OUTPUT_SCHEMA as unknown as Record<string, unknown>;
   if (prompt.startsWith(`${CHATGPT_CODEX_CHALLENGE_PHASE_MARKER}\n`)) return CHATGPT_CODEX_CHALLENGE_OUTPUT_SCHEMA as unknown as Record<string, unknown>;
   throw new Error("WEB_CHATGPT_CODEX_PHASE_INVALID: semantic prompt is missing a closed WCO phase marker.");
@@ -76,8 +78,9 @@ async function assertBlindChallengeFilesystem(scratchDirectory: string, authorit
 
 /** Read-only/no-network semantic provider adapter with closed phase schema,
  * trusted per-turn deadline, mandatory measurable token usage, prompt-only SDK
- * event attestation, exact continuation-thread identity, and a challenge-
- * specific empty-filesystem boundary before a blind Web-B turn reaches Codex. */
+ * event attestation, exact continuation-thread identity, an inspection-only
+ * independent-review phase before verdict authority, and a challenge-specific
+ * empty-filesystem boundary before a blind Web-B turn reaches Codex. */
 export class ChatGptCodexSemanticClient {
   constructor(private readonly agent: AgentClient, private readonly maximumTurnSeconds = DEFAULT_PROVIDER_TURN_SECONDS) {
     if (!Number.isFinite(maximumTurnSeconds) || maximumTurnSeconds <= 0 || maximumTurnSeconds > MAX_PROVIDER_TURN_SECONDS) throw new Error("WEB_CHATGPT_CODEX_CONFIG_INVALID: semantic turn timeout is outside the trusted 1-3600 second range.");
