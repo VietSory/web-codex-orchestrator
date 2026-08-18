@@ -218,6 +218,11 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
   }
 
   async createAuthoringJob(request: AuthoringJobRequest, idempotencyKey: string): Promise<BridgeJobIdentity> {
+    // In the normal interactive product path, complete (or refresh) the one
+    // official ChatGPT authorization boundary before durable task creation.
+    // This prevents a cancelled/expired login from leaving an orphan AUTHORING
+    // session behind. Non-interactive callers remain side-effect free and will
+    // fail at the provider boundary rather than opening a browser.
     if (process.stdin.isTTY && process.stdout.isTTY && process.env.CI !== "true") await this.ensureAuthorizedForProviderTurn();
     return await this.store.create("authoring", OWNER, request, idempotencyKey, request.ttl_seconds);
   }
