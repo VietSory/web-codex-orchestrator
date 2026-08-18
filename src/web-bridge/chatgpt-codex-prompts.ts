@@ -1,9 +1,11 @@
 import { MAINTAINER_AUTHORING_STANDARD, MAINTAINER_REVIEW_STANDARD } from "../shared/maintainer-reasoning-standard.js";
-import { WEB_BRIDGE_PROTOCOL_VERSION, type FinalReviewRequest } from "./contracts.js";
+import { WEB_BRIDGE_PROTOCOL_VERSION, contentDigest, type FinalReviewRequest } from "./contracts.js";
 import { assertChatGptCodexReviewEvidenceBinding, requiresExactSourceInspection } from "./chatgpt-codex-review-evidence.js";
 import { CHATGPT_CODEX_AUTHOR_PHASE_MARKER, CHATGPT_CODEX_REVIEW_INSPECTION_PHASE_MARKER, CHATGPT_CODEX_REVIEW_PHASE_MARKER } from "./chatgpt-codex-semantic-client.js";
 import { prepareRepositoryResultForSemanticPrompt } from "./repository-result-semantic-context.js";
 import type { AuthoringJobRequest } from "./web-bridge.js";
+
+const REVIEW_REPOSITORY_RESULT_MAX_BYTES = 192_000;
 
 function boundedJson(value: unknown, maximum = 512_000): string {
   const encoded = JSON.stringify(value);
@@ -80,6 +82,28 @@ function containsExactSourceReadResult(result: unknown): boolean {
   });
 }
 
+function prepareReviewRepositoryResult(result: unknown): { semanticResult: unknown; oversized: boolean } {
+  const semanticResult = prepareRepositoryResultForSemanticPrompt(result);
+  const encoded = JSON.stringify(semanticResult);
+  const sizeBytes = Buffer.byteLength(encoded, "utf8");
+  if (sizeBytes <= REVIEW_REPOSITORY_RESULT_MAX_BYTES) return { semanticResult, oversized: false };
+
+  // The exact result is already durable in relay state, but replaying an
+  // oversized result verbatim would make every resume fail at prompt creation.
+  // Send a digest-bound receipt instead so the same thread can request a
+  // narrower tree/search/read. This receipt is never source-inspection proof.
+  return {
+    semanticResult: {
+      repository_result_oversized: true,
+      exact_result_sha256: contentDigest(semanticResult),
+      exact_result_json_bytes: sizeBytes,
+      semantic_result_limit_bytes: REVIEW_REPOSITORY_RESULT_MAX_BYTES,
+      instruction: "The exact durable repository result is too large for one semantic follow-up. Request fewer paths, a narrower tree/search, or smaller exact read regions.",
+    },
+    oversized: true,
+  };
+}
+
 export function chatGptCodexAuthorPrompt(request: AuthoringJobRequest, jobId: string): string {
   return [
     CHATGPT_CODEX_AUTHOR_PHASE_MARKER,
@@ -141,17 +165,17 @@ export function chatGptCodexReviewPrompt(request: FinalReviewRequest, evidence: 
  * large Result Bundle evidence intentionally stays in the thread instead of
  * being retransmitted on every lookup, keeping exact-context review cheaper
  * than manual full-context copy/paste loops. A non-source lookup (summary,
- * tree, search, binary payload, or digest-only content_ref) remains
- * inspection-only; only a durable exact UTF-8 source payload delivered to the
- * reviewer opens the normal verdict-capable review schema.
+ * tree, search, binary payload, digest-only content_ref, or oversize receipt)
+ * remains inspection-only; only a durable exact UTF-8 source payload delivered
+ * to the reviewer opens the normal verdict-capable review schema.
  */
 export function chatGptCodexReviewRepositoryResultPrompt(result: unknown, request: FinalReviewRequest, reviewId: string, inspectionRequired?: boolean): string {
-  const semanticResult = prepareRepositoryResultForSemanticPrompt(result);
-  const sourceInspectionRequired = inspectionRequired ?? !containsExactSourceReadResult(semanticResult);
+  const prepared = prepareReviewRepositoryResult(result);
+  const sourceInspectionRequired = prepared.oversized || (inspectionRequired ?? !containsExactSourceReadResult(prepared.semanticResult));
   return [
     sourceInspectionRequired ? CHATGPT_CODEX_REVIEW_INSPECTION_PHASE_MARKER : CHATGPT_CODEX_REVIEW_PHASE_MARKER,
     "Continue the same REVIEW thread. WCO executed your bounded read-only repository request against the exact published commit from the initial review.",
-    `Repository result: ${boundedJson(semanticResult, 192_000)}`,
+    `Repository result: ${boundedJson(prepared.semanticResult, REVIEW_REPOSITORY_RESULT_MAX_BYTES)}`,
     "Keep applying the senior-maintainer review standard from the initial turn. Do not inherit implementation claims or treat green tests as proof.",
     sourceInspectionRequired ? inspectionRequirement() : "Allowed actions remain repository_command or web_verdict. Request another bounded lookup only for a still-material unresolved question; otherwise decide the verdict now.",
     reviewRepositoryContract(request),
