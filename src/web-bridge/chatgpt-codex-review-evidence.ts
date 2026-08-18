@@ -15,14 +15,12 @@ function object(value: unknown, label: string): Record<string, unknown> {
 
 function productionShape(evidence: Record<string, unknown>): boolean {
   const keys = Object.keys(evidence);
-  const present = PRODUCTION_FIELDS.filter((key) => keys.includes(key));
-  // WebBridge historically accepts generic bounded JSON evidence. A generic
-  // caller may legitimately use one field named "purpose" (or another single
-  // reserved word), so one coincidental field is not enough to reinterpret the
-  // object as the newer production Result-evidence envelope.
-  if (present.length <= 1) return false;
-  if (present.length !== PRODUCTION_FIELDS.length || keys.length !== PRODUCTION_FIELDS.length) {
-    throw new WebBridgeError("WEB_RESULT_EVIDENCE_INVALID", "Review evidence has an incomplete or widened production transport shape.");
+  // WebBridge historically accepts arbitrary bounded JSON evidence. Only the
+  // complete production field set is a discriminator; partial name overlap is
+  // still legacy/generic data and must not be reinterpreted.
+  if (!PRODUCTION_FIELDS.every((key) => keys.includes(key))) return false;
+  if (keys.length !== PRODUCTION_FIELDS.length) {
+    throw new WebBridgeError("WEB_RESULT_EVIDENCE_INVALID", "Review evidence widened the closed production transport shape.");
   }
   if (evidence.purpose !== "independent_code_review" && evidence.purpose !== "final_intent_review") {
     throw new WebBridgeError("WEB_RESULT_EVIDENCE_INVALID", "Review evidence has an invalid purpose.");
