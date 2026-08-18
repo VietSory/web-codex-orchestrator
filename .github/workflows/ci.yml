@@ -81,6 +81,9 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Deterministic review relay efficiency benchmark
+        run: npm run benchmark:relay-efficiency
+
       - name: Deterministic semantic corpus integrity benchmark
         run: npm run benchmark:semantic
 
