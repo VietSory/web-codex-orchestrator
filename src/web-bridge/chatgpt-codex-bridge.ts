@@ -281,9 +281,15 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
   }
 
   async createFinalReviewJob(request: FinalReviewRequest, idempotencyKey: string): Promise<BridgeJobIdentity> {
-    // A review job is a new relay record, not a new task budget. Charge all
-    // durable provider usage already bound to this run before creating more
-    // authority so exhausted tasks cannot accumulate orphan review jobs.
+    // Idempotent replay/adoption does not consume a provider turn and must stay
+    // available even when the task budget is now exhausted (for example after
+    // a crash between durable provider verdict and local receipt adoption).
+    const replay = (await this.store.list(OWNER)).some((record) => Object.prototype.hasOwnProperty.call(record.idempotency, `create:${idempotencyKey}`));
+    if (replay) return await this.store.create("final_review", OWNER, request, idempotencyKey, 86_400);
+
+    // A genuinely new review job is a new authority record, not a new task
+    // budget. Charge all durable provider usage already bound to this run before
+    // creating it so exhausted tasks cannot accumulate orphan review jobs.
     await this.assertProviderBudgetForRun(request.run_id, true);
     return await this.store.create("final_review", OWNER, request, idempotencyKey, 86_400);
   }
