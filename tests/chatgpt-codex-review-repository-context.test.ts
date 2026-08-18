@@ -125,13 +125,17 @@ test("reviewer can inspect immutable out-of-diff source and keeps large evidence
 
   assert.deepEqual(await bridge.waitForVerdict(review.job_id), verdict);
   assert.equal(calls, 2);
-  assert.equal(prompts[0].threadId, undefined);
-  assert.equal(prompts[1].threadId, "review-context-thread", "bounded repository evidence must continue the same review thread");
-  assert.match(prompts[1].prompt, /published-before/);
-  assert.doesNotMatch(prompts[1].prompt, /tampered-working-tree/);
-  assert.doesNotMatch(prompts[1].prompt, /large_evidence_marker/);
-  assert.doesNotMatch(prompts[1].prompt, /Exact review evidence:/);
-  assert.ok(Buffer.byteLength(prompts[1].prompt, "utf8") < Buffer.byteLength(prompts[0].prompt, "utf8"), "follow-up must not retransmit the large initial review evidence");
+  const firstPrompt = prompts[0];
+  const secondPrompt = prompts[1];
+  assert.ok(firstPrompt);
+  assert.ok(secondPrompt);
+  assert.equal(firstPrompt.threadId, undefined);
+  assert.equal(secondPrompt.threadId, "review-context-thread", "bounded repository evidence must continue the same review thread");
+  assert.match(secondPrompt.prompt, /published-before/);
+  assert.doesNotMatch(secondPrompt.prompt, /tampered-working-tree/);
+  assert.doesNotMatch(secondPrompt.prompt, /large_evidence_marker/);
+  assert.doesNotMatch(secondPrompt.prompt, /Exact review evidence:/);
+  assert.ok(Buffer.byteLength(secondPrompt.prompt, "utf8") < Buffer.byteLength(firstPrompt.prompt, "utf8"), "follow-up must not retransmit the large initial review evidence");
 
   const restarted = new ChatGptCodexWebBridge(item.config, item.bridgeDirectory, item.state);
   (restarted as any).ensureAuthorizedForProviderTurn = async () => undefined;
