@@ -67,6 +67,12 @@ function inspectionRequirement(): string { return [
   "A green verifier/test result, the diff alone, or the author's explanation never satisfies this mandatory source-inspection boundary.",
 ].join("\n"); }
 
+function containsExactSourceReadResult(result: unknown): boolean {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return false;
+  const files = (result as Record<string, unknown>).files;
+  return Array.isArray(files) && files.length > 0;
+}
+
 export function chatGptCodexAuthorPrompt(request: AuthoringJobRequest, jobId: string): string {
   return [
     CHATGPT_CODEX_AUTHOR_PHASE_MARKER,
@@ -127,10 +133,11 @@ export function chatGptCodexReviewPrompt(request: FinalReviewRequest, evidence: 
  * Continue the same provider thread after one bounded repository lookup. The
  * large Result Bundle evidence intentionally stays in the thread instead of
  * being retransmitted on every lookup, keeping exact-context review cheaper
- * than manual full-context copy/paste loops. Independent code review remains
- * inspection-only until WCO has durably completed at least one exact read.
+ * than manual full-context copy/paste loops. A non-source lookup (summary,
+ * tree, or search) remains inspection-only; only a durable exact read result
+ * opens the normal verdict-capable review schema.
  */
-export function chatGptCodexReviewRepositoryResultPrompt(result: unknown, request: FinalReviewRequest, reviewId: string, inspectionRequired = false): string {
+export function chatGptCodexReviewRepositoryResultPrompt(result: unknown, request: FinalReviewRequest, reviewId: string, inspectionRequired = !containsExactSourceReadResult(result)): string {
   return [
     inspectionRequired ? CHATGPT_CODEX_REVIEW_INSPECTION_PHASE_MARKER : CHATGPT_CODEX_REVIEW_PHASE_MARKER,
     "Continue the same REVIEW thread. WCO executed your bounded read-only repository request against the exact published commit from the initial review.",
