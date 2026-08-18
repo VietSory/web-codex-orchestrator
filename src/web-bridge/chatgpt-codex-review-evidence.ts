@@ -20,6 +20,20 @@ function exactUtf8(bytes: Buffer, label: string): string {
   return text;
 }
 
+function assertBounded(value: Record<string, unknown>): Record<string, unknown> {
+  let encoded: string | undefined;
+  try { encoded = JSON.stringify(value); }
+  catch { throw new WebBridgeError("WEB_RESULT_EVIDENCE_INVALID", "Review evidence is not JSON-serializable."); }
+  if (encoded === undefined) throw new WebBridgeError("WEB_RESULT_EVIDENCE_INVALID", "Review evidence is not JSON-serializable.");
+  if (Buffer.byteLength(encoded, "utf8") > MAX_CHATGPT_CODEX_REVIEW_EVIDENCE_JSON_BYTES) {
+    throw new WebBridgeError(
+      "WEB_RESULT_REVIEW_CONTEXT_LIMIT",
+      "Exact review evidence exceeds the bounded ChatGPT/Codex semantic context. Split the change into a smaller reviewable task; WCO refuses to truncate evidence and approve from partial context.",
+    );
+  }
+  return value;
+}
+
 function semanticEntry(path: string, value: unknown): { content_utf8: string; sha256: string; size_bytes: number } {
   const entry = object(value, `Review evidence '${path}'`);
   const keys = Object.keys(entry);
@@ -48,14 +62,21 @@ function semanticEntry(path: string, value: unknown): { content_utf8: string; sh
 }
 
 /**
- * Convert the stable generic WebBridge evidence transport into exact readable
- * local semantic context. This is intentionally ChatGPT/Codex-specific: manual,
- * MCP, and Action Relay bridges keep the existing base64 wire contract.
+ * Convert the production Result-evidence transport into exact readable local
+ * semantic context without changing the generic WebBridge wire contract.
+ *
+ * Older/direct WebBridge callers may still submit a generic JSON evidence
+ * object. Preserve that compatibility, but keep it bounded. If any production
+ * envelope discriminator is present, require the complete closed production
+ * shape instead of silently treating a malformed envelope as legacy evidence.
  */
 export function prepareChatGptCodexReviewEvidence(evidence: Record<string, unknown>): Record<string, unknown> {
   const keys = Object.keys(evidence);
+  const hasProductionField = keys.some((key) => key === "purpose" || key === "binding" || key === "entries");
+  if (!hasProductionField) return assertBounded(evidence);
+
   if (keys.length !== 3 || !keys.includes("purpose") || !keys.includes("binding") || !keys.includes("entries")) {
-    throw new WebBridgeError("WEB_RESULT_EVIDENCE_INVALID", "Review evidence has an unexpected top-level shape.");
+    throw new WebBridgeError("WEB_RESULT_EVIDENCE_INVALID", "Review evidence has an incomplete production transport shape.");
   }
   if (evidence.purpose !== "independent_code_review" && evidence.purpose !== "final_intent_review") {
     throw new WebBridgeError("WEB_RESULT_EVIDENCE_INVALID", "Review evidence has an invalid purpose.");
@@ -65,13 +86,5 @@ export function prepareChatGptCodexReviewEvidence(evidence: Record<string, unkno
   const readableEntries: Record<string, { content_utf8: string; sha256: string; size_bytes: number }> = {};
   for (const [entryPath, entry] of Object.entries(entries)) readableEntries[entryPath] = semanticEntry(entryPath, entry);
 
-  const readable = { purpose: evidence.purpose, binding, entries: readableEntries };
-  const encoded = JSON.stringify(readable);
-  if (Buffer.byteLength(encoded, "utf8") > MAX_CHATGPT_CODEX_REVIEW_EVIDENCE_JSON_BYTES) {
-    throw new WebBridgeError(
-      "WEB_RESULT_REVIEW_CONTEXT_LIMIT",
-      "Exact review evidence exceeds the bounded ChatGPT/Codex semantic context. Split the change into a smaller reviewable task; WCO refuses to truncate evidence and approve from partial context.",
-    );
-  }
-  return readable;
+  return assertBounded({ purpose: evidence.purpose, binding, entries: readableEntries });
 }
