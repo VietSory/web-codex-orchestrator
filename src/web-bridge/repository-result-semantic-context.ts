@@ -49,15 +49,31 @@ function semanticFile(value: unknown): unknown {
   return { ...rest, content_utf8: text };
 }
 
+function prepareResult(value: unknown, allowCommandResultWrapper: boolean): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const result = value as Record<string, unknown>;
+
+  // AUTHOR repository results are durably relayed as
+  // { request_id, result }. REVIEW follow-ups receive the inner result
+  // directly. Normalize exactly one transport wrapper so both semantic paths
+  // get the same digest-attested UTF-8 representation without recursively
+  // interpreting arbitrary nested objects as repository evidence.
+  if (allowCommandResultWrapper && typeof result.request_id === "string" && Object.prototype.hasOwnProperty.call(result, "result")) {
+    return { ...result, result: prepareResult(result.result, false) };
+  }
+
+  if (!Array.isArray(result.files)) return value;
+  return { ...result, files: result.files.map(semanticFile) };
+}
+
 /**
  * Repository reads are transported as digest-bound base64 so the wire format
  * stays binary-safe. Semantic reasoning should not pay the base64 expansion or
  * reason over encoded source text. Convert only exact UTF-8 payloads after
  * re-attesting their size and SHA-256; binary payloads remain untouched.
+ * Both the direct REVIEW result and AUTHOR's one-level RepositoryCommandResult
+ * wrapper are supported explicitly.
  */
 export function prepareRepositoryResultForSemanticPrompt(value: unknown): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const result = value as Record<string, unknown>;
-  if (!Array.isArray(result.files)) return value;
-  return { ...result, files: result.files.map(semanticFile) };
+  return prepareResult(value, true);
 }
