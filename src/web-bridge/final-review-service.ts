@@ -82,7 +82,7 @@ export async function createPendingFinalReview(options: { bridge: WebBridge; run
   // before durable review authority is created, without affecting other bridges.
   const evidence = await readBoundedResultEvidence(verified.archivePath, verified.manifest);
   const payload = { purpose: "final_intent_review", binding: request, entries: evidence };
-  await options.bridge.preflightFinalReviewEvidence?.(payload);
+  await options.bridge.preflightFinalReviewEvidence?.(request, payload);
 
   const identity = await options.bridge.createFinalReviewJob(request, `final-review-${contentDigest({ purpose: "final_intent_review", request })}`);
   await options.bridge.submitFinalReviewEvidence(identity.job_id, payload, `final-evidence-${receipt.archive_sha256}`);
