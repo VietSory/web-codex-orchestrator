@@ -56,6 +56,35 @@ function parseFlags(args: string[]): { configPath?: string; stateDirectory?: str
   }
   return { ...(configPath ? { configPath } : {}), ...(stateDirectory ? { stateDirectory } : {}) };
 }
+
+class ReviewProviderBudget {
+  readonly usage: Usage = { turns: 0, input_tokens: 0, cached_input_tokens: 0, output_tokens: 0 };
+  private readonly startedAt = performance.now();
+
+  constructor(private readonly limits: AgentLimits) {}
+
+  turnSignal(): AbortSignal {
+    if (this.usage.turns >= this.limits.maximum_total_agent_turns) throw new Error("review provider benchmark configured turn budget is exhausted.");
+    const totalMs = this.limits.maximum_total_seconds * 1_000;
+    const remainingTotalMs = totalMs - (performance.now() - this.startedAt);
+    if (!Number.isFinite(remainingTotalMs) || remainingTotalMs <= 0) throw new Error("review provider benchmark configured wall-clock budget is exhausted.");
+    const configuredTurnMs = this.limits.maximum_turn_seconds * 1_000;
+    const turnMs = Math.max(1, Math.floor(Math.min(configuredTurnMs, remainingTotalMs)));
+    return AbortSignal.timeout(turnMs);
+  }
+
+  record(input: number, cached: number, output: number): void {
+    if (cached > input) throw new Error("review provider benchmark cached input usage exceeds total input usage.");
+    this.usage.turns = addSafe(this.usage.turns, 1, "turn count");
+    this.usage.input_tokens = addSafe(this.usage.input_tokens, input, "input tokens");
+    this.usage.cached_input_tokens = addSafe(this.usage.cached_input_tokens, cached, "cached input tokens");
+    this.usage.output_tokens = addSafe(this.usage.output_tokens, output, "output tokens");
+    if (this.usage.input_tokens > this.limits.maximum_total_input_tokens || this.usage.output_tokens > this.limits.maximum_total_output_tokens) {
+      throw new Error("review provider benchmark configured token budget is exhausted.");
+    }
+  }
+}
+
 function entry(text: string) {
   const bytes = Buffer.from(text, "utf8");
   return { content_base64: bytes.toString("base64"), sha256: sha256(bytes), size_bytes: bytes.byteLength };
@@ -139,7 +168,7 @@ async function runCase(options: {
   profile: any;
   scratchDirectory: string;
   authorityDirectory: string;
-  limits: AgentLimits;
+  budget: ReviewProviderBudget;
 }) {
   const reviewId = `provider-review-${options.name}`;
   const request: FinalReviewRequest = {
@@ -157,20 +186,24 @@ async function runCase(options: {
   let exactReads = 0;
   const started = performance.now();
 
-  for (let turn = 0; turn < Math.min(MAX_CASE_TURNS, options.limits.maximum_total_agent_turns); turn += 1) {
+  for (let turn = 0; turn < MAX_CASE_TURNS; turn += 1) {
     const response = await options.client.turn({
       profile: options.profile,
       prompt,
       scratchDirectory: options.scratchDirectory,
       authorityDirectory: options.authorityDirectory,
       ...(threadId ? { threadId } : {}),
+      signal: options.budget.turnSignal(),
     });
     threadId = response.thread_id;
-    usage.turns = addSafe(usage.turns, 1, "turn count");
-    usage.input_tokens = addSafe(usage.input_tokens, measured(response.usage.input_tokens, "input tokens"), "input tokens");
-    usage.cached_input_tokens = addSafe(usage.cached_input_tokens, measured(response.usage.cached_input_tokens, "cached input tokens"), "cached input tokens");
-    usage.output_tokens = addSafe(usage.output_tokens, measured(response.usage.output_tokens, "output tokens"), "output tokens");
-    if (usage.input_tokens > options.limits.maximum_total_input_tokens || usage.output_tokens > options.limits.maximum_total_output_tokens) throw new Error(`review provider benchmark ${options.name} exceeded configured token budget.`);
+    const input = measured(response.usage.input_tokens, "input tokens");
+    const cached = measured(response.usage.cached_input_tokens, "cached input tokens");
+    const output = measured(response.usage.output_tokens, "output tokens");
+    options.budget.record(input, cached, output);
+    usage.turns = addSafe(usage.turns, 1, "case turn count");
+    usage.input_tokens = addSafe(usage.input_tokens, input, "case input tokens");
+    usage.cached_input_tokens = addSafe(usage.cached_input_tokens, cached, "case cached input tokens");
+    usage.output_tokens = addSafe(usage.output_tokens, output, "case output tokens");
 
     const authority = parseChatGptCodexAuthority(response.output);
     if (authority.kind === "repository_command") {
@@ -217,7 +250,7 @@ const config = await loadTrustedConfig(paths.config);
 const profile = config.agents?.final_reviewer;
 if (!profile) throw new Error("Review provider benchmark requires configured final_reviewer profile.");
 const limits = config.agents?.limits ?? defaultAgentLimits();
-if (limits.maximum_total_agent_turns < 2) throw new Error("Review provider benchmark requires at least two configured provider turns per case.");
+if (limits.maximum_total_agent_turns < 2) throw new Error("Review provider benchmark requires at least two configured provider turns across the qualification run.");
 const authorized = await ensureChatGptLogin({ config, stateDirectory: paths.state });
 if (!authorized) throw new Error("ChatGPT authorization is required. Run `wco web connect` in an interactive terminal, then retry the review provider benchmark.");
 const runtime = await resolveCodexRuntime(config.runtime, paths.state);
@@ -229,9 +262,10 @@ const scratchDirectory = path.join(root, "scratch");
 const authorityDirectory = path.join(root, "authority");
 await mkdir(scratchDirectory, { mode: 0o700 });
 await mkdir(authorityDirectory, { mode: 0o700 });
+const budget = new ReviewProviderBudget(limits);
 
-const hidden = await runCase({ name: "hidden_defect", expectedVerdict: "REVISE", client, profile, scratchDirectory, authorityDirectory, limits });
-const clean = await runCase({ name: "clean_twin", expectedVerdict: "APPROVE", client, profile, scratchDirectory, authorityDirectory, limits });
+const hidden = await runCase({ name: "hidden_defect", expectedVerdict: "REVISE", client, profile, scratchDirectory, authorityDirectory, budget });
+const clean = await runCase({ name: "clean_twin", expectedVerdict: "APPROVE", client, profile, scratchDirectory, authorityDirectory, budget });
 const artifact = {
   benchmark_version: "1.0",
   kind: "independent-review-provider-qualification",
@@ -243,17 +277,24 @@ const artifact = {
   hidden_defect_must_revise: true,
   clean_twin_must_approve: true,
   exact_source_read_required_before_verdict: true,
+  configured_budget: {
+    maximum_total_agent_turns: limits.maximum_total_agent_turns,
+    maximum_total_input_tokens: limits.maximum_total_input_tokens,
+    maximum_total_output_tokens: limits.maximum_total_output_tokens,
+    maximum_total_seconds: limits.maximum_total_seconds,
+    maximum_turn_seconds: limits.maximum_turn_seconds,
+  },
   cases: [hidden, clean],
   totals: {
-    provider_turns: hidden.provider_turns + clean.provider_turns,
+    provider_turns: budget.usage.turns,
     repository_commands: hidden.repository_commands + clean.repository_commands,
     exact_source_reads: hidden.exact_source_reads + clean.exact_source_reads,
-    input_tokens: hidden.input_tokens + clean.input_tokens,
-    cached_input_tokens: hidden.cached_input_tokens + clean.cached_input_tokens,
-    output_tokens: hidden.output_tokens + clean.output_tokens,
+    input_tokens: budget.usage.input_tokens,
+    cached_input_tokens: budget.usage.cached_input_tokens,
+    output_tokens: budget.usage.output_tokens,
     duration_ms: hidden.duration_ms + clean.duration_ms,
   },
-  caveat: "This measures the configured real provider on two bounded review cases. It reduces false-approval risk; it cannot prove arbitrary future tasks are bug-free.",
+  caveat: "This measures the configured real provider on two bounded review cases under one shared configured turn/token/wall-clock budget. It reduces false-approval risk; it cannot prove arbitrary future tasks are bug-free.",
 };
 await mkdir(path.resolve("artifacts"), { recursive: true });
 await writeFile(path.resolve("artifacts/review-provider-qualification.json"), `${JSON.stringify(artifact, null, 2)}\n`, "utf8");
