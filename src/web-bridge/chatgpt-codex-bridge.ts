@@ -10,6 +10,7 @@ import { ensureCanonicalDirectory } from "../shared/safe-directory.js";
 import { parseChatGptCodexAuthority } from "./chatgpt-codex-authority.js";
 import { ChatGptCodexImplementationClient } from "./chatgpt-codex-implementation-client.js";
 import { chatGptCodexAuthorPrompt, chatGptCodexClarificationPrompt, chatGptCodexRepositoryResultPrompt, chatGptCodexReviewPrompt } from "./chatgpt-codex-prompts.js";
+import { prepareChatGptCodexReviewEvidence } from "./chatgpt-codex-review-evidence.js";
 import { ChatGptCodexSemanticClient } from "./chatgpt-codex-semantic-client.js";
 import { WebBridgeError, contentDigest, parseWebContractEnvelope, parseWebImplementationSubmission, parseWebVerdictEnvelope, type AuthoringEvent, type BridgeConnectionStatus, type BridgeJobIdentity, type FinalReviewRequest, type RepositoryCommandResult, type WebContractEnvelope, type WebImplementationSubmission, type WebVerdictEnvelope } from "./contracts.js";
 import type { PreparedRunAwareWebBridge } from "./prepared-run-aware.js";
@@ -85,8 +86,6 @@ function accumulatedProviderUsage(events: RelayEvents): { turns: number; input_t
 
 function assertProviderBudget(events: RelayEvents, limits: AgentLimits, beforeTurn: boolean): void {
   const usage = accumulatedProviderUsage(events);
-  // Codex reports cached_input_tokens as a subset of input_tokens. Keep cached
-  // usage for observability, but never charge it twice against total input.
   if ((beforeTurn && usage.turns >= limits.maximum_total_agent_turns) || usage.input_tokens > limits.maximum_total_input_tokens || usage.output_tokens > limits.maximum_total_output_tokens) {
     throw new WebBridgeError("WEB_CHATGPT_CODEX_BUDGET_EXHAUSTED", "Configured local ChatGPT/Codex provider budget is exhausted.");
   }
@@ -177,11 +176,6 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
   }
 
   async createAuthoringJob(request: AuthoringJobRequest, idempotencyKey: string): Promise<BridgeJobIdentity> {
-    // In the normal interactive product path, complete (or refresh) the one
-    // official ChatGPT authorization boundary before durable task creation.
-    // This prevents a cancelled/expired login from leaving an orphan AUTHORING
-    // session behind. Non-interactive callers remain side-effect free and will
-    // fail at the provider boundary rather than opening a browser.
     if (process.stdin.isTTY && process.stdout.isTTY && process.env.CI !== "true") await this.ensureAuthorizedForProviderTurn();
     return await this.store.create("authoring", OWNER, request, idempotencyKey, request.ttl_seconds);
   }
@@ -280,16 +274,13 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
     await this.store.append(jobId, OWNER, "chatgpt_codex_prepared_run", { run_id: runId }, idempotencyKey);
   }
 
+  async preflightFinalReviewEvidence(evidence: Record<string, unknown>): Promise<void> {
+    prepareChatGptCodexReviewEvidence(evidence);
+  }
+
   async createFinalReviewJob(request: FinalReviewRequest, idempotencyKey: string): Promise<BridgeJobIdentity> {
-    // Idempotent replay/adoption does not consume a provider turn and must stay
-    // available even when the task budget is now exhausted (for example after
-    // a crash between durable provider verdict and local receipt adoption).
     const replay = (await this.store.list(OWNER)).some((record) => Object.prototype.hasOwnProperty.call(record.idempotency, `create:${idempotencyKey}`));
     if (replay) return await this.store.create("final_review", OWNER, request, idempotencyKey, 86_400);
-
-    // A genuinely new review job is a new authority record, not a new task
-    // budget. Charge all durable provider usage already bound to this run before
-    // creating it so exhausted tasks cannot accumulate orphan review jobs.
     await this.assertProviderBudgetForRun(request.run_id, true);
     return await this.store.create("final_review", OWNER, request, idempotencyKey, 86_400);
   }
@@ -306,7 +297,8 @@ export class ChatGptCodexWebBridge implements WebBridge, PreparedRunAwareWebBrid
     if (hasUnresolvedReservation(record.events, "chatgpt_codex_review_reserved", ["web_verdict"])) throw new WebBridgeError("WEB_CHATGPT_CODEX_AMBIGUOUS_REVIEW", "A prior semantic review turn may have completed without a durable verdict; WCO refuses to replay an ambiguous authority-bearing review.");
     await this.assertProviderBudgetForJob(reviewId, record, true);
     const request = record.request as FinalReviewRequest;
-    const prompt = chatGptCodexReviewPrompt(request, evidence.payload as Record<string, unknown>, reviewId);
+    const readableEvidence = prepareChatGptCodexReviewEvidence(evidence.payload as Record<string, unknown>);
+    const prompt = chatGptCodexReviewPrompt(request, readableEvidence, reviewId);
     const inputSha256 = contentDigest({ reviewId, prompt });
     const result = await this.turn(prompt, undefined, signal, async (claimNonce) => (await this.store.claim(reviewId, OWNER, "chatgpt_codex_review_reserved", { input_sha256: inputSha256 }, `review-reserve-${inputSha256}`, claimNonce)).acquired);
     await this.recordProviderUsage(reviewId, "review", inputSha256, result.usage);
