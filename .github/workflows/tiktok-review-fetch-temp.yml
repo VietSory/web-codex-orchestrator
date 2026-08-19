@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - chatgpt/tiktok-review-7647343159999073556
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -93,7 +96,7 @@ jobs:
           set +e
           if ls out/target.* >/dev/null 2>&1; then exit 0; fi
           python - <<'PY'
-          import json, os, re
+          import json
           candidates=[]
           for f in ['out/tikwm.json','out/yoinku.json','out/tdown.json']:
               try:
