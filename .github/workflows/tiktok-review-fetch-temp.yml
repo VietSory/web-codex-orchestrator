@@ -16,77 +16,82 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Fetch exact TikTok media
+      - name: Fetch exact TikTok MP4 from media proxy
         shell: bash
         run: |
-          set -e
+          set +e
           mkdir -p out/frames
           ID='7647343159999073556'
-          URL="https://www.tiktok.com/@ngoclish/video/$ID"
-          curl -L --fail --max-time 60 -A 'Mozilla/5.0' -X POST 'https://www.tikwm.com/api/' \
-            --data-urlencode "url=$URL" --data 'hd=1' -o out/tikwm.json
-          python - <<'PY'
-          import json
-          d=json.load(open('out/tikwm.json'))['data']
-          print('TIKWM_META', json.dumps({k:d.get(k) for k in ['id','title','duration','play_count','digg_count','comment_count','share_count','collect_count','create_time']}, ensure_ascii=False))
-          PY
-          curl -L --fail --max-time 90 --retry 1 -A 'Mozilla/5.0' \
-            "https://www.tikwm.com/video/media/hdplay/$ID.mp4" -o out/target.mp4
-          echo "MEDIA_BYTES $(stat -c%s out/target.mp4)"
-          file out/target.mp4
+          for u in \
+            "https://www.tikwm.com/video/media/hdplay/$ID.mp4" \
+            "https://www.tikwm.com/video/media/play/$ID.mp4" \
+            "https://tikwm.com/video/media/hdplay/$ID.mp4" \
+            "https://tikwm.com/video/media/play/$ID.mp4"; do
+            echo "TRY $u"
+            rm -f out/candidate.bin
+            curl -L --max-time 90 --retry 2 --retry-all-errors -A 'Mozilla/5.0' "$u" -o out/candidate.bin
+            code=$?
+            echo "curl_exit=$code bytes=$(stat -c%s out/candidate.bin 2>/dev/null || echo 0)"
+            file out/candidate.bin 2>/dev/null || true
+            if [ "$code" = 0 ] && file out/candidate.bin | grep -q 'ISO Media'; then
+              mv out/candidate.bin out/target.mp4
+              echo 'MEDIA_FETCH_OK'
+              break
+            fi
+          done
+          if [ ! -f out/target.mp4 ]; then
+            echo 'MEDIA_FETCH_FAILED'
+            exit 1
+          fi
           xxd -l 32 out/target.mp4
 
-      - name: Decode frames and transcribe
+      - name: Decode frames and transcribe exact MP4
         shell: bash
         run: |
           set -e
           python -m pip install -q --disable-pip-version-check faster-whisper Pillow
           python - <<'PY'
-          import av, os
-          from PIL import Image, ImageOps, ImageDraw
+          import av
+          from PIL import Image, ImageDraw
           from faster_whisper import WhisperModel
 
           media='out/target.mp4'
-          container=av.open(media)
-          vstream=container.streams.video[0]
-          duration=float(container.duration/av.time_base) if container.duration else 97.0
-          print('MEDIA_DURATION', duration)
-          print('VIDEO_CODEC', vstream.codec_context.name, 'SIZE', vstream.width, vstream.height)
-
+          c=av.open(media)
+          vs=c.streams.video[0]
+          duration=float(c.duration/av.time_base) if c.duration else 97.0
+          print('MEDIA_DURATION', round(duration,3))
+          print('VIDEO_CODEC', vs.codec_context.name, 'SIZE', vs.width, vs.height)
           targets=[i*5.0 for i in range(20)]
-          got=[]
-          ti=0
-          for frame in container.decode(video=0):
-              if ti >= len(targets): break
+          got=[]; ti=0
+          for frame in c.decode(video=0):
+              if ti>=len(targets): break
               t=float(frame.time or 0.0)
               if t+0.05 >= targets[ti]:
                   im=frame.to_image()
                   im.thumbnail((480,854))
-                  path=f'out/frames/frame-{ti+1:02d}-{t:05.1f}s.jpg'
-                  im.save(path, quality=85)
-                  got.append((t,path,im.copy()))
+                  p=f'out/frames/frame-{ti+1:02d}-{t:05.1f}s.jpg'
+                  im.save(p,quality=86)
+                  got.append((t,im.copy()))
                   ti+=1
-          container.close()
-          print('FRAME_COUNT', len(got))
+          c.close()
+          print('FRAME_COUNT',len(got))
 
           if got:
-              thumbs=[]
-              for t,path,im in got:
-                  canvas=Image.new('RGB',(240,450),'white')
-                  x=im.copy(); x.thumbnail((240,420))
-                  canvas.paste(x,((240-x.width)//2,0))
-                  ImageDraw.Draw(canvas).text((5,425),f'{t:.1f}s',fill='black')
-                  thumbs.append(canvas)
-              cols=4; rows=(len(thumbs)+cols-1)//cols
-              sheet=Image.new('RGB',(cols*240,rows*450),'white')
-              for i,im in enumerate(thumbs): sheet.paste(im,((i%cols)*240,(i//cols)*450))
+              cols=4; cw=240; ch=445; rows=(len(got)+cols-1)//cols
+              sheet=Image.new('RGB',(cols*cw,rows*ch),'white')
+              for i,(t,im) in enumerate(got):
+                  thumb=im.copy(); thumb.thumbnail((cw,410))
+                  tile=Image.new('RGB',(cw,ch),'white')
+                  tile.paste(thumb,((cw-thumb.width)//2,0))
+                  ImageDraw.Draw(tile).text((5,415),f'{t:.1f}s',fill='black')
+                  sheet.paste(tile,((i%cols)*cw,(i//cols)*ch))
               sheet.save('out/contact-sheet.jpg',quality=88)
 
-          model=WhisperModel('base', device='cpu', compute_type='int8')
-          segments,info=model.transcribe(media, beam_size=5, vad_filter=True, word_timestamps=False)
+          model=WhisperModel('base',device='cpu',compute_type='int8')
+          segs,info=model.transcribe(media,beam_size=5,vad_filter=True)
           print(f'TRANSCRIPT_LANGUAGE {info.language} {info.language_probability:.4f}')
           with open('out/transcript.txt','w',encoding='utf-8') as f:
-              for s in segments:
+              for s in segs:
                   line=f'[{s.start:.2f}-{s.end:.2f}] {s.text.strip()}'
                   print('TRANSCRIPT',line)
                   f.write(line+'\n')
