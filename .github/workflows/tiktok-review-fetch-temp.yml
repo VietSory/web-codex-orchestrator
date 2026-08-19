@@ -19,86 +19,71 @@ jobs:
       - name: Fetch exact TikTok media
         shell: bash
         run: |
-          set +e
+          set -e
           mkdir -p out/frames
           ID='7647343159999073556'
           URL="https://www.tiktok.com/@ngoclish/video/$ID"
-
           curl -L --fail --max-time 60 -A 'Mozilla/5.0' -X POST 'https://www.tikwm.com/api/' \
             --data-urlencode "url=$URL" --data 'hd=1' -o out/tikwm.json
           python - <<'PY'
           import json
           d=json.load(open('out/tikwm.json'))['data']
           print('TIKWM_META', json.dumps({k:d.get(k) for k in ['id','title','duration','play_count','digg_count','comment_count','share_count','collect_count','create_time']}, ensure_ascii=False))
-          with open('out/direct-urls.txt','w') as f:
-              for k in ('hdplay','play','wmplay'):
-                  u=d.get(k)
-                  if u: f.write(k+'\t'+u+'\n')
           PY
+          curl -L --fail --max-time 90 --retry 1 -A 'Mozilla/5.0' \
+            "https://www.tikwm.com/video/media/hdplay/$ID.mp4" -o out/target.mp4
+          echo "MEDIA_BYTES $(stat -c%s out/target.mp4)"
+          file out/target.mp4
+          xxd -l 32 out/target.mp4
 
-          for u in \
-            "https://www.tikwm.com/video/media/hdplay/$ID.mp4" \
-            "https://www.tikwm.com/video/media/play/$ID.mp4" \
-            "https://tikwm.com/video/media/hdplay/$ID.mp4" \
-            "https://tikwm.com/video/media/play/$ID.mp4"; do
-            echo "PROXY_TRY $u"
-            curl -L --fail --max-time 90 --retry 1 -A 'Mozilla/5.0' "$u" -o out/candidate.bin
-            echo "curl_exit=$? bytes=$(stat -c%s out/candidate.bin 2>/dev/null || echo 0)"
-            file out/candidate.bin || true
-            xxd -l 32 out/candidate.bin || true
-            if ffprobe -v error -show_entries format=format_name,duration -of default=nw=1 out/candidate.bin > out/probe.tmp 2>&1; then
-              cat out/probe.tmp
-              mv out/candidate.bin out/target.mp4
-              break
-            else
-              cat out/probe.tmp
-              rm -f out/candidate.bin
-            fi
-          done
-
-          if [ ! -f out/target.mp4 ]; then
-            while IFS=$'\t' read -r key u; do
-              echo "DIRECT_TRY $key"
-              curl -L --fail --max-time 90 --retry 1 \
-                -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36' \
-                -H 'Referer: https://www.tiktok.com/' \
-                -H 'Accept: video/webm,video/mp4,video/*;q=0.9,*/*;q=0.8' \
-                "$u" -o out/candidate.bin
-              echo "curl_exit=$? bytes=$(stat -c%s out/candidate.bin 2>/dev/null || echo 0)"
-              file out/candidate.bin || true
-              xxd -l 32 out/candidate.bin || true
-              if ffprobe -v error -show_entries format=format_name,duration -of default=nw=1 out/candidate.bin > out/probe.tmp 2>&1; then
-                cat out/probe.tmp
-                mv out/candidate.bin out/target.mp4
-                break
-              else
-                cat out/probe.tmp
-                rm -f out/candidate.bin
-              fi
-            done < out/direct-urls.txt
-          fi
-
-          if [ ! -f out/target.mp4 ]; then
-            echo 'MEDIA_FETCH_FAILED'
-            exit 0
-          fi
-
-          echo 'MEDIA_FETCH_OK'
-          ffprobe -v error -show_format -show_streams -of json out/target.mp4 > out/ffprobe.json
-          ffmpeg -hide_banner -loglevel error -i out/target.mp4 -vf 'fps=1/5,scale=480:-1' -frames:v 24 out/frames/frame-%03d.jpg
-          ffmpeg -hide_banner -loglevel error -i out/target.mp4 -vn -ac 1 -ar 16000 out/audio.wav
-          echo "frames=$(find out/frames -type f | wc -l)"
-
-      - name: Transcribe exact media
+      - name: Decode frames and transcribe
         shell: bash
         run: |
-          set +e
-          if [ ! -f out/audio.wav ]; then echo 'NO_AUDIO'; exit 0; fi
-          python -m pip install -q --disable-pip-version-check faster-whisper
+          set -e
+          python -m pip install -q --disable-pip-version-check faster-whisper Pillow
           python - <<'PY'
+          import av, os
+          from PIL import Image, ImageOps, ImageDraw
           from faster_whisper import WhisperModel
+
+          media='out/target.mp4'
+          container=av.open(media)
+          vstream=container.streams.video[0]
+          duration=float(container.duration/av.time_base) if container.duration else 97.0
+          print('MEDIA_DURATION', duration)
+          print('VIDEO_CODEC', vstream.codec_context.name, 'SIZE', vstream.width, vstream.height)
+
+          targets=[i*5.0 for i in range(20)]
+          got=[]
+          ti=0
+          for frame in container.decode(video=0):
+              if ti >= len(targets): break
+              t=float(frame.time or 0.0)
+              if t+0.05 >= targets[ti]:
+                  im=frame.to_image()
+                  im.thumbnail((480,854))
+                  path=f'out/frames/frame-{ti+1:02d}-{t:05.1f}s.jpg'
+                  im.save(path, quality=85)
+                  got.append((t,path,im.copy()))
+                  ti+=1
+          container.close()
+          print('FRAME_COUNT', len(got))
+
+          if got:
+              thumbs=[]
+              for t,path,im in got:
+                  canvas=Image.new('RGB',(240,450),'white')
+                  x=im.copy(); x.thumbnail((240,420))
+                  canvas.paste(x,((240-x.width)//2,0))
+                  ImageDraw.Draw(canvas).text((5,425),f'{t:.1f}s',fill='black')
+                  thumbs.append(canvas)
+              cols=4; rows=(len(thumbs)+cols-1)//cols
+              sheet=Image.new('RGB',(cols*240,rows*450),'white')
+              for i,im in enumerate(thumbs): sheet.paste(im,((i%cols)*240,(i//cols)*450))
+              sheet.save('out/contact-sheet.jpg',quality=88)
+
           model=WhisperModel('base', device='cpu', compute_type='int8')
-          segments,info=model.transcribe('out/audio.wav', beam_size=5, vad_filter=True, word_timestamps=False)
+          segments,info=model.transcribe(media, beam_size=5, vad_filter=True, word_timestamps=False)
           print(f'TRANSCRIPT_LANGUAGE {info.language} {info.language_probability:.4f}')
           with open('out/transcript.txt','w',encoding='utf-8') as f:
               for s in segments:
@@ -106,16 +91,6 @@ jobs:
                   print('TRANSCRIPT',line)
                   f.write(line+'\n')
           PY
-
-      - name: Make contact sheet
-        if: always()
-        shell: bash
-        run: |
-          set +e
-          if find out/frames -type f -name '*.jpg' | grep -q .; then
-            ffmpeg -hide_banner -loglevel error -pattern_type glob -i 'out/frames/*.jpg' \
-              -vf 'tile=4x5:padding=4:margin=4' -frames:v 1 out/contact-sheet.jpg || true
-          fi
 
       - name: Upload review inputs
         if: always()
