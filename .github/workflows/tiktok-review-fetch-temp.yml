@@ -1,0 +1,155 @@
+name: Temporary TikTok Review Fetch
+
+on:
+  push:
+    branches:
+      - chatgpt/tiktok-review-7647343159999073556
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Fetch metadata through multiple routes
+        shell: bash
+        run: |
+          set +e
+          mkdir -p out/frames
+          URL='https://www.tiktok.com/@ngoclish/video/7647343159999073556'
+
+          echo '=== TikTok official oEmbed ===' | tee out/status.txt
+          curl -L --max-time 30 --retry 1 -A 'Mozilla/5.0' -G \
+            --data-urlencode "url=$URL" \
+            'https://www.tiktok.com/oembed' \
+            -o out/tiktok-oembed.json -w 'HTTP %{http_code}\n' | tee -a out/status.txt
+          cat out/tiktok-oembed.json 2>/dev/null | head -c 12000 || true
+          echo
+
+          echo '=== TikWM ===' | tee -a out/status.txt
+          curl -L --max-time 45 --retry 1 -A 'Mozilla/5.0' \
+            -X POST 'https://www.tikwm.com/api/' \
+            --data-urlencode "url=$URL" --data 'hd=1' \
+            -o out/tikwm.json -w 'HTTP %{http_code}\n' | tee -a out/status.txt
+          cat out/tikwm.json 2>/dev/null | head -c 16000 || true
+          echo
+
+          echo '=== Yoinku ===' | tee -a out/status.txt
+          curl -L --max-time 45 --retry 1 -A 'Mozilla/5.0' -G \
+            --data-urlencode "url=$URL" \
+            'https://yoinku.com/api/v1/info' \
+            -o out/yoinku.json -w 'HTTP %{http_code}\n' | tee -a out/status.txt
+          cat out/yoinku.json 2>/dev/null | head -c 12000 || true
+          echo
+
+          echo '=== tdown worker ===' | tee -a out/status.txt
+          curl -L --max-time 45 --retry 1 -A 'Mozilla/5.0' -G \
+            --data-urlencode "down=$URL" \
+            'https://tdownv4.sl-bjs.workers.dev/' \
+            -o out/tdown.json -w 'HTTP %{http_code}\n' | tee -a out/status.txt
+          cat out/tdown.json 2>/dev/null | head -c 16000 || true
+          echo
+
+          echo '=== tik-data OpenAPI ===' | tee -a out/status.txt
+          curl -L --max-time 30 --retry 1 -A 'Mozilla/5.0' \
+            'https://api.tik-data.com/api/openapi.json' \
+            -o out/tik-data-openapi.json -w 'HTTP %{http_code}\n' | tee -a out/status.txt
+          python - <<'PY'
+          import json
+          p='out/tik-data-openapi.json'
+          try:
+              d=json.load(open(p))
+              path=d.get('paths',{}).get('/api/v1/public/video/info',{})
+              print(json.dumps(path, ensure_ascii=False, indent=2)[:16000])
+          except Exception as e:
+              print('OpenAPI parse error:',e)
+          PY
+
+      - name: Try yt-dlp and download media
+        shell: bash
+        run: |
+          set +e
+          URL='https://www.tiktok.com/@ngoclish/video/7647343159999073556'
+          python -m pip install -q --disable-pip-version-check yt-dlp
+          yt-dlp --no-warnings --dump-single-json "$URL" > out/ytdlp.json 2>out/ytdlp.err
+          echo "yt-dlp metadata exit=$?" | tee -a out/status.txt
+          cat out/ytdlp.err || true
+          cat out/ytdlp.json 2>/dev/null | head -c 16000 || true
+          echo
+          yt-dlp --no-warnings -f 'bv*+ba/b' --merge-output-format mp4 -o 'out/target.%(ext)s' "$URL" 2>>out/ytdlp.err
+          echo "yt-dlp download exit=$?" | tee -a out/status.txt
+
+          if ls out/target.* >/dev/null 2>&1; then
+            MEDIA=$(ls out/target.* | head -1)
+            ffprobe -v error -show_format -show_streams -of json "$MEDIA" > out/ffprobe.json 2>/dev/null || true
+            ffmpeg -hide_banner -loglevel error -i "$MEDIA" -vf 'fps=1/2,scale=480:-1' -frames:v 30 out/frames/frame-%03d.jpg || true
+          fi
+
+      - name: Recover media from scraper JSON if needed
+        shell: bash
+        run: |
+          set +e
+          if ls out/target.* >/dev/null 2>&1; then exit 0; fi
+          python - <<'PY'
+          import json, os, re
+          candidates=[]
+          for f in ['out/tikwm.json','out/yoinku.json','out/tdown.json']:
+              try:
+                  d=json.load(open(f))
+              except Exception:
+                  continue
+              def walk(x):
+                  if isinstance(x,dict):
+                      for k,v in x.items():
+                          if isinstance(v,str) and v.startswith('http') and ('.mp4' in v or k.lower() in {'play','hdplay','download_url','video','video_hd','url'}):
+                              candidates.append((k,v))
+                          walk(v)
+                  elif isinstance(x,list):
+                      for v in x: walk(v)
+              walk(d)
+          print('candidate_count',len(candidates))
+          with open('out/media-candidates.txt','w') as w:
+              for k,u in candidates: w.write(k+'\t'+u+'\n')
+          PY
+          while IFS=$'\t' read -r key u; do
+            [ -z "$u" ] && continue
+            echo "Trying media candidate: $key" | tee -a out/status.txt
+            curl -L --max-time 90 --retry 1 -A 'Mozilla/5.0' "$u" -o out/target.mp4
+            if ffprobe -v error out/target.mp4 >/dev/null 2>&1; then break; fi
+            rm -f out/target.mp4
+          done < out/media-candidates.txt
+          if [ -f out/target.mp4 ]; then
+            ffprobe -v error -show_format -show_streams -of json out/target.mp4 > out/ffprobe.json 2>/dev/null || true
+            ffmpeg -hide_banner -loglevel error -i out/target.mp4 -vf 'fps=1/2,scale=480:-1' -frames:v 30 out/frames/frame-%03d.jpg || true
+          fi
+
+      - name: Transcribe audio if media exists
+        shell: bash
+        run: |
+          set +e
+          MEDIA=$(ls out/target.* 2>/dev/null | head -1)
+          if [ -z "$MEDIA" ]; then echo 'No media to transcribe' | tee -a out/status.txt; exit 0; fi
+          python -m pip install -q --disable-pip-version-check faster-whisper
+          python - <<'PY'
+          import glob
+          from faster_whisper import WhisperModel
+          media=glob.glob('out/target.*')[0]
+          model=WhisperModel('tiny', device='cpu', compute_type='int8')
+          segments,info=model.transcribe(media, beam_size=3, vad_filter=True)
+          with open('out/transcript.txt','w',encoding='utf-8') as f:
+              f.write(f'language={info.language} probability={info.language_probability}\n')
+              for s in segments:
+                  line=f'[{s.start:.2f}-{s.end:.2f}] {s.text.strip()}'
+                  print(line)
+                  f.write(line+'\n')
+          PY
+
+      - name: Upload review inputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiktok-review-inputs
+          path: out/
+          retention-days: 1
