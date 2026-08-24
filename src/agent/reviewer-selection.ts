@@ -44,5 +44,6 @@ export function selectionProfile(selection: ReviewerSelection): AgentProfile {
 }
 
 export function reviewerLabel(selection: ReviewerSelection): string {
+  if (selection.model === "chatgpt-web") return "ChatGPT Web · independent";
   return `${selection.kind === "sol" ? "Sol" : "Terra"} · ${selection.reasoning_effort}`;
 }
