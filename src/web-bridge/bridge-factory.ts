@@ -11,8 +11,8 @@ import { ManagedAutoWebBridge } from "./managed-auto-web-bridge.js";
 import { resolveManagedWebService } from "./managed-service.js";
 import type { WebBridge } from "./web-bridge.js";
 
-function browserPairOptIn(env: NodeJS.ProcessEnv): boolean {
-  const value = env.WCO_CHATGPT_BROWSER?.trim().toLowerCase();
+function enabled(env: NodeJS.ProcessEnv, key: string): boolean {
+  const value = env[key]?.trim().toLowerCase();
   return value === "1" || value === "true" || value === "yes" || value === "on";
 }
 
@@ -23,10 +23,12 @@ export function createConfiguredWebBridge(config: TrustedConfig, bridgeDirectory
   const mode = config.web_bridge?.mode ?? "chatgpt_codex";
 
   if (mode === "chatgpt_codex") {
-    // Browser PAIR is an explicit local-user fallback. Never silently switch a
-    // provider after a partially completed Codex turn: the user opts in before
-    // the run with WCO_CHATGPT_BROWSER=1, preserving deterministic authority.
-    if (browserPairOptIn(env)) return new ChatGptBrowserWebBridge(config, bridgeDirectory, stateDirectory, env);
+    // Browser-only mode is useful for qualification and for users who already
+    // know Codex is unavailable. Quota-fallback mode keeps Codex as the fast
+    // path and switches only after a first-turn allowance exhaustion signal.
+    // Browser-only takes precedence when both flags are present.
+    if (enabled(env, "WCO_CHATGPT_BROWSER")) return new ChatGptBrowserWebBridge(config, bridgeDirectory, stateDirectory, env, "browser_only");
+    if (enabled(env, "WCO_CHATGPT_BROWSER_FALLBACK")) return new ChatGptBrowserWebBridge(config, bridgeDirectory, stateDirectory, env, "codex_quota_fallback");
 
     // Keep the normal hot path limited to provider work that can affect the
     // user's task. The blind Web-B challenger is qualified research/evaluation
