@@ -1,22 +1,37 @@
 # ChatGPT Web browser PAIR
 
-This core transport is a direct, personal ChatGPT Web path for PAIR. It exists so a PAIR run can use the user's normal ChatGPT Web session instead of spending Codex provider quota.
+This core transport is a direct, personal ChatGPT Web path for PAIR. It exists so a PAIR run can use the user's normal ChatGPT Web session instead of spending Codex provider/model quota.
 
 It drives the user's own local Chromium browser session through the Chrome DevTools Protocol. It does **not** read ChatGPT cookies/tokens, call private ChatGPT HTTP endpoints, bypass CAPTCHA/protective measures, or depend on Codex model turns.
 
-## Enable direct browser PAIR
+## Daily setup
 
-Start a fresh PAIR run with:
+For a fresh installation, normal first-run setup now saves `chatgpt-web` as the PAIR provider. In practice the normal flow is simply:
 
 ```bash
-WCO_CHATGPT_BROWSER=1 wco
+cd /path/to/project
+wco
 ```
 
-Then type a goal normally.
+WCO registers the repository, stores the owner-local provider preference, opens its dedicated ChatGPT browser profile when sign-in is needed, and then future terminals only need `wco` plus a goal.
 
-There is no Codex-quota probe and no Codex-to-browser fallback router in this mode. The browser transport owns the provider turns from the beginning of the PAIR session.
+To select the provider explicitly:
 
-The normal Codex-backed path remains unchanged when `WCO_CHATGPT_BROWSER` is absent.
+```bash
+wco setup --provider chatgpt-web
+```
+
+To switch back to the bundled Codex provider later:
+
+```bash
+wco setup --provider codex
+```
+
+The saved choice lives in WCO-owned local preferences next to the state directory. It is deliberately separate from trusted repository configuration because provider choice is user/product UX state, not repository authority.
+
+`WCO_CHATGPT_BROWSER=1` remains supported only as a development/qualification override. Normal users do not need to export it.
+
+There is no Codex-quota probe and no Codex-to-browser fallback router in direct browser PAIR. The browser transport owns provider turns from the beginning of the PAIR session.
 
 ## Intended flow
 
@@ -58,6 +73,17 @@ Optional bounds:
 - `WCO_CHATGPT_BROWSER_RESPONSE_SECONDS` — one Web response deadline, default `900`, maximum `3600`.
 - `WCO_CHATGPT_BROWSER_CONTEXT_BYTES` — context-pack ceiling, default `6291456`, maximum `12582912`.
 
+## Readiness behavior
+
+`wco doctor` reads the same saved provider preference. For PAIR with `chatgpt-web` selected:
+
+- Codex runtime is not a readiness requirement;
+- Codex authentication is not a readiness requirement;
+- ChatGPT Web browser-profile readiness is checked directly;
+- Git/GitHub and deterministic verification requirements remain unchanged.
+
+AUTOPILOT keeps its own reviewer/runtime requirements and is not silently reinterpreted as browser PAIR.
+
 ## Context and authority
 
 A new browser provider thread creates a new ChatGPT conversation. WCO stores the resulting `https://chatgpt.com/c/...` URL as the provider `thread_id`; a continuation turn reopens exactly that URL.
@@ -86,6 +112,8 @@ Merge and release remain human-only.
 The browser adapter intentionally fails if it detects a human-verification/protective page. There is no CAPTCHA solver, anti-bot bypass, rate-limit bypass, cookie extraction, or private endpoint fallback.
 
 The adapter also refuses continuation URLs outside `https://chatgpt.com/`.
+
+Provider preferences themselves fail closed if malformed or replaced with an unsafe/symlinked file. WCO does not silently fall back to Codex and accidentally spend provider quota when the saved browser preference cannot be trusted.
 
 ## Usage accounting
 

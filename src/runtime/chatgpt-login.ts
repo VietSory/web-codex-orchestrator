@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import type { TrustedConfig } from "../config/contracts.js";
+import { browserProviderSelected } from "../setup/provider-preferences.js";
 import { resolveCodexRuntime, type ResolvedCodexRuntime } from "./codex-runtime.js";
 
 export type ChatGptLoginRunner = (
@@ -79,6 +80,10 @@ export function clearProcessChatGptLoginProof(): void {
  * can never compete for stdin. Before an inherited interactive login, the
  * parent stream is paused so a completed readline prompt cannot compete either.
  *
+ * Direct ChatGPT Web PAIR does not use the Codex runtime for provider turns or
+ * authorization. Its dedicated browser profile owns its own ChatGPT session,
+ * so this legacy Codex authorization preflight becomes a no-op in that mode.
+ *
  * A successful production status/login check is remembered only for this Node
  * process. `forceStatus` bypasses that optimization for explicit reconnect
  * operations. Test runners also bypass the cache so command-call assertions
@@ -94,6 +99,8 @@ export async function ensureChatGptLogin(options: {
   output?: ChatGptLoginOutput;
   runCommand?: ChatGptLoginRunner;
 }): Promise<boolean> {
+  if (browserProviderSelected(options.stateDirectory)) return true;
+
   const runtime = await resolveCodexRuntime(options.config.runtime, options.stateDirectory);
   const execute = options.runCommand ?? run;
   const productionRunner = options.runCommand === undefined;

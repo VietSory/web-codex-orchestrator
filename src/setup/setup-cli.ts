@@ -1,8 +1,10 @@
 import readline from "node:readline/promises";
+import { ChatGptBrowserAgentClient } from "../agent/chatgpt-browser-client.js";
 import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
 import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
 import { resolveGitHubToken } from "./credential-provider.js";
 import { performFirstRunSetup } from "./first-run.js";
+import type { WcoExecutionProvider } from "./provider-preferences.js";
 
 export interface SetupCommandIo {
   write(value: string): void;
@@ -54,7 +56,15 @@ function friendlySetupError(error: unknown): string {
   if (/SETUP_NODE_UNSUPPORTED/i.test(message)) {
     return "WCO requires Node.js 22 or newer. Update Node.js, then run `wco` again.";
   }
+  if (/WCO_PREFERENCES_INVALID/i.test(message)) {
+    return "WCO provider preferences are invalid or unsafe. Re-run setup with an explicit provider, for example `wco setup --provider chatgpt-web --force`.";
+  }
   return message;
+}
+
+function providerFromCli(value: string | undefined): WcoExecutionProvider | null {
+  if (value === "chatgpt-web" || value === "codex") return value;
+  return null;
 }
 
 export async function runSetupCommand(
@@ -63,17 +73,26 @@ export async function runSetupCommand(
   suppliedIo: SetupCommandIo = defaultIo,
   platform: NodeJS.Platform = process.platform,
 ): Promise<number> {
-  let yes = false, overwrite = false, configPath: string | undefined, stateDirectory: string | undefined;
+  let yes = false, overwrite = false, configPath: string | undefined, stateDirectory: string | undefined, provider: WcoExecutionProvider | undefined;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
     if (arg === "--yes") yes = true;
     else if (arg === "--force") overwrite = true;
-    else if (arg === "--config" || arg === "--state-dir") {
+    else if (arg === "--config" || arg === "--state-dir" || arg === "--provider") {
       const value = args[++i];
       if (!value) return 2;
-      if (arg === "--config") configPath = value; else stateDirectory = value;
+      if (arg === "--config") configPath = value;
+      else if (arg === "--state-dir") stateDirectory = value;
+      else {
+        const parsed = providerFromCli(value);
+        if (!parsed) {
+          suppliedIo.error("Provider must be `chatgpt-web` or `codex`.\n");
+          return 2;
+        }
+        provider = parsed;
+      }
     } else {
-      suppliedIo.error("Usage: wco setup [--yes] [--force] [--config <path>] [--state-dir <path>]\n");
+      suppliedIo.error("Usage: wco setup [--yes] [--force] [--provider chatgpt-web|codex] [--config <path>] [--state-dir <path>]\n");
       return 2;
     }
   }
@@ -101,23 +120,42 @@ export async function runSetupCommand(
   }
   try {
     suppliedIo.write("Checking this Git repository and initial WCO setup…\n");
-    const result = await performFirstRunSetup({ cwd, ...(configPath ? { configPath } : {}), ...(stateDirectory ? { stateDirectory } : {}), overwrite });
+    const result = await performFirstRunSetup({ cwd, ...(configPath ? { configPath } : {}), ...(stateDirectory ? { stateDirectory } : {}), overwrite, ...(provider ? { provider } : {}) });
     const checks: Array<["ok" | "warn", string, string]> = [["ok", "Git repository", result.repository.github_repository ?? result.repository.root]];
     checks.push([executionHost.severity, "Execution host", executionHost.value]);
-    let codex = "authorization pending";
-    try { const runtime = await resolveCodexRuntime(result.config.runtime, result.paths.state); await new CodexSdkAgentClient(runtime).checkAvailability(); codex = `ChatGPT authenticated (${runtime.package_version})`; } catch { /* reported below */ }
+
+    let providerStatus = result.provider === "chatgpt-web" ? "ChatGPT Web browser sign-in pending" : "Codex authorization pending";
+    const explicitMode = result.config.web_bridge?.mode;
+    if (!explicitMode && result.provider === "chatgpt-web") {
+      if (process.stdin.isTTY && process.stdout.isTTY && process.env.CI !== "true") {
+        try {
+          await new ChatGptBrowserAgentClient({ stateDirectory: result.paths.state }).checkAvailability();
+          providerStatus = "ChatGPT Web browser ready";
+        } catch {
+          providerStatus = "ChatGPT Web browser sign-in pending";
+        }
+      }
+    } else if (!explicitMode) {
+      try {
+        const runtime = await resolveCodexRuntime(result.config.runtime, result.paths.state);
+        await new CodexSdkAgentClient(runtime).checkAvailability();
+        providerStatus = `Codex ready (${runtime.package_version})`;
+      } catch { /* reported below */ }
+    }
+
     let github = "not configured";
     if (result.config.github_pull_request) { try { await resolveGitHubToken(result.config.github_pull_request.authentication); github = "gh authenticated"; } catch { github = "gh missing or not authenticated"; } }
     checks.push([github === "gh missing or not authenticated" ? "warn" : "ok", "GitHub", github]);
-    checks.push([codex === "authorization pending" ? "warn" : "ok", "ChatGPT", codex]);
-    const explicitMode = result.config.web_bridge?.mode;
-    const transport = explicitMode ? `${explicitMode} (advanced override)` : "local ChatGPT/Codex";
-    checks.push([explicitMode ? "warn" : "ok", "Transport", transport]);
+    checks.push([providerStatus.includes("pending") ? "warn" : "ok", "Provider", explicitMode ? `${explicitMode} (advanced override)` : providerStatus]);
+    checks.push(["ok", "PAIR review", result.provider === "chatgpt-web" && !explicitMode ? "independent ChatGPT Web review before Draft PR" : "configured provider review policy"]);
+
     suppliedIo.write(`\nWeb Codex Orchestrator setup\n\n${checks.map(([severity, label, value]) => `${severity === "ok" ? "✓" : "!"} ${label.padEnd(16)} ${value}`).join("\n")}\n`);
-    if (codex === "authorization pending" && !explicitMode) {
-      suppliedIo.write("\nSetup is complete. On the first interactive `wco` run, the official Codex sign-in will request ChatGPT authorization if needed. No API key, relay, tunnel, domain, or cloud setup is required. WCO performs the full mode readiness check before starting a task.\n");
+    if (!explicitMode && result.provider === "chatgpt-web") {
+      suppliedIo.write("\nSetup is complete. ChatGPT Web is now the saved PAIR provider, so future terminals only need `wco` and a goal. No WCO_CHATGPT_BROWSER environment flag and no Codex model quota are required for PAIR.\n");
+      if (providerStatus.includes("pending")) suppliedIo.write("On the next `wco` run, WCO will open its dedicated ChatGPT browser profile so you can finish sign-in if needed.\n");
+      suppliedIo.write("Switch back later with `wco setup --provider codex`.\n");
     } else if (!explicitMode) {
-      suppliedIo.write("\nSetup is complete. Daily use is simply `wco` and a goal. WCO performs the full mode readiness check before starting a task.\n");
+      suppliedIo.write("\nSetup is complete. Codex is the saved provider. Daily use is simply `wco` and a goal. Switch to direct ChatGPT Web PAIR with `wco setup --provider chatgpt-web`.\n");
     }
     if (github === "gh missing or not authenticated") suppliedIo.write("GitHub needs attention before WCO can publish a Draft PR. Install GitHub CLI (`gh`) if it is missing, then run `gh auth login` and `wco doctor`. WCO will not start normal task execution until required readiness checks pass.\n");
     return 0;

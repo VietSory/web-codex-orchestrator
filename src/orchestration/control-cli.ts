@@ -8,6 +8,7 @@ import {
   resolveCodexRuntime,
 } from "../runtime/codex-runtime.js";
 import { spawnBounded, type SpawnBoundedResult } from "../runtime/spawn-bounded.js";
+import { browserProviderSelected } from "../setup/provider-preferences.js";
 import { BubblewrapVerificationSandbox } from "../verifier/bubblewrap-sandbox.js";
 import { pauseRun, resumeRun } from "./controller.js";
 import { readRunLedger } from "./ledger.js";
@@ -158,8 +159,9 @@ export function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
   const webPaths = resolveWcoPaths({ configPath: args.configPath!, stateDirectory: args.stateDirectory });
   const webFailure = (label: string, error: unknown) => ({ severity: "WARN" as const, summary: `${label} FAIL - ${error instanceof Error ? error.message : String(error)}` });
   const webMode = lazyPromise(() => loadConfig().then((config) => config.web_bridge?.mode ?? "chatgpt_codex"));
+  const directBrowserPair = args.doctorMode === "PAIR" && browserProviderSelected(args.stateDirectory);
   const loadRuntime = lazyPromise(() => loadConfig().then((config) => resolveCodexRuntime(config.runtime, args.stateDirectory)));
-  const codexRequired = async (): Promise<boolean> => (await webMode()) === "chatgpt_codex" || args.doctorMode === "AUTOPILOT";
+  const codexRequired = async (): Promise<boolean> => !directBrowserPair && ((await webMode()) === "chatgpt_codex" || args.doctorMode === "AUTOPILOT");
   const loadManagedService = lazyPromise(() => loadConfig().then(async (config) => {
     if (config.web_bridge?.mode !== "managed_actions") throw new Error("managed Web mode is not configured");
     const metadata = resolveManagedWebService();
@@ -208,7 +210,7 @@ export function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
     } },
     { id: "verification-sandbox", async run() { await new BubblewrapVerificationSandbox().checkAvailability(); return { severity: "OK" as const, summary: "Bubblewrap verification sandbox available with isolated filesystem/network namespaces" }; } },
     { id: "codex-runtime", async run() {
-      if (!await codexRequired()) return { severity: "OK" as const, summary: "explicit advanced PAIR profile does not require the local Codex runtime" };
+      if (!await codexRequired()) return { severity: "OK" as const, summary: directBrowserPair ? "ChatGPT Web PAIR does not require the local Codex runtime" : "explicit advanced PAIR profile does not require the local Codex runtime" };
       const runtime = await loadRuntime();
       const result = await spawnBounded({ executable: runtime.executable, args: codexCliArgs(runtime, ["--version"]), cwd: path.dirname(runtime.launcher_path), environment: minimalCodexEnvironment(runtime), timeoutMs: 4_000, stdoutMaxBytes: 16_384, stderrMaxBytes: 16_384, shell: false });
       if (result.exitCode !== 0 || result.timedOut || result.spawnError) return { severity: "FAIL" as const, summary: processFailureSummary(result, "pinned Codex runtime unavailable") };
@@ -216,6 +218,7 @@ export function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
       return { severity: "OK" as const, summary: `pinned Codex ${version}` };
     } },
     { id: "codex-auth", async run() {
+      if (directBrowserPair) return { severity: "OK" as const, summary: "ChatGPT Web PAIR owns browser authorization; Codex authentication is not required" };
       const mode = await webMode();
       if (mode !== "chatgpt_codex" && args.doctorMode !== "AUTOPILOT") return { severity: "OK" as const, summary: "explicit advanced PAIR profile does not require local Codex authentication" };
       const runtime = await loadRuntime();
@@ -226,6 +229,7 @@ export function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
       return { severity: "OK" as const, summary: mode === "chatgpt_codex" ? "ChatGPT authorization available through the pinned Codex runtime" : "Codex authentication available for AUTOPILOT review" };
     } },
     { id: "wco-relay-service", async run() {
+      if (directBrowserPair) return { severity: "OK" as const, summary: "direct ChatGPT Web browser transport; no relay or hosted service required" };
       const mode = await webMode();
       if (mode === "chatgpt_codex") return { severity: "OK" as const, summary: "local ChatGPT/Codex transport; no relay or hosted service required" };
       if (mode === "manual_file") return { severity: "OK" as const, summary: "offline manual_file profile; no relay probe required" };
@@ -235,10 +239,20 @@ export function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
     } },
     { id: "wco-device-account", async run() {
       const mode = await webMode();
-      if (mode !== "managed_actions") return { severity: "OK" as const, summary: `${mode} profile has no managed device/account requirement` };
+      if (mode !== "managed_actions") return { severity: "OK" as const, summary: `${directBrowserPair ? "chatgpt-web" : mode} profile has no managed device/account requirement` };
       try { const { client } = await loadManagedService(); await client.accessToken(); return { severity: "OK" as const, summary: "PASS - scoped device/account credential valid" }; } catch (error) { return webFailure("WCO device/account", error); }
     } },
     { id: "chatgpt-web", async run() {
+      if (directBrowserPair) {
+        try {
+          const status = await loadLocalConnection();
+          return status.configured && status.connected
+            ? { severity: "OK" as const, summary: "direct ChatGPT Web browser profile ready" }
+            : { severity: "FAIL" as const, summary: "direct ChatGPT Web browser profile is not ready; finish sign-in in the WCO browser window" };
+        } catch (error) {
+          return { severity: "FAIL" as const, summary: `direct ChatGPT Web browser unavailable - ${error instanceof Error ? error.message : String(error)}` };
+        }
+      }
       const mode = await webMode();
       if (mode === "chatgpt_codex") {
         try {
@@ -256,6 +270,7 @@ export function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
       try { const value = await loadManagedConnection(); return value.service.chatgpt_oauth_configured && value.connection.connected ? { severity: "OK" as const, summary: "managed OAuth linked" } : { severity: "WARN" as const, summary: "managed OAuth not linked" }; } catch { return { severity: "WARN" as const, summary: "managed OAuth not linked" }; }
     } },
     { id: "senior-architect-gpt", async run() {
+      if (directBrowserPair) return { severity: "OK" as const, summary: "direct ChatGPT Web PAIR has no Custom GPT or Workspace Agent requirement" };
       const config = await loadConfig(), mode = config.web_bridge?.mode ?? "chatgpt_codex";
       if (mode === "chatgpt_codex") return { severity: "OK" as const, summary: "local ChatGPT/Codex transport has no Custom GPT or Workspace Agent requirement" };
       if (mode === "manual_file") return { severity: "OK" as const, summary: "not required for offline manual_file profile" };
