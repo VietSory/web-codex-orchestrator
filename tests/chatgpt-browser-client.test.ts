@@ -138,6 +138,14 @@ test("browser lifecycle closes CDP and terminates only its own child idempotentl
   existing.setConnection({ close: () => { closed += 1; } });
   await existing.close();
   assert.equal(closed, 2, "an existing compatible browser is disconnected but never killed");
+
+  let windowsTreeKills = 0, fallbackKills = 0;
+  const windowsInterop = new BrowserLifecycle();
+  windowsInterop.own({ exitCode: null, kill: () => { fallbackKills += 1; return true; }, once: () => undefined as never }, () => { windowsTreeKills += 1; });
+  await windowsInterop.close();
+  await windowsInterop.close();
+  assert.equal(windowsTreeKills, 1, "Windows interop uses its exact owned-tree terminator once");
+  assert.equal(fallbackKills, 0, "Windows interop does not rely on the ineffective Linux child signal");
 });
 
 test("WSL networking diagnostics distinguish mirrored mode, NAT default, and unavailable host configuration", () => {

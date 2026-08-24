@@ -179,9 +179,13 @@ export interface BrowserProcessHandle {
 export class BrowserLifecycle {
   private connection: { close(): void } | null = null;
   private ownedProcess: BrowserProcessHandle | null = null;
+  private ownedProcessTerminator: (() => void) | null = null;
 
   setConnection(connection: { close(): void } | null): void { this.connection = connection; }
-  own(process: BrowserProcessHandle): void { this.ownedProcess = process; }
+  own(process: BrowserProcessHandle, terminate?: () => void): void {
+    this.ownedProcess = process;
+    this.ownedProcessTerminator = terminate ?? null;
+  }
 
   async close(): Promise<void> {
     const connection = this.connection;
@@ -190,7 +194,13 @@ export class BrowserLifecycle {
 
     const child = this.ownedProcess;
     this.ownedProcess = null;
+    const terminate = this.ownedProcessTerminator;
+    this.ownedProcessTerminator = null;
     if (!child || child.killed || child.exitCode !== null && child.exitCode !== undefined) return;
+    if (terminate) {
+      try { terminate(); } catch { /* exact owned process only */ }
+      return;
+    }
     await new Promise<void>((resolve) => {
       let settled = false;
       const finish = () => { if (!settled) { settled = true; resolve(); } };
@@ -208,9 +218,24 @@ export class BrowserLifecycle {
     this.connection = null;
     const child = this.ownedProcess;
     this.ownedProcess = null;
+    const terminate = this.ownedProcessTerminator;
+    this.ownedProcessTerminator = null;
     if (!child || child.killed || child.exitCode !== null && child.exitCode !== undefined) return;
+    if (terminate) {
+      try { terminate(); } catch { /* exact owned process only */ }
+      return;
+    }
     try { child.kill("SIGTERM"); } catch { /* exact owned process only */ }
   }
+}
+
+/** Chrome started via WSL interop can outlive Node's Linux child handle. The
+ * random launch marker is attached only to the process WCO spawned, then a
+ * single Windows-side query-and-tree-kill targets that exact marker. */
+function terminateOwnedWindowsBrowser(instance: string): void {
+  if (!/^[0-9a-f-]{36}$/i.test(instance)) return;
+  const script = `$instance = '${instance}'; Get-CimInstance Win32_Process -Filter \"name='chrome.exe'\" | Where-Object { $_.CommandLine -like \"*--wco-browser-instance=$instance*\" } | ForEach-Object { taskkill.exe /PID $_.ProcessId /T /F | Out-Null }`;
+  spawnSync("powershell.exe", ["-NoProfile", "-Command", script], { encoding: "utf8", shell: false, windowsHide: true });
 }
 
 function isSensitiveRelativePath(relativePath: string): boolean {
@@ -529,22 +554,28 @@ export class ChatGptBrowserAgentClient implements AgentClient {
           this.lifecycle.setConnection(this.connection);
           await this.connection.command("Browser.getVersion", {}, undefined, signal);
           return this.connection;
-        } catch {
+        } catch (error) {
           await this.lifecycle.close();
           this.connection = null;
           abortIfRequested(signal);
+          if (profile.cross_os) {
+            const networking = detectWslNetworkingMode(windowsWslConfig());
+            throw codedError("WEB_CHATGPT_BROWSER_WSL_CDP_UNREACHABLE", `Windows Chrome DevTools endpoint '${existing}' is not reachable from WSL (detected networking: ${networking}). WCO will not expose DevTools beyond Chrome's loopback binding; use mirrored WSL networking or a Linux Chromium browser.`);
+          }
         }
       }
 
       await unlink(path.join(profile.linux_profile_path, "DevToolsActivePort")).catch(() => undefined);
+      const browserInstance = profile.cross_os ? crypto.randomUUID() : null;
       const child = spawn(executable, [
         `--user-data-dir=${profile.browser_profile_path}`,
         "--remote-debugging-port=0",
+        ...(browserInstance ? [`--wco-browser-instance=${browserInstance}`] : []),
         "--no-first-run",
         "--no-default-browser-check",
         CHATGPT_ORIGIN,
       ], { stdio: "ignore", shell: false });
-      this.lifecycle.own(child);
+      this.lifecycle.own(child, browserInstance ? () => terminateOwnedWindowsBrowser(browserInstance) : undefined);
 
       const deadline = Date.now() + 20_000;
       let socketUrl: string | null = null;
