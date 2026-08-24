@@ -185,23 +185,28 @@ try {
   assert(/Checking this Git repository and initial WCO setup/.test(first.transcript), "Fresh packed `wco` did not auto-run local setup.");
   assert(/Execution host\s+Linux\/WSL verification supported/.test(first.transcript), "Fresh packed `wco` did not report Linux/WSL support.");
   assert(/Setup is complete/.test(first.transcript), "Fresh packed `wco` did not complete setup before opening the prompt.");
-  assert(/local ChatGPT\/Codex/i.test(first.transcript), "Fresh packed `wco` did not select zero-config local ChatGPT/Codex.");
+  assert(/ChatGPT Web is now the saved PAIR provider/.test(first.transcript), "Fresh packed `wco` did not select ChatGPT Web as the saved PAIR provider.");
   assert(/\/new/.test(first.transcript), "Fresh packed `wco` did not expose the normal slash palette.");
-  assert(/No API key, relay, tunnel, domain, or cloud setup is required/i.test(first.transcript), "Fresh packed `wco` did not reassure the user that hosted/API infrastructure is unnecessary.");
+  assert(/No WCO_CHATGPT_BROWSER environment flag and no Codex model quota are required for PAIR/i.test(first.transcript), "Fresh packed `wco` did not explain the zero-Codex PAIR path.");
   assert(!/(?:API key|relay endpoint|tunnel ID|public host|domain setup)\s*(?:is\s+)?(?:required|needed|:|=)|(?:enter|provide|configure)\s+(?:an?\s+)?(?:API key|relay endpoint|tunnel ID|public host|domain)/i.test(first.transcript), "Fresh normal path requested advanced infrastructure instead of remaining zero-config.");
 
   const configPath = path.join(wcoHome, "config.json");
+  const preferencesPath = path.join(wcoHome, "preferences.json");
   const firstConfig = readFileSync(configPath, "utf8");
+  const firstPreferences = readFileSync(preferencesPath, "utf8");
   const config = JSON.parse(firstConfig);
+  const preferences = JSON.parse(firstPreferences);
   assert(config.web_bridge === undefined, "Fresh bare `wco` persisted an advanced Web transport.");
   assert(config.runtime?.source === "bundled", "Fresh bare `wco` did not pin the bundled Codex runtime.");
+  assert(preferences.schema_version === "1.0" && preferences.provider === "chatgpt-web", "Fresh bare `wco` did not persist the ChatGPT Web provider preference.");
 
-  // Returning user: same command, no repeated setup and byte-identical trusted config.
+  // Returning user: same command, no repeated setup and byte-identical trusted config/provider preference.
   const second = runPty(bin, project, env, "palette-quit");
   assert(second.exitCode === 0, `returning bare wco exited ${second.exitCode}.\n${second.transcript}`);
   assert(!/Welcome to WCO/.test(second.transcript), "Returning packed `wco` repeated first-run welcome.");
   assert(!/Checking this Git repository and initial WCO setup/.test(second.transcript), "Returning packed `wco` repeated setup.");
   assert(readFileSync(configPath, "utf8") === firstConfig, "Returning packed `wco` rewrote trusted config without a user change.");
+  assert(readFileSync(preferencesPath, "utf8") === firstPreferences, "Returning packed `wco` rewrote the saved provider preference without a user change.");
 
   // Real packed terminal controls: cancel draft input without exiting, then safe-exit from an empty prompt.
   const controls = runPty(bin, project, env, "interrupt-exit");
@@ -209,15 +214,15 @@ try {
   assert(/Input cancelled\./.test(controls.transcript), "Packed Ctrl+C did not cancel only the current input buffer.");
   assert(/Goodbye\./.test(controls.transcript), "Packed Ctrl+D did not complete the safe-exit handshake.");
 
-  // Break the auth/readiness boundary as a user would: type a real goal while CI has no ChatGPT authorization.
+  // Break the direct ChatGPT Web readiness boundary as a user would: type a real goal while CI has no signed-in browser profile.
   const beforeGoalState = allTextBelow(wcoHome);
   const blockedGoal = runPty(bin, project, env, "goal-auth-quit");
-  assert(blockedGoal.exitCode === 0, `auth-blocked user flow did not recover to the prompt.\n${blockedGoal.transcript}`);
-  assert(/ChatGPT authorization is not ready/.test(blockedGoal.transcript), "Missing ChatGPT auth did not produce direct recovery guidance.");
-  assert(/No task state was created/.test(blockedGoal.transcript), "Missing ChatGPT auth did not state the no-side-effect guarantee.");
+  assert(blockedGoal.exitCode === 0, `browser-readiness-blocked user flow did not recover to the prompt.\n${blockedGoal.transcript}`);
+  assert(/direct ChatGPT Web browser/i.test(blockedGoal.transcript), "Missing ChatGPT Web browser readiness did not produce direct recovery guidance.");
+  assert(/No task state was created/.test(blockedGoal.transcript), "Missing ChatGPT Web browser readiness did not state the no-side-effect guarantee.");
   const afterGoalState = allTextBelow(wcoHome);
-  assert(!afterGoalState.includes("Change the README heading and add a regression test"), "Auth-blocked real goal leaked into durable task state.");
-  assert(afterGoalState.length >= beforeGoalState.length, "Unexpected WCO state truncation after auth-blocked goal.");
+  assert(!afterGoalState.includes("Change the README heading and add a regression test"), "Browser-readiness-blocked real goal leaked into durable task state.");
+  assert(afterGoalState.length >= beforeGoalState.length, "Unexpected WCO state truncation after browser-readiness-blocked goal.");
 
   // Break first-run prerequisites through the packed binary, not imported test helpers.
   const outside = path.join(temp, "outside-git");
