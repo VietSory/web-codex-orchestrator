@@ -1,11 +1,16 @@
 import path from "node:path";
 import { ChatGptBrowserAgentClient } from "../agent/chatgpt-browser-client.js";
+import { CodexBrowserFallbackAgentClient } from "../agent/codex-browser-fallback-client.js";
+import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
 import type { AgentClient } from "../agent/contracts.js";
 import type { TrustedConfig } from "../config/contracts.js";
+import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
 import { ChatGptCodexWebBridge } from "./chatgpt-codex-bridge.js";
 import type { AuthoringEvent, BridgeConnectionStatus, BridgeJobIdentity, FinalReviewRequest, RepositoryCommandResult, WebContractEnvelope, WebImplementationSubmission, WebVerdictEnvelope } from "./contracts.js";
 import type { PreparedRunAwareWebBridge } from "./prepared-run-aware.js";
 import type { AuthoringJobRequest } from "./web-bridge.js";
+
+export type ChatGptBrowserMode = "browser_only" | "codex_quota_fallback";
 
 /**
  * Core, opt-in ChatGPT Web transport for the user's own interactive browser
@@ -19,10 +24,17 @@ import type { AuthoringJobRequest } from "./web-bridge.js";
  */
 export class ChatGptBrowserWebBridge implements PreparedRunAwareWebBridge {
   private readonly delegate: ChatGptCodexWebBridge;
-  private readonly agent: ChatGptBrowserAgentClient;
+  private readonly browserAgent: ChatGptBrowserAgentClient;
+  private providerAgentPromise: Promise<AgentClient> | null = null;
 
-  constructor(config: TrustedConfig, bridgeDirectory: string, stateDirectory: string, env: NodeJS.ProcessEnv = process.env) {
-    this.agent = new ChatGptBrowserAgentClient({ stateDirectory, env });
+  constructor(
+    private readonly config: TrustedConfig,
+    bridgeDirectory: string,
+    private readonly stateDirectory: string,
+    env: NodeJS.ProcessEnv = process.env,
+    private readonly mode: ChatGptBrowserMode = "browser_only",
+  ) {
+    this.browserAgent = new ChatGptBrowserAgentClient({ stateDirectory, env });
     this.delegate = new ChatGptCodexWebBridge(config, path.join(bridgeDirectory, "chatgpt-browser-provider"), stateDirectory);
 
     // ChatGptCodexWebBridge predates provider injection and currently keeps the
@@ -40,17 +52,34 @@ export class ChatGptBrowserWebBridge implements PreparedRunAwareWebBridge {
       configurable: false,
       enumerable: false,
       writable: false,
-      value: async (): Promise<AgentClient> => this.agent,
+      value: async (): Promise<AgentClient> => await this.providerAgent(),
     });
     Object.defineProperty(this.delegate, "ensureAuthorizedForProviderTurn", {
       configurable: false,
       enumerable: false,
       writable: false,
       // BrowserAgentClient.turn performs its own login/protective-measure
-      // preflight on the exact target tab. Avoid opening a second throwaway tab
-      // before every provider turn.
+      // preflight on the exact target tab. In quota-fallback mode the normal
+      // interactive app already performs Codex authorization before task state
+      // is created, so a second provider preflight here would add a duplicate
+      // process/browser probe to every turn.
       value: async (): Promise<void> => undefined,
     });
+  }
+
+  private async providerAgent(): Promise<AgentClient> {
+    if (this.providerAgentPromise) return await this.providerAgentPromise;
+    this.providerAgentPromise = (async () => {
+      if (this.mode === "browser_only") return this.browserAgent;
+      const runtime = await resolveCodexRuntime(this.config.runtime, this.stateDirectory);
+      return new CodexBrowserFallbackAgentClient(new CodexSdkAgentClient(runtime), this.browserAgent);
+    })();
+    try {
+      return await this.providerAgentPromise;
+    } catch (error) {
+      this.providerAgentPromise = null;
+      throw error;
+    }
   }
 
   async createAuthoringJob(request: AuthoringJobRequest, idempotencyKey: string): Promise<BridgeJobIdentity> {
@@ -99,8 +128,12 @@ export class ChatGptBrowserWebBridge implements PreparedRunAwareWebBridge {
 
   async getConnectionStatus(): Promise<BridgeConnectionStatus> {
     try {
-      await this.agent.checkAvailability();
-      return { configured: true, connected: true, account: "ChatGPT Web browser" };
+      await (await this.providerAgent()).checkAvailability();
+      return {
+        configured: true,
+        connected: true,
+        account: this.mode === "codex_quota_fallback" ? "Codex with ChatGPT Web quota fallback" : "ChatGPT Web browser",
+      };
     } catch {
       return { configured: true, connected: false };
     }
