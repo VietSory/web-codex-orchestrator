@@ -23,7 +23,10 @@ test("browser JSON parser accepts plain and fenced structured output", () => {
   assert.deepEqual(parseChatGptBrowserJson('{"kind":"ok"}'), { kind: "ok" });
   assert.deepEqual(parseChatGptBrowserJson('```json\n{"kind":"ok"}\n```'), { kind: "ok" });
   assert.deepEqual(parseChatGptBrowserJson('prefix\n{"kind":"ok"}\nsuffix'), { kind: "ok" });
-  assert.throws(() => parseChatGptBrowserJson("not json"), /WEB_CHATGPT_BROWSER_OUTPUT_INVALID/);
+  assert.throws(
+    () => parseChatGptBrowserJson("not json"),
+    (error: unknown) => !!error && typeof error === "object" && "code" in error && error.code === "WEB_CHATGPT_BROWSER_OUTPUT_INVALID",
+  );
 });
 
 test("browser implementation context follows Task Bundle path policy and excludes obvious secrets", async () => {
