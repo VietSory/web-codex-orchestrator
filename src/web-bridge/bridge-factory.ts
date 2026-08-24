@@ -11,30 +11,21 @@ import { ManagedAutoWebBridge } from "./managed-auto-web-bridge.js";
 import { resolveManagedWebService } from "./managed-service.js";
 import type { WebBridge } from "./web-bridge.js";
 
-function enabled(env: NodeJS.ProcessEnv, key: string): boolean {
-  const value = env[key]?.trim().toLowerCase();
+function browserPairEnabled(env: NodeJS.ProcessEnv): boolean {
+  const value = env.WCO_CHATGPT_BROWSER?.trim().toLowerCase();
   return value === "1" || value === "true" || value === "yes" || value === "on";
 }
 
 export function createConfiguredWebBridge(config: TrustedConfig, bridgeDirectory: string, env: NodeJS.ProcessEnv = process.env, stateDirectory = path.join(path.dirname(path.resolve(bridgeDirectory)), "state")): WebBridge {
   const credentialsDirectory = path.join(path.dirname(path.resolve(bridgeDirectory)), "credentials");
-  // Zero-config normal user path. Explicit web_bridge profiles are advanced
-  // compatibility overrides; absence never falls back to a manual mailbox.
   const mode = config.web_bridge?.mode ?? "chatgpt_codex";
 
   if (mode === "chatgpt_codex") {
-    // Browser-only mode is useful for qualification and for users who already
-    // know Codex is unavailable. Quota-fallback mode keeps Codex as the fast
-    // path and switches only after a first-turn allowance exhaustion signal.
-    // Browser-only takes precedence when both flags are present.
-    if (enabled(env, "WCO_CHATGPT_BROWSER")) return new ChatGptBrowserWebBridge(config, bridgeDirectory, stateDirectory, env, "browser_only");
-    if (enabled(env, "WCO_CHATGPT_BROWSER_FALLBACK")) return new ChatGptBrowserWebBridge(config, bridgeDirectory, stateDirectory, env, "codex_quota_fallback");
+    // Direct browser PAIR is deliberately selected before a fresh run. It does
+    // not probe Codex quota or switch providers mid-thread; every provider turn
+    // for that PAIR session is owned by ChatGPT Web.
+    if (browserPairEnabled(env)) return new ChatGptBrowserWebBridge(config, bridgeDirectory, stateDirectory, env);
 
-    // Keep the normal hot path limited to provider work that can affect the
-    // user's task. The blind Web-B challenger is qualified research/evaluation
-    // infrastructure and remains directly constructible by its benchmark/tests,
-    // but it is shadow-only and therefore must not spend extra provider turns,
-    // tokens, filesystem work, or authorization latency on every normal task.
     return new ChatGptCodexWebBridge(config, bridgeDirectory, stateDirectory);
   }
   if (mode === "managed_actions") {
@@ -51,9 +42,6 @@ export function createConfiguredWebBridge(config: TrustedConfig, bridgeDirectory
     });
   }
   if (mode === "web_native_mcp" || mode === "manual_file") {
-    // Legacy native-MCP and offline manual-file compatibility paths use the
-    // owner-local durable mailbox. Neither is an implicit fallback for the
-    // local ChatGPT/Codex transport or any other configured mode.
     return new ManualFileWebBridge(new RelayFileStore(bridgeDirectory));
   }
 
