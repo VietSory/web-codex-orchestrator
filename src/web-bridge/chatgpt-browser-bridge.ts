@@ -46,7 +46,10 @@ export class ChatGptBrowserWebBridge implements PreparedRunAwareWebBridge {
       configurable: false,
       enumerable: false,
       writable: false,
-      value: async (): Promise<void> => await this.agent.checkAvailability(),
+      // BrowserAgentClient.turn performs its own login/protective-measure
+      // preflight on the exact target tab. Avoid opening a second throwaway tab
+      // before every provider turn.
+      value: async (): Promise<void> => undefined,
     });
   }
 
