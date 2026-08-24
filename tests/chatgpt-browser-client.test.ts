@@ -36,17 +36,20 @@ test("browser implementation context follows Task Bundle path policy and exclude
     await mkdir(bundle, { recursive: true });
     await writeFile(path.join(workspace, "src", "worker.ts"), "export const worker = true;\n");
     await writeFile(path.join(workspace, "src", ".env.local"), "SECRET=never-export\n");
-    await writeFile(path.join(workspace, "infra", "prod.tf"), "forbidden\n");
-    await writeFile(path.join(workspace, "README.md"), "outside allowed paths\n");
+    await writeFile(path.join(workspace, "infra", "prod.tf"), "forbidden-file-content\n");
+    await writeFile(path.join(workspace, "README.md"), "outside-allowed-content\n");
     await writeFile(path.join(bundle, "manifest.json"), JSON.stringify({ allowed_paths: ["src/**"], forbidden_paths: ["src/private/**", "infra/**"] }));
     await writeFile(path.join(bundle, "REQUEST.md"), "Change worker behavior.\n");
 
     const context = await buildChatGptBrowserContextPack({ workspacePath: workspace, acceptedBundlePath: bundle });
     assert.match(context, /Change worker behavior/);
+    assert.match(context, /BEGIN WCO REPOSITORY FILE "src\/worker\.ts"/);
     assert.match(context, /export const worker = true/);
     assert.doesNotMatch(context, /never-export/);
-    assert.doesNotMatch(context, /forbidden/);
-    assert.doesNotMatch(context, /outside allowed paths/);
+    assert.doesNotMatch(context, /BEGIN WCO REPOSITORY FILE "infra\/prod\.tf"/);
+    assert.doesNotMatch(context, /forbidden-file-content/);
+    assert.doesNotMatch(context, /BEGIN WCO REPOSITORY FILE "README\.md"/);
+    assert.doesNotMatch(context, /outside-allowed-content/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
