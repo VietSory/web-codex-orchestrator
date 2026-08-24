@@ -36,6 +36,7 @@ function response(thread_id: string): AgentTurnResponse {
 
 test("allowance classifier accepts Codex usage exhaustion but rejects unrelated failures", () => {
   assert.equal(isCodexAllowanceExhausted(Object.assign(new Error("You've hit your usage limit. Try again in 3 hours."), { code: "CODEX_TURN_FAILED" })), true);
+  assert.equal(isCodexAllowanceExhausted(Object.assign(new Error("codex_error_info: usage_limit_exceeded"), { code: "CODEX_TURN_FAILED" })), true);
   assert.equal(isCodexAllowanceExhausted(Object.assign(new Error("quota exceeded; resets at 20:00 UTC"), { code: "CODEX_TURN_FAILED" })), true);
   assert.equal(isCodexAllowanceExhausted(Object.assign(new Error("Codex authentication is unavailable"), { code: "CODEX_AUTH_UNAVAILABLE" })), false);
   assert.equal(isCodexAllowanceExhausted(Object.assign(new Error("provider timed out"), { code: "CODEX_TURN_TIMEOUT" })), false);
