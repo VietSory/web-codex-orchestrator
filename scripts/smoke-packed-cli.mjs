@@ -168,9 +168,11 @@ try {
   assert(readFileSync(configPath, "utf8") === firstConfigBytes, "Packed repeated setup changed trusted config for an already registered repository.");
   assert(readFileSync(preferencesPath, "utf8") === firstPreferencesBytes, "Packed repeated setup changed the saved provider preference for an already registered repository.");
   const webStatus = run(bin, ["web", "status"], { cwd: project, capture: true, env: isolatedEnv, expectedStatuses: [1] });
-  assert(/Mode\s+local ChatGPT\/Codex/i.test(webStatus.stdout), "Packed web status did not report the local ChatGPT/Codex transport.");
-  assert(/ChatGPT authorization\s+required/i.test(webStatus.stdout), "Packed web status did not fail closed on missing ChatGPT authorization.");
-  assert(/Per-task browser\s+not required/i.test(webStatus.stdout), "Packed zero-config status regressed to a per-task browser workflow.");
+  assert(/Mode\s+ChatGPT Web browser PAIR/i.test(webStatus.stdout), "Packed web status did not report the saved ChatGPT Web browser provider.");
+  assert(/ChatGPT Web session\s+not ready/i.test(webStatus.stdout), "Packed web status did not fail closed on missing local browser readiness.");
+  assert(/Codex provider quota\s+not required for PAIR/i.test(webStatus.stdout), "Packed web status implied Codex provider quota is required for browser PAIR.");
+  assert(/Browser readiness\s+CI probe disabled; run locally/i.test(webStatus.stdout), "Packed CI status did not disable the real browser readiness probe.");
+  assert(!/Mode\s+local ChatGPT\/Codex/i.test(webStatus.stdout), "Packed web status regressed to the legacy provider UX.");
   assert(!/managed|MCP|relay URL|tunnel/i.test(webStatus.stdout), "Packed zero-config status leaked an advanced transport requirement.");
 
   const interactiveTiming = packedInteractivePtySmoke(bin, project, isolatedEnv);
