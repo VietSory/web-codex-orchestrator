@@ -41,6 +41,7 @@ const browserPairHarnessDependencies: Pick<OrchestrationDependencies, "createExe
     return { verifier, reviewer };
   },
   async executePack(options) {
+    if (!options.reviewer) throw new OrchestrationError("ORCHESTRATION_PAIR_BROWSER_REVIEWER_REQUIRED", "Browser PAIR cannot publish without its independent ChatGPT Web reviewer.");
     return await executeRegisteredWebPack({
       runId: options.runId,
       artifactSha256: options.artifactSha256,
