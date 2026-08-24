@@ -1,48 +1,43 @@
-# ChatGPT Web browser PAIR fallback
+# ChatGPT Web browser PAIR
 
-This core transport is an explicit personal fallback for a WCO run when the normal bundled Codex provider is out of allowance.
+This core transport is a direct, personal ChatGPT Web path for PAIR. It exists so a PAIR run can use the user's normal ChatGPT Web session instead of spending Codex provider quota.
 
-It drives the user's own local Chromium browser session through the Chrome DevTools Protocol. It does **not** read ChatGPT cookies/tokens, call private ChatGPT HTTP endpoints, bypass CAPTCHA/protective measures, or transplant hidden provider context between unrelated conversations.
+It drives the user's own local Chromium browser session through the Chrome DevTools Protocol. It does **not** read ChatGPT cookies/tokens, call private ChatGPT HTTP endpoints, bypass CAPTCHA/protective measures, or depend on Codex model turns.
 
-## Daily mode: Codex first, browser on quota exhaustion
+## Enable direct browser PAIR
 
-Arm the fallback before starting WCO:
-
-```bash
-WCO_CHATGPT_BROWSER_FALLBACK=1 wco
-```
-
-Then use WCO normally and type a goal. Codex remains the fast path. If the **first provider turn of a logical thread** fails with a recognized Codex usage/quota exhaustion signal, WCO starts that thread in ChatGPT Web instead and keeps browser routing sticky for the rest of the WCO process.
-
-This means the intended personal workflow is:
-
-```text
-goal
-  -> Codex available: normal Codex path
-  -> Codex allowance exhausted on first turn: ChatGPT Web browser path
-       -> authoring
-       -> implementation proposal
-       -> local Harness mutation/verification
-       -> independent review
-       -> repair/review loop when needed
-       -> Draft PR
-```
-
-Fallback is deliberately **quota-only**. Authentication failures, sandbox failures, schema failures, timeouts, interruptions, and unknown Codex failures do not select the browser.
-
-If Codex allowance is exhausted only after an opaque Codex thread has already completed one or more turns, WCO fails closed with `WEB_CHATGPT_BROWSER_MID_THREAD_FALLBACK_UNSAFE`. The browser cannot safely reconstruct hidden conversation state that was never included in the durable WCO payload. Start the same goal as a fresh browser-fallback run instead.
-
-## Browser-only qualification mode
-
-To bypass Codex entirely for a fresh qualification/dogfood run:
+Start a fresh PAIR run with:
 
 ```bash
 WCO_CHATGPT_BROWSER=1 wco
 ```
 
-`WCO_CHATGPT_BROWSER=1` takes precedence if both browser flags are present.
+Then type a goal normally.
 
-The normal path remains unchanged when neither flag is present.
+There is no Codex-quota probe and no Codex-to-browser fallback router in this mode. The browser transport owns the provider turns from the beginning of the PAIR session.
+
+The normal Codex-backed path remains unchanged when `WCO_CHATGPT_BROWSER` is absent.
+
+## Intended flow
+
+```text
+goal
+  -> ChatGPT Web author / repository reasoning
+  -> ChatGPT Web implementation proposal
+  -> WCO Harness applies bounded operations
+  -> deterministic tests / verification
+  -> fresh independent ChatGPT Web reviewer
+       -> APPROVE
+       -> or one bounded REVISE repair + re-verification
+       -> or ESCALATE and stop safely
+  -> push reviewed exact head
+  -> open Draft PR
+  -> human decides merge/release
+```
+
+The independent reviewer is deliberately **before publication**. Browser PAIR therefore has one quality-review gate after implementation and verification, then creates the Draft PR only after that gate is satisfied. It does not require a second post-PR model review.
+
+The main implementation conversation and the reviewer conversation are separate ChatGPT Web threads. The reviewer is not given the author's hidden conversation state; it receives the exact bounded Task Bundle and repository context needed to challenge the resulting change independently.
 
 ## First browser login
 
@@ -61,24 +56,30 @@ Optional bounds:
 - `WCO_CHATGPT_BROWSER_PROFILE` — absolute dedicated browser profile directory.
 - `WCO_CHATGPT_BROWSER_LOGIN_SECONDS` — login/composer readiness deadline, default `120`, maximum `900`.
 - `WCO_CHATGPT_BROWSER_RESPONSE_SECONDS` — one Web response deadline, default `900`, maximum `3600`.
-- `WCO_CHATGPT_BROWSER_CONTEXT_BYTES` — implementation context-pack ceiling, default `6291456`, maximum `12582912`.
+- `WCO_CHATGPT_BROWSER_CONTEXT_BYTES` — context-pack ceiling, default `6291456`, maximum `12582912`.
 
-## Runtime flow
+## Context and authority
 
-The browser transport reuses the existing WCO authoring, exact repository-read, implementation, verification, final-review, and Draft-PR state machine. Only the provider turn boundary changes.
+A new browser provider thread creates a new ChatGPT conversation. WCO stores the resulting `https://chatgpt.com/c/...` URL as the provider `thread_id`; a continuation turn reopens exactly that URL.
 
-A new browser provider thread creates a new ChatGPT conversation. WCO stores the resulting `https://chatgpt.com/c/...` URL as the provider `thread_id`; a continuation turn reopens exactly that URL. Independent review therefore remains a distinct provider thread.
-
-Semantic author/reviewer turns continue to use WCO's bounded repository-command protocol. The implementation planner cannot see the local filesystem, so WCO creates one temporary context attachment containing:
+Semantic authoring continues to use WCO's bounded repository-command protocol. Implementation and the independent pre-publish reviewer receive a temporary bounded context attachment containing:
 
 1. accepted Task Bundle text files;
 2. repository text files admitted by `manifest.json.allowed_paths`;
 3. no file matched by `forbidden_paths`;
 4. no obvious credential material such as `.env*`, `.npmrc`, private keys, or certificate/key containers.
 
-The context export is bounded by file count, per-file size, and total bytes. It fails closed rather than silently truncating an implementation context.
+The context export is bounded by file count, per-file size, and total bytes. It fails closed rather than silently truncating required implementation/review context.
 
-After ChatGPT returns structured output, WCO parses and revalidates it through the same existing bridge schemas before any Harness mutation authority is granted.
+After ChatGPT returns structured output, WCO parses and revalidates it through the existing schemas. The reviewer never mutates the worktree directly. A REVISE verdict may contain exactly one bounded repair proposal; the Harness validates, applies, and re-runs deterministic verification before publication.
+
+The Draft PR is therefore downstream of all three local gates:
+
+```text
+Harness apply -> deterministic verification -> independent ChatGPT Web review -> Draft PR
+```
+
+Merge and release remain human-only.
 
 ## Protective behavior
 
@@ -88,7 +89,9 @@ The adapter also refuses continuation URLs outside `https://chatgpt.com/`.
 
 ## Usage accounting
 
-ChatGPT Web does not expose per-turn token telemetry to this adapter. The legacy provider ledger therefore records `0` input/cached/output tokens for a browser turn while still recording the provider turn and measured wall-clock duration. **Those zero token fields mean “unavailable to WCO”, not “ChatGPT used zero tokens”.** Browser/Plus product allowance is controlled by ChatGPT itself.
+ChatGPT Web does not expose per-turn token telemetry to this adapter. Browser turns therefore use zero token counters as an **unavailable telemetry sentinel**, not as a claim that the model consumed zero tokens. WCO still bounds the number of reviewer turns; browser PAIR permits exactly one independent pre-publish reviewer turn.
+
+This mode is quota-independent from Codex provider turns, but it is still subject to whatever availability/usage rules ChatGPT Web applies to the user's own account.
 
 ## Stability warning
 
