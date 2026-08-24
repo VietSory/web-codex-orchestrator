@@ -7,6 +7,11 @@ import type { AuthoringEvent, BridgeConnectionStatus, BridgeJobIdentity, FinalRe
 import type { PreparedRunAwareWebBridge } from "./prepared-run-aware.js";
 import type { AuthoringJobRequest } from "./web-bridge.js";
 
+function truthyEnvironmentFlag(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
 /**
  * Core, opt-in ChatGPT Web transport for the user's own interactive browser
  * session. It deliberately reuses WCO's mature semantic/implementation state
@@ -21,7 +26,7 @@ export class ChatGptBrowserWebBridge implements PreparedRunAwareWebBridge {
   private readonly delegate: ChatGptCodexWebBridge;
   private readonly agent: ChatGptBrowserAgentClient;
 
-  constructor(config: TrustedConfig, bridgeDirectory: string, stateDirectory: string, env: NodeJS.ProcessEnv = process.env) {
+  constructor(config: TrustedConfig, bridgeDirectory: string, stateDirectory: string, private readonly env: NodeJS.ProcessEnv = process.env) {
     this.agent = new ChatGptBrowserAgentClient({ stateDirectory, env });
     this.delegate = new ChatGptCodexWebBridge(config, path.join(bridgeDirectory, "chatgpt-browser-provider"), stateDirectory);
 
@@ -88,6 +93,12 @@ export class ChatGptBrowserWebBridge implements PreparedRunAwareWebBridge {
   }
 
   async getConnectionStatus(): Promise<BridgeConnectionStatus> {
+    // Generic CI qualification must never launch the user's browser or contact
+    // chatgpt.com. Real browser dogfood is intentionally a local, interactive
+    // qualification step using the user's dedicated signed-in profile.
+    if (truthyEnvironmentFlag(this.env.CI)) {
+      return { configured: true, connected: false, account: "CI browser probe disabled" };
+    }
     try {
       await this.agent.checkAvailability();
       return { configured: true, connected: true, account: "ChatGPT Web browser" };
