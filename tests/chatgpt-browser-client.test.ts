@@ -58,20 +58,18 @@ test("browser implementation context follows Task Bundle path policy and exclude
   }
 });
 
-test("browser provider flags are explicit and default Codex path stays unchanged", async () => {
+test("browser provider is direct opt-in and no quota-fallback flag changes routing", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-browser-factory-"));
   try {
     const config = minimalConfig(root);
     const bridgeDirectory = path.join(root, "bridge");
     const stateDirectory = path.join(root, "state");
     const normal = createConfiguredWebBridge(config, bridgeDirectory, {}, stateDirectory);
-    const browserOnly = createConfiguredWebBridge(config, bridgeDirectory, { WCO_CHATGPT_BROWSER: "1" }, stateDirectory);
-    const quotaFallback = createConfiguredWebBridge(config, bridgeDirectory, { WCO_CHATGPT_BROWSER_FALLBACK: "1" }, stateDirectory);
-    const both = createConfiguredWebBridge(config, bridgeDirectory, { WCO_CHATGPT_BROWSER: "1", WCO_CHATGPT_BROWSER_FALLBACK: "1" }, stateDirectory);
+    const browser = createConfiguredWebBridge(config, bridgeDirectory, { WCO_CHATGPT_BROWSER: "1" }, stateDirectory);
+    const obsoleteFallbackFlag = createConfiguredWebBridge(config, bridgeDirectory, { WCO_CHATGPT_BROWSER_FALLBACK: "1" }, stateDirectory);
     assert.ok(normal instanceof ChatGptCodexWebBridge);
-    assert.ok(browserOnly instanceof ChatGptBrowserWebBridge);
-    assert.ok(quotaFallback instanceof ChatGptBrowserWebBridge);
-    assert.ok(both instanceof ChatGptBrowserWebBridge);
+    assert.ok(browser instanceof ChatGptBrowserWebBridge);
+    assert.ok(obsoleteFallbackFlag instanceof ChatGptCodexWebBridge);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
