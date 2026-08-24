@@ -1,18 +1,50 @@
 # ChatGPT Web browser PAIR fallback
 
-This core transport is an explicit personal fallback for a WCO run when the normal bundled Codex provider is unavailable or out of allowance.
+This core transport is an explicit personal fallback for a WCO run when the normal bundled Codex provider is out of allowance.
 
-It drives the user's own local Chromium browser session through the Chrome DevTools Protocol. It does **not** read ChatGPT cookies/tokens, call private ChatGPT HTTP endpoints, bypass CAPTCHA/protective measures, or silently switch a partially completed run between providers.
+It drives the user's own local Chromium browser session through the Chrome DevTools Protocol. It does **not** read ChatGPT cookies/tokens, call private ChatGPT HTTP endpoints, bypass CAPTCHA/protective measures, or transplant hidden provider context between unrelated conversations.
 
-## Enable it
+## Daily mode: Codex first, browser on quota exhaustion
 
-Start a fresh WCO run with:
+Arm the fallback before starting WCO:
+
+```bash
+WCO_CHATGPT_BROWSER_FALLBACK=1 wco
+```
+
+Then use WCO normally and type a goal. Codex remains the fast path. If the **first provider turn of a logical thread** fails with a recognized Codex usage/quota exhaustion signal, WCO starts that thread in ChatGPT Web instead and keeps browser routing sticky for the rest of the WCO process.
+
+This means the intended personal workflow is:
+
+```text
+goal
+  -> Codex available: normal Codex path
+  -> Codex allowance exhausted on first turn: ChatGPT Web browser path
+       -> authoring
+       -> implementation proposal
+       -> local Harness mutation/verification
+       -> independent review
+       -> repair/review loop when needed
+       -> Draft PR
+```
+
+Fallback is deliberately **quota-only**. Authentication failures, sandbox failures, schema failures, timeouts, interruptions, and unknown Codex failures do not select the browser.
+
+If Codex allowance is exhausted only after an opaque Codex thread has already completed one or more turns, WCO fails closed with `WEB_CHATGPT_BROWSER_MID_THREAD_FALLBACK_UNSAFE`. The browser cannot safely reconstruct hidden conversation state that was never included in the durable WCO payload. Start the same goal as a fresh browser-fallback run instead.
+
+## Browser-only qualification mode
+
+To bypass Codex entirely for a fresh qualification/dogfood run:
 
 ```bash
 WCO_CHATGPT_BROWSER=1 wco
 ```
 
-The normal path remains unchanged when that variable is absent.
+`WCO_CHATGPT_BROWSER=1` takes precedence if both browser flags are present.
+
+The normal path remains unchanged when neither flag is present.
+
+## First browser login
 
 On the first browser run WCO opens a dedicated Chrome/Edge profile at `chatgpt.com`. Sign in once in that profile. Subsequent runs reuse the profile and can create/resume conversations automatically.
 
@@ -35,7 +67,7 @@ Optional bounds:
 
 The browser transport reuses the existing WCO authoring, exact repository-read, implementation, verification, final-review, and Draft-PR state machine. Only the provider turn boundary changes.
 
-A new provider thread creates a new ChatGPT conversation. WCO stores the resulting `https://chatgpt.com/c/...` URL as the provider `thread_id`; a continuation turn reopens exactly that URL. Independent review therefore remains a distinct provider thread.
+A new browser provider thread creates a new ChatGPT conversation. WCO stores the resulting `https://chatgpt.com/c/...` URL as the provider `thread_id`; a continuation turn reopens exactly that URL. Independent review therefore remains a distinct provider thread.
 
 Semantic author/reviewer turns continue to use WCO's bounded repository-command protocol. The implementation planner cannot see the local filesystem, so WCO creates one temporary context attachment containing:
 
