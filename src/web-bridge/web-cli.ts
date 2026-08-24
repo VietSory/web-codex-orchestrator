@@ -5,6 +5,7 @@ import type { TrustedConfig } from "../config/contracts.js";
 import { ensureChatGptLogin } from "../runtime/chatgpt-login.js";
 import { resolveWcoPaths } from "../setup/default-paths.js";
 import { writeTrustedConfigAtomic } from "../setup/config-writer.js";
+import { browserProviderSelected } from "../setup/provider-preferences.js";
 import { createConfiguredWebBridge } from "./bridge-factory.js";
 import { CHATGPT_CODEX_AUTH_REQUIRED_ACCOUNT } from "./chatgpt-codex-bridge.js";
 import { configureManagedWebBridgeConnection, configureWebBridgeConnection, disconnectManagedWebBridgeConnection, disconnectWebBridgeConnection } from "./connection-setup.js";
@@ -300,8 +301,14 @@ export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = d
     }
 
     if (!config.web_bridge) {
+      const browserPair = browserProviderSelected(paths.state, process.env);
       const bridge = createConfiguredWebBridge(config, paths.bridge, process.env, paths.state);
       const status = await bridge.getConnectionStatus();
+      if (browserPair) {
+        const browserReadiness = status.connected ? "ready" : status.account === "CI browser probe disabled" ? "CI probe disabled; run locally" : "sign-in required";
+        io.write(`Mode                  ChatGPT Web browser PAIR\nWCO authority/state   local only\nChatGPT Web session   ${status.connected ? "ready" : "not ready"}\nCodex provider quota  not required for PAIR\nBrowser readiness     ${browserReadiness}\nPending author task   ${status.pending_author_job ? "yes" : "none"}\nPending final review  ${status.pending_final_review ? "yes" : "none"}\n`);
+        return status.connected ? 0 : 1;
+      }
       const authorizationReady = status.connected && status.account !== CHATGPT_CODEX_AUTH_REQUIRED_ACCOUNT;
       io.write(`Mode                  local ChatGPT/Codex\nWCO authority/state   local only\nChatGPT authorization ${authorizationReady ? "ready" : "required"}\nPer-task browser      not required\nPending author task   ${status.pending_author_job ? "yes" : "none"}\nPending final review  ${status.pending_final_review ? "yes" : "none"}\n`);
       return authorizationReady ? 0 : 1;
