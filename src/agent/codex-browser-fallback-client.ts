@@ -3,6 +3,7 @@ import type { AgentClient, AgentTurnRequest, AgentTurnResponse } from "./contrac
 const CHATGPT_THREAD_PREFIX = "https://chatgpt.com/c/";
 const QUOTA_PATTERNS = [
   /\busage limit\b/i,
+  /\busage[_ -]?limit[_ -]?exceeded\b/i,
   /\bquota\b/i,
   /\bcredits?\b.*\b(?:exhausted|depleted|insufficient|limit|remaining)\b/i,
   /\b(?:exhausted|depleted|insufficient)\b.*\bcredits?\b/i,
