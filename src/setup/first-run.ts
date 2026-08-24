@@ -69,7 +69,6 @@ export async function performFirstRunSetup(options: { cwd: string; configPath?: 
     if (!options.provider) throw error;
   }
   const provider = options.provider ?? previousPreferences?.provider ?? "chatgpt-web";
-  if (!previousPreferences || previousPreferences.provider !== provider) await writeProviderPreferences(paths.state, provider);
 
   let current: TrustedConfig | null = null;
   try {
@@ -102,6 +101,10 @@ export async function performFirstRunSetup(options: { cwd: string; configPath?: 
   const written = write
     ? await writeTrustedConfigAtomic(paths.config, config, { overwrite: Boolean(current) || options.overwrite === true })
     : { config, backup_path: null };
+
+  // Provider preference is committed only after trusted repository/config setup
+  // succeeds, so a failed registration cannot leave a half-applied UX switch.
+  if (!previousPreferences || previousPreferences.provider !== provider) await writeProviderPreferences(paths.state, provider);
   await atomicWriteJson(paths.install_manifest, { schema_version: "1.0", product: "web-codex-orchestrator", version: "0.3.3", home: paths.home, owned_paths: [paths.config, paths.credentials, paths.state, paths.cache, paths.logs, paths.bridge, providerPreferencesPath(paths.state), paths.install_manifest] });
 
   // Codex authorization is only needed when Codex is the selected daily
