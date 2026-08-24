@@ -174,10 +174,10 @@ export function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
     const connection = await createConfiguredWebBridge(config, webPaths.bridge, process.env, webPaths.state).getConnectionStatus();
     return { service, connection };
   }));
-  const loadLocalConnection = lazyPromise(() => loadConfig().then(async (config) => {
+  const loadLocalConnection = (signal?: AbortSignal) => loadConfig().then(async (config) => {
     if ((config.web_bridge?.mode ?? "chatgpt_codex") !== "chatgpt_codex") throw new Error("local ChatGPT/Codex mode is not configured");
-    return await createConfiguredWebBridge(config, webPaths.bridge, process.env, webPaths.state).getConnectionStatus();
-  }));
+    return await createConfiguredWebBridge(config, webPaths.bridge, process.env, webPaths.state).getConnectionStatus(signal);
+  });
   const loadPersonalConnection = lazyPromise(() => loadConfig().then(async (config) => {
     if (config.web_bridge?.mode !== "personal_actions" && config.web_bridge?.mode !== "actions_relay") throw new Error("personal Web mode is not configured");
     await readRelayToken(webPaths.credentials);
@@ -242,10 +242,10 @@ export function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
       if (mode !== "managed_actions") return { severity: "OK" as const, summary: `${directBrowserPair ? "chatgpt-web" : mode} profile has no managed device/account requirement` };
       try { const { client } = await loadManagedService(); await client.accessToken(); return { severity: "OK" as const, summary: "PASS - scoped device/account credential valid" }; } catch (error) { return webFailure("WCO device/account", error); }
     } },
-    { id: "chatgpt-web", async run() {
+    { id: "chatgpt-web", async run(signal) {
       if (directBrowserPair) {
         try {
-          const status = await loadLocalConnection();
+          const status = await loadLocalConnection(signal);
           return status.configured && status.connected
             ? { severity: "OK" as const, summary: "direct ChatGPT Web browser profile ready" }
             : { severity: "FAIL" as const, summary: "direct ChatGPT Web browser profile is not ready; finish sign-in in the WCO browser window" };
@@ -256,7 +256,7 @@ export function productionDoctorProbes(args: ControlArgs): DoctorProbe[] {
       const mode = await webMode();
       if (mode === "chatgpt_codex") {
         try {
-          const status = await loadLocalConnection();
+          const status = await loadLocalConnection(signal);
           return status.configured && status.connected
             ? { severity: "OK" as const, summary: "local ChatGPT/Codex semantic transport reachable; authorization is checked separately" }
             : { severity: "FAIL" as const, summary: "local ChatGPT/Codex semantic transport unavailable" };

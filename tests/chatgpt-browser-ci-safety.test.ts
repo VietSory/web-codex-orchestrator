@@ -7,6 +7,7 @@ import { writeTrustedConfigAtomic } from "../src/setup/config-writer.js";
 import { writeProviderPreferences } from "../src/setup/provider-preferences.js";
 import { ChatGptBrowserWebBridge } from "../src/web-bridge/chatgpt-browser-bridge.js";
 import { runWebCommand } from "../src/web-bridge/web-cli.js";
+import { runDoctor } from "../src/orchestration/doctor.js";
 
 function minimalConfig(repoPath: string): any {
   return {
@@ -86,4 +87,31 @@ test("web status reports saved ChatGPT Web provider without legacy Codex UX in C
     if (previousCi === undefined) delete process.env.CI;
     else process.env.CI = previousCi;
   }
+});
+
+test("Doctor deadline reaches the direct browser readiness probe and lets it clean up", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-browser-doctor-abort-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let aborted = false;
+  const browserAgent = {
+    async checkAvailability(options: { signal?: AbortSignal } = {}) {
+      return await new Promise<void>((_, reject) => {
+        options.signal?.addEventListener("abort", () => {
+          aborted = true;
+          reject(options.signal!.reason);
+        }, { once: true });
+      });
+    },
+    async turn() { throw new Error("unused"); },
+  } as any;
+  const bridge = new ChatGptBrowserWebBridge(minimalConfig(root), path.join(root, "bridge"), path.join(root, "state"), {}, browserAgent);
+  const report = await runDoctor([{
+    id: "chatgpt-web",
+    async run(signal) {
+      const status = await bridge.getConnectionStatus(signal);
+      return { severity: status.connected ? "OK" as const : "FAIL" as const, summary: "browser readiness" };
+    },
+  }], { probe_timeout_ms: 10 });
+  assert.equal(report.status, "FAIL");
+  assert.equal(aborted, true, "Doctor must abort the actual browser readiness probe");
 });

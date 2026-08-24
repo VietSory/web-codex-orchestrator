@@ -26,8 +26,8 @@ export class ChatGptBrowserWebBridge implements PreparedRunAwareWebBridge {
   private readonly delegate: ChatGptCodexWebBridge;
   private readonly agent: ChatGptBrowserAgentClient;
 
-  constructor(config: TrustedConfig, bridgeDirectory: string, stateDirectory: string, private readonly env: NodeJS.ProcessEnv = process.env) {
-    this.agent = new ChatGptBrowserAgentClient({ stateDirectory, env });
+  constructor(config: TrustedConfig, bridgeDirectory: string, stateDirectory: string, private readonly env: NodeJS.ProcessEnv = process.env, browserAgent?: ChatGptBrowserAgentClient) {
+    this.agent = browserAgent ?? new ChatGptBrowserAgentClient({ stateDirectory, env });
     this.delegate = new ChatGptCodexWebBridge(config, path.join(bridgeDirectory, "chatgpt-browser-provider"), stateDirectory);
 
     const providerHooks = this.delegate as unknown as Record<string, unknown>;
@@ -92,7 +92,7 @@ export class ChatGptBrowserWebBridge implements PreparedRunAwareWebBridge {
     return await this.delegate.waitForVerdict(reviewId, signal);
   }
 
-  async getConnectionStatus(): Promise<BridgeConnectionStatus> {
+  async getConnectionStatus(signal?: AbortSignal): Promise<BridgeConnectionStatus> {
     // Generic CI qualification must never launch the user's browser or contact
     // chatgpt.com. Real browser dogfood is intentionally a local, interactive
     // qualification step using the user's dedicated signed-in profile.
@@ -100,7 +100,7 @@ export class ChatGptBrowserWebBridge implements PreparedRunAwareWebBridge {
       return { configured: true, connected: false, account: "CI browser probe disabled" };
     }
     try {
-      await this.agent.checkAvailability();
+      await this.agent.checkAvailability(signal ? { signal } : {});
       return { configured: true, connected: true, account: "ChatGPT Web browser" };
     } catch {
       return { configured: true, connected: false };

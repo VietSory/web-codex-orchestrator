@@ -14,5 +14,5 @@ export interface WebBridge {
   createFinalReviewJob(request: FinalReviewRequest, idempotencyKey: string): Promise<BridgeJobIdentity>;
   submitFinalReviewEvidence(reviewId: string, evidence: Record<string, unknown>, idempotencyKey: string): Promise<void>;
   waitForVerdict(reviewId: string, signal?: AbortSignal): Promise<WebVerdictEnvelope | null>;
-  getConnectionStatus(): Promise<BridgeConnectionStatus>;
+  getConnectionStatus(signal?: AbortSignal): Promise<BridgeConnectionStatus>;
 }

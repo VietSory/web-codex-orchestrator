@@ -2,7 +2,9 @@ import { BoundedResourcePool } from "./resource-pool.js";
 
 export type DoctorSeverity = "OK" | "WARN" | "FAIL";
 export interface DoctorCheckResult { id: string; severity: DoctorSeverity; summary: string; duration_ms: number; details?: Record<string, unknown>; }
-export interface DoctorProbe { id: string; run(): Promise<Omit<DoctorCheckResult, "id" | "duration_ms">>; }
+/** A probe must honor the supplied signal so a Doctor deadline cancels the
+ * underlying work rather than merely abandoning its Promise. */
+export interface DoctorProbe { id: string; run(signal?: AbortSignal): Promise<Omit<DoctorCheckResult, "id" | "duration_ms">>; }
 export interface DoctorReport { status: DoctorSeverity; checks: DoctorCheckResult[]; generated_at: string; }
 
 function worst(left: DoctorSeverity, right: DoctorSeverity): DoctorSeverity {
@@ -29,12 +31,18 @@ function normalizeReadiness(id: string, result: Omit<DoctorCheckResult, "id" | "
   return result;
 }
 
-async function withDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+async function withDeadline<T>(run: (signal: AbortSignal) => Promise<T>, timeoutMs: number): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
+  const controller = new AbortController();
   try {
     return await Promise.race([
-      promise,
-      new Promise<T>((_, reject) => { timer = setTimeout(() => reject(new Error(`probe exceeded ${timeoutMs}ms`)), timeoutMs); }),
+      run(controller.signal),
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort(new Error(`probe exceeded ${timeoutMs}ms`));
+          reject(new Error(`probe exceeded ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
     ]);
   } finally { if (timer) clearTimeout(timer); }
 }
@@ -46,7 +54,7 @@ export async function runDoctor(probes: DoctorProbe[], options: { maximum_concur
   const checks = await Promise.all(probes.map((probe) => pool.run(async () => {
     const started = Date.now();
     try {
-      const result = normalizeReadiness(probe.id, await withDeadline(probe.run(), timeout));
+      const result = normalizeReadiness(probe.id, await withDeadline((signal) => probe.run(signal), timeout));
       return { id: probe.id, ...result, duration_ms: Math.max(0, Date.now() - started) } satisfies DoctorCheckResult;
     } catch (error) {
       return { id: probe.id, severity: "FAIL", summary: error instanceof Error ? error.message : String(error), duration_ms: Math.max(0, Date.now() - started) } satisfies DoctorCheckResult;

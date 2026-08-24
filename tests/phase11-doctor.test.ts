@@ -18,3 +18,21 @@ test("P11-DOCTOR-002 stalled probe becomes a bounded FAIL instead of hanging sta
   assert.equal(report.status, "FAIL");
   assert.match(report.checks[0]?.summary ?? "", /exceeded 10ms/);
 });
+
+test("P11-DOCTOR-003 deadline aborts the underlying probe instead of only racing its Promise", async () => {
+  let aborted = false;
+  const report = await runDoctor([{
+    id: "abortable-stall",
+    async run(signal) {
+      return await new Promise((_, reject) => {
+        signal?.addEventListener("abort", () => {
+          aborted = true;
+          reject(signal.reason);
+        }, { once: true });
+      });
+    },
+  }], { probe_timeout_ms: 10 });
+  assert.equal(report.status, "FAIL");
+  assert.equal(aborted, true);
+  assert.match(report.checks[0]?.summary ?? "", /exceeded 10ms/);
+});

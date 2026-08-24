@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { buildChatGptBrowserContextPack, parseChatGptBrowserJson } from "../src/agent/chatgpt-browser-client.js";
+import { BrowserLifecycle, buildChatGptBrowserContextPack, detectWslNetworkingMode, parseChatGptBrowserJson, resolveBrowserProfilePlan } from "../src/agent/chatgpt-browser-client.js";
 import type { TrustedConfig } from "../src/config/contracts.js";
 import { createConfiguredWebBridge } from "../src/web-bridge/bridge-factory.js";
 import { ChatGptBrowserWebBridge } from "../src/web-bridge/chatgpt-browser-bridge.js";
@@ -73,4 +73,75 @@ test("browser provider is direct opt-in and no quota-fallback flag changes routi
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("browser profile planning keeps native browsers on their native state filesystem", () => {
+  const tools = {
+    toWindows: () => { throw new Error("native browser must not invoke wslpath"); },
+    toLinux: () => { throw new Error("native browser must not invoke wslpath"); },
+    windowsLocalAppData: () => { throw new Error("native browser must not discover Windows paths"); },
+  };
+  const linux = resolveBrowserProfilePlan({ stateDirectory: "/tmp/wco", executable: "/usr/bin/chromium", tools, platform: "linux" });
+  assert.deepEqual(linux, { linux_profile_path: "/tmp/wco/chatgpt-browser/profile", browser_profile_path: "/tmp/wco/chatgpt-browser/profile", cross_os: false });
+  const windows = resolveBrowserProfilePlan({ stateDirectory: "/state/wco", executable: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", tools, platform: "win32" });
+  assert.equal(windows.cross_os, false);
+  assert.equal(windows.browser_profile_path, windows.linux_profile_path);
+});
+
+test("WSL Windows Chrome derives a dedicated Windows profile for Linux-only WCO state", () => {
+  const plan = resolveBrowserProfilePlan({
+    stateDirectory: "/tmp/wco-state",
+    executable: "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe",
+    platform: "linux",
+    environment: { WSL_DISTRO_NAME: "Ubuntu" },
+    tools: {
+      toWindows: (value) => value.startsWith("/tmp/") ? "\\\\wsl.localhost\\Ubuntu\\tmp\\wco-state" : null,
+      toLinux: (value) => value.startsWith("C:\\Users\\WcoUser\\AppData\\Local\\WCO\\chatgpt-browser\\") ? "/mnt/c/Users/WcoUser/AppData/Local/WCO/chatgpt-browser/profile-key" : null,
+      windowsLocalAppData: () => "C:\\Users\\WcoUser\\AppData\\Local",
+    },
+  });
+  assert.equal(plan.cross_os, true);
+  assert.match(plan.browser_profile_path, /^C:\\Users\\WcoUser\\AppData\\Local\\WCO\\chatgpt-browser\\[a-f0-9]{32}$/);
+  assert.equal(plan.linux_profile_path, "/mnt/c/Users/WcoUser/AppData/Local/WCO/chatgpt-browser/profile-key");
+});
+
+test("WSL Windows Chrome retains a mounted Windows state profile and rejects an explicit Linux-only profile", () => {
+  const tools = {
+    toWindows: (value: string) => value.startsWith("/mnt/d/") ? `D:${value.slice("/mnt/d".length).replaceAll("/", "\\")}` : "\\\\wsl.localhost\\Ubuntu\\tmp\\profile",
+    toLinux: (value: string) => value.startsWith("D:\\") ? `/mnt/d${value.slice(2).replaceAll("\\", "/")}` : null,
+    windowsLocalAppData: () => "C:\\Users\\WcoUser\\AppData\\Local",
+  };
+  const mounted = resolveBrowserProfilePlan({ stateDirectory: "/mnt/d/wco-state", executable: "/mnt/c/Chrome/chrome.exe", tools, platform: "linux", environment: { WSL_INTEROP: "1" } });
+  assert.deepEqual(mounted, { linux_profile_path: "/mnt/d/wco-state/chatgpt-browser/profile", browser_profile_path: "D:\\wco-state\\chatgpt-browser\\profile", cross_os: true });
+  assert.throws(
+    () => resolveBrowserProfilePlan({ stateDirectory: "/tmp/wco-state", configuredProfile: "/tmp/profile", executable: "/mnt/c/Chrome/chrome.exe", tools, platform: "linux", environment: { WSL_INTEROP: "1" } }),
+    (error: unknown) => !!error && typeof error === "object" && "code" in error && error.code === "WEB_CHATGPT_BROWSER_WSL_PROFILE_UNTRANSLATABLE",
+  );
+});
+
+test("browser lifecycle closes CDP and terminates only its own child idempotently", async () => {
+  let closed = 0, killed = 0;
+  let exited: (() => void) | undefined;
+  const lifecycle = new BrowserLifecycle();
+  lifecycle.setConnection({ close: () => { closed += 1; } });
+  lifecycle.own({
+    exitCode: null,
+    kill: () => { killed += 1; queueMicrotask(() => exited?.()); return true; },
+    once: (_event, listener) => { exited = listener; return undefined as never; },
+  });
+  await lifecycle.close();
+  await lifecycle.close();
+  assert.equal(closed, 1);
+  assert.equal(killed, 1);
+
+  const existing = new BrowserLifecycle();
+  existing.setConnection({ close: () => { closed += 1; } });
+  await existing.close();
+  assert.equal(closed, 2, "an existing compatible browser is disconnected but never killed");
+});
+
+test("WSL networking diagnostics distinguish mirrored mode, NAT default, and unavailable host configuration", () => {
+  assert.equal(detectWslNetworkingMode("[wsl2]\nnetworkingMode=mirrored\n"), "mirrored");
+  assert.equal(detectWslNetworkingMode("[wsl2]\nmemory=4GB\n"), "nat");
+  assert.equal(detectWslNetworkingMode(null), "unknown");
 });
