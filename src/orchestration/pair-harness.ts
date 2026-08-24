@@ -2,15 +2,11 @@ import { createProductionBrowserReviewer } from "../executor/browser-reviewer.js
 import { createProductionVerifier } from "../executor/production-gates.js";
 import { executeRegisteredWebPack } from "../executor/service.js";
 import type { ExecutorReviewerPort } from "../executor/gates.js";
+import { browserProviderSelected } from "../setup/provider-preferences.js";
 import type { LifecycleSnapshot } from "./planner.js";
 import { readLifecycleSnapshot } from "./snapshot-reader.js";
 import { runNextTransition, type ContinueResult, type OrchestrationDependencies } from "./transition-runner.js";
 import { OrchestrationError } from "./contracts.js";
-
-function browserPairEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const value = env.WCO_CHATGPT_BROWSER?.trim().toLowerCase();
-  return value === "1" || value === "true" || value === "yes" || value === "on";
-}
 
 const unreachableReviewer: ExecutorReviewerPort = {
   async review() { throw new Error("PAIR_WEB_REVIEW_BOUNDARY: model reviewer must never run in legacy PAIR Harness execution."); },
@@ -67,12 +63,12 @@ export function assertPairHarnessReadyForCodeReview(last: ContinueResult | null,
  * Drive PAIR through Web-pack registration, Harness apply/verification,
  * publication, Draft PR and Result Bundle.
  *
- * Normal legacy PAIR preserves the historical post-publication Web-review
- * boundary. Direct browser PAIR (`WCO_CHATGPT_BROWSER=1`) instead runs exactly
- * one independent ChatGPT Web reviewer inside the Harness after deterministic
- * verification and before READY_FOR_PUBLISH. APPROVE proceeds to publication;
- * one bounded REVISE repair is applied and re-verified before publication;
- * ESCALATE or an invalid repair stops safely without creating a PR.
+ * Browser PAIR is selected by owner-local provider preferences written by
+ * `wco setup` (WCO_CHATGPT_BROWSER remains a qualification override). It runs
+ * exactly one independent ChatGPT Web reviewer after deterministic verification
+ * and before READY_FOR_PUBLISH. APPROVE proceeds to publication; one bounded
+ * REVISE repair is applied and re-verified before publication; ESCALATE or an
+ * invalid repair stops safely without creating a PR.
  */
 export async function drivePairHarnessToCodeReview(options: {
   runId: string;
@@ -82,7 +78,7 @@ export async function drivePairHarnessToCodeReview(options: {
   maxTransitions?: number;
 }): Promise<{ last: ContinueResult | null; snapshot: LifecycleSnapshot }> {
   const maximum = Math.max(1, Math.min(options.maxTransitions ?? 8, 16));
-  const dependencies = browserPairEnabled() ? browserPairHarnessDependencies : legacyPairHarnessDependencies;
+  const dependencies = browserProviderSelected(options.stateDirectory) ? browserPairHarnessDependencies : legacyPairHarnessDependencies;
   let last: ContinueResult | null = null;
   let suppliedPack = false;
   for (let index = 0; index < maximum; index += 1) {

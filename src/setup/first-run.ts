@@ -8,6 +8,7 @@ import { resolveWcoPaths, type WcoPaths } from "./default-paths.js";
 import { detectProject, type ProjectDiscovery } from "./project-detect.js";
 import { detectRepository, type RepositoryDiscovery } from "./repository-detect.js";
 import { atomicWriteJson } from "../run/run-store.js";
+import { providerPreferencesPath, readProviderPreferences, writeProviderPreferences, type WcoExecutionProvider } from "./provider-preferences.js";
 
 function allowedExecutables(project: ProjectDiscovery): string[] {
   const values = new Set(["node"]);
@@ -37,9 +38,9 @@ export function buildFirstRunConfig(repository: RepositoryDiscovery, project: Pr
     ...(githubAuth ? { github_pull_request: { provider: "github.com" as const, authentication: githubAuth } } : {}),
     result_bundle: { github_attestation: githubAuth ? "required" : "optional" },
     ui: { interactive: true },
-    // Intentionally no web_bridge field. Absence is the normal zero-config
-    // local ChatGPT/Codex transport. Explicit web_bridge profiles are advanced
-    // compatibility overrides and are never selected implicitly.
+    // Intentionally no web_bridge field. Provider choice is owner-local product
+    // preference, not repository authority. Advanced web_bridge profiles remain
+    // explicit compatibility overrides.
   };
 }
 
@@ -48,9 +49,10 @@ export interface FirstRunResult {
   repository: RepositoryDiscovery;
   project: ProjectDiscovery;
   config: TrustedConfig;
+  provider: WcoExecutionProvider;
 }
 
-export async function performFirstRunSetup(options: { cwd: string; configPath?: string; stateDirectory?: string; overwrite?: boolean }): Promise<FirstRunResult> {
+export async function performFirstRunSetup(options: { cwd: string; configPath?: string; stateDirectory?: string; overwrite?: boolean; provider?: WcoExecutionProvider }): Promise<FirstRunResult> {
   if (Number(process.versions.node.split(".")[0]) < 22) throw new Error("SETUP_NODE_UNSUPPORTED: WCO requires Node.js 22 or newer.");
   const paths = resolveWcoPaths({
     ...(options.configPath !== undefined ? { configPath: options.configPath } : {}),
@@ -60,6 +62,14 @@ export async function performFirstRunSetup(options: { cwd: string; configPath?: 
   const project = await detectProject(repository.root);
   const discovered = buildFirstRunConfig(repository, project);
   for (const directory of [paths.home, paths.credentials, paths.state, paths.cache, paths.logs, paths.bridge]) await mkdir(directory, { recursive: true, mode: 0o700 });
+
+  let previousPreferences = null;
+  try { previousPreferences = await readProviderPreferences(paths.state); }
+  catch (error) {
+    if (!options.provider) throw error;
+  }
+  const provider = options.provider ?? previousPreferences?.provider ?? "chatgpt-web";
+
   let current: TrustedConfig | null = null;
   try {
     current = await loadTrustedConfig(paths.config);
@@ -91,14 +101,18 @@ export async function performFirstRunSetup(options: { cwd: string; configPath?: 
   const written = write
     ? await writeTrustedConfigAtomic(paths.config, config, { overwrite: Boolean(current) || options.overwrite === true })
     : { config, backup_path: null };
-  await atomicWriteJson(paths.install_manifest, { schema_version: "1.0", product: "web-codex-orchestrator", version: "0.3.3", home: paths.home, owned_paths: [paths.config, paths.credentials, paths.state, paths.cache, paths.logs, paths.bridge, paths.install_manifest] });
 
-  // Interactive zero-config first use performs the only normal-user Web auth
-  // step. Explicit advanced bridge profiles preserve their own legacy setup.
-  if (written.config.web_bridge === undefined && process.stdin.isTTY && process.stdout.isTTY && process.env.CI !== "true") {
+  // Provider preference is committed only after trusted repository/config setup
+  // succeeds, so a failed registration cannot leave a half-applied UX switch.
+  if (!previousPreferences || previousPreferences.provider !== provider) await writeProviderPreferences(paths.state, provider);
+  await atomicWriteJson(paths.install_manifest, { schema_version: "1.0", product: "web-codex-orchestrator", version: "0.3.3", home: paths.home, owned_paths: [paths.config, paths.credentials, paths.state, paths.cache, paths.logs, paths.bridge, providerPreferencesPath(paths.state), paths.install_manifest] });
+
+  // Codex authorization is only needed when Codex is the selected daily
+  // provider. Direct ChatGPT Web PAIR owns a separate browser profile/session.
+  if (provider === "codex" && written.config.web_bridge === undefined && process.stdin.isTTY && process.stdout.isTTY && process.env.CI !== "true") {
     const authorized = await ensureChatGptLogin({ config: written.config, stateDirectory: paths.state, interactive: true });
     if (!authorized) throw new Error("SETUP_CHATGPT_AUTH_FAILED: ChatGPT authorization did not complete. Run wco again to retry the official browser authorization.");
   }
 
-  return { paths, repository, project, config: written.config };
+  return { paths, repository, project, config: written.config, provider };
 }

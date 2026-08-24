@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { TrustedConfig } from "../config/contracts.js";
+import { browserProviderSelected } from "../setup/provider-preferences.js";
 import { ActionRelayWebBridge } from "./action-relay-client.js";
 import { ChatGptBrowserWebBridge } from "./chatgpt-browser-bridge.js";
 import { ChatGptCodexWebBridge } from "./chatgpt-codex-bridge.js";
@@ -11,21 +12,15 @@ import { ManagedAutoWebBridge } from "./managed-auto-web-bridge.js";
 import { resolveManagedWebService } from "./managed-service.js";
 import type { WebBridge } from "./web-bridge.js";
 
-function browserPairEnabled(env: NodeJS.ProcessEnv): boolean {
-  const value = env.WCO_CHATGPT_BROWSER?.trim().toLowerCase();
-  return value === "1" || value === "true" || value === "yes" || value === "on";
-}
-
 export function createConfiguredWebBridge(config: TrustedConfig, bridgeDirectory: string, env: NodeJS.ProcessEnv = process.env, stateDirectory = path.join(path.dirname(path.resolve(bridgeDirectory)), "state")): WebBridge {
   const credentialsDirectory = path.join(path.dirname(path.resolve(bridgeDirectory)), "credentials");
   const mode = config.web_bridge?.mode ?? "chatgpt_codex";
 
   if (mode === "chatgpt_codex") {
-    // Direct browser PAIR is deliberately selected before a fresh run. It does
-    // not probe Codex quota or switch providers mid-thread; every provider turn
-    // for that PAIR session is owned by ChatGPT Web.
-    if (browserPairEnabled(env)) return new ChatGptBrowserWebBridge(config, bridgeDirectory, stateDirectory, env);
-
+    // Provider preference is owner-local product UX state, not repository
+    // authority. WCO_CHATGPT_BROWSER remains a development/qualification
+    // override, while normal users select the same behavior once during setup.
+    if (browserProviderSelected(stateDirectory, env)) return new ChatGptBrowserWebBridge(config, bridgeDirectory, stateDirectory, env);
     return new ChatGptCodexWebBridge(config, bridgeDirectory, stateDirectory);
   }
   if (mode === "managed_actions") {
