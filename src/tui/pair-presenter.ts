@@ -30,6 +30,7 @@ export function derivePairStage(snapshot: LifecycleSnapshot): UserStage {
   if (snapshot.publish_state !== "PUSHED") return "PUBLISHING";
   if (snapshot.draft_pr_state !== "OPEN") return "DRAFT_PR";
   if (!snapshot.result_bundle_ready) return "RESULT_BUNDLE";
+  if (snapshot.browser_review_gate_passed === true) return "AWAITING_HUMAN";
   if (snapshot.web_code_review_state === "ESCALATED") return "BLOCKED";
   if (snapshot.web_code_review_state !== "APPROVED") return "TERRA_REVIEW";
   if (snapshot.web_review_state === "ESCALATED") return "BLOCKED";
@@ -47,6 +48,8 @@ function checksLabel(snapshot: LifecycleSnapshot): string {
 }
 
 function codeReviewLabel(snapshot: LifecycleSnapshot): string {
+  if (snapshot.browser_review_gate_passed === true) return "approved before PR";
+  if (snapshot.executor_state === "REVIEWING_TERRA" || snapshot.executor_state === "REVIEWING_SOL") return "in progress";
   if (!snapshot.result_bundle_ready) return "not started";
   if (snapshot.web_code_review_state === "APPROVED") return "approved";
   if (snapshot.web_code_review_state === "ESCALATED") return "needs attention";
@@ -60,6 +63,7 @@ function draftPrLabel(snapshot: LifecycleSnapshot, url?: string | null): string 
 }
 
 function finalReviewLabel(snapshot: LifecycleSnapshot): string {
+  if (snapshot.browser_review_gate_passed === true) return "not required · review ran before PR";
   if (snapshot.web_code_review_state !== "APPROVED") return "not started";
   if (snapshot.web_review_state === "APPROVED") return "approved";
   if (snapshot.web_review_state === "ESCALATED") return "needs attention";
@@ -76,7 +80,7 @@ function userAction(stage: UserStage): string {
     case "REVISION": return "None — WCO is applying the requested review fixes";
     case "WEB_FINAL_REVIEW": return "None — WCO is waiting for the final review";
     case "TERRA_REVIEW":
-    case "SOL_REVIEW": return "None — WCO is reviewing the exact change";
+    case "SOL_REVIEW": return "None — WCO is reviewing the exact change before PR";
     case "EXECUTION": return "None — WCO is implementing the task";
     case "VERIFICATION": return "None — WCO is running checks";
     case "PUBLISHING":

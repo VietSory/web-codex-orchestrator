@@ -117,11 +117,20 @@ async function currentPairCodeReviewState(stateDirectory: string, runId: string,
   }
 }
 
+function browserReviewGatePassed(executor: ExecutorReceipt | null): boolean {
+  return Boolean(
+    executor
+      && executor.state === "READY_FOR_PUBLISH"
+      && executor.review_strategy === "model"
+      && executor.reviewer_selection?.model === "chatgpt-web",
+  );
+}
+
 export async function readLifecycleSnapshot(stateDirectory: string, runId: string): Promise<LifecycleSnapshot> {
   const ledger = await readRunLedger(stateDirectory, runId);
   const paused = ledger?.paused === true;
   const selected = await readSelectedArtifact(stateDirectory, runId);
-  if (!selected) return { registered_artifact_sha256: null, executor_state: null, publish_state: null, draft_pr_state: null, result_bundle_ready: false, web_code_review_state: null, web_review_state: null, revision_state: null, revision_result_ready: false, paused };
+  if (!selected) return { registered_artifact_sha256: null, executor_state: null, publish_state: null, draft_pr_state: null, result_bundle_ready: false, browser_review_gate_passed: false, web_code_review_state: null, web_review_state: null, revision_state: null, revision_result_ready: false, paused };
   const id = splitRunId(runId);
   const executor = await readExecutorReceipt(stateDirectory, id.taskId, id.taskBundleSha256, selected.artifact_sha256);
   const directory = executorPaths(stateDirectory, id.taskId, id.taskBundleSha256, selected.artifact_sha256).directory;
@@ -151,6 +160,7 @@ export async function readLifecycleSnapshot(stateDirectory: string, runId: strin
     publish_state: publishCurrent ? publish?.state ?? null : null,
     draft_pr_state: draftCurrent ? draft?.state ?? null : null,
     result_bundle_ready: initialResultCurrent,
+    browser_review_gate_passed: browserReviewGatePassed(executor),
     web_code_review_state: codeReviewState,
     web_review_state: webReviewState,
     revision_state: relevantRevision?.state ?? null,
