@@ -20,7 +20,7 @@ function scriptedIo(answers: string[], output: string[]): InteractiveIo {
   };
 }
 
-test("fresh bare wco auto-sets up zero-config local mode and returning launch does not repeat setup", async (t) => {
+test("fresh bare wco auto-sets up saved ChatGPT Web PAIR and returning launch does not repeat setup", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-bare-user-journey-"));
   t.after(async () => rm(root, { recursive: true, force: true }));
   const repo = path.join(root, "repo");
@@ -57,14 +57,17 @@ test("fresh bare wco auto-sets up zero-config local mode and returning launch do
   assert.match(firstText, /Checking this Git repository and initial WCO setup/);
   assert.match(firstText, /Execution host\s+Linux\/WSL verification supported/);
   assert.match(firstText, /Setup is complete/);
-  assert.match(firstText, /local ChatGPT\/Codex/);
+  assert.match(firstText, /ChatGPT Web is now the saved PAIR provider/);
   assert.match(firstText, /Web Codex Orchestrator · v0\.3/);
   assert.match(firstText, /Type a goal to start/);
 
   const configPath = path.join(home, "config.json");
+  const preferencesPath = path.join(home, "preferences.json");
   const config = JSON.parse(await readFile(configPath, "utf8"));
+  const preferences = JSON.parse(await readFile(preferencesPath, "utf8"));
   assert.equal(config.web_bridge, undefined);
   assert.equal(config.runtime?.source, "bundled");
+  assert.deepEqual(preferences, { schema_version: "1.0", provider: "chatgpt-web" });
   assert.equal(Object.keys(config.repositories ?? {}).length, 1);
   const registered = Object.values(config.repositories ?? {})[0] as { path?: string; remote?: string; expected_remote_urls?: string[] } | undefined;
   assert.equal(registered?.path, repo);
@@ -72,8 +75,10 @@ test("fresh bare wco auto-sets up zero-config local mode and returning launch do
   assert.deepEqual(registered?.expected_remote_urls, [remote]);
 
   const configBefore = await readFile(configPath, "utf8");
+  const preferencesBefore = await readFile(preferencesPath, "utf8");
   const secondOutput: string[] = [];
   assert.equal(await runInteractiveApp(scriptedIo(["/quit"], secondOutput)), 0, secondOutput.join("\n"));
   assert.doesNotMatch(secondOutput.join(""), /Welcome to WCO/);
   assert.equal(await readFile(configPath, "utf8"), configBefore, "returning bare wco must reuse trusted setup byte-for-byte");
+  assert.equal(await readFile(preferencesPath, "utf8"), preferencesBefore, "returning bare wco must reuse the saved provider preference byte-for-byte");
 });
