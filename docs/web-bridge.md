@@ -127,6 +127,10 @@ manual_file
 
 They are never the fresh default and never a silent fallback from first-party browser PAIR.
 
+## Human shipment boundary
+
+Browser/provider output can never merge or release. WCO may prepare and update a Draft PR only through its validated local publication path; **human merge/release remains the final shipment authority**.
+
 ## Recovery commands
 
 ```bash
