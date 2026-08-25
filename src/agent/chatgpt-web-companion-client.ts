@@ -182,8 +182,11 @@ function parseInstalledConfig(filePath: string): MiuuyyInstalledConfig {
   if (typeof config.appName !== "string" || !config.appName.trim() || config.appName.length > 80) {
     throw codedError("WEB_CHATGPT_COMPANION_CONFIG_INVALID", "miuuyy appName is missing or invalid.");
   }
-  const solAvailable = config.solAvailable !== false;
-  const proAvailable = config.proAvailable === true;
+  if (typeof config.solAvailable !== "boolean" || typeof config.proAvailable !== "boolean") {
+    throw codedError("WEB_CHATGPT_COMPANION_CONFIG_INVALID", "miuuyy account capability flags must be explicit booleans.");
+  }
+  const solAvailable = config.solAvailable;
+  const proAvailable = config.proAvailable;
   if (proAvailable && !solAvailable) {
     throw codedError("WEB_CHATGPT_COMPANION_CONFIG_INVALID", "miuuyy account capabilities are contradictory: Pro requires Sol.");
   }
