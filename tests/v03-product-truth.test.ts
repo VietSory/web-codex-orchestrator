@@ -14,10 +14,12 @@ test("release-candidate version stays synchronized across package and installed 
   assert.match(firstRun, new RegExp(`version: "${packageJson.version!.replaceAll(".", "\\.")}"`));
 });
 
-test("public documentation freezes install + one authorization + prompt-only daily workflow", async () => {
+test("public documentation freezes first-party browser PAIR without Codex fallback", async () => {
   const readme = await repositoryText("README.md");
   const operations = await repositoryText("docs/operations.md");
   const contract = await repositoryText("docs/user-experience-contract.md");
+  const bridge = await repositoryText("docs/web-bridge.md");
+  const architecture = await repositoryText("docs/architecture.md");
   const packageJson = JSON.parse(await repositoryText("package.json")) as { private?: boolean; publishConfig?: { access?: string } };
 
   assert.equal(packageJson.private, undefined);
@@ -26,18 +28,34 @@ test("public documentation freezes install + one authorization + prompt-only dai
     assert.match(source, /npm install -g (?:\.\/|\\?[^\n]*\/)?web-codex-orchestrator-[^\s`]+\.tgz/i);
     assert.doesNotMatch(source, /npm install -g web-codex-orchestrator\s*(?:\r?\n|$)/i);
   }
+
+  for (const source of [readme, operations, contract, bridge, architecture]) {
+    assert.match(source, /WCO[- ]owned Windows (?:browser )?companion|WCO Windows companion/i);
+    assert.match(source, /Temporary Chat/i);
+  }
+
   assert.match(readme, /cd \/path\/to\/project\n+wco/);
-  assert.match(readme, /Codex official ChatGPT sign-in[\s\S]*Browser authorization/i);
-  assert.match(readme, /no `web_bridge` field/i);
-  assert.match(readme, /per-task browser interactions\s*=\s*(?:\*\*)?0(?:\*\*)?/i);
-  assert.match(readme, /never(?: silently)? falls back/i);
-  assert.match(readme, /Publishing(?: WCO)? remains a human maintainer action/i);
+  assert.match(readme, /provider preference.*chatgpt-web|defaults.*chatgpt-web/is);
+  assert.match(readme, /Codex provider\/model turns\s+=\s*0/i);
+  assert.match(readme, /per-task manual browser interactions\s+=\s*0/i);
+  assert.match(readme, /fails closed|fail-closed/i);
+  assert.match(readme, /Publishing WCO remains a human maintainer action/i);
+  assert.doesNotMatch(readme, /delegates authorization to its \*\*bundled official Codex runtime\*\*/i);
 
   assert.match(operations, /## Normal interactive workflow/);
   assert.match(operations, /## Multiple repositories/);
-  assert.match(operations, /one provider-owned ChatGPT authorization interaction/i);
-  assert.match(operations, /per-task browser interactions = 0/i);
-  assert.match(operations, /web_native_mcp.*advanced|Advanced `web_native_mcp`/is);
+  assert.match(operations, /Codex provider\/model turns in PAIR\s+=\s*0/i);
+  assert.match(operations, /per-task manual browser interactions\s*=\s*0/i);
+  assert.match(operations, /never silently fall back|never.*fallback/i);
+
+  assert.match(contract, /"provider": "chatgpt-web"/i);
+  assert.match(contract, /Codex provider\/model turns\s+=\s*0/i);
+  assert.match(contract, /per-task manual browser interactions\s+=\s*0/i);
+  assert.match(contract, /never silently fall back/i);
+
+  assert.match(bridge, /Only an explicit persisted `provider: "codex"` selects/i);
+  assert.match(bridge, /Browser automation itself is expected/i);
+  assert.doesNotMatch(bridge, /Browser DOM automation.*not supported normal transports/i);
 });
 
 test("CI keeps real packed install and zero-config product-contract gates separate", async () => {
