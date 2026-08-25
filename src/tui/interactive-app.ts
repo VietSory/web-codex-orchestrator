@@ -167,7 +167,7 @@ async function reviewSummary(runId: string, stateDirectory: string): Promise<str
 function configSummary(config: TrustedConfig, repositoryId: string, reviewer: ReviewerSelection): string {
   const mode = config.web_bridge?.mode ?? "chatgpt_codex";
   const transport = !config.web_bridge
-    ? "local ChatGPT/Codex"
+    ? "ChatGPT Web browser PAIR"
     : mode === "web_native_mcp"
       ? "advanced local Secure MCP"
       : mode === "managed_actions"
@@ -200,7 +200,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
   catch {
     firstRun = true;
     io.write("Welcome to WCO\n");
-    io.write("Checking this project for the normal Linux/WSL workflow. If supported and ChatGPT is not authorized yet, the official Codex sign-in may open once.\n\n");
+    io.write("Checking this project for the normal Linux/WSL workflow. Normal PAIR uses the WCO Windows browser companion with your signed-in ChatGPT Web session; Codex provider authentication is not required.\n\n");
     const code = await runSetupCommand(["--yes"], process.cwd(), { write: (value) => io.write(value), error: (value) => io.write(value), question: async (prompt) => await io.question(prompt) });
     if (code !== 0) return code;
   }
@@ -273,7 +273,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
   const ensureWebConnected = async (): Promise<boolean> => {
     if (isLocal()) {
       if (bridge) return true;
-      io.write("The local ChatGPT/Codex runtime is unavailable. Use /doctor for the next step.\n");
+      io.write("The ChatGPT Web browser PAIR transport is unavailable. Use /doctor for the next step.\n");
       return false;
     }
     if (await connectionWorks()) { if (isNative()) await ensureNativeTunnel(); return true; }
@@ -708,7 +708,7 @@ export async function runInteractiveApp(io: InteractiveIo = terminalIo()): Promi
         const connectedBridge = bridge;
         if (!connectedBridge) {
           const resumed = pausedForClarification ? await continueAfterClarificationPause() : "";
-          return `ChatGPT/Codex is not ready. Use /doctor for the next step.${resumed ? `\n${resumed}` : ""}`;
+          return `The selected ChatGPT transport is not ready. Use /doctor for the next step.${resumed ? `\n${resumed}` : ""}`;
         }
         await appendLocalClarification({ bridge: connectedBridge, session: latest, value, stateDirectory: paths.state });
         if (!pausedForClarification) return "Added that detail to the task before the plan was locked.";
