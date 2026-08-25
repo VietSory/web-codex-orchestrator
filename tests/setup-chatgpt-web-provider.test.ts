@@ -1,17 +1,18 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { setupChatGptWebProviderStatus } from "../src/setup/setup-cli.js";
 
-async function fakeMiuuyyInstall(root: string): Promise<string> {
-  const helperScript = path.join(root, "fake-miuuyy-helper.mjs");
-  await writeFile(helperScript, `
-import readline from "node:readline";
+async function fakeWcoCompanion(root: string): Promise<string> {
+  const executable = path.join(root, "fake-wco-browser-companion");
+  await writeFile(executable, `#!/usr/bin/env node
+const readline = require("node:readline");
 const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 const send = value => process.stdout.write(JSON.stringify(value) + "\\n");
-send({ type: "ready" });
+send({ type: "ready", protocol_version: 1, kind: "wco-browser-companion", pid: process.pid });
 input.on("line", line => {
   const request = JSON.parse(line);
   if (request.type === "shutdown") {
@@ -24,77 +25,55 @@ input.on("line", line => {
       authenticated: true,
       temporary: true,
       url: "https://chatgpt.com/?temporary-chat=true",
-      solAvailable: true,
-      proAvailable: false
+      available_modes: ["instant", "medium", "high"]
     }});
   }
 });
-`, "utf8");
-
-  const descriptorPath = path.join(root, "browser-host.json");
-  await writeFile(descriptorPath, JSON.stringify({
-    version: 2,
-    kind: "codex-web-gpt-launcher",
-    profile: "production",
-    pid: process.pid,
-    endpoint: "http://127.0.0.1:43101",
-    control: { endpoint: "http://127.0.0.1:43102", token: "a".repeat(48) },
-    helper: { executable: process.execPath, script: helperScript },
-    partition: "persist:codex-web-gpt-chatgpt",
-    idleUrl: "about:blank#codex-web-gpt-browser-host",
-    surfaceId: "s".repeat(32),
-    createdAt: new Date().toISOString()
-  }), "utf8");
-
-  const configPath = path.join(root, "config.json");
-  await writeFile(configPath, JSON.stringify({
-    version: 3,
-    releaseVersion: "3.0.3",
-    browserHost: "launcher",
-    browserHostDescriptorPath: descriptorPath,
-    appName: "Codex Native2",
-    solAvailable: true,
-    proAvailable: false
-  }), "utf8");
-  return configPath;
+`, { encoding: "utf8", mode: 0o700 });
+  return executable;
 }
 
-test("setup readiness uses installed miuuyy helper instead of the legacy direct browser", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "wco-setup-helper-"));
+test("setup readiness uses the explicit first-party WCO companion and never a legacy transport", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-setup-first-party-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const configPath = await fakeMiuuyyInstall(root);
+  const executable = await fakeWcoCompanion(root);
+  const codexMarker = path.join(root, "codex-must-not-run.marker");
+  const fakeCodex = path.join(root, "fake-codex.sh");
+  await writeFile(fakeCodex, `#!/bin/sh\nprintf codex > ${JSON.stringify(codexMarker)}\nexit 99\n`, { mode: 0o700 });
 
   const result = await setupChatGptWebProviderStatus(path.join(root, "state"), {
     ...process.env,
-    WCO_CHATGPT_WEB_MIUUYY_CONFIG: configPath,
-    WCO_CHATGPT_BROWSER_EXECUTABLE: path.join(root, "must-not-launch-browser"),
-    WCO_CODEX_EXECUTABLE: path.join(root, "must-not-run-codex"),
+    CI: "true",
+    WCO_CHATGPT_WEB_COMPANION_EXECUTABLE: executable,
+    WCO_CHATGPT_BROWSER_EXECUTABLE: path.join(root, "must-not-launch-legacy-browser"),
+    WCO_CODEX_EXECUTABLE: fakeCodex,
   });
 
   assert.deepEqual(result, {
-    value: "ChatGPT Web launcher helper ready",
-    transport: "miuuyy-helper",
+    value: "WCO ChatGPT Web browser companion ready",
+    transport: "wco-companion",
   });
+  assert.equal(existsSync(codexMarker), false, "setup readiness must never execute Codex for browser PAIR");
 });
 
-test("setup fails closed on a configured but unavailable helper and does not fall back", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "wco-setup-helper-fail-"));
+test("setup fails closed on a missing first-party companion and does not fall back", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-setup-first-party-fail-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const configPath = await fakeMiuuyyInstall(root);
-  const descriptorPath = path.join(root, "browser-host.json");
-  const descriptor = JSON.parse(await (await import("node:fs/promises")).readFile(descriptorPath, "utf8"));
-  descriptor.helper.script = path.join(root, "missing-helper.mjs");
-  await writeFile(descriptorPath, JSON.stringify(descriptor), "utf8");
+  const codexMarker = path.join(root, "codex-must-not-run.marker");
+  const fakeCodex = path.join(root, "fake-codex.sh");
+  await writeFile(fakeCodex, `#!/bin/sh\nprintf codex > ${JSON.stringify(codexMarker)}\nexit 99\n`, { mode: 0o700 });
 
   const result = await setupChatGptWebProviderStatus(path.join(root, "state"), {
     ...process.env,
-    WCO_CHATGPT_WEB_MIUUYY_CONFIG: configPath,
-    WCO_CHATGPT_BROWSER_EXECUTABLE: path.join(root, "must-not-launch-browser"),
-    WCO_CODEX_EXECUTABLE: path.join(root, "must-not-run-codex"),
+    CI: "true",
+    WCO_CHATGPT_WEB_COMPANION_EXECUTABLE: path.join(root, "missing-wco-companion.exe"),
+    WCO_CHATGPT_BROWSER_EXECUTABLE: path.join(root, "must-not-launch-legacy-browser"),
+    WCO_CODEX_EXECUTABLE: fakeCodex,
   });
 
   assert.deepEqual(result, {
-    value: "ChatGPT Web launcher helper sign-in/readiness pending",
-    transport: "miuuyy-helper",
+    value: "WCO ChatGPT Web browser companion sign-in/readiness pending",
+    transport: "wco-companion",
   });
+  assert.equal(existsSync(codexMarker), false, "missing companion must fail closed without Codex fallback");
 });
