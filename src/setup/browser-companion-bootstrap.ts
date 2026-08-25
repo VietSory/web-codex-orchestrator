@@ -29,6 +29,8 @@ export interface BrowserCompanionBootstrapOptions {
   env?: NodeJS.ProcessEnv;
   fetch?: (url: string, init?: { redirect?: "follow" }) => Promise<DownloadResponse>;
   packageVersion?: string;
+  /** Programmatic/test-only destination override; normal CLI setup uses LOCALAPPDATA. */
+  installPath?: string;
 }
 
 function codedError(code: string, message: string): Error & { code: string } {
@@ -63,7 +65,7 @@ function discoverWindowsLocalAppData(env: NodeJS.ProcessEnv): string | null {
     encoding: "utf8",
     shell: false,
     windowsHide: true,
-    env,
+    env: { ...process.env, ...env },
   });
   const value = result.status === 0 ? result.stdout.trim() : "";
   return value && isWindowsAbsolutePath(value) ? value : null;
@@ -161,7 +163,7 @@ export async function ensureWcoBrowserCompanionInstalled(
   const explicit = explicitExecutable(env);
   if (explicit) return { executable: explicit, source: "explicit" };
 
-  const target = defaultBrowserCompanionInstallPath(env);
+  const target = options.installPath ? path.resolve(options.installPath) : defaultBrowserCompanionInstallPath(env);
   if (target && existsSync(target)) return { executable: target, source: "installed" };
 
   if (truthy(env.CI)) {
