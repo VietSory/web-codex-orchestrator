@@ -9,6 +9,14 @@ const TEMPORARY_CHAT_URL = `${CHATGPT_ORIGIN}/?temporary-chat=true`;
 const POLL_MS = 250;
 const DEFAULT_LOGIN_SECONDS = 120;
 const DEFAULT_RESPONSE_SECONDS = 900;
+const MODE_LABELS: Record<WcoBrowserCompanionMode, string> = {
+  instant: "Instant",
+  medium: "Medium",
+  high: "High",
+  "extra-high": "Extra High",
+  pro: "Pro",
+  luna: "Luna",
+};
 
 type JsonObject = Record<string, unknown>;
 type PendingCdp = { resolve: (value: JsonObject) => void; reject: (error: Error) => void };
@@ -73,6 +81,21 @@ function temporaryUrlProof(value: string): boolean {
   if (!isExactChatGptUrl(value)) return false;
   const parsed = new URL(value);
   return parsed.searchParams.get("temporary-chat") === "true";
+}
+
+function normalizeModelMenuEntry(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+export function menuEntryMatchesMode(entry: string, mode: WcoBrowserCompanionMode): boolean {
+  const text = normalizeModelMenuEntry(entry);
+  const wanted = normalizeModelMenuEntry(MODE_LABELS[mode]);
+  return text === wanted || text.startsWith(`${wanted} `);
+}
+
+export function detectModesFromMenuEntries(entries: readonly string[]): WcoBrowserCompanionMode[] {
+  const order: readonly WcoBrowserCompanionMode[] = ["instant", "medium", "high", "extra-high", "pro", "luna"];
+  return order.filter((mode) => entries.some((entry) => menuEntryMatchesMode(entry, mode)));
 }
 
 class CdpConnection {
@@ -373,27 +396,19 @@ export class WcoWindowsChatGptBrowserTransport {
   }
 
   private async selectMode(session: BrowserSession, mode: WcoBrowserCompanionMode, signal?: AbortSignal): Promise<void> {
-    const desired: Record<WcoBrowserCompanionMode, string> = {
-      instant: "Instant",
-      medium: "Medium",
-      high: "High",
-      "extra-high": "Extra High",
-      pro: "Pro",
-      luna: "Luna",
-    };
     const menuText = await this.openModelMenu(session, signal);
-    const label = desired[mode];
-    if (!menuText.some((entry) => entry.toLowerCase().includes(label.toLowerCase()))) {
+    const label = MODE_LABELS[mode];
+    if (!menuText.some((entry) => menuEntryMatchesMode(entry, mode))) {
       await this.evaluate(session, `document.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true})); true`, signal);
       throw codedError("WCO_BROWSER_COMPANION_MODE_UNAVAILABLE", `ChatGPT account/UI does not expose requested mode '${mode}'.`);
     }
     const clicked = await this.evaluate(session, `(() => {
-      const wanted = ${JSON.stringify(label.toLowerCase())};
+      const wanted = ${JSON.stringify(normalizeModelMenuEntry(label))};
       const candidates = Array.from(document.querySelectorAll('[role="menuitem"], [role="option"], [data-radix-collection-item], button'));
       const match = candidates.find((element) => {
-        const text = (element.textContent || '').trim().toLowerCase();
+        const text = (element.textContent || '').trim().replace(/\\s+/g, ' ').toLowerCase();
         const r = element.getBoundingClientRect();
-        return r.width > 0 && r.height > 0 && (text === wanted || text.startsWith(wanted + ' ') || text.endsWith(' ' + wanted));
+        return r.width > 0 && r.height > 0 && (text === wanted || text.startsWith(wanted + ' '));
       });
       if (!match) return false;
       match.click();
@@ -404,16 +419,9 @@ export class WcoWindowsChatGptBrowserTransport {
   }
 
   private async detectModes(session: BrowserSession, signal?: AbortSignal): Promise<WcoBrowserCompanionMode[]> {
-    const text = (await this.openModelMenu(session, signal)).join("\n").toLowerCase();
+    const entries = await this.openModelMenu(session, signal);
     await this.evaluate(session, `document.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true})); true`, signal);
-    const modes: WcoBrowserCompanionMode[] = [];
-    if (/\binstant\b/.test(text)) modes.push("instant");
-    if (/\bmedium\b/.test(text)) modes.push("medium");
-    if (/\bhigh\b/.test(text)) modes.push("high");
-    if (/extra[ -]?high/.test(text)) modes.push("extra-high");
-    if (/\bpro\b/.test(text)) modes.push("pro");
-    if (/\bluna\b/.test(text)) modes.push("luna");
-    return [...new Set(modes)];
+    return detectModesFromMenuEntries(entries);
   }
 
   private async sendPrompt(session: BrowserSession, prompt: string, signal?: AbortSignal): Promise<number> {
