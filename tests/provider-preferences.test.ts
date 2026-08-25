@@ -95,11 +95,13 @@ test("PAIR doctor does not require Codex runtime or Codex authentication for sav
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-provider-doctor-"));
   try {
     const state = path.join(root, "state");
+    const configPath = path.join(root, "config.json");
     await mkdir(state, { recursive: true });
+    await writeFile(configPath, JSON.stringify(config(root)));
     await writeProviderPreferences(state, "chatgpt-web");
     const probes = productionDoctorProbes({
       stateDirectory: state,
-      configPath: path.join(root, "missing-config.json"),
+      configPath,
       json: false,
       doctorMode: "PAIR",
       maxTransitions: 8,
