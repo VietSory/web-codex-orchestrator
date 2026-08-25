@@ -13,7 +13,10 @@ function splitRunId(runId: string): { taskId: string; taskBundleSha256: string }
 function selectedReviewReady(receipt: NonNullable<Awaited<ReturnType<typeof readExecutorReceipt>>>, digest: string, kind: "terra" | "sol"): boolean {
   const review = kind === "terra" ? receipt.terra_review : receipt.sol_review;
   if (review.verdict === "APPROVE" && review.change_set_digest === digest) return true;
-  return Boolean(receipt.repair?.state === "VERIFIED" && receipt.repair.reviewer === kind && receipt.repair.final_change_set_digest === digest && review.verdict === "REVISE" && review.change_set_digest === receipt.repair.source_change_set_digest && review.evidence_sha256 === receipt.repair.source_review_evidence_sha256);
+  const selectedRepairReady = Boolean(receipt.repair?.state === "VERIFIED" && receipt.repair.reviewer === kind && receipt.repair.final_change_set_digest === digest && review.verdict === "REVISE" && review.change_set_digest === receipt.repair.source_change_set_digest && review.evidence_sha256 === receipt.repair.source_review_evidence_sha256);
+  if (!selectedRepairReady) return false;
+  if (receipt.reviewer_selection?.model !== "chatgpt-web") return true;
+  return Boolean(receipt.repair_reapproval?.rounds === 1 && receipt.repair_reapproval.verdict === "APPROVE" && receipt.repair_reapproval.change_set_digest === digest && receipt.repair_reapproval.evidence_sha256);
 }
 function assertReviewAuthority(receipt: NonNullable<Awaited<ReturnType<typeof readExecutorReceipt>>>, digest: string): void {
   if (receipt.review_strategy === "web") {
