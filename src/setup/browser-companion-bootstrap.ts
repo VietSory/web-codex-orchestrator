@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const RELEASE_REPOSITORY = "VietSory/web-codex-orchestrator";
@@ -23,6 +23,14 @@ interface DownloadResponse {
   headers: { get(name: string): string | null };
   arrayBuffer(): Promise<ArrayBuffer>;
   text(): Promise<string>;
+}
+
+interface BrowserCompanionInstallMetadata {
+  schema_version: 1;
+  version: string;
+  sha256: string;
+  asset: typeof COMPANION_ASSET;
+  repository: typeof RELEASE_REPOSITORY;
 }
 
 export interface BrowserCompanionBootstrapOptions {
@@ -156,6 +164,46 @@ function explicitExecutable(env: NodeJS.ProcessEnv): string | null {
   return hostPath;
 }
 
+function parseInstalledMetadata(value: unknown, expectedVersion: string): BrowserCompanionInstallMetadata | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = value as Record<string, unknown>;
+  if (Object.keys(item).some((key) => !["schema_version", "version", "sha256", "asset", "repository"].includes(key))) return null;
+  if (
+    item.schema_version !== 1
+    || item.version !== expectedVersion
+    || typeof item.sha256 !== "string"
+    || !/^[0-9a-f]{64}$/i.test(item.sha256)
+    || item.asset !== COMPANION_ASSET
+    || item.repository !== RELEASE_REPOSITORY
+  ) return null;
+  return item as unknown as BrowserCompanionInstallMetadata;
+}
+
+async function verifyInstalledCompanion(executable: string, expectedVersion: string): Promise<BrowserCompanionInstallation | null> {
+  try {
+    const metadataPath = browserCompanionInstallMetadataPath(executable);
+    const [binaryInfo, metadataInfo] = await Promise.all([lstat(executable), lstat(metadataPath)]);
+    if (
+      !binaryInfo.isFile()
+      || binaryInfo.isSymbolicLink()
+      || binaryInfo.size <= 0
+      || binaryInfo.size > MAX_COMPANION_BYTES
+      || !metadataInfo.isFile()
+      || metadataInfo.isSymbolicLink()
+      || metadataInfo.size <= 0
+      || metadataInfo.size > MAX_SHA_BYTES
+    ) return null;
+    const metadata = parseInstalledMetadata(JSON.parse(await readFile(metadataPath, "utf8")) as unknown, expectedVersion);
+    if (!metadata) return null;
+    const binary = await readFile(executable);
+    const actualSha = crypto.createHash("sha256").update(binary).digest("hex");
+    if (actualSha !== metadata.sha256.toLowerCase()) return null;
+    return { executable, source: "installed", version: expectedVersion, sha256: actualSha };
+  } catch {
+    return null;
+  }
+}
+
 export async function ensureWcoBrowserCompanionInstalled(
   options: BrowserCompanionBootstrapOptions = {},
 ): Promise<BrowserCompanionInstallation> {
@@ -171,7 +219,6 @@ export async function ensureWcoBrowserCompanionInstalled(
   }
 
   const target = options.installPath ? path.resolve(options.installPath) : defaultBrowserCompanionInstallPath(env);
-  if (target && existsSync(target)) return { executable: target, source: "installed" };
   if (!target) {
     throw codedError(
       "WEB_CHATGPT_COMPANION_WINDOWS_HOST_UNAVAILABLE",
@@ -180,6 +227,11 @@ export async function ensureWcoBrowserCompanionInstalled(
   }
 
   const version = options.packageVersion ?? await packageVersion();
+  if (existsSync(target)) {
+    const installed = await verifyInstalledCompanion(target, version);
+    if (installed) return installed;
+  }
+
   const fetcher = options.fetch ?? (async (url: string, init?: { redirect?: "follow" }) => await fetch(url, init) as unknown as DownloadResponse);
   const binaryUrl = releaseAssetUrl(version, COMPANION_ASSET);
   const shaUrl = releaseAssetUrl(version, COMPANION_SHA_ASSET);
