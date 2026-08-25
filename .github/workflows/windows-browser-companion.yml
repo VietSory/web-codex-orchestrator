@@ -220,6 +220,22 @@ jobs:
           test -f wco-browser-companion-windows-x64.exe.sha256
           sha256sum --check wco-browser-companion-windows-x64.exe.sha256
 
+      - name: Refuse mutable release asset replacement
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          WCO_RELEASE_TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          existing_assets="$(gh release view "$WCO_RELEASE_TAG" --repo "$GH_REPO" --json assets --jq '.assets[].name')"
+          for asset in wco-browser-companion-windows-x64.exe wco-browser-companion-windows-x64.exe.sha256; do
+            if grep -Fxq "$asset" <<<"$existing_assets"; then
+              echo "Release asset '$asset' already exists on '$WCO_RELEASE_TAG'; refusing to replace an immutable companion artifact." >&2
+              exit 1
+            fi
+          done
+
       - name: Attach exact companion assets to published release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -231,5 +247,4 @@ jobs:
           gh release upload "$WCO_RELEASE_TAG" \
             companion/wco-browser-companion-windows-x64.exe \
             companion/wco-browser-companion-windows-x64.exe.sha256 \
-            --repo "$GH_REPO" \
-            --clobber
+            --repo "$GH_REPO"
