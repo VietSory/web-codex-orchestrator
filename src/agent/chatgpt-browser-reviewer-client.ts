@@ -32,6 +32,7 @@ export class ChatGptBrowserReviewerAgentClient implements AgentClient {
         { code: "WEB_CHATGPT_BROWSER_REVIEW_ROLE_INVALID" },
       );
     }
-    return await this.delegate.turn({ ...request, role: "implementer", thread_id: undefined });
+    const { thread_id: _ignoredThreadId, ...freshRequest } = request;
+    return await this.delegate.turn({ ...freshRequest, role: "implementer" });
   }
 }
