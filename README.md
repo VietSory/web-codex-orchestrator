@@ -52,11 +52,11 @@ You decide whether to merge
 
 ## Install
 
-For release `v0.3.3`, download:
+For release `v0.4.0`, download:
 
 ```text
-web-codex-orchestrator-0.3.3.tgz
-web-codex-orchestrator-0.3.3.tgz.sha256
+web-codex-orchestrator-0.4.0.tgz
+web-codex-orchestrator-0.4.0.tgz.sha256
 ```
 
 A Draft-PR candidate is not a published release merely because its code or CI artifact exists on GitHub.
@@ -64,14 +64,14 @@ A Draft-PR candidate is not a published release merely because its code or CI ar
 Verify the package from WSL/Linux:
 
 ```bash
-sha256sum -c web-codex-orchestrator-0.3.3.tgz.sha256
+sha256sum -c web-codex-orchestrator-0.4.0.tgz.sha256
 ```
 
 Install it once inside WSL:
 
 ```bash
 cd /mnt/c/Users/<windows-user>/Downloads
-npm install -g ./web-codex-orchestrator-0.3.3.tgz
+npm install -g ./web-codex-orchestrator-0.4.0.tgz
 ```
 
 Then enter the repository WCO should work on:
