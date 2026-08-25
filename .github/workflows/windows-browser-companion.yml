@@ -62,12 +62,15 @@ jobs:
           });
           '@ | Set-Content -Encoding utf8 "$directory/sea-entry.ts"
 
+          # windows-main.ts has an ESM-only direct-entry guard. The generated SEA entry above
+          # invokes the exported function explicitly, so that guard is intentionally dead in CJS.
           npx --yes esbuild@0.28.2 `
             "$directory/sea-entry.ts" `
             --bundle `
             --platform=node `
             --format=cjs `
             --target=node22 `
+            --log-override:empty-import-meta=silent `
             --outfile="$directory/wco-browser-companion.cjs"
           if ($LASTEXITCODE -ne 0) {
             throw "esbuild failed with exit code $LASTEXITCODE."
@@ -98,6 +101,18 @@ jobs:
             throw "Could not copy the Node executable for SEA injection."
           }
 
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" `
+            -File -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (-not $signtool) {
+            throw "Windows SDK signtool.exe is required to remove the upstream Node signature before SEA injection."
+          }
+          & $signtool.FullName remove /s $exe
+          if ($LASTEXITCODE -ne 0) {
+            throw "signtool failed to remove the upstream Node signature with exit code $LASTEXITCODE."
+          }
+
           npx --yes postject@1.0.0-alpha.6 `
             $exe `
             NODE_SEA_BLOB `
@@ -106,6 +121,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "postject failed with exit code $LASTEXITCODE."
           }
+
+          $signature = Get-AuthenticodeSignature $exe
+          if ($signature.Status.ToString() -ne "NotSigned") {
+            throw "Final companion must be clean unsigned rather than carrying an invalid inherited signature; status is '$($signature.Status)'."
+          }
+          Write-Host "Authenticode status: $($signature.Status)"
 
       - name: Smoke-test executable protocol without browser launch
         shell: pwsh
@@ -151,7 +172,7 @@ jobs:
           Write-Host "Size: $size bytes"
 
       - name: Upload companion candidate
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wco-browser-companion-windows-x64
           path: |
@@ -169,7 +190,7 @@ jobs:
 
     steps:
       - name: Download qualified companion artifact
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           name: wco-browser-companion-windows-x64
           path: companion
