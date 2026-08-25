@@ -16,6 +16,10 @@ function truthyEnvironmentFlag(value: string | undefined): boolean {
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
+function companionExplicitlyRequested(env: NodeJS.ProcessEnv): boolean {
+  return Boolean(env.WCO_CHATGPT_WEB_MIUUYY_CONFIG?.trim());
+}
+
 /**
  * Core ChatGPT Web transport for PAIR.
  *
@@ -28,7 +32,9 @@ function truthyEnvironmentFlag(value: string | undefined): boolean {
  *
  * The legacy direct local Chromium adapter remains available only when no
  * qualified miuuyy launcher is configured, for non-WSL qualification and
- * backwards compatibility. Neither path may silently fall back to Codex.
+ * backwards compatibility. An explicit companion-config override is authority:
+ * if it is unreadable or invalid WCO fails closed instead of silently changing
+ * transports. Neither path may silently fall back to Codex.
  */
 export class ChatGptBrowserWebBridge implements PreparedRunAwareWebBridge {
   private readonly delegate: ChatGptCodexWebBridge;
@@ -42,7 +48,10 @@ export class ChatGptBrowserWebBridge implements PreparedRunAwareWebBridge {
     private readonly env: NodeJS.ProcessEnv = process.env,
     browserAgent?: AgentClient,
   ) {
-    const companion = !browserAgent && isChatGptWebCompanionConfigured(env);
+    const companion = !browserAgent && (
+      companionExplicitlyRequested(env)
+      || isChatGptWebCompanionConfigured(env)
+    );
     this.agent = browserAgent
       ?? (companion
         ? new ChatGptWebCompanionAgentClient({ env })
