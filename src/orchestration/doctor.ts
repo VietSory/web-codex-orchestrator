@@ -11,14 +11,16 @@ export interface DoctorReport { status: DoctorSeverity; checks: DoctorCheckResul
 
 // The installed ChatGPT Web launcher may need to hydrate a real Temporary Chat
 // and inspect account/model controls before it can prove readiness. Its 3.0.3
-// launcher contract budgets up to 120s for capability inspection. Production's
-// chatgpt-web probe therefore requests this scoped minimum; the generic Doctor
-// runner itself remains caller-configurable so focused tests and other callers
-// can use short cancellation deadlines without being silently widened by an ID.
+// launcher contract budgets up to 120s for capability inspection. The normal
+// production Doctor calls probes with an 8s baseline, so chatgpt-web receives a
+// scoped 130s minimum there. Deliberately shorter caller deadlines remain exact
+// overrides; this is important for cancellation tests and bounded embedding
+// callers that explicitly choose not to wait for interactive browser readiness.
 export const CHATGPT_WEB_DOCTOR_PROBE_TIMEOUT_MS = 130_000;
+export const CHATGPT_WEB_DOCTOR_POLICY_THRESHOLD_MS = 8_000;
 
 export function doctorProbeTimeoutMs(probeId: string, configuredTimeoutMs: number): number {
-  return probeId === "chatgpt-web"
+  return probeId === "chatgpt-web" && configuredTimeoutMs >= CHATGPT_WEB_DOCTOR_POLICY_THRESHOLD_MS
     ? Math.max(configuredTimeoutMs, CHATGPT_WEB_DOCTOR_PROBE_TIMEOUT_MS)
     : configuredTimeoutMs;
 }
@@ -69,7 +71,8 @@ export async function runDoctor(probes: DoctorProbe[], options: { maximum_concur
   const pool = new BoundedResourcePool(maximum, Math.max(0, probes.length));
   const checks = await Promise.all(probes.map((probe) => pool.run(async () => {
     const started = Date.now();
-    const probeTimeout = probe.timeout_ms === undefined ? timeout : Math.max(timeout, probe.timeout_ms);
+    const configuredProbeTimeout = probe.timeout_ms === undefined ? timeout : Math.max(timeout, probe.timeout_ms);
+    const probeTimeout = doctorProbeTimeoutMs(probe.id, configuredProbeTimeout);
     try {
       const result = normalizeReadiness(probe.id, await withDeadline((signal) => probe.run(signal), probeTimeout));
       return { id: probe.id, ...result, duration_ms: Math.max(0, Date.now() - started) } satisfies DoctorCheckResult;
