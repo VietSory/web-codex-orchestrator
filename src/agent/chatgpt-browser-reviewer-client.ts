@@ -1,32 +1,24 @@
-import { ChatGptBrowserAgentClient } from "./chatgpt-browser-client.js";
-import {
-  ChatGptWebCompanionAgentClient,
-  isChatGptWebCompanionConfigured,
-} from "./chatgpt-web-companion-client.js";
+import { WcoBrowserCompanionAgentClient } from "./wco-browser-companion-client.js";
 import type { AgentClient, AgentTurnRequest, AgentTurnResponse } from "./contracts.js";
 
 /**
  * Reviewer-only ChatGPT Web adapter.
  *
- * The reviewer must use the same provider family as browser PAIR while keeping
- * a fresh logical conversation. If the installed miuuyy launcher helper is
- * available, reviewer turns use that Windows-native stdio boundary too;
- * otherwise the legacy direct Chromium transport remains available for local
- * non-WSL qualification.
+ * Browser PAIR authoring and review use the same first-party WCO Windows
+ * companion transport, while each review request starts without a provider
+ * thread id so the native transport opens a fresh ChatGPT Temporary Chat.
  *
- * The underlying browser transports attach bounded repository context only for
- * implementer-shaped turns. This wrapper therefore maps the reviewer request to
- * role=implementer strictly at the transport boundary; the prompt/schema remain
- * the independent reviewer contract and WCO retains all mutation authority.
+ * The companion itself receives only prepared prompt text. This wrapper maps
+ * the reviewer request to role=implementer only on the WSL side so WCO can add
+ * its bounded repository context before serialization; no workspace/bundle path
+ * crosses into Windows.
  */
 export class ChatGptBrowserReviewerAgentClient implements AgentClient {
   private readonly delegate: AgentClient;
 
   constructor(options: { stateDirectory: string; env?: NodeJS.ProcessEnv }) {
-    const env = options.env ?? process.env;
-    this.delegate = isChatGptWebCompanionConfigured(env)
-      ? new ChatGptWebCompanionAgentClient({ env })
-      : new ChatGptBrowserAgentClient({ stateDirectory: options.stateDirectory, env });
+    void options.stateDirectory;
+    this.delegate = new WcoBrowserCompanionAgentClient({ env: options.env ?? process.env });
   }
 
   async checkAvailability(options: { signal?: AbortSignal } = {}): Promise<void> {
@@ -40,7 +32,6 @@ export class ChatGptBrowserReviewerAgentClient implements AgentClient {
         { code: "WEB_CHATGPT_BROWSER_REVIEW_ROLE_INVALID" },
       );
     }
-
-    return await this.delegate.turn({ ...request, role: "implementer" });
+    return await this.delegate.turn({ ...request, role: "implementer", thread_id: undefined });
   }
 }
