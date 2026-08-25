@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { BrowserLifecycle, buildChatGptBrowserContextPack, detectWslNetworkingMode, parseChatGptBrowserJson, resolveBrowserProfilePlan } from "../src/agent/chatgpt-browser-client.js";
 import type { TrustedConfig } from "../src/config/contracts.js";
+import { writeProviderPreferences } from "../src/setup/provider-preferences.js";
 import { createConfiguredWebBridge } from "../src/web-bridge/bridge-factory.js";
 import { ChatGptBrowserWebBridge } from "../src/web-bridge/chatgpt-browser-bridge.js";
 import { ChatGptCodexWebBridge } from "../src/web-bridge/chatgpt-codex-bridge.js";
@@ -58,7 +59,7 @@ test("browser implementation context follows Task Bundle path policy and exclude
   }
 });
 
-test("browser provider is direct opt-in and no quota-fallback flag changes routing", async () => {
+test("browser provider is the safe default and Codex requires an explicit persisted selection", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-browser-factory-"));
   try {
     const config = minimalConfig(root);
@@ -67,9 +68,15 @@ test("browser provider is direct opt-in and no quota-fallback flag changes routi
     const normal = createConfiguredWebBridge(config, bridgeDirectory, {}, stateDirectory);
     const browser = createConfiguredWebBridge(config, bridgeDirectory, { WCO_CHATGPT_BROWSER: "1" }, stateDirectory);
     const obsoleteFallbackFlag = createConfiguredWebBridge(config, bridgeDirectory, { WCO_CHATGPT_BROWSER_FALLBACK: "1" }, stateDirectory);
-    assert.ok(normal instanceof ChatGptCodexWebBridge);
+    assert.ok(normal instanceof ChatGptBrowserWebBridge);
     assert.ok(browser instanceof ChatGptBrowserWebBridge);
-    assert.ok(obsoleteFallbackFlag instanceof ChatGptCodexWebBridge);
+    assert.ok(obsoleteFallbackFlag instanceof ChatGptBrowserWebBridge);
+
+    await writeProviderPreferences(stateDirectory, "codex");
+    const explicitCodex = createConfiguredWebBridge(config, bridgeDirectory, {}, stateDirectory);
+    const browserOverride = createConfiguredWebBridge(config, bridgeDirectory, { WCO_CHATGPT_BROWSER: "1" }, stateDirectory);
+    assert.ok(explicitCodex instanceof ChatGptCodexWebBridge);
+    assert.ok(browserOverride instanceof ChatGptBrowserWebBridge);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
