@@ -1,6 +1,10 @@
 import path from "node:path";
-import { ChatGptBrowserAgentClient } from "../agent/chatgpt-browser-client.js";
 import type { AgentClient } from "../agent/contracts.js";
+import { ChatGptBrowserAgentClient } from "../agent/chatgpt-browser-client.js";
+import {
+  ChatGptWebCompanionAgentClient,
+  isChatGptWebCompanionConfigured,
+} from "../agent/chatgpt-web-companion-client.js";
 import type { TrustedConfig } from "../config/contracts.js";
 import { ChatGptCodexWebBridge } from "./chatgpt-codex-bridge.js";
 import type { AuthoringEvent, BridgeConnectionStatus, BridgeJobIdentity, FinalReviewRequest, RepositoryCommandResult, WebContractEnvelope, WebImplementationSubmission, WebVerdictEnvelope } from "./contracts.js";
@@ -13,22 +17,43 @@ function truthyEnvironmentFlag(value: string | undefined): boolean {
 }
 
 /**
- * Core, opt-in ChatGPT Web transport for the user's own interactive browser
- * session. It deliberately reuses WCO's mature semantic/implementation state
- * machine while replacing the provider turn boundary with ChatGPT Web.
+ * Core ChatGPT Web transport for PAIR.
  *
- * No cookies, bearer tokens, private ChatGPT endpoints, CAPTCHA bypasses, or
- * anti-bot workarounds are read or implemented here. Browser state lives in a
- * dedicated persistent Chromium profile owned by the local user. If ChatGPT
- * presents a protective verification step, the provider fails closed.
+ * The mature WCO semantic/implementation state machine stays provider-neutral.
+ * Provider turns are injected through AgentClient and therefore never need a
+ * Codex model. When WCO_CHATGPT_WEB_COMPANION_EXE is configured, WCO uses the
+ * pinned miuuyy Windows-native Temporary Chat companion over stdio. Otherwise
+ * the legacy direct local Chromium adapter remains available for non-WSL
+ * qualification and backwards compatibility.
+ *
+ * Neither path may read ChatGPT cookies/tokens, call private ChatGPT endpoints,
+ * bypass protective measures, or silently fall back to a Codex model.
  */
 export class ChatGptBrowserWebBridge implements PreparedRunAwareWebBridge {
   private readonly delegate: ChatGptCodexWebBridge;
-  private readonly agent: ChatGptBrowserAgentClient;
+  private readonly agent: AgentClient;
+  private readonly accountLabel: string;
 
-  constructor(config: TrustedConfig, bridgeDirectory: string, stateDirectory: string, private readonly env: NodeJS.ProcessEnv = process.env, browserAgent?: ChatGptBrowserAgentClient) {
-    this.agent = browserAgent ?? new ChatGptBrowserAgentClient({ stateDirectory, env });
-    this.delegate = new ChatGptCodexWebBridge(config, path.join(bridgeDirectory, "chatgpt-browser-provider"), stateDirectory);
+  constructor(
+    config: TrustedConfig,
+    bridgeDirectory: string,
+    stateDirectory: string,
+    private readonly env: NodeJS.ProcessEnv = process.env,
+    browserAgent?: AgentClient,
+  ) {
+    const companion = !browserAgent && isChatGptWebCompanionConfigured(env);
+    this.agent = browserAgent
+      ?? (companion
+        ? new ChatGptWebCompanionAgentClient({ env })
+        : new ChatGptBrowserAgentClient({ stateDirectory, env }));
+    this.accountLabel = companion
+      ? "ChatGPT Web companion"
+      : "ChatGPT Web browser";
+    this.delegate = new ChatGptCodexWebBridge(
+      config,
+      path.join(bridgeDirectory, "chatgpt-browser-provider"),
+      stateDirectory,
+    );
 
     const providerHooks = this.delegate as unknown as Record<string, unknown>;
     if (typeof providerHooks.rawAgent !== "function" || typeof providerHooks.ensureAuthorizedForProviderTurn !== "function") {
@@ -94,14 +119,13 @@ export class ChatGptBrowserWebBridge implements PreparedRunAwareWebBridge {
 
   async getConnectionStatus(signal?: AbortSignal): Promise<BridgeConnectionStatus> {
     // Generic CI qualification must never launch the user's browser or contact
-    // chatgpt.com. Real browser dogfood is intentionally a local, interactive
-    // qualification step using the user's dedicated signed-in profile.
+    // chatgpt.com. Real Web dogfood is intentionally a local interactive gate.
     if (truthyEnvironmentFlag(this.env.CI)) {
       return { configured: true, connected: false, account: "CI browser probe disabled" };
     }
     try {
       await this.agent.checkAvailability(signal ? { signal } : {});
-      return { configured: true, connected: true, account: "ChatGPT Web browser" };
+      return { configured: true, connected: true, account: this.accountLabel };
     } catch {
       return { configured: true, connected: false };
     }

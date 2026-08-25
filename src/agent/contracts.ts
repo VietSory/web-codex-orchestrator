@@ -9,8 +9,8 @@ export interface AgentTurnRequest {
   reasoning_effort: "minimal" | "low" | "medium" | "high" | "xhigh";
 
   /**
-   * Undefined means create a new SDK thread.
-   * A value means reconstruct that thread through resumeThread().
+   * Undefined means create a new provider thread.
+   * A value means reconstruct or resume that exact logical provider thread.
    */
   thread_id?: string;
   prompt: string;
@@ -22,7 +22,7 @@ export interface AgentTurnRequest {
   network_access: false;
   live_web_search: false;
   cached_web_search: false;
-  /** Canonical project root granted to the agent by the trusted orchestrator. */
+  /** Canonical project root granted to the trusted orchestrator. */
   workspace_path: string;
   /** Accepted bundle is read-only context and is never a writable root. */
   accepted_bundle_path: string;
@@ -37,12 +37,15 @@ export interface AgentTurnResponse {
 }
 
 /**
- * Runtime boundary for Codex.  Implementations own provider-specific thread
- * creation/resume, while the orchestrator only supplies validated requests.
+ * Provider runtime boundary. Implementations own provider-specific logical
+ * thread creation/reconstruction, while WCO only supplies validated requests.
  */
 export interface AgentClient {
-  /** Resolve the configured runtime and perform a credential-free auth
-   * preflight before any model thread is started. */
-  checkAvailability(): Promise<void>;
+  /**
+   * Resolve the configured provider runtime and perform a credential-free
+   * readiness preflight before any model turn is started. Browser transports
+   * may observe cancellation so doctor deadlines cancel the actual probe.
+   */
+  checkAvailability(options?: { signal?: AbortSignal }): Promise<void>;
   turn(request: AgentTurnRequest): Promise<AgentTurnResponse>;
 }
