@@ -52,6 +52,16 @@ test("authoritative docs freeze first-party ChatGPT Web browser PAIR", async () 
   assert.doesNotMatch(bridge, /Browser DOM automation.*not supported normal transports/i);
 });
 
+test("normal TUI presents first-party browser PAIR without Codex-auth wording", async () => {
+  const interactive = await text("src/tui/interactive-app.ts");
+  assert.match(interactive, /ChatGPT Web browser PAIR/);
+  assert.match(interactive, /Normal PAIR uses the WCO Windows browser companion/);
+  assert.match(interactive, /Codex provider authentication is not required/);
+  assert.match(interactive, /ChatGPT Web browser PAIR transport is unavailable/);
+  assert.match(interactive, /The selected ChatGPT transport is not ready/);
+  assert.doesNotMatch(interactive, /local ChatGPT\/Codex|official Codex sign-in may open once|ChatGPT\/Codex is not ready/);
+});
+
 test("browser-selected auth preflight returns before any Codex runtime command", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-browser-auth-preflight-"));
   t.after(() => rm(root, { recursive: true, force: true }));
