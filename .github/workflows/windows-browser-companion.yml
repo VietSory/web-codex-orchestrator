@@ -45,6 +45,22 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
 
+      - name: Confirm release tag matches package version
+        if: github.event_name == 'release'
+        shell: pwsh
+        env:
+          WCO_RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          $packageVersion = (node -p "require('./package.json').version").Trim()
+          if ($packageVersion -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
+            throw "package.json contains an invalid release version '$packageVersion'."
+          }
+          $expectedTag = "v$packageVersion"
+          if ($env:WCO_RELEASE_TAG -ne $expectedTag) {
+            throw "Browser companion release tag '$env:WCO_RELEASE_TAG' does not match package version '$packageVersion'; expected '$expectedTag'."
+          }
+          Write-Host "Release identity: $expectedTag"
+
       - name: Install repository dependencies
         run: npm ci
 
