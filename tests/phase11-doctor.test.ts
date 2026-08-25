@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runDoctor } from "../src/orchestration/doctor.js";
+import {
+  CHATGPT_WEB_DOCTOR_PROBE_TIMEOUT_MS,
+  doctorProbeTimeoutMs,
+  runDoctor,
+} from "../src/orchestration/doctor.js";
 
 test("P11-DOCTOR-001 probes are bounded/concurrent and report worst severity", async () => {
   const report = await runDoctor([
@@ -35,4 +39,11 @@ test("P11-DOCTOR-003 deadline aborts the underlying probe instead of only racing
   assert.equal(report.status, "FAIL");
   assert.equal(aborted, true);
   assert.match(report.checks[0]?.summary ?? "", /exceeded 10ms/);
+});
+
+test("P11-DOCTOR-004 ChatGPT Web readiness gets the real launcher capability-inspection budget only", () => {
+  assert.equal(CHATGPT_WEB_DOCTOR_PROBE_TIMEOUT_MS, 130_000);
+  assert.equal(doctorProbeTimeoutMs("chatgpt-web", 8_000), 130_000);
+  assert.equal(doctorProbeTimeoutMs("state", 8_000), 8_000);
+  assert.equal(doctorProbeTimeoutMs("chatgpt-web", 180_000), 180_000);
 });
