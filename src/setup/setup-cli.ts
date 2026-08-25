@@ -1,11 +1,8 @@
 import readline from "node:readline/promises";
-import { ChatGptBrowserAgentClient } from "../agent/chatgpt-browser-client.js";
-import {
-  ChatGptWebCompanionAgentClient,
-  isChatGptWebCompanionConfigured,
-} from "../agent/chatgpt-web-companion-client.js";
+import { WcoBrowserCompanionAgentClient } from "../agent/wco-browser-companion-client.js";
 import { CodexSdkAgentClient } from "../agent/codex-sdk-client.js";
 import { resolveCodexRuntime } from "../runtime/codex-runtime.js";
+import { ensureWcoBrowserCompanionInstalled } from "./browser-companion-bootstrap.js";
 import { resolveGitHubToken } from "./credential-provider.js";
 import { performFirstRunSetup } from "./first-run.js";
 import type { WcoExecutionProvider } from "./provider-preferences.js";
@@ -24,17 +21,13 @@ export interface SetupExecutionHostStatus {
 
 export interface SetupChatGptWebProviderStatus {
   value: string;
-  transport: "miuuyy-helper" | "direct-browser";
+  transport: "wco-companion";
 }
 
 const defaultIo: SetupCommandIo = {
   write: (value) => process.stdout.write(value),
   error: (value) => process.stderr.write(value),
 };
-
-function companionExplicitlyRequested(env: NodeJS.ProcessEnv): boolean {
-  return Boolean(env.WCO_CHATGPT_WEB_MIUUYY_CONFIG?.trim());
-}
 
 export function setupExecutionHostStatus(platform: NodeJS.Platform = process.platform): SetupExecutionHostStatus {
   if (platform === "linux") return { severity: "ok", value: "Linux/WSL verification supported" };
@@ -53,26 +46,21 @@ export function setupExecutionHostStatus(platform: NodeJS.Platform = process.pla
 }
 
 export async function setupChatGptWebProviderStatus(
-  stateDirectory: string,
+  _stateDirectory: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<SetupChatGptWebProviderStatus> {
-  if (companionExplicitlyRequested(env) || isChatGptWebCompanionConfigured(env)) {
-    try {
-      await new ChatGptWebCompanionAgentClient({ env }).checkAvailability();
-      return { value: "ChatGPT Web launcher helper ready", transport: "miuuyy-helper" };
-    } catch {
-      return {
-        value: "ChatGPT Web launcher helper sign-in/readiness pending",
-        transport: "miuuyy-helper",
-      };
-    }
-  }
-
   try {
-    await new ChatGptBrowserAgentClient({ stateDirectory, env }).checkAvailability();
-    return { value: "ChatGPT Web browser ready", transport: "direct-browser" };
+    const installation = await ensureWcoBrowserCompanionInstalled({ env });
+    await new WcoBrowserCompanionAgentClient({
+      env,
+      executable: installation.executable,
+    }).checkAvailability();
+    return { value: "WCO ChatGPT Web browser companion ready", transport: "wco-companion" };
   } catch {
-    return { value: "ChatGPT Web browser sign-in pending", transport: "direct-browser" };
+    return {
+      value: "WCO ChatGPT Web browser companion sign-in/readiness pending",
+      transport: "wco-companion",
+    };
   }
 }
 
@@ -161,16 +149,11 @@ export async function runSetupCommand(
     const checks: Array<["ok" | "warn", string, string]> = [["ok", "Git repository", result.repository.github_repository ?? result.repository.root]];
     checks.push([executionHost.severity, "Execution host", executionHost.value]);
 
-    let providerStatus = result.provider === "chatgpt-web" ? "ChatGPT Web browser sign-in pending" : "Codex authorization pending";
-    let browserTransport: SetupChatGptWebProviderStatus["transport"] | undefined;
+    let providerStatus = result.provider === "chatgpt-web" ? "WCO ChatGPT Web browser companion sign-in/readiness pending" : "Codex authorization pending";
     const explicitMode = result.config.web_bridge?.mode;
     if (!explicitMode && result.provider === "chatgpt-web") {
-      const companionConfigured = companionExplicitlyRequested(process.env) || isChatGptWebCompanionConfigured(process.env);
-      if (companionConfigured || (process.stdin.isTTY && process.stdout.isTTY && process.env.CI !== "true")) {
-        const status = await setupChatGptWebProviderStatus(result.paths.state);
-        providerStatus = status.value;
-        browserTransport = status.transport;
-      }
+      const status = await setupChatGptWebProviderStatus(result.paths.state);
+      providerStatus = status.value;
     } else if (!explicitMode) {
       try {
         const runtime = await resolveCodexRuntime(result.config.runtime, result.paths.state);
@@ -189,11 +172,7 @@ export async function runSetupCommand(
     if (!explicitMode && result.provider === "chatgpt-web") {
       suppliedIo.write("\nSetup is complete. ChatGPT Web is now the saved PAIR provider, so future terminals only need `wco` and a goal. No WCO_CHATGPT_BROWSER environment flag and no Codex model quota are required for PAIR.\n");
       if (providerStatus.includes("pending")) {
-        if (browserTransport === "miuuyy-helper") {
-          suppliedIo.write("Open or keep the miuuyy/codex-chatgpt-web launcher running, finish ChatGPT sign-in in its embedded browser if needed, then run `wco doctor --mode PAIR`.\n");
-        } else {
-          suppliedIo.write("On the next `wco` run, WCO will open its dedicated ChatGPT browser profile so you can finish sign-in if needed.\n");
-        }
+        suppliedIo.write("WCO uses its own first-party Windows browser companion for PAIR. Complete ChatGPT sign-in in the WCO browser window if needed, then run `wco doctor --mode PAIR`. Helper failure fails closed and never falls back to Codex.\n");
       }
       suppliedIo.write("Switch back later with `wco setup --provider codex`.\n");
     } else if (!explicitMode) {
