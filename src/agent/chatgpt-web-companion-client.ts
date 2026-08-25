@@ -25,6 +25,7 @@ const MAX_HELPER_LINE_BYTES = 10 * 1024 * 1024;
 const MAX_HELPER_STDERR_BYTES = 512 * 1024;
 const MAX_THREAD_REPLAY_BYTES = 512 * 1024;
 const HELPER_SHUTDOWN_GRACE_MS = 2_000;
+const HELPER_TERMINATE_GRACE_MS = 2_000;
 const CHATGPT_SOL_MODEL_ID = "gpt-5.6-sol";
 const CHATGPT_LUNA_MODEL_ID = "gpt-5.6-luna";
 const WSL_TO_WINDOWS_ENVIRONMENT = [
@@ -498,11 +499,13 @@ export class ChatGptWebCompanionAgentClient implements AgentClient {
       let ready = false;
       let terminal: HelperTerminalMessage | undefined;
       let finished = false;
+      let terminateTimer: ReturnType<typeof setTimeout> | undefined;
       let forcedKillTimer: ReturnType<typeof setTimeout> | undefined;
       let timeout: ReturnType<typeof setTimeout> | undefined;
 
       const cleanup = () => {
         if (timeout) clearTimeout(timeout);
+        if (terminateTimer) clearTimeout(terminateTimer);
         if (forcedKillTimer) clearTimeout(forcedKillTimer);
         signal?.removeEventListener("abort", onAbort);
         lines.close();
@@ -512,10 +515,16 @@ export class ChatGptWebCompanionAgentClient implements AgentClient {
         if (child.exitCode !== null || child.signalCode !== null) return;
         try { child.stdin.write(`${JSON.stringify({ type: "shutdown" })}\n`); } catch { /* best effort */ }
         try { child.stdin.end(); } catch { /* best effort */ }
-        forcedKillTimer = setTimeout(() => {
-          try { child.kill("SIGKILL"); } catch { /* exact helper only */ }
+        terminateTimer = setTimeout(() => {
+          if (child.exitCode !== null || child.signalCode !== null) return;
+          try { child.kill("SIGTERM"); } catch { /* exact helper only */ }
+          forcedKillTimer = setTimeout(() => {
+            if (child.exitCode !== null || child.signalCode !== null) return;
+            try { child.kill("SIGKILL"); } catch { /* exact helper only */ }
+          }, HELPER_TERMINATE_GRACE_MS);
+          forcedKillTimer.unref();
         }, HELPER_SHUTDOWN_GRACE_MS);
-        forcedKillTimer.unref();
+        terminateTimer.unref();
       };
 
       const failNow = (error: Error) => {
