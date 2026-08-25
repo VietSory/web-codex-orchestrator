@@ -46,7 +46,7 @@ test("authoritative docs freeze first-party ChatGPT Web browser PAIR", async () 
     assert.match(source, /chatgpt-web/i);
     assert.match(source, /Codex provider(?:\/model)? turns[^\n]*0|Codex provider\/model turns\s*=\s*0/i);
     assert.match(source, /manual browser interactions[^\n]*0/i);
-    assert.match(source, /never.*fallback|never a silent fallback|must not silently fall back/i);
+    assert.match(source, /never\s+silently\s+fall\s+back|never a silent fallback|must not silently fall back/i);
   }
   assert.doesNotMatch(readme, /delegates authorization to its \*\*bundled official Codex runtime\*\*/i);
   assert.doesNotMatch(bridge, /Browser DOM automation.*not supported normal transports/i);
