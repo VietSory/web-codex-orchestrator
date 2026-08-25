@@ -32,6 +32,10 @@ const defaultIo: SetupCommandIo = {
   error: (value) => process.stderr.write(value),
 };
 
+function companionExplicitlyRequested(env: NodeJS.ProcessEnv): boolean {
+  return Boolean(env.WCO_CHATGPT_WEB_MIUUYY_CONFIG?.trim());
+}
+
 export function setupExecutionHostStatus(platform: NodeJS.Platform = process.platform): SetupExecutionHostStatus {
   if (platform === "linux") return { severity: "ok", value: "Linux/WSL verification supported" };
   if (platform === "win32") {
@@ -52,7 +56,7 @@ export async function setupChatGptWebProviderStatus(
   stateDirectory: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<SetupChatGptWebProviderStatus> {
-  if (isChatGptWebCompanionConfigured(env)) {
+  if (companionExplicitlyRequested(env) || isChatGptWebCompanionConfigured(env)) {
     try {
       await new ChatGptWebCompanionAgentClient({ env }).checkAvailability();
       return { value: "ChatGPT Web launcher helper ready", transport: "miuuyy-helper" };
@@ -161,7 +165,7 @@ export async function runSetupCommand(
     let browserTransport: SetupChatGptWebProviderStatus["transport"] | undefined;
     const explicitMode = result.config.web_bridge?.mode;
     if (!explicitMode && result.provider === "chatgpt-web") {
-      const companionConfigured = isChatGptWebCompanionConfigured(process.env);
+      const companionConfigured = companionExplicitlyRequested(process.env) || isChatGptWebCompanionConfigured(process.env);
       if (companionConfigured || (process.stdin.isTTY && process.stdout.isTTY && process.env.CI !== "true")) {
         const status = await setupChatGptWebProviderStatus(result.paths.state);
         providerStatus = status.value;
