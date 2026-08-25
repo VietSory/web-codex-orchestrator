@@ -7,6 +7,7 @@ import test from "node:test";
 import { isSemanticChallengeAwareWebBridge, type SemanticChallengeTransport } from "../src/semantic/challenge-aware-web-bridge.js";
 import { createSemanticChallengeRequest } from "../src/semantic/blind-challenge.js";
 import { readSemanticChallengeTrajectory } from "../src/semantic/challenge-trajectory-store.js";
+import { writeProviderPreferences } from "../src/setup/provider-preferences.js";
 import { createConfiguredWebBridge } from "../src/web-bridge/bridge-factory.js";
 import { ChatGptCodexWebBridge } from "../src/web-bridge/chatgpt-codex-bridge.js";
 import { ChatGptCodexChallengeWebBridge } from "../src/web-bridge/chatgpt-codex-challenge-bridge.js";
@@ -38,11 +39,19 @@ function challengeIdentity(jobId: string): BridgeJobIdentity {
   };
 }
 
-test("configured local bridge keeps the normal hot path free of shadow-only provider work", () => {
-  const bridge = createConfiguredWebBridge(config(), "/tmp/wco-challenge-factory");
-  assert.ok(bridge instanceof ChatGptCodexWebBridge);
-  assert.equal(bridge instanceof ChatGptCodexChallengeWebBridge, false);
-  assert.equal(isSemanticChallengeAwareWebBridge(bridge), false);
+test("configured local Codex bridge keeps the normal hot path free of shadow-only provider work", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-challenge-factory-"));
+  try {
+    const stateDirectory = path.join(root, "state");
+    const bridgeDirectory = path.join(root, "bridge");
+    await writeProviderPreferences(stateDirectory, "codex");
+    const bridge = createConfiguredWebBridge(config(), bridgeDirectory, {}, stateDirectory);
+    assert.ok(bridge instanceof ChatGptCodexWebBridge);
+    assert.equal(bridge instanceof ChatGptCodexChallengeWebBridge, false);
+    assert.equal(isSemanticChallengeAwareWebBridge(bridge), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("explicit challenge bridge remains available for semantic evaluation without affecting normal authoring authority", async () => {
