@@ -7,6 +7,21 @@ export interface DoctorCheckResult { id: string; severity: DoctorSeverity; summa
 export interface DoctorProbe { id: string; run(signal?: AbortSignal): Promise<Omit<DoctorCheckResult, "id" | "duration_ms">>; }
 export interface DoctorReport { status: DoctorSeverity; checks: DoctorCheckResult[]; generated_at: string; }
 
+// The installed ChatGPT Web launcher may need to hydrate a real Temporary Chat
+// and inspect account/model controls before it can prove readiness. Its 3.0.3
+// launcher contract budgets up to 120s for capability inspection, so the
+// generic 8s WCO Doctor deadline would otherwise reject a healthy real browser
+// even though fast CI doubles always pass. Keep the wider allowance scoped to
+// the one browser readiness probe; all other Doctor checks retain their normal
+// bounded deadline.
+export const CHATGPT_WEB_DOCTOR_PROBE_TIMEOUT_MS = 130_000;
+
+export function doctorProbeTimeoutMs(probeId: string, configuredTimeoutMs: number): number {
+  return probeId === "chatgpt-web"
+    ? Math.max(configuredTimeoutMs, CHATGPT_WEB_DOCTOR_PROBE_TIMEOUT_MS)
+    : configuredTimeoutMs;
+}
+
 function worst(left: DoctorSeverity, right: DoctorSeverity): DoctorSeverity {
   const rank: Record<DoctorSeverity, number> = { OK: 0, WARN: 1, FAIL: 2 };
   return rank[right] > rank[left] ? right : left;
@@ -53,8 +68,9 @@ export async function runDoctor(probes: DoctorProbe[], options: { maximum_concur
   const pool = new BoundedResourcePool(maximum, Math.max(0, probes.length));
   const checks = await Promise.all(probes.map((probe) => pool.run(async () => {
     const started = Date.now();
+    const probeTimeout = doctorProbeTimeoutMs(probe.id, timeout);
     try {
-      const result = normalizeReadiness(probe.id, await withDeadline((signal) => probe.run(signal), timeout));
+      const result = normalizeReadiness(probe.id, await withDeadline((signal) => probe.run(signal), probeTimeout));
       return { id: probe.id, ...result, duration_ms: Math.max(0, Date.now() - started) } satisfies DoctorCheckResult;
     } catch (error) {
       return { id: probe.id, severity: "FAIL", summary: error instanceof Error ? error.message : String(error), duration_ms: Math.max(0, Date.now() - started) } satisfies DoctorCheckResult;
