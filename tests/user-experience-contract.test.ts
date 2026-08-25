@@ -1,10 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { buildFirstRunConfig } from "../src/setup/first-run.js";
+import { writeProviderPreferences } from "../src/setup/provider-preferences.js";
+import { ensureChatGptLogin } from "../src/runtime/chatgpt-login.js";
 
-async function text(path: string): Promise<string> {
-  return await readFile(new URL(`../${path}`, import.meta.url), "utf8");
+async function text(pathname: string): Promise<string> {
+  return await readFile(new URL(`../${pathname}`, import.meta.url), "utf8");
 }
 
 test("fresh user configuration leaves the normal Web transport implicit", () => {
@@ -23,34 +27,62 @@ test("fresh user configuration leaves the normal Web transport implicit", () => 
   assert.equal(config.web_bridge, undefined);
 });
 
-test("authoritative docs freeze local one-authorization prompt-only workflow", async () => {
-  const [readme, contract, bridge] = await Promise.all([
+test("authoritative docs freeze first-party ChatGPT Web browser PAIR", async () => {
+  const [readme, contract, bridge, operations, architecture] = await Promise.all([
     text("README.md"),
     text("docs/user-experience-contract.md"),
     text("docs/web-bridge.md"),
+    text("docs/operations.md"),
+    text("docs/architecture.md"),
   ]);
+
   assert.match(readme, /npm install -g \.\/web-codex-orchestrator-[^\s`]+\.tgz/);
-  for (const source of [contract, bridge]) {
-    assert.match(source, /local ChatGPT\/Codex/i);
-    assert.match(source, /no `web_bridge` field|no `web_bridge`/i);
-    assert.match(source, /official.*ChatGPT|ChatGPT.*official/i);
-    assert.match(source, /no browser action|per-task browser interactions\s*= 0/i);
-    assert.match(source, /never.*fallback|never a silent fallback|must not silently switch/i);
+  for (const source of [readme, contract, bridge, operations, architecture]) {
+    assert.match(source, /WCO[- ]owned Windows (?:browser )?companion|WCO Windows companion/i);
+    assert.match(source, /Temporary Chat/i);
   }
+  for (const source of [contract, bridge]) {
+    assert.match(source, /no `web_bridge` field|no `web_bridge`/i);
+    assert.match(source, /chatgpt-web/i);
+    assert.match(source, /Codex provider(?:\/model)? turns[^\n]*0|Codex provider\/model turns\s*=\s*0/i);
+    assert.match(source, /manual browser interactions[^\n]*0/i);
+    assert.match(source, /never.*fallback|never a silent fallback|must not silently fall back/i);
+  }
+  assert.doesNotMatch(readme, /delegates authorization to its \*\*bundled official Codex runtime\*\*/i);
+  assert.doesNotMatch(bridge, /Browser DOM automation.*not supported normal transports/i);
 });
 
-test("the first normal goal may trigger official ChatGPT authorization without a manual connect command", async () => {
-  const [interactive, bridge] = await Promise.all([
-    text("src/tui/interactive-app.ts"),
-    text("src/web-bridge/chatgpt-codex-bridge.ts"),
-  ]);
-  assert.match(interactive, /if \(isLocal\(\)\) \{\s+if \(bridge\) return true;/s);
-  assert.doesNotMatch(interactive, /if \(isLocal\(\)\) \{[^}]*Run \/web connect to authorize/s);
-  assert.match(bridge, /createAuthoringJob[\s\S]*ensureAuthorizedForProviderTurn/);
-  assert.match(bridge, /before durable task creation/i);
+test("browser-selected auth preflight returns before any Codex runtime command", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-browser-auth-preflight-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const explicitState = path.join(root, "explicit", "state");
+  await writeProviderPreferences(explicitState, "chatgpt-web");
+  let codexCommands = 0;
+  const runCommand = async () => {
+    codexCommands += 1;
+    return 99;
+  };
+
+  const explicit = await ensureChatGptLogin({
+    config: { runtime: { source: "bundled" } } as any,
+    stateDirectory: explicitState,
+    runCommand,
+  });
+  assert.equal(explicit, true);
+  assert.equal(codexCommands, 0, "explicit chatgpt-web PAIR must not execute Codex auth commands");
+
+  const missingPreferenceState = path.join(root, "upgrade-recovery", "state");
+  const recovery = await ensureChatGptLogin({
+    config: { runtime: { source: "bundled" } } as any,
+    stateDirectory: missingPreferenceState,
+    runCommand,
+  });
+  assert.equal(recovery, true);
+  assert.equal(codexCommands, 0, "missing preferences must not become permission to spend Codex quota");
 });
 
-test("local background execution completes authorization and readiness before task ownership", async () => {
+test("local background execution performs provider preflight and readiness before task ownership", async () => {
   const [interactive, login] = await Promise.all([
     text("src/tui/interactive-app.ts"),
     text("src/runtime/chatgpt-login.ts"),
@@ -61,6 +93,7 @@ test("local background execution completes authorization and readiness before ta
   const taskStart = interactive.indexOf("taskSlot.start", readinessStart);
   assert.ok(launchStart >= 0 && authStart > launchStart && readinessStart > authStart && taskStart > readinessStart);
   assert.match(interactive.slice(launchStart, taskStart), /ensureTaskReadiness\(mode, "start"\)/);
+  assert.match(login, /browserProviderSelected\(options\.stateDirectory\).*return true/s);
   assert.match(login, /input\.isRaw !== true/);
   assert.match(login, /two terminal readers|raw-mode parent TUI/i);
 });
@@ -206,10 +239,10 @@ test("advanced compatibility profiles stay foreground so they never race the liv
 test("normal path keeps mutation and shipment authority local and human-owned", async () => {
   const contract = await text("docs/user-experience-contract.md");
   const bridge = await text("docs/web-bridge.md");
-  assert.match(contract, /Harness mutation authority/i);
+  assert.match(contract, /Harness remains the only mutation authority/i);
   assert.match(contract, /human alone decides merge\/release/i);
-  assert.match(contract, /automatic merge\/release\s+= 0/i);
-  assert.match(bridge, /WCO validates/i);
+  assert.match(contract, /automatic merge\/release\s+=\s*0/i);
+  assert.match(bridge, /WCO parses provider output|WCO\/Harness revalidates|WCO validates/i);
   assert.match(bridge, /human merge\/release/i);
 });
 
@@ -218,5 +251,5 @@ test("advanced compatibility profiles remain explicit", async () => {
   assert.match(bridge, /web_native_mcp/);
   assert.match(bridge, /managed_actions/);
   assert.match(bridge, /manual_file/);
-  assert.match(bridge, /explicit compatibility profiles|advanced compatibility profiles/i);
+  assert.match(bridge, /explicit `web_bridge` profiles|advanced compatibility profiles/i);
 });
