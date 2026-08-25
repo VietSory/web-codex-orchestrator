@@ -225,6 +225,17 @@ export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = d
           io.error(`WEB_ADVANCED_PROFILE_ACTIVE: explicit '${config.web_bridge.mode}' is configured. Remove that advanced override before using the zero-config local transport.\n`);
           return 1;
         }
+        if (browserProviderSelected(paths.state, process.env)) {
+          const bridge = createConfiguredWebBridge(config, paths.bridge, process.env, paths.state);
+          const status = await bridge.getConnectionStatus();
+          if (!status.connected) {
+            const readiness = status.account === "CI browser probe disabled" ? "browser readiness probe is disabled in CI" : "finish ChatGPT sign-in / browser-helper setup";
+            io.error(`CHATGPT_WEB_NOT_READY: ChatGPT Web browser PAIR is not ready (${readiness}). Run \`wco web status\` and retry after browser readiness is confirmed.\n`);
+            return 1;
+          }
+          io.write("ChatGPT Web browser PAIR ready. Codex provider authentication and quota are not required for PAIR. Daily use is `wco` and a goal.\n");
+          return 0;
+        }
         const authorized = await ensureChatGptLogin({ config, stateDirectory: paths.state });
         if (!authorized) {
           io.error("CODEX_AUTH_UNAVAILABLE: ChatGPT authorization requires an interactive terminal. Re-run `wco web connect` in your normal terminal.\n");
@@ -268,7 +279,8 @@ export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = d
 
     if (operation === "open") {
       if (!config.web_bridge) {
-        io.write("Local ChatGPT/Codex runs automatically. No per-task browser page or connector action is required.\n");
+        if (browserProviderSelected(paths.state, process.env)) io.write("ChatGPT Web browser PAIR runs through the configured browser/helper. No separate WCO Web page is required; use `wco web status` to check readiness.\n");
+        else io.write("Local ChatGPT/Codex runs automatically. No per-task browser page or connector action is required.\n");
         return 0;
       }
       if (config.web_bridge.mode === "managed_actions") {
@@ -283,7 +295,8 @@ export async function runWebCommand(args: string[], suppliedIo: WebCommandIo = d
 
     if (operation === "disconnect") {
       if (!config.web_bridge) {
-        io.write("Zero-config WCO stores no Web credential to remove. ChatGPT authorization is owned by the bundled official Codex runtime.\n");
+        if (browserProviderSelected(paths.state, process.env)) io.write("Zero-config WCO stores no copied ChatGPT Web credential to remove. Browser/helper session ownership stays outside WCO; provider remains ChatGPT Web until changed with `wco setup --provider codex`.\n");
+        else io.write("Zero-config WCO stores no Web credential to remove. ChatGPT authorization is owned by the bundled official Codex runtime.\n");
       } else if (config.web_bridge.mode === "web_native_mcp") {
         await removeNativeOpenAiCredential(paths.credentials);
         await disconnectWebBridgeConnection({ configPath: paths.config, credentialsDirectory: paths.credentials });
