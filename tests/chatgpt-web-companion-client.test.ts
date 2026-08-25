@@ -199,7 +199,7 @@ test("companion refuses unknown logical continuation rather than fabricating his
       thread_id: "wco-chatgpt-web:missing",
     })),
     (error: unknown) => (
-      Boolean(error)
+      error !== null
       && typeof error === "object"
       && "code" in error
       && error.code === "WEB_CHATGPT_COMPANION_THREAD_UNKNOWN"
@@ -221,7 +221,7 @@ test("companion pin attestation fails closed on an unreviewed miuuyy checkout", 
   await assert.rejects(
     () => client.checkAvailability(),
     (error: unknown) => (
-      Boolean(error)
+      error !== null
       && typeof error === "object"
       && "code" in error
       && error.code === "WEB_CHATGPT_COMPANION_ATTESTATION_INVALID"
