@@ -1,6 +1,8 @@
-export const WCO_CHATGPT_WEB_COMPANION_PROTOCOL = "wco-chatgpt-web-companion/v1";
-export const WCO_CHATGPT_WEB_COMPANION_TRANSPORT = "miuuyy-browser-worker";
+export const PINNED_MIUUYY_CHATGPT_WEB_RELEASE = "3.0.3";
+/** Provenance commit for the qualified 3.0.3 release; runtime selection is fail-closed on releaseVersion. */
 export const PINNED_MIUUYY_CHATGPT_WEB_SHA = "2569603f950de3a123e31bd26e7c8757566066f3";
+export const MIUUYY_LAUNCHER_DESCRIPTOR_VERSION = 2;
+export const MIUUYY_LAUNCHER_DESCRIPTOR_KIND = "codex-web-gpt-launcher";
 
 export type ChatGptWebCompanionMode =
   | "instant"
@@ -10,57 +12,32 @@ export type ChatGptWebCompanionMode =
   | "pro"
   | "luna";
 
-export type ChatGptWebCompanionRole =
-  | "implementer"
-  | "internal_reviewer"
-  | "final_reviewer";
-
-export interface ChatGptWebCompanionProbeRequest {
-  protocol: typeof WCO_CHATGPT_WEB_COMPANION_PROTOCOL;
-  id: string;
-  type: "probe";
-  upstream_root: string;
-  upstream_home?: string;
+export interface MiuuyyInstalledConfig {
+  version: 3;
+  releaseVersion: typeof PINNED_MIUUYY_CHATGPT_WEB_RELEASE;
+  browserHost: "launcher";
+  browserHostDescriptorPath: string;
+  appName: string;
+  solAvailable: boolean;
+  proAvailable: boolean;
 }
 
-export interface ChatGptWebCompanionTurnRequest {
-  protocol: typeof WCO_CHATGPT_WEB_COMPANION_PROTOCOL;
-  id: string;
-  type: "turn";
-  upstream_root: string;
-  upstream_home?: string;
-  role: ChatGptWebCompanionRole;
-  mode: ChatGptWebCompanionMode;
-  prompt: string;
+export interface MiuuyyLauncherDescriptor {
+  version: typeof MIUUYY_LAUNCHER_DESCRIPTOR_VERSION;
+  kind: typeof MIUUYY_LAUNCHER_DESCRIPTOR_KIND;
+  profile: "production";
+  pid: number;
+  endpoint: string;
+  control: {
+    endpoint: string;
+    token: string;
+  };
+  helper: {
+    executable: string;
+    script: string;
+  };
+  partition: "persist:codex-web-gpt-chatgpt";
+  idleUrl: "about:blank#codex-web-gpt-browser-host";
+  surfaceId: string;
+  createdAt: string;
 }
-
-export type ChatGptWebCompanionRequest =
-  | ChatGptWebCompanionProbeRequest
-  | ChatGptWebCompanionTurnRequest;
-
-export interface ChatGptWebCompanionSuccess {
-  protocol: typeof WCO_CHATGPT_WEB_COMPANION_PROTOCOL;
-  id: string;
-  ok: true;
-  provider: "chatgpt-web";
-  transport: typeof WCO_CHATGPT_WEB_COMPANION_TRANSPORT;
-  upstream_sha: typeof PINNED_MIUUYY_CHATGPT_WEB_SHA;
-  temporary_chat: true;
-  mode?: ChatGptWebCompanionMode;
-  model_id?: string;
-  answer?: string;
-  sol_available?: boolean;
-  pro_available?: boolean;
-}
-
-export interface ChatGptWebCompanionFailure {
-  protocol: typeof WCO_CHATGPT_WEB_COMPANION_PROTOCOL;
-  id: string;
-  ok: false;
-  code: string;
-  error: string;
-}
-
-export type ChatGptWebCompanionResponse =
-  | ChatGptWebCompanionSuccess
-  | ChatGptWebCompanionFailure;

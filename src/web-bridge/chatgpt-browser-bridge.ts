@@ -21,13 +21,14 @@ function truthyEnvironmentFlag(value: string | undefined): boolean {
  *
  * The mature WCO semantic/implementation state machine stays provider-neutral.
  * Provider turns are injected through AgentClient and therefore never need a
- * Codex model. When WCO_CHATGPT_WEB_COMPANION_EXE is configured, WCO uses the
- * pinned miuuyy Windows-native Temporary Chat companion over stdio. Otherwise
- * the legacy direct local Chromium adapter remains available for non-WSL
- * qualification and backwards compatibility.
+ * Codex model. When an installed miuuyy/codex-chatgpt-web 3.0.3 launcher is
+ * discoverable, WCO talks to its launcher-owned browser helper over bounded
+ * stdin/stdout. That keeps the browser/CDP boundary Windows-native while WCO,
+ * Bubblewrap verification, Git and publication authority remain in WSL/Linux.
  *
- * Neither path may read ChatGPT cookies/tokens, call private ChatGPT endpoints,
- * bypass protective measures, or silently fall back to a Codex model.
+ * The legacy direct local Chromium adapter remains available only when no
+ * qualified miuuyy launcher is configured, for non-WSL qualification and
+ * backwards compatibility. Neither path may silently fall back to Codex.
  */
 export class ChatGptBrowserWebBridge implements PreparedRunAwareWebBridge {
   private readonly delegate: ChatGptCodexWebBridge;

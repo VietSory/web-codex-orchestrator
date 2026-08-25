@@ -1,52 +1,66 @@
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { createInterface } from "node:readline";
 import type { AgentClient, AgentTurnRequest, AgentTurnResponse } from "./contracts.js";
 import {
-  PINNED_MIUUYY_CHATGPT_WEB_SHA,
-  WCO_CHATGPT_WEB_COMPANION_PROTOCOL,
-  WCO_CHATGPT_WEB_COMPANION_TRANSPORT,
+  MIUUYY_LAUNCHER_DESCRIPTOR_KIND,
+  MIUUYY_LAUNCHER_DESCRIPTOR_VERSION,
+  PINNED_MIUUYY_CHATGPT_WEB_RELEASE,
   type ChatGptWebCompanionMode,
-  type ChatGptWebCompanionRequest,
-  type ChatGptWebCompanionResponse,
-  type ChatGptWebCompanionSuccess,
+  type MiuuyyInstalledConfig,
+  type MiuuyyLauncherDescriptor,
 } from "./chatgpt-web-companion-protocol.js";
 import {
   buildChatGptBrowserContextPack,
   parseChatGptBrowserJson,
 } from "./chatgpt-browser-client.js";
 
-const DEFAULT_COMPANION_TIMEOUT_SECONDS = 900;
-const MAX_COMPANION_TIMEOUT_SECONDS = 3600;
-const DEFAULT_CONTEXT_BYTES = 768 * 1024;
-const MAX_CONTEXT_BYTES = 900 * 1024;
-const MAX_STDOUT_BYTES = 10 * 1024 * 1024;
-const MAX_STDERR_BYTES = 512 * 1024;
+const DEFAULT_TURN_TIMEOUT_SECONDS = 900;
+const MAX_TURN_TIMEOUT_SECONDS = 3600;
+const DEFAULT_CONTEXT_BYTES = 192 * 1024;
+const MAX_CONTEXT_BYTES = 512 * 1024;
+const MAX_HELPER_LINE_BYTES = 10 * 1024 * 1024;
+const MAX_HELPER_STDERR_BYTES = 512 * 1024;
 const MAX_THREAD_REPLAY_BYTES = 512 * 1024;
-const MAX_COMPANION_ARGUMENTS = 64;
-const MAX_COMPANION_ARGUMENT_BYTES = 16 * 1024;
+const HELPER_SHUTDOWN_GRACE_MS = 2_000;
+const CHATGPT_SOL_MODEL_ID = "gpt-5.6-sol";
+const CHATGPT_LUNA_MODEL_ID = "gpt-5.6-luna";
+const WSL_TO_WINDOWS_ENVIRONMENT = [
+  "ELECTRON_RUN_AS_NODE",
+  "CODEX_CHATGPT_WEB_BROWSER_HELPER_PROCESS",
+] as const;
 
 interface ThreadHistoryItem {
   prompt: string;
   output: string;
 }
 
+interface HelperResultMessage {
+  type: "result";
+  id: string;
+  text?: string;
+  value?: unknown;
+}
+
+interface HelperErrorMessage {
+  type: "error";
+  id: string;
+  message: string;
+  code?: string;
+}
+
+type HelperTerminalMessage = HelperResultMessage | HelperErrorMessage;
+
 function codedError(code: string, message: string): Error & { code: string } {
   return Object.assign(new Error(message), { code });
 }
 
-function boundedPositiveInteger(
-  value: string | undefined,
-  fallback: number,
-  maximum: number,
-): number {
+function boundedPositiveInteger(value: string | undefined, fallback: number, maximum: number): number {
   if (!value) return fallback;
   const parsed = Number(value);
-  return Number.isSafeInteger(parsed) && parsed > 0 && parsed <= maximum
-    ? parsed
-    : fallback;
+  return Number.isSafeInteger(parsed) && parsed > 0 && parsed <= maximum ? parsed : fallback;
 }
 
 function companionMode(value: string | undefined): ChatGptWebCompanionMode {
@@ -59,342 +73,575 @@ function companionMode(value: string | undefined): ChatGptWebCompanionMode {
     || normalized === "pro"
     || normalized === "luna"
   ) return normalized;
-  throw codedError(
-    "WEB_CHATGPT_COMPANION_MODE_INVALID",
-    `Unsupported ChatGPT Web companion mode '${normalized}'.`,
-  );
+  throw codedError("WEB_CHATGPT_COMPANION_MODE_INVALID", `Unsupported ChatGPT Web companion mode '${normalized}'.`);
 }
 
-function parseArgsJson(value: string | undefined): string[] | null {
-  if (!value?.trim()) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    throw codedError(
-      "WEB_CHATGPT_COMPANION_ARGS_INVALID",
-      "WCO_CHATGPT_WEB_COMPANION_ARGS_JSON must be a JSON string array.",
-    );
-  }
-  if (
-    !Array.isArray(parsed)
-    || parsed.length > MAX_COMPANION_ARGUMENTS
-    || !parsed.every((item) => (
-      typeof item === "string"
-      && item.length <= MAX_COMPANION_ARGUMENT_BYTES
-      && !item.includes("\u0000")
-    ))
-  ) {
-    throw codedError(
-      "WEB_CHATGPT_COMPANION_ARGS_INVALID",
-      "WCO_CHATGPT_WEB_COMPANION_ARGS_JSON contains an unsafe or oversized argument.",
-    );
-  }
-  return parsed as string[];
+function isWindowsAbsolutePath(value: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(value) || /^\\\\[^\\]+\\[^\\]+/.test(value);
 }
 
-function isWindowsInteropExecutable(
-  executable: string,
-  platform: NodeJS.Platform = process.platform,
-): boolean {
-  return platform === "linux" && /\.exe$/i.test(executable);
-}
-
-function translateWslPathToWindows(value: string): string {
-  const result = spawnSync("wslpath", ["-w", value], {
-    encoding: "utf8",
-    shell: false,
-  });
+function wslPath(value: string, direction: "-u" | "-w"): string {
+  const result = spawnSync("wslpath", [direction, value], { encoding: "utf8", shell: false });
   const output = result.status === 0 ? result.stdout.trim() : "";
   if (!output || output.includes("\u0000")) {
-    throw codedError(
-      "WEB_CHATGPT_COMPANION_PATH_UNTRANSLATABLE",
-      `Cannot translate WSL path for the Windows companion: ${value}`,
-    );
+    throw codedError("WEB_CHATGPT_COMPANION_PATH_UNTRANSLATABLE", `Cannot translate companion path: ${value}`);
   }
   return output;
 }
 
-function boundedAppend(
-  chunks: Buffer[],
-  chunk: Buffer,
-  state: { bytes: number },
-  maximum: number,
-): boolean {
-  state.bytes += chunk.length;
-  if (state.bytes > maximum) return false;
-  chunks.push(chunk);
-  return true;
+function hostReadablePath(value: string): string {
+  if (process.platform === "linux" && isWindowsAbsolutePath(value)) return wslPath(value, "-u");
+  return path.resolve(value);
+}
+
+function discoverWindowsConfigPath(): string | null {
+  if (process.platform === "win32") {
+    const profile = process.env.USERPROFILE?.trim();
+    if (!profile) return null;
+    const candidate = path.join(profile, ".codex-chatgpt-web", "config.json");
+    return existsSync(candidate) ? candidate : null;
+  }
+  if (process.platform !== "linux") return null;
+  const result = spawnSync("cmd.exe", ["/d", "/s", "/c", "echo %USERPROFILE%"], {
+    encoding: "utf8",
+    shell: false,
+    windowsHide: true,
+  });
+  const profile = result.status === 0 ? result.stdout.trim() : "";
+  if (!profile || !isWindowsAbsolutePath(profile)) return null;
+  try {
+    const candidate = path.join(wslPath(profile, "-u"), ".codex-chatgpt-web", "config.json");
+    return existsSync(candidate) ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveInstalledConfigPath(env: NodeJS.ProcessEnv): string | null {
+  const explicit = env.WCO_CHATGPT_WEB_MIUUYY_CONFIG?.trim();
+  if (explicit) {
+    if (explicit.includes("\u0000")) return null;
+    try {
+      const resolved = hostReadablePath(explicit);
+      return existsSync(resolved) ? resolved : null;
+    } catch {
+      return null;
+    }
+  }
+  return discoverWindowsConfigPath();
+}
+
+function parseJsonFile(filePath: string, label: string): unknown {
+  let source: string;
+  try {
+    source = readFileSync(filePath, "utf8");
+  } catch (error) {
+    throw codedError(
+      "WEB_CHATGPT_COMPANION_CONFIG_UNREADABLE",
+      `${label} cannot be read: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  try {
+    return JSON.parse(source.replace(/^\uFEFF/u, "")) as unknown;
+  } catch (error) {
+    throw codedError(
+      "WEB_CHATGPT_COMPANION_CONFIG_INVALID",
+      `${label} is invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function parseInstalledConfig(filePath: string): MiuuyyInstalledConfig {
+  const value = parseJsonFile(filePath, "miuuyy installed config");
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw codedError("WEB_CHATGPT_COMPANION_CONFIG_INVALID", "miuuyy installed config is not an object.");
+  }
+  const config = value as Record<string, unknown>;
+  if (config.version !== 3) {
+    throw codedError("WEB_CHATGPT_COMPANION_CONFIG_INVALID", `miuuyy config version '${String(config.version)}' is not supported.`);
+  }
+  if (config.releaseVersion !== PINNED_MIUUYY_CHATGPT_WEB_RELEASE) {
+    throw codedError(
+      "WEB_CHATGPT_COMPANION_RELEASE_MISMATCH",
+      `WCO requires miuuyy/codex-chatgpt-web ${PINNED_MIUUYY_CHATGPT_WEB_RELEASE}; installed config reports '${String(config.releaseVersion)}'.`,
+    );
+  }
+  if (config.browserHost !== "launcher") {
+    throw codedError(
+      "WEB_CHATGPT_COMPANION_LAUNCHER_REQUIRED",
+      "miuuyy must use browserHost=launcher; WCO will not cross the WSL/Windows CDP boundary.",
+    );
+  }
+  if (
+    typeof config.browserHostDescriptorPath !== "string"
+    || !config.browserHostDescriptorPath.trim()
+    || config.browserHostDescriptorPath.includes("\u0000")
+  ) {
+    throw codedError("WEB_CHATGPT_COMPANION_CONFIG_INVALID", "miuuyy launcher descriptor path is missing or invalid.");
+  }
+  if (typeof config.appName !== "string" || !config.appName.trim() || config.appName.length > 80) {
+    throw codedError("WEB_CHATGPT_COMPANION_CONFIG_INVALID", "miuuyy appName is missing or invalid.");
+  }
+  const solAvailable = config.solAvailable !== false;
+  const proAvailable = config.proAvailable === true;
+  if (proAvailable && !solAvailable) {
+    throw codedError("WEB_CHATGPT_COMPANION_CONFIG_INVALID", "miuuyy account capabilities are contradictory: Pro requires Sol.");
+  }
+  return {
+    version: 3,
+    releaseVersion: PINNED_MIUUYY_CHATGPT_WEB_RELEASE,
+    browserHost: "launcher",
+    browserHostDescriptorPath: config.browserHostDescriptorPath,
+    appName: config.appName,
+    solAvailable,
+    proAvailable,
+  };
+}
+
+function assertLoopbackEndpoint(value: unknown, label: string): string {
+  if (typeof value !== "string" || !value.trim()) {
+    throw codedError("WEB_CHATGPT_COMPANION_DESCRIPTOR_INVALID", `${label} is missing.`);
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw codedError("WEB_CHATGPT_COMPANION_DESCRIPTOR_INVALID", `${label} is not a valid URL.`);
+  }
+  if (
+    parsed.protocol !== "http:"
+    || parsed.hostname !== "127.0.0.1"
+    || !parsed.port
+    || parsed.username
+    || parsed.password
+    || parsed.search
+    || parsed.hash
+  ) {
+    throw codedError(
+      "WEB_CHATGPT_COMPANION_DESCRIPTOR_INVALID",
+      `${label} must be a bounded http://127.0.0.1:<port> endpoint.`,
+    );
+  }
+  return parsed.origin;
+}
+
+function parseLauncherDescriptor(filePath: string): MiuuyyLauncherDescriptor {
+  const value = parseJsonFile(filePath, "miuuyy launcher descriptor");
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw codedError("WEB_CHATGPT_COMPANION_DESCRIPTOR_INVALID", "miuuyy launcher descriptor is not an object.");
+  }
+  const descriptor = value as Record<string, unknown>;
+  if (
+    descriptor.version !== MIUUYY_LAUNCHER_DESCRIPTOR_VERSION
+    || descriptor.kind !== MIUUYY_LAUNCHER_DESCRIPTOR_KIND
+    || descriptor.profile !== "production"
+  ) {
+    throw codedError(
+      "WEB_CHATGPT_COMPANION_DESCRIPTOR_INVALID",
+      "miuuyy launcher descriptor identity, version, or profile is unsupported.",
+    );
+  }
+  if (!Number.isInteger(descriptor.pid) || (descriptor.pid as number) < 1) {
+    throw codedError("WEB_CHATGPT_COMPANION_DESCRIPTOR_INVALID", "miuuyy launcher descriptor has an invalid pid.");
+  }
+  const endpoint = assertLoopbackEndpoint(descriptor.endpoint, "miuuyy launcher CDP endpoint");
+  if (!descriptor.control || typeof descriptor.control !== "object" || Array.isArray(descriptor.control)) {
+    throw codedError("WEB_CHATGPT_COMPANION_DESCRIPTOR_INVALID", "miuuyy launcher descriptor is missing its control channel.");
+  }
+  const controlRecord = descriptor.control as Record<string, unknown>;
+  const controlEndpoint = assertLoopbackEndpoint(controlRecord.endpoint, "miuuyy launcher control endpoint");
+  if (typeof controlRecord.token !== "string" || !/^[A-Za-z0-9_-]{40,}$/.test(controlRecord.token)) {
+    throw codedError("WEB_CHATGPT_COMPANION_DESCRIPTOR_INVALID", "miuuyy launcher descriptor has an invalid control token.");
+  }
+  if (!descriptor.helper || typeof descriptor.helper !== "object" || Array.isArray(descriptor.helper)) {
+    throw codedError("WEB_CHATGPT_COMPANION_DESCRIPTOR_INVALID", "miuuyy launcher descriptor is missing its helper command.");
+  }
+  const helper = descriptor.helper as Record<string, unknown>;
+  if (
+    typeof helper.executable !== "string"
+    || !helper.executable.trim()
+    || helper.executable.includes("\u0000")
+    || typeof helper.script !== "string"
+    || !helper.script.trim()
+    || helper.script.includes("\u0000")
+  ) {
+    throw codedError("WEB_CHATGPT_COMPANION_DESCRIPTOR_INVALID", "miuuyy launcher helper command is invalid.");
+  }
+  if (
+    descriptor.partition !== "persist:codex-web-gpt-chatgpt"
+    || descriptor.idleUrl !== "about:blank#codex-web-gpt-browser-host"
+    || typeof descriptor.surfaceId !== "string"
+    || !/^[A-Za-z0-9_-]{32}$/.test(descriptor.surfaceId)
+    || typeof descriptor.createdAt !== "string"
+    || Number.isNaN(Date.parse(descriptor.createdAt))
+  ) {
+    throw codedError(
+      "WEB_CHATGPT_COMPANION_DESCRIPTOR_INVALID",
+      "miuuyy launcher descriptor does not identify the expected production browser surface.",
+    );
+  }
+  return {
+    version: MIUUYY_LAUNCHER_DESCRIPTOR_VERSION,
+    kind: MIUUYY_LAUNCHER_DESCRIPTOR_KIND,
+    profile: "production",
+    pid: descriptor.pid as number,
+    endpoint,
+    control: { endpoint: controlEndpoint, token: controlRecord.token },
+    helper: { executable: helper.executable, script: helper.script },
+    partition: "persist:codex-web-gpt-chatgpt",
+    idleUrl: "about:blank#codex-web-gpt-browser-host",
+    surfaceId: descriptor.surfaceId,
+    createdAt: descriptor.createdAt,
+  };
+}
+
+function helperExecutablePath(value: string): string {
+  const resolved = hostReadablePath(value);
+  if (!existsSync(resolved)) {
+    throw codedError("WEB_CHATGPT_COMPANION_HELPER_MISSING", `miuuyy launcher helper executable is missing: ${value}`);
+  }
+  return resolved;
+}
+
+function helperScriptArgument(value: string, windowsInterop: boolean): string {
+  const readable = hostReadablePath(value);
+  if (!existsSync(readable)) {
+    throw codedError("WEB_CHATGPT_COMPANION_HELPER_MISSING", `miuuyy launcher helper script is missing: ${value}`);
+  }
+  return windowsInterop ? value : readable;
+}
+
+/**
+ * WSL only forwards explicitly listed custom variables into Win32. Keep the
+ * helper's two control variables in WSLENV with /w (WSL -> Windows) so Electron
+ * deterministically enters Node/helper mode instead of accidentally opening the
+ * desktop app. Existing unrelated WSLENV entries are preserved.
+ */
+export function chatGptWebCompanionChildEnvironment(
+  env: NodeJS.ProcessEnv,
+  windowsInterop: boolean,
+): NodeJS.ProcessEnv {
+  const output: NodeJS.ProcessEnv = {
+    ...env,
+    ELECTRON_RUN_AS_NODE: "1",
+    CODEX_CHATGPT_WEB_BROWSER_HELPER_PROCESS: "1",
+  };
+  if (!windowsInterop) return output;
+  const controlled = new Set<string>(WSL_TO_WINDOWS_ENVIRONMENT);
+  const existing = (env.WSLENV ?? "")
+    .split(":")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .filter((entry) => !controlled.has(entry.split("/", 1)[0] ?? ""));
+  output.WSLENV = [
+    ...existing,
+    ...WSL_TO_WINDOWS_ENVIRONMENT.map((name) => `${name}/w`),
+  ].join(":");
+  return output;
 }
 
 function stderrSuffix(source: string): string {
   const trimmed = source.trim();
-  return trimmed ? ` Companion stderr: ${trimmed.slice(-4_000)}` : "";
+  return trimmed ? ` Helper stderr: ${trimmed.slice(-4_000)}` : "";
 }
 
-export function isChatGptWebCompanionConfigured(
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
-  return Boolean(env.WCO_CHATGPT_WEB_COMPANION_EXE?.trim());
+function helperError(message: HelperErrorMessage, stderr: string): Error & { code: string } {
+  return codedError(
+    message.code || "WEB_CHATGPT_COMPANION_HELPER_FAILED",
+    `${message.message}${stderrSuffix(stderr)}`,
+  );
+}
+
+export function isChatGptWebCompanionConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+  return resolveInstalledConfigPath(env) !== null;
 }
 
 export class ChatGptWebCompanionAgentClient implements AgentClient {
+  private readonly installed: MiuuyyInstalledConfig;
+  private readonly descriptor: MiuuyyLauncherDescriptor;
   private readonly executable: string;
-  private readonly args: string[];
-  private readonly upstreamRoot: string;
-  private readonly upstreamHome?: string;
+  private readonly scriptArgument: string;
+  private readonly windowsInterop: boolean;
   private readonly mode: ChatGptWebCompanionMode;
-  private readonly timeoutMs: number;
+  private readonly turnTimeoutMs: number;
   private readonly maximumContextBytes: number;
   private readonly threads = new Map<string, ThreadHistoryItem[]>();
 
   constructor(private readonly options: { env?: NodeJS.ProcessEnv } = {}) {
     const env = options.env ?? process.env;
-    const executable = env.WCO_CHATGPT_WEB_COMPANION_EXE?.trim();
-    if (!executable || !path.isAbsolute(executable) || executable.includes("\u0000")) {
+    const configPath = resolveInstalledConfigPath(env);
+    if (!configPath) {
       throw codedError(
         "WEB_CHATGPT_COMPANION_NOT_CONFIGURED",
-        "Set WCO_CHATGPT_WEB_COMPANION_EXE to an absolute Windows Bun executable path visible from WSL.",
+        "Install miuuyy/codex-chatgpt-web 3.0.3 on Windows or set WCO_CHATGPT_WEB_MIUUYY_CONFIG to its config.json path.",
       );
     }
-    this.executable = executable;
-
-    const configuredArgs = parseArgsJson(env.WCO_CHATGPT_WEB_COMPANION_ARGS_JSON);
-    if (configuredArgs) {
-      this.args = configuredArgs;
-    } else {
-      const builtCompanionPath = fileURLToPath(
-        new URL("../companion/miuuyy-web-companion.js", import.meta.url),
-      );
-      const sourceCompanionPath = fileURLToPath(
-        new URL("../companion/miuuyy-web-companion.ts", import.meta.url),
-      );
-      let companionPath = existsSync(builtCompanionPath)
-        ? builtCompanionPath
-        : sourceCompanionPath;
-      if (!existsSync(companionPath)) {
-        throw codedError(
-          "WEB_CHATGPT_COMPANION_SCRIPT_MISSING",
-          "WCO's miuuyy companion entrypoint is missing; rebuild WCO before using the companion transport.",
-        );
-      }
-      if (isWindowsInteropExecutable(this.executable)) {
-        companionPath = translateWslPathToWindows(companionPath);
-      }
-      this.args = [companionPath];
-    }
-
-    const root = env.WCO_CHATGPT_WEB_MIUUYY_ROOT?.trim();
-    if (!root || root.includes("\u0000")) {
+    this.installed = parseInstalledConfig(configPath);
+    const descriptorPath = hostReadablePath(this.installed.browserHostDescriptorPath);
+    if (!existsSync(descriptorPath)) {
       throw codedError(
-        "WEB_CHATGPT_COMPANION_UPSTREAM_REQUIRED",
-        "Set WCO_CHATGPT_WEB_MIUUYY_ROOT to the pinned miuuyy/codex-chatgpt-web checkout.",
+        "WEB_CHATGPT_COMPANION_LAUNCHER_NOT_RUNNING",
+        `miuuyy launcher descriptor is missing: ${this.installed.browserHostDescriptorPath}`,
       );
     }
-    this.upstreamRoot = (
-      isWindowsInteropExecutable(this.executable) && path.isAbsolute(root)
-        ? translateWslPathToWindows(root)
-        : root
-    );
-
-    const home = env.WCO_CHATGPT_WEB_MIUUYY_HOME?.trim();
-    if (home) {
-      if (home.includes("\u0000")) {
-        throw codedError(
-          "WEB_CHATGPT_COMPANION_UPSTREAM_HOME_INVALID",
-          "WCO_CHATGPT_WEB_MIUUYY_HOME contains an invalid path.",
-        );
-      }
-      this.upstreamHome = (
-        isWindowsInteropExecutable(this.executable) && path.isAbsolute(home)
-          ? translateWslPathToWindows(home)
-          : home
-      );
-    }
-
+    this.descriptor = parseLauncherDescriptor(descriptorPath);
+    this.windowsInterop = process.platform === "linux" && isWindowsAbsolutePath(this.descriptor.helper.executable);
+    this.executable = helperExecutablePath(this.descriptor.helper.executable);
+    this.scriptArgument = helperScriptArgument(this.descriptor.helper.script, this.windowsInterop);
     this.mode = companionMode(env.WCO_CHATGPT_WEB_COMPANION_MODE);
-    this.timeoutMs = boundedPositiveInteger(
+    this.turnTimeoutMs = boundedPositiveInteger(
       env.WCO_CHATGPT_WEB_COMPANION_TIMEOUT_SECONDS,
-      DEFAULT_COMPANION_TIMEOUT_SECONDS,
-      MAX_COMPANION_TIMEOUT_SECONDS,
+      DEFAULT_TURN_TIMEOUT_SECONDS,
+      MAX_TURN_TIMEOUT_SECONDS,
     ) * 1_000;
     this.maximumContextBytes = boundedPositiveInteger(
       env.WCO_CHATGPT_WEB_COMPANION_CONTEXT_BYTES,
       DEFAULT_CONTEXT_BYTES,
       MAX_CONTEXT_BYTES,
     );
+    this.assertModeAvailable();
   }
 
-  private async invoke(
-    request: ChatGptWebCompanionRequest,
-    signal?: AbortSignal,
-  ): Promise<ChatGptWebCompanionSuccess> {
-    if (signal?.aborted) {
+  private assertModeAvailable(): void {
+    if (this.mode === "luna") {
+      if (this.installed.solAvailable) {
+        throw codedError("WEB_CHATGPT_COMPANION_MODE_UNAVAILABLE", "ChatGPT Web Luna is only valid for a Luna-only account.");
+      }
+      return;
+    }
+    if (!this.installed.solAvailable) {
       throw codedError(
-        "WEB_CHATGPT_COMPANION_ABORTED",
-        "ChatGPT Web companion operation was aborted before launch.",
+        "WEB_CHATGPT_COMPANION_MODE_UNAVAILABLE",
+        `ChatGPT Web ${this.mode} requires the Sol model selector; this account is Luna-only.`,
       );
     }
+    if ((this.mode === "extra-high" || this.mode === "pro") && !this.installed.proAvailable) {
+      throw codedError("WEB_CHATGPT_COMPANION_MODE_UNAVAILABLE", `ChatGPT Web ${this.mode} is not exposed by this account.`);
+    }
+  }
 
-    const child = spawn(this.executable, this.args, {
+  private modelSelection(): { modelId: string; reasoning: string } {
+    if (this.mode === "luna") return { modelId: CHATGPT_LUNA_MODEL_ID, reasoning: "low" };
+    const reasoning = this.mode === "instant"
+      ? "low"
+      : this.mode === "medium"
+        ? "medium"
+        : this.mode === "high"
+          ? "high"
+          : this.mode === "extra-high"
+            ? "xhigh"
+            : "max";
+    return { modelId: CHATGPT_SOL_MODEL_ID, reasoning };
+  }
+
+  private helperConfig(): { appName: string; browserHostDescriptorPath: string } {
+    return {
+      appName: this.installed.appName,
+      // The Windows-native helper must receive the descriptor path exactly as
+      // recorded by its own launcher, not a WSL-translated path.
+      browserHostDescriptorPath: this.installed.browserHostDescriptorPath,
+    };
+  }
+
+  private async invokeHelper(
+    id: string,
+    message: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<HelperResultMessage> {
+    if (signal?.aborted) {
+      throw codedError("WEB_CHATGPT_COMPANION_ABORTED", "ChatGPT Web companion operation was aborted before launch.");
+    }
+
+    const child = spawn(this.executable, [this.scriptArgument], {
       stdio: ["pipe", "pipe", "pipe"],
       shell: false,
       windowsHide: true,
-      env: {
-        ...(this.options.env ?? process.env),
-        WCO_CHATGPT_WEB_COMPANION_PARENT: "wco",
-      },
+      env: chatGptWebCompanionChildEnvironment(
+        { ...process.env, ...(this.options.env ?? {}) },
+        this.windowsInterop,
+      ),
     });
+    if (!child.stdin || !child.stdout || !child.stderr) {
+      throw codedError("WEB_CHATGPT_COMPANION_HELPER_FAILED", "miuuyy launcher helper did not expose bounded stdio pipes.");
+    }
 
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    const stdoutState = { bytes: 0 };
-    const stderrState = { bytes: 0 };
-    let overflow: "stdout" | "stderr" | null = null;
-    let abortRequested = false;
-    let forceTimer: ReturnType<typeof setTimeout> | undefined;
-
-    child.stdout.on("data", (value: Buffer | string) => {
-      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
-      if (!boundedAppend(stdout, chunk, stdoutState, MAX_STDOUT_BYTES)) {
-        overflow = "stdout";
-        try { child.kill("SIGTERM"); } catch { /* exact child only */ }
-      }
-    });
+    const stderrChunks: Buffer[] = [];
+    let stderrBytes = 0;
     child.stderr.on("data", (value: Buffer | string) => {
+      if (stderrBytes >= MAX_HELPER_STDERR_BYTES) return;
       const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
-      if (!boundedAppend(stderr, chunk, stderrState, MAX_STDERR_BYTES)) {
-        overflow = "stderr";
-        try { child.kill("SIGTERM"); } catch { /* exact child only */ }
-      }
+      const remaining = MAX_HELPER_STDERR_BYTES - stderrBytes;
+      stderrChunks.push(chunk.subarray(0, remaining));
+      stderrBytes += Math.min(chunk.length, remaining);
     });
+    const stderrText = () => Buffer.concat(stderrChunks).toString("utf8");
 
-    const abort = () => {
-      abortRequested = true;
-      try { child.kill("SIGTERM"); } catch { /* exact child only */ }
-      forceTimer = setTimeout(() => {
-        try { child.kill("SIGKILL"); } catch { /* exact child only */ }
-      }, 2_000);
-      forceTimer.unref();
-    };
-    signal?.addEventListener("abort", abort, { once: true });
+    return await new Promise<HelperResultMessage>((resolve, reject) => {
+      const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
+      let ready = false;
+      let terminal: HelperTerminalMessage | undefined;
+      let finished = false;
+      let forcedKillTimer: ReturnType<typeof setTimeout> | undefined;
+      let timeout: ReturnType<typeof setTimeout> | undefined;
 
-    let timedOut = false;
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      abort();
-    }, this.timeoutMs);
-    timeout.unref();
+      const cleanup = () => {
+        if (timeout) clearTimeout(timeout);
+        if (forcedKillTimer) clearTimeout(forcedKillTimer);
+        signal?.removeEventListener("abort", onAbort);
+        lines.close();
+      };
 
-    let exitCode: number | null;
-    try {
-      child.stdin.end(`${JSON.stringify(request)}\n`);
-      exitCode = await new Promise<number | null>((resolve, reject) => {
-        child.once("error", reject);
-        child.once("close", (code) => resolve(code));
+      const requestShutdown = () => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        try { child.stdin.write(`${JSON.stringify({ type: "shutdown" })}\n`); } catch { /* best effort */ }
+        try { child.stdin.end(); } catch { /* best effort */ }
+        forcedKillTimer = setTimeout(() => {
+          try { child.kill("SIGKILL"); } catch { /* exact helper only */ }
+        }, HELPER_SHUTDOWN_GRACE_MS);
+        forcedKillTimer.unref();
+      };
+
+      const failNow = (error: Error) => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        requestShutdown();
+        reject(error);
+      };
+
+      const onAbort = () => {
+        if (ready && child.exitCode === null && child.signalCode === null) {
+          try { child.stdin.write(`${JSON.stringify({ type: "abort", id })}\n`); } catch { /* best effort */ }
+        }
+        failNow(codedError("WEB_CHATGPT_COMPANION_ABORTED", "ChatGPT Web companion operation was aborted."));
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+
+      timeout = setTimeout(() => {
+        failNow(codedError(
+          "WEB_CHATGPT_COMPANION_TIMEOUT",
+          `miuuyy launcher helper exceeded ${this.turnTimeoutMs}ms.${stderrSuffix(stderrText())}`,
+        ));
+      }, this.turnTimeoutMs);
+      timeout.unref();
+
+      child.once("error", (error) => failNow(codedError(
+        "WEB_CHATGPT_COMPANION_HELPER_FAILED",
+        `Could not start miuuyy launcher helper: ${error.message}`,
+      )));
+
+      lines.on("line", (line) => {
+        if (finished) return;
+        if (Buffer.byteLength(line) > MAX_HELPER_LINE_BYTES) {
+          failNow(codedError("WEB_CHATGPT_COMPANION_OUTPUT_TOO_LARGE", "miuuyy launcher helper emitted an oversized protocol line."));
+          return;
+        }
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(line) as unknown;
+        } catch {
+          failNow(codedError(
+            "WEB_CHATGPT_COMPANION_PROTOCOL_INVALID",
+            `miuuyy launcher helper emitted invalid JSON.${stderrSuffix(stderrText())}`,
+          ));
+          return;
+        }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          failNow(codedError("WEB_CHATGPT_COMPANION_PROTOCOL_INVALID", "miuuyy launcher helper emitted a non-object protocol message."));
+          return;
+        }
+        const record = parsed as Record<string, unknown>;
+        if (record.type === "ready") {
+          if (ready) {
+            failNow(codedError("WEB_CHATGPT_COMPANION_PROTOCOL_INVALID", "miuuyy launcher helper emitted duplicate readiness."));
+            return;
+          }
+          ready = true;
+          try {
+            child.stdin.write(`${JSON.stringify(message)}\n`);
+          } catch (error) {
+            failNow(codedError(
+              "WEB_CHATGPT_COMPANION_HELPER_FAILED",
+              `Could not write to miuuyy launcher helper: ${error instanceof Error ? error.message : String(error)}`,
+            ));
+          }
+          return;
+        }
+        if (record.id !== id) return;
+        if (record.type === "event") return;
+        if (record.type === "result") {
+          terminal = record as unknown as HelperResultMessage;
+          requestShutdown();
+          return;
+        }
+        if (record.type === "error" && typeof record.message === "string") {
+          terminal = record as unknown as HelperErrorMessage;
+          requestShutdown();
+          return;
+        }
+        failNow(codedError("WEB_CHATGPT_COMPANION_PROTOCOL_INVALID", "miuuyy launcher helper emitted an unsupported terminal message."));
       });
-    } finally {
-      clearTimeout(timeout);
-      if (forceTimer) clearTimeout(forceTimer);
-      signal?.removeEventListener("abort", abort);
-    }
 
-    const stdoutText = Buffer.concat(stdout).toString("utf8");
-    const stderrText = Buffer.concat(stderr).toString("utf8");
-
-    if (overflow) {
-      throw codedError(
-        "WEB_CHATGPT_COMPANION_OUTPUT_TOO_LARGE",
-        `ChatGPT Web companion ${overflow} exceeded its bounded transport limit.`,
-      );
-    }
-    if (signal?.aborted || abortRequested && !timedOut) {
-      throw codedError(
-        "WEB_CHATGPT_COMPANION_ABORTED",
-        "ChatGPT Web companion operation was aborted.",
-      );
-    }
-    if (timedOut) {
-      throw codedError(
-        "WEB_CHATGPT_COMPANION_TIMEOUT",
-        `ChatGPT Web companion exceeded ${this.timeoutMs}ms.${stderrSuffix(stderrText)}`,
-      );
-    }
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(stdoutText.trim());
-    } catch {
-      throw codedError(
-        "WEB_CHATGPT_COMPANION_OUTPUT_INVALID",
-        `ChatGPT Web companion did not return exactly one JSON response.${stderrSuffix(stderrText)}`,
-      );
-    }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw codedError(
-        "WEB_CHATGPT_COMPANION_OUTPUT_INVALID",
-        "ChatGPT Web companion response is not an object.",
-      );
-    }
-
-    const response = parsed as ChatGptWebCompanionResponse;
-    if (
-      response.protocol !== WCO_CHATGPT_WEB_COMPANION_PROTOCOL
-      || response.id !== request.id
-    ) {
-      throw codedError(
-        "WEB_CHATGPT_COMPANION_PROTOCOL_MISMATCH",
-        "ChatGPT Web companion returned a mismatched protocol or request identity.",
-      );
-    }
-    if (!response.ok) {
-      throw codedError(
-        response.code || "WEB_CHATGPT_COMPANION_FAILED",
-        response.error || "ChatGPT Web companion failed.",
-      );
-    }
-    if (
-      response.provider !== "chatgpt-web"
-      || response.transport !== WCO_CHATGPT_WEB_COMPANION_TRANSPORT
-      || response.upstream_sha !== PINNED_MIUUYY_CHATGPT_WEB_SHA
-      || response.temporary_chat !== true
-    ) {
-      throw codedError(
-        "WEB_CHATGPT_COMPANION_ATTESTATION_INVALID",
-        "ChatGPT Web companion did not attest the pinned miuuyy Temporary Chat transport.",
-      );
-    }
-    if (exitCode !== 0) {
-      throw codedError(
-        "WEB_CHATGPT_COMPANION_EXIT_FAILED",
-        `ChatGPT Web companion exited with code ${String(exitCode)}.${stderrSuffix(stderrText)}`,
-      );
-    }
-    return response;
+      child.once("close", (code) => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        if (!terminal) {
+          reject(codedError(
+            "WEB_CHATGPT_COMPANION_HELPER_FAILED",
+            `miuuyy launcher helper exited before returning a result (status ${String(code)}).${stderrSuffix(stderrText())}`,
+          ));
+          return;
+        }
+        if (terminal.type === "error") {
+          reject(helperError(terminal, stderrText()));
+          return;
+        }
+        if (code !== 0) {
+          reject(codedError(
+            "WEB_CHATGPT_COMPANION_HELPER_FAILED",
+            `miuuyy launcher helper returned a result but exited with status ${String(code)}.${stderrSuffix(stderrText())}`,
+          ));
+          return;
+        }
+        resolve(terminal);
+      });
+    });
   }
 
-  private requestBase(id: string): {
-    protocol: typeof WCO_CHATGPT_WEB_COMPANION_PROTOCOL;
-    id: string;
-    upstream_root: string;
-    upstream_home?: string;
-  } {
-    return {
-      protocol: WCO_CHATGPT_WEB_COMPANION_PROTOCOL,
+  async checkAvailability(options: { signal?: AbortSignal } = {}): Promise<void> {
+    const id = `wco_inspect_${randomUUID().replaceAll("-", "")}`;
+    const response = await this.invokeHelper(id, {
+      type: "inspect",
       id,
-      upstream_root: this.upstreamRoot,
-      ...(this.upstreamHome ? { upstream_home: this.upstreamHome } : {}),
-    };
-  }
-
-  async checkAvailability(
-    options: { signal?: AbortSignal } = {},
-  ): Promise<void> {
-    const id = randomUUID();
-    await this.invoke({
-      ...this.requestBase(id),
-      type: "probe",
+      config: this.helperConfig(),
+      detectCapabilities: true,
     }, options.signal);
+    const value = response.value;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw codedError("WEB_CHATGPT_COMPANION_SESSION_NOT_READY", "miuuyy launcher helper did not return ChatGPT session evidence.");
+    }
+    const session = value as Record<string, unknown>;
+    if (
+      session.authenticated !== true
+      || session.temporary !== true
+      || typeof session.url !== "string"
+      || !session.url.startsWith("https://chatgpt.com")
+    ) {
+      throw codedError(
+        "WEB_CHATGPT_COMPANION_SESSION_NOT_READY",
+        "miuuyy launcher is not authenticated in a real ChatGPT Temporary Chat.",
+      );
+    }
+    if (
+      session.solAvailable !== this.installed.solAvailable
+      || session.proAvailable !== this.installed.proAvailable
+    ) {
+      throw codedError(
+        "WEB_CHATGPT_COMPANION_CAPABILITY_MISMATCH",
+        "miuuyy launcher live account capabilities do not match its saved 3.0.3 configuration; rerun launcher setup before PAIR.",
+      );
+    }
   }
 
   private replay(history: readonly ThreadHistoryItem[]): string {
@@ -406,24 +653,18 @@ export class ChatGptWebCompanionAgentClient implements AgentClient {
       item.output,
     ].join("\n")).join("\n\n");
     if (Buffer.byteLength(text) > MAX_THREAD_REPLAY_BYTES) {
-      throw codedError(
-        "WEB_CHATGPT_COMPANION_THREAD_TOO_LARGE",
-        "Logical ChatGPT Web thread replay exceeded its bounded continuity limit.",
-      );
+      throw codedError("WEB_CHATGPT_COMPANION_THREAD_TOO_LARGE", "Logical ChatGPT Web thread replay exceeded its bounded continuity limit.");
     }
     return text;
   }
 
-  private async providerPrompt(
-    request: AgentTurnRequest,
-    history: readonly ThreadHistoryItem[],
-  ): Promise<string> {
+  private async providerPrompt(request: AgentTurnRequest, history: readonly ThreadHistoryItem[]): Promise<string> {
     const parts = [
       "WCO_CHATGPT_WEB_COMPANION: This is a read-only provider turn. WCO remains the only filesystem, Git, verification, publish, merge, and release authority.",
       history.length > 0
         ? [
             "=== WCO LOGICAL THREAD REPLAY ===",
-            "The following prior user/assistant transcript is continuity data from earlier WCO turns. The current WCO turn below is authoritative.",
+            "The following transcript is continuity data from earlier WCO turns. The current WCO turn below is authoritative.",
             this.replay(history),
             "=== END WCO LOGICAL THREAD REPLAY ===",
           ].join("\n")
@@ -455,9 +696,7 @@ export class ChatGptWebCompanionAgentClient implements AgentClient {
 
   async turn(request: AgentTurnRequest): Promise<AgentTurnResponse> {
     const continuing = Boolean(request.thread_id);
-    const history = request.thread_id
-      ? this.threads.get(request.thread_id)
-      : [];
+    const history = request.thread_id ? this.threads.get(request.thread_id) : [];
     if (request.thread_id && !history) {
       throw codedError(
         "WEB_CHATGPT_COMPANION_THREAD_UNKNOWN",
@@ -465,50 +704,45 @@ export class ChatGptWebCompanionAgentClient implements AgentClient {
       );
     }
 
-    const logicalThreadId = request.thread_id
-      ?? `wco-chatgpt-web:${randomUUID()}`;
+    const logicalThreadId = request.thread_id ?? `wco-chatgpt-web:${randomUUID()}`;
     const prompt = await this.providerPrompt(request, history ?? []);
-    const id = randomUUID();
-    const response = await this.invoke({
-      ...this.requestBase(id),
-      type: "turn",
-      role: request.role,
-      mode: this.mode,
-      prompt,
+    const id = `wco_turn_${randomUUID().replaceAll("-", "")}`;
+    const selected = this.modelSelection();
+    const response = await this.invokeHelper(id, {
+      type: "run",
+      id,
+      config: {
+        ...this.helperConfig(),
+        turnTimeoutMs: this.turnTimeoutMs,
+        autoApproveToolCalls: false,
+      },
+      turn: {
+        traceId: id,
+        modelId: selected.modelId,
+        reasoning: selected.reasoning,
+        capabilities: {
+          localToolsEnabled: false,
+          solAvailable: this.installed.solAvailable,
+          proAvailable: this.installed.proAvailable,
+        },
+        prepared: { text: prompt, images: [] },
+      },
     }, request.signal);
 
-    if (typeof response.answer !== "string" || response.answer.trim().length === 0) {
-      throw codedError(
-        "WEB_CHATGPT_COMPANION_OUTPUT_INVALID",
-        "ChatGPT Web companion returned no assistant answer.",
-      );
+    if (typeof response.text !== "string" || response.text.trim().length === 0) {
+      throw codedError("WEB_CHATGPT_COMPANION_OUTPUT_INVALID", "miuuyy launcher helper returned no assistant answer.");
     }
-    if (response.mode !== this.mode) {
-      throw codedError(
-        "WEB_CHATGPT_COMPANION_MODE_DRIFT",
-        `ChatGPT Web companion returned mode '${String(response.mode)}' instead of requested '${this.mode}'.`,
-      );
-    }
-
-    const output = parseChatGptBrowserJson(response.answer);
-    const nextHistory = [
+    const output = parseChatGptBrowserJson(response.text);
+    this.threads.set(logicalThreadId, [
       ...(history ?? []),
-      {
-        prompt: request.prompt,
-        output: JSON.stringify(output),
-      },
-    ];
-    this.threads.set(logicalThreadId, nextHistory);
+      { prompt: request.prompt, output: JSON.stringify(output) },
+    ]);
 
     const now = new Date().toISOString();
     return {
       thread_id: logicalThreadId,
       output,
-      usage: {
-        input_tokens: 0,
-        cached_input_tokens: 0,
-        output_tokens: 0,
-      },
+      usage: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0 },
       public_events: [
         ...(continuing ? [] : [{ type: "thread.started", timestamp: now }]),
         { type: "turn.started", timestamp: now },

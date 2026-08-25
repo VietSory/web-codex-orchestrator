@@ -5,13 +5,15 @@ import path from "node:path";
 import test from "node:test";
 import {
   ChatGptWebCompanionAgentClient,
+  chatGptWebCompanionChildEnvironment,
   isChatGptWebCompanionConfigured,
 } from "../src/agent/chatgpt-web-companion-client.js";
 import {
-  PINNED_MIUUYY_CHATGPT_WEB_SHA,
-  WCO_CHATGPT_WEB_COMPANION_PROTOCOL,
-  WCO_CHATGPT_WEB_COMPANION_TRANSPORT,
+  MIUUYY_LAUNCHER_DESCRIPTOR_KIND,
+  MIUUYY_LAUNCHER_DESCRIPTOR_VERSION,
+  PINNED_MIUUYY_CHATGPT_WEB_RELEASE,
 } from "../src/agent/chatgpt-web-companion-protocol.js";
+import { ChatGptBrowserReviewerAgentClient } from "../src/agent/chatgpt-browser-reviewer-client.js";
 import { ChatGptBrowserWebBridge } from "../src/web-bridge/chatgpt-browser-bridge.js";
 
 function minimalConfig(repoPath: string): any {
@@ -35,53 +37,97 @@ function minimalConfig(repoPath: string): any {
   };
 }
 
-async function fakeCompanionScript(root: string): Promise<string> {
-  const script = path.join(root, "fake-companion.mjs");
+async function fakeHelperScript(root: string): Promise<string> {
+  const script = path.join(root, "fake-miuuyy-helper.mjs");
   await writeFile(script, `
-let source = "";
-for await (const chunk of process.stdin) source += chunk.toString();
-const request = JSON.parse(source.trim());
-const pin = process.env.FAKE_BAD_PIN === "1"
-  ? "0000000000000000000000000000000000000000"
-  : ${JSON.stringify(PINNED_MIUUYY_CHATGPT_WEB_SHA)};
-const base = {
-  protocol: ${JSON.stringify(WCO_CHATGPT_WEB_COMPANION_PROTOCOL)},
-  id: request.id,
-  ok: true,
-  provider: "chatgpt-web",
-  transport: ${JSON.stringify(WCO_CHATGPT_WEB_COMPANION_TRANSPORT)},
-  upstream_sha: pin,
-  temporary_chat: true,
-  sol_available: true,
-  pro_available: false
-};
-if (request.type === "probe") {
-  process.stdout.write(JSON.stringify(base));
-  process.exit(0);
-}
-let output = { ok: true };
-if (request.prompt.includes("CONTEXT_SENTINEL")) output = { saw_context: true };
-else if (request.prompt.includes("SECOND_TURN")) {
-  output = { saw_replay: request.prompt.includes("FIRST_OUTPUT_MARKER") };
-} else if (request.prompt.includes("FIRST_TURN")) {
-  output = { marker: "FIRST_OUTPUT_MARKER" };
-}
-process.stdout.write(JSON.stringify({
-  ...base,
-  mode: request.mode,
-  model_id: "gpt-5.6-sol",
-  answer: JSON.stringify(output)
-}));
+import readline from "node:readline";
+const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+const send = value => process.stdout.write(JSON.stringify(value) + "\\n");
+send({ type: "ready" });
+input.on("line", line => {
+  const request = JSON.parse(line);
+  if (request.type === "shutdown") {
+    input.close();
+    setImmediate(() => process.exit(0));
+    return;
+  }
+  if (request.type === "abort") return;
+  if (request.type === "inspect") {
+    send({
+      type: "result",
+      id: request.id,
+      value: {
+        authenticated: true,
+        temporary: true,
+        url: "https://chatgpt.com/?temporary-chat=true",
+        solAvailable: process.env.FAKE_CAPABILITY_MISMATCH === "1" ? false : true,
+        proAvailable: false
+      }
+    });
+    return;
+  }
+  if (request.type !== "run") {
+    send({ type: "error", id: request.id, message: "unsupported request" });
+    return;
+  }
+  let output = { ok: true };
+  const prompt = request.turn?.prepared?.text ?? "";
+  if (prompt.includes("CONTEXT_SENTINEL")) output = { saw_context: true };
+  else if (prompt.includes("SECOND_TURN")) {
+    output = { saw_replay: prompt.includes("FIRST_OUTPUT_MARKER") };
+  } else if (prompt.includes("FIRST_TURN")) {
+    output = { marker: "FIRST_OUTPUT_MARKER" };
+  }
+  send({ type: "result", id: request.id, text: JSON.stringify(output) });
+});
 `, { encoding: "utf8", mode: 0o600 });
   return script;
 }
 
-function companionEnv(root: string, script: string): NodeJS.ProcessEnv {
+async function fakeMiuuyyInstall(
+  root: string,
+  options: { releaseVersion?: string; solAvailable?: boolean; proAvailable?: boolean; bom?: boolean } = {},
+): Promise<{ configPath: string; helperScript: string }> {
+  const helperScript = await fakeHelperScript(root);
+  const descriptorPath = path.join(root, "browser-host.json");
+  await writeFile(descriptorPath, JSON.stringify({
+    version: MIUUYY_LAUNCHER_DESCRIPTOR_VERSION,
+    kind: MIUUYY_LAUNCHER_DESCRIPTOR_KIND,
+    profile: "production",
+    pid: process.pid,
+    endpoint: "http://127.0.0.1:43101",
+    control: {
+      endpoint: "http://127.0.0.1:43102",
+      token: "a".repeat(48),
+    },
+    helper: {
+      executable: process.execPath,
+      script: helperScript,
+    },
+    partition: "persist:codex-web-gpt-chatgpt",
+    idleUrl: "about:blank#codex-web-gpt-browser-host",
+    surfaceId: "s".repeat(32),
+    createdAt: new Date().toISOString(),
+  }), "utf8");
+
+  const configPath = path.join(root, "config.json");
+  const config = JSON.stringify({
+    version: 3,
+    releaseVersion: options.releaseVersion ?? PINNED_MIUUYY_CHATGPT_WEB_RELEASE,
+    browserHost: "launcher",
+    browserHostDescriptorPath: descriptorPath,
+    appName: "Codex Native2",
+    solAvailable: options.solAvailable ?? true,
+    proAvailable: options.proAvailable ?? false,
+  });
+  await writeFile(configPath, `${options.bom ? "\uFEFF" : ""}${config}`, "utf8");
+  return { configPath, helperScript };
+}
+
+function companionEnv(configPath: string): NodeJS.ProcessEnv {
   return {
     ...process.env,
-    WCO_CHATGPT_WEB_COMPANION_EXE: process.execPath,
-    WCO_CHATGPT_WEB_COMPANION_ARGS_JSON: JSON.stringify([script]),
-    WCO_CHATGPT_WEB_MIUUYY_ROOT: path.join(root, "upstream"),
+    WCO_CHATGPT_WEB_MIUUYY_CONFIG: configPath,
     WCO_CHATGPT_WEB_COMPANION_MODE: "high",
     WCO_CHATGPT_WEB_COMPANION_TIMEOUT_SECONDS: "5",
   };
@@ -108,11 +154,11 @@ function turnRequest(overrides: Partial<CompanionTurnRequest> = {}): CompanionTu
   };
 }
 
-test("ChatGPT Web companion performs probe and provider turn over bounded stdio", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "wco-web-companion-"));
+test("ChatGPT Web companion drives the installed miuuyy launcher helper over bounded stdio", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-miuuyy-helper-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const script = await fakeCompanionScript(root);
-  const env = companionEnv(root, script);
+  const { configPath } = await fakeMiuuyyInstall(root);
+  const env = companionEnv(configPath);
 
   assert.equal(isChatGptWebCompanionConfigured(env), true);
   const client = new ChatGptWebCompanionAgentClient({ env });
@@ -134,10 +180,18 @@ test("ChatGPT Web companion performs probe and provider turn over bounded stdio"
   ]);
 });
 
-test("implementation companion prompt carries WCO's bounded accepted repository context inline", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "wco-web-companion-context-"));
+test("installed miuuyy config accepts a preserved UTF-8 BOM", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-miuuyy-bom-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const script = await fakeCompanionScript(root);
+  const { configPath } = await fakeMiuuyyInstall(root, { bom: true });
+  const client = new ChatGptWebCompanionAgentClient({ env: companionEnv(configPath) });
+  await client.checkAvailability();
+});
+
+test("implementation helper prompt carries WCO's bounded accepted repository context inline", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-miuuyy-context-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { configPath } = await fakeMiuuyyInstall(root);
   const workspace = path.join(root, "workspace");
   const bundle = path.join(root, "bundle");
   await mkdir(path.join(workspace, "src"), { recursive: true });
@@ -149,9 +203,7 @@ test("implementation companion prompt carries WCO's bounded accepted repository 
     "utf8",
   );
 
-  const client = new ChatGptWebCompanionAgentClient({
-    env: companionEnv(root, script),
-  });
+  const client = new ChatGptWebCompanionAgentClient({ env: companionEnv(configPath) });
   const result = await client.turn(turnRequest({
     role: "implementer",
     prompt: "Inspect only the supplied WCO context.",
@@ -161,17 +213,14 @@ test("implementation companion prompt carries WCO's bounded accepted repository 
   assert.deepEqual(result.output, { saw_context: true });
 });
 
-test("continuation uses a stable logical thread and replays prior JSON into a fresh Temporary Chat turn", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "wco-web-companion-thread-"));
+test("continuation keeps WCO logical identity while replaying prior JSON into a fresh Web turn", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-miuuyy-thread-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const script = await fakeCompanionScript(root);
-  const client = new ChatGptWebCompanionAgentClient({
-    env: companionEnv(root, script),
-  });
+  const { configPath } = await fakeMiuuyyInstall(root);
+  const client = new ChatGptWebCompanionAgentClient({ env: companionEnv(configPath) });
 
   const first = await client.turn(turnRequest({ prompt: "FIRST_TURN" }));
   assert.deepEqual(first.output, { marker: "FIRST_OUTPUT_MARKER" });
-
   const second = await client.turn(turnRequest({
     prompt: "SECOND_TURN",
     thread_id: first.thread_id,
@@ -185,19 +234,14 @@ test("continuation uses a stable logical thread and replays prior JSON into a fr
   ]);
 });
 
-test("companion refuses unknown logical continuation rather than fabricating history", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "wco-web-companion-unknown-"));
+test("companion refuses unknown logical continuation rather than inventing history", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-miuuyy-unknown-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const script = await fakeCompanionScript(root);
-  const client = new ChatGptWebCompanionAgentClient({
-    env: companionEnv(root, script),
-  });
+  const { configPath } = await fakeMiuuyyInstall(root);
+  const client = new ChatGptWebCompanionAgentClient({ env: companionEnv(configPath) });
 
   await assert.rejects(
-    () => client.turn(turnRequest({
-      prompt: "SECOND_TURN",
-      thread_id: "wco-chatgpt-web:missing",
-    })),
+    () => client.turn(turnRequest({ prompt: "SECOND_TURN", thread_id: "wco-chatgpt-web:missing" })),
     (error: unknown) => (
       error !== null
       && typeof error === "object"
@@ -207,34 +251,60 @@ test("companion refuses unknown logical continuation rather than fabricating his
   );
 });
 
-test("companion pin attestation fails closed on an unreviewed miuuyy checkout", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "wco-web-companion-pin-"));
+test("companion pins the qualified miuuyy installed release instead of trusting any helper", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-miuuyy-release-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const script = await fakeCompanionScript(root);
-  const client = new ChatGptWebCompanionAgentClient({
-    env: {
-      ...companionEnv(root, script),
-      FAKE_BAD_PIN: "1",
-    },
-  });
+  const { configPath } = await fakeMiuuyyInstall(root, { releaseVersion: "3.0.2" });
 
+  assert.throws(
+    () => new ChatGptWebCompanionAgentClient({ env: companionEnv(configPath) }),
+    (error: unknown) => (
+      error !== null
+      && typeof error === "object"
+      && "code" in error
+      && error.code === "WEB_CHATGPT_COMPANION_RELEASE_MISMATCH"
+    ),
+  );
+});
+
+test("companion rejects stale account capability state before a PAIR turn", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-miuuyy-capabilities-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { configPath } = await fakeMiuuyyInstall(root);
+  const client = new ChatGptWebCompanionAgentClient({
+    env: { ...companionEnv(configPath), FAKE_CAPABILITY_MISMATCH: "1" },
+  });
   await assert.rejects(
     () => client.checkAvailability(),
     (error: unknown) => (
       error !== null
       && typeof error === "object"
       && "code" in error
-      && error.code === "WEB_CHATGPT_COMPANION_ATTESTATION_INVALID"
+      && error.code === "WEB_CHATGPT_COMPANION_CAPABILITY_MISMATCH"
     ),
   );
 });
 
-test("browser PAIR selects configured companion without touching Codex runtime/auth", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "wco-web-companion-bridge-"));
+test("WSL child environment explicitly forwards Electron helper mode into Win32", () => {
+  const env = chatGptWebCompanionChildEnvironment({
+    WSLENV: "FOO/p:ELECTRON_RUN_AS_NODE/u",
+    FOO: "/tmp/value",
+  }, true);
+  assert.equal(env.ELECTRON_RUN_AS_NODE, "1");
+  assert.equal(env.CODEX_CHATGPT_WEB_BROWSER_HELPER_PROCESS, "1");
+  const entries = new Set((env.WSLENV ?? "").split(":"));
+  assert.equal(entries.has("FOO/p"), true);
+  assert.equal(entries.has("ELECTRON_RUN_AS_NODE/w"), true);
+  assert.equal(entries.has("CODEX_CHATGPT_WEB_BROWSER_HELPER_PROCESS/w"), true);
+  assert.equal(entries.has("ELECTRON_RUN_AS_NODE/u"), false);
+});
+
+test("browser PAIR prefers installed miuuyy helper without touching Codex runtime/auth", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-miuuyy-bridge-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const script = await fakeCompanionScript(root);
+  const { configPath } = await fakeMiuuyyInstall(root);
   const env = {
-    ...companionEnv(root, script),
+    ...companionEnv(configPath),
     CI: "",
     WCO_CODEX_EXECUTABLE: path.join(root, "must-not-run-codex"),
   };
@@ -249,4 +319,33 @@ test("browser PAIR selects configured companion without touching Codex runtime/a
   assert.equal(status.configured, true);
   assert.equal(status.connected, true);
   assert.equal(status.account, "ChatGPT Web companion");
+});
+
+test("independent browser reviewer also uses the installed miuuyy helper transport", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-miuuyy-reviewer-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { configPath } = await fakeMiuuyyInstall(root);
+  const workspace = path.join(root, "workspace");
+  const bundle = path.join(root, "bundle");
+  await mkdir(path.join(workspace, "src"), { recursive: true });
+  await mkdir(bundle, { recursive: true });
+  await writeFile(path.join(workspace, "src", "review.txt"), "CONTEXT_SENTINEL\n", "utf8");
+  await writeFile(
+    path.join(bundle, "manifest.json"),
+    JSON.stringify({ allowed_paths: ["src/**"], forbidden_paths: [] }),
+    "utf8",
+  );
+
+  const reviewer = new ChatGptBrowserReviewerAgentClient({
+    stateDirectory: path.join(root, "state"),
+    env: companionEnv(configPath),
+  });
+  await reviewer.checkAvailability();
+  const result = await reviewer.turn(turnRequest({
+    role: "internal_reviewer",
+    prompt: "Review the exact bounded context.",
+    workspace_path: workspace,
+    accepted_bundle_path: bundle,
+  }));
+  assert.deepEqual(result.output, { saw_context: true });
 });

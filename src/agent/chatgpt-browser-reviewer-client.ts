@@ -1,24 +1,36 @@
 import { ChatGptBrowserAgentClient } from "./chatgpt-browser-client.js";
+import {
+  ChatGptWebCompanionAgentClient,
+  isChatGptWebCompanionConfigured,
+} from "./chatgpt-web-companion-client.js";
 import type { AgentClient, AgentTurnRequest, AgentTurnResponse } from "./contracts.js";
 
 /**
- * Reviewer-only browser adapter.
+ * Reviewer-only ChatGPT Web adapter.
  *
- * ChatGptBrowserAgentClient attaches the bounded repository context pack for
- * implementation turns. The pre-publish reviewer needs the same bounded local
- * evidence but must remain semantically an internal reviewer to the rest of
- * WCO. This wrapper keeps that authority split explicit while reusing the
- * browser transport's context attachment path.
+ * The reviewer must use the same provider family as browser PAIR while keeping
+ * a fresh logical conversation. If the installed miuuyy launcher helper is
+ * available, reviewer turns use that Windows-native stdio boundary too;
+ * otherwise the legacy direct Chromium transport remains available for local
+ * non-WSL qualification.
+ *
+ * The underlying browser transports attach bounded repository context only for
+ * implementer-shaped turns. This wrapper therefore maps the reviewer request to
+ * role=implementer strictly at the transport boundary; the prompt/schema remain
+ * the independent reviewer contract and WCO retains all mutation authority.
  */
 export class ChatGptBrowserReviewerAgentClient implements AgentClient {
-  private readonly delegate: ChatGptBrowserAgentClient;
+  private readonly delegate: AgentClient;
 
   constructor(options: { stateDirectory: string; env?: NodeJS.ProcessEnv }) {
-    this.delegate = new ChatGptBrowserAgentClient(options);
+    const env = options.env ?? process.env;
+    this.delegate = isChatGptWebCompanionConfigured(env)
+      ? new ChatGptWebCompanionAgentClient({ env })
+      : new ChatGptBrowserAgentClient({ stateDirectory: options.stateDirectory, env });
   }
 
-  async checkAvailability(): Promise<void> {
-    await this.delegate.checkAvailability();
+  async checkAvailability(options: { signal?: AbortSignal } = {}): Promise<void> {
+    await this.delegate.checkAvailability(options);
   }
 
   async turn(request: AgentTurnRequest): Promise<AgentTurnResponse> {
@@ -29,10 +41,6 @@ export class ChatGptBrowserReviewerAgentClient implements AgentClient {
       );
     }
 
-    // The browser transport uses role=implementer only to decide whether the
-    // bounded context attachment is required. The supplied prompt/output schema
-    // remain the independent review contract and the Harness remains the only
-    // mutation authority.
     return await this.delegate.turn({ ...request, role: "implementer" });
   }
 }
