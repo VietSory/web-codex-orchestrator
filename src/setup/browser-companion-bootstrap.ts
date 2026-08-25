@@ -163,15 +163,15 @@ export async function ensureWcoBrowserCompanionInstalled(
   const explicit = explicitExecutable(env);
   if (explicit) return { executable: explicit, source: "explicit" };
 
-  const target = options.installPath ? path.resolve(options.installPath) : defaultBrowserCompanionInstallPath(env);
-  if (target && existsSync(target)) return { executable: target, source: "installed" };
-
   if (truthy(env.CI)) {
     throw codedError(
       "WEB_CHATGPT_COMPANION_BOOTSTRAP_DISABLED",
       "WCO browser companion bootstrap is disabled in CI; CI must not download or launch the user's browser transport.",
     );
   }
+
+  const target = options.installPath ? path.resolve(options.installPath) : defaultBrowserCompanionInstallPath(env);
+  if (target && existsSync(target)) return { executable: target, source: "installed" };
   if (!target) {
     throw codedError(
       "WEB_CHATGPT_COMPANION_WINDOWS_HOST_UNAVAILABLE",
