@@ -49,7 +49,7 @@ test("PAIR advanced-native Doctor does not require Codex, third-party relay or m
       assert.ok(probe, `missing ${id}`);
       const result = await probe.run();
       assert.equal(result.severity, "OK", `${id}: ${result.summary}`);
-      if (id === "wco-relay-service") assert.match(result.summary, /no third-party relay required/i);
+      if (id === "wco-relay-service") assert.match(result.summary, /(?:no third-party relay required|no relay or hosted service required)/i);
       if (id === "wco-device-account") assert.match(result.summary, /no managed device\/account requirement/i);
     }
   } finally { item.restore(); }
