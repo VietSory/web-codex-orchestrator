@@ -138,7 +138,7 @@ export class WcoBrowserCompanionAgentClient implements AgentClient {
   private readonly mode: WcoBrowserCompanionMode;
   private readonly turnTimeoutMs: number;
   private readonly maximumContextBytes: number;
-  private readonly injectedExecutable?: string;
+  private readonly injectedExecutable: string | undefined;
   private readonly injectedArguments: string[];
   private readonly threads = new Map<string, ThreadHistoryItem[]>();
 
