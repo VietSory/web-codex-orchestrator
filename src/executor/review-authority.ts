@@ -8,6 +8,16 @@ function selectedReview(receipt: ExecutorReceipt) {
       : null;
 }
 
+function browserRepairReapproved(receipt: ExecutorReceipt, digest: string): boolean {
+  const reapproval = receipt.repair_reapproval;
+  return Boolean(
+    reapproval?.rounds === 1 &&
+    reapproval.verdict === "APPROVE" &&
+    reapproval.change_set_digest === digest &&
+    reapproval.evidence_sha256,
+  );
+}
+
 function modelHistoryAnchor(receipt: ExecutorReceipt): string | null {
   if (receipt.review_strategy !== "model" || !receipt.reviewer_selection) return null;
   const review = selectedReview(receipt);
@@ -21,7 +31,8 @@ function modelHistoryAnchor(receipt: ExecutorReceipt): string | null {
     if (
       review.verdict !== "REVISE" ||
       review.change_set_digest !== first.source_change_set_digest ||
-      review.evidence_sha256 !== first.source_review_evidence_sha256
+      review.evidence_sha256 !== first.source_review_evidence_sha256 ||
+      (receipt.reviewer_selection.model === "chatgpt-web" && !browserRepairReapproved(receipt, first.final_change_set_digest))
     ) return null;
     current = first.final_change_set_digest;
   } else if (first.reviewer === "web") {
@@ -38,9 +49,10 @@ function modelHistoryAnchor(receipt: ExecutorReceipt): string | null {
 }
 
 /**
- * Returns true only when the selected model's single review pass authorizes the
- * supplied digest directly, through its own verified adaptive repair, or
- * through an immutable chain of later Web-A repair generations.
+ * Returns true only when the selected model authority covers the supplied
+ * digest. Browser PAIR is stricter than legacy model review: if the selected
+ * ChatGPT Web reviewer proposed a repair, a fresh review must APPROVE the exact
+ * repaired digest before that repair can anchor any later authority chain.
  */
 export function selectedModelAuthorityCoversDigest(receipt: ExecutorReceipt, digest: string): boolean {
   if (receipt.review_strategy !== "model" || !receipt.reviewer_selection) return false;
@@ -56,7 +68,11 @@ export function selectedModelAuthorityCoversDigest(receipt: ExecutorReceipt, dig
     review.verdict === "REVISE" &&
     review.change_set_digest === repair.source_change_set_digest &&
     review.evidence_sha256 === repair.source_review_evidence_sha256
-  ) return true;
+  ) {
+    return receipt.reviewer_selection.model === "chatgpt-web"
+      ? browserRepairReapproved(receipt, digest)
+      : true;
+  }
 
   return modelHistoryAnchor(receipt) === digest;
 }
