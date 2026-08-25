@@ -1,10 +1,6 @@
 import path from "node:path";
 import type { AgentClient } from "../agent/contracts.js";
-import { ChatGptBrowserAgentClient } from "../agent/chatgpt-browser-client.js";
-import {
-  ChatGptWebCompanionAgentClient,
-  isChatGptWebCompanionConfigured,
-} from "../agent/chatgpt-web-companion-client.js";
+import { WcoBrowserCompanionAgentClient } from "../agent/wco-browser-companion-client.js";
 import type { TrustedConfig } from "../config/contracts.js";
 import { ChatGptCodexWebBridge } from "./chatgpt-codex-bridge.js";
 import type { AuthoringEvent, BridgeConnectionStatus, BridgeJobIdentity, FinalReviewRequest, RepositoryCommandResult, WebContractEnvelope, WebImplementationSubmission, WebVerdictEnvelope } from "./contracts.js";
@@ -16,30 +12,21 @@ function truthyEnvironmentFlag(value: string | undefined): boolean {
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
-function companionExplicitlyRequested(env: NodeJS.ProcessEnv): boolean {
-  return Boolean(env.WCO_CHATGPT_WEB_MIUUYY_CONFIG?.trim());
-}
-
 /**
  * Core ChatGPT Web transport for PAIR.
  *
- * The mature WCO semantic/implementation state machine stays provider-neutral.
- * Provider turns are injected through AgentClient and therefore never need a
- * Codex model. When an installed miuuyy/codex-chatgpt-web 3.0.3 launcher is
- * discoverable, WCO talks to its launcher-owned browser helper over bounded
- * stdin/stdout. That keeps the browser/CDP boundary Windows-native while WCO,
- * Bubblewrap verification, Git and publication authority remain in WSL/Linux.
+ * Normal browser PAIR always routes model turns through WCO's own Windows-native
+ * browser companion over bounded stdin/stdout. WSL builds repository context and
+ * retains mutation, verification, Git and publication authority. The companion
+ * receives only prepared prompt text plus bounded model metadata and controls its
+ * loopback-only CDP endpoint on Windows; WSL never connects to browser CDP.
  *
- * The legacy direct local Chromium adapter remains available only when no
- * qualified miuuyy launcher is configured, for non-WSL qualification and
- * backwards compatibility. An explicit companion-config override is authority:
- * if it is unreadable or invalid WCO fails closed instead of silently changing
- * transports. Neither path may silently fall back to Codex.
+ * A browserAgent can be injected only by tests/maintainer harnesses. Production
+ * construction has no Codex or legacy direct-browser fallback.
  */
 export class ChatGptBrowserWebBridge implements PreparedRunAwareWebBridge {
   private readonly delegate: ChatGptCodexWebBridge;
   private readonly agent: AgentClient;
-  private readonly accountLabel: string;
 
   constructor(
     config: TrustedConfig,
@@ -48,17 +35,7 @@ export class ChatGptBrowserWebBridge implements PreparedRunAwareWebBridge {
     private readonly env: NodeJS.ProcessEnv = process.env,
     browserAgent?: AgentClient,
   ) {
-    const companion = !browserAgent && (
-      companionExplicitlyRequested(env)
-      || isChatGptWebCompanionConfigured(env)
-    );
-    this.agent = browserAgent
-      ?? (companion
-        ? new ChatGptWebCompanionAgentClient({ env })
-        : new ChatGptBrowserAgentClient({ stateDirectory, env }));
-    this.accountLabel = companion
-      ? "ChatGPT Web companion"
-      : "ChatGPT Web browser";
+    this.agent = browserAgent ?? new WcoBrowserCompanionAgentClient({ env });
     this.delegate = new ChatGptCodexWebBridge(
       config,
       path.join(bridgeDirectory, "chatgpt-browser-provider"),
@@ -135,7 +112,7 @@ export class ChatGptBrowserWebBridge implements PreparedRunAwareWebBridge {
     }
     try {
       await this.agent.checkAvailability(signal ? { signal } : {});
-      return { configured: true, connected: true, account: this.accountLabel };
+      return { configured: true, connected: true, account: "WCO Windows ChatGPT browser companion" };
     } catch {
       return { configured: true, connected: false };
     }
