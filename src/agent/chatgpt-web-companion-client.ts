@@ -94,6 +94,20 @@ function hostReadablePath(value: string): string {
   return path.resolve(value);
 }
 
+export function isChatGptWebSessionUrl(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:"
+      && parsed.hostname === "chatgpt.com"
+      && parsed.port === ""
+      && !parsed.username
+      && !parsed.password;
+  } catch {
+    return false;
+  }
+}
+
 function discoverWindowsConfigPath(): string | null {
   if (process.platform === "win32") {
     const profile = process.env.USERPROFILE?.trim();
@@ -628,8 +642,7 @@ export class ChatGptWebCompanionAgentClient implements AgentClient {
     if (
       session.authenticated !== true
       || session.temporary !== true
-      || typeof session.url !== "string"
-      || !session.url.startsWith("https://chatgpt.com")
+      || !isChatGptWebSessionUrl(session.url)
     ) {
       throw codedError(
         "WEB_CHATGPT_COMPANION_SESSION_NOT_READY",
