@@ -15,12 +15,16 @@ function mappedVerdict(verdict: string): "APPROVE" | "REVISE" | "ESCALATE" {
   return "ESCALATE";
 }
 
+function isFinalReapproval(request: ExecutorReviewRequest): boolean {
+  return request.final_reapproval === true || request.prior_evidence_sha256.length > 1;
+}
+
 function browserReviewPrompt(request: ExecutorReviewRequest): string {
   const base = reviewPrompt(request);
   if (!base.includes(GENERIC_REPAIR_PROMPT)) {
     throw new ExecutorError("EXECUTOR_STATE_INVALID", "Browser PAIR review prompt contract changed; refusing to weaken repair reapproval semantics.");
   }
-  const replacement = request.final_reapproval
+  const replacement = isFinalReapproval(request)
     ? "This is the fresh final reapproval of an already applied and deterministically verified repair. Return APPROVE only if this exact digest is acceptable. Otherwise return ESCALATE. Return repair_operations=[]; no further adaptive repair generation is authorized."
     : "For REVISE, return the complete minimal bounded repair in repair_operations in this same response. Harness may apply and deterministically verify that proposal, but publication remains blocked until a fresh independent ChatGPT Web review APPROVEs the exact repaired digest.";
   return base.replace(GENERIC_REPAIR_PROMPT, replacement);
@@ -65,6 +69,7 @@ export async function createProductionBrowserReviewer(options: {
         throw new ExecutorError("EXECUTOR_STATE_INVALID", "Browser PAIR uses exactly one independent ChatGPT Web reviewer role.");
       }
 
+      const finalReapproval = isFinalReapproval(request);
       const result = await reviewWithTerra(client, {
         model: BROWSER_REVIEW_MODEL,
         reasoning_effort: BROWSER_REVIEW_REASONING,
@@ -78,26 +83,26 @@ export async function createProductionBrowserReviewer(options: {
 
       const digestMatches = result.review.reviewed_change_set_sha256 === request.change_set_digest;
       const repairOperations = result.review.repair_operations ?? [];
-      const proposalValidForVerdict = request.final_reapproval
+      const proposalValidForVerdict = finalReapproval
         ? result.review.verdict !== "REVISE" && repairOperations.length === 0
         : result.review.verdict === "REVISE"
           ? repairOperations.length > 0
           : repairOperations.length === 0;
-      const acceptedVerdict = request.final_reapproval
+      const acceptedVerdict = finalReapproval
         ? result.review.verdict === "APPROVE" ? "APPROVE" as const : "ESCALATE" as const
         : mappedVerdict(result.review.verdict);
 
       return {
         verdict: digestMatches && proposalValidForVerdict ? acceptedVerdict : "ESCALATE",
         usage: browserUsage(),
-        ...(!request.final_reapproval && digestMatches && proposalValidForVerdict && result.review.verdict === "REVISE"
+        ...(!finalReapproval && digestMatches && proposalValidForVerdict && result.review.verdict === "REVISE"
           ? { repair_operations: repairOperations }
           : {}),
         evidence: {
           kind: "harness-chatgpt-web-review",
           reviewer: "chatgpt-web",
           model: BROWSER_REVIEW_MODEL,
-          final_reapproval: request.final_reapproval === true,
+          final_reapproval: finalReapproval,
           change_set_digest: request.change_set_digest,
           reviewed_change_set_sha256: result.review.reviewed_change_set_sha256,
           authority_binding_valid: digestMatches,
