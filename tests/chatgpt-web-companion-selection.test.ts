@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -26,28 +27,28 @@ function minimalConfig(repoPath: string): any {
   };
 }
 
-test("explicit miuuyy helper override fails closed instead of changing to direct-browser transport", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "wco-miuuyy-explicit-missing-"));
+test("missing first-party companion fails closed without direct-browser or Codex fallback", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-first-party-explicit-missing-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const missingConfig = path.join(root, "missing-miuuyy-config.json");
+  const missingCompanion = path.join(root, "missing-wco-companion.exe");
+  const codexMarker = path.join(root, "codex-must-not-run.marker");
+  const fakeCodex = path.join(root, "fake-codex.sh");
+  await writeFile(fakeCodex, `#!/bin/sh\nprintf codex > ${JSON.stringify(codexMarker)}\nexit 99\n`, { mode: 0o700 });
 
-  assert.throws(
-    () => new ChatGptBrowserWebBridge(
-      minimalConfig(root),
-      path.join(root, "bridge"),
-      path.join(root, "state"),
-      {
-        ...process.env,
-        CI: "",
-        WCO_CHATGPT_WEB_MIUUYY_CONFIG: missingConfig,
-        WCO_CODEX_EXECUTABLE: path.join(root, "must-not-run-codex"),
-      },
-    ),
-    (error: unknown) => (
-      error !== null
-      && typeof error === "object"
-      && "code" in error
-      && error.code === "WEB_CHATGPT_COMPANION_NOT_CONFIGURED"
-    ),
+  const bridge = new ChatGptBrowserWebBridge(
+    minimalConfig(root),
+    path.join(root, "bridge"),
+    path.join(root, "state"),
+    {
+      ...process.env,
+      CI: "",
+      WCO_CHATGPT_WEB_COMPANION_EXECUTABLE: missingCompanion,
+      WCO_CODEX_EXECUTABLE: fakeCodex,
+    },
   );
+
+  const status = await bridge.getConnectionStatus();
+  assert.equal(status.configured, true);
+  assert.equal(status.connected, false);
+  assert.equal(existsSync(codexMarker), false, "browser PAIR readiness must never execute the Codex fallback");
 });
