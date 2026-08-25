@@ -1,0 +1,198 @@
+name: Windows browser companion
+
+on:
+  pull_request:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-x64:
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    env:
+      WCO_EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      WCO_COMPANION_ASSET: wco-browser-companion-windows-x64.exe
+      WCO_COMPANION_SHA_ASSET: wco-browser-companion-windows-x64.exe.sha256
+
+    steps:
+      - name: Checkout exact event head
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.WCO_EXPECTED_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Confirm exact checkout and x64 runner
+        shell: pwsh
+        run: |
+          $actualSha = (git rev-parse HEAD).Trim()
+          if ($actualSha -ne $env:WCO_EXPECTED_SHA) {
+            throw "Expected exact head $env:WCO_EXPECTED_SHA but checked out $actualSha"
+          }
+          $architecture = (node -p "process.arch").Trim()
+          if ($architecture -ne "x64") {
+            throw "Windows browser companion must be built on x64, received '$architecture'."
+          }
+          Write-Host "Exact head: $actualSha"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install repository dependencies
+        run: npm ci
+
+      - name: Bundle native companion entry
+        shell: pwsh
+        run: |
+          $directory = "artifacts/browser-companion"
+          New-Item -ItemType Directory -Force $directory | Out-Null
+          @'
+          import { runWcoWindowsBrowserCompanion } from "../../src/browser-companion/windows-main.js";
+
+          runWcoWindowsBrowserCompanion().catch((error) => {
+            process.stderr.write(`${error instanceof Error ? error.stack || error.message : String(error)}\n`);
+            process.exitCode = 1;
+          });
+          '@ | Set-Content -Encoding utf8 "$directory/sea-entry.ts"
+
+          npx --yes esbuild@0.28.2 `
+            "$directory/sea-entry.ts" `
+            --bundle `
+            --platform=node `
+            --format=cjs `
+            --target=node22 `
+            --outfile="$directory/wco-browser-companion.cjs"
+          if ($LASTEXITCODE -ne 0) {
+            throw "esbuild failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Build Node SEA executable
+        shell: pwsh
+        run: |
+          $directory = "artifacts/browser-companion"
+          $exe = Join-Path $directory $env:WCO_COMPANION_ASSET
+          $configPath = Join-Path $directory "sea-config.json"
+          $blob = Join-Path $directory "sea-prep.blob"
+          @{
+            main = "$directory/wco-browser-companion.cjs"
+            output = $blob
+            disableExperimentalSEAWarning = $true
+            useSnapshot = $false
+            useCodeCache = $false
+            execArgvExtension = "none"
+          } | ConvertTo-Json | Set-Content -Encoding utf8 $configPath
+
+          node --experimental-sea-config $configPath
+          if ($LASTEXITCODE -ne 0) {
+            throw "Node SEA blob generation failed with exit code $LASTEXITCODE."
+          }
+          node -e "require('fs').copyFileSync(process.execPath, process.argv[1])" $exe
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not copy the Node executable for SEA injection."
+          }
+
+          npx --yes postject@1.0.0-alpha.6 `
+            $exe `
+            NODE_SEA_BLOB `
+            $blob `
+            --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2
+          if ($LASTEXITCODE -ne 0) {
+            throw "postject failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Smoke-test executable protocol without browser launch
+        shell: pwsh
+        run: |
+          $exe = Join-Path "artifacts/browser-companion" $env:WCO_COMPANION_ASSET
+          $request = '{"protocol_version":1,"type":"shutdown","id":"artifact-smoke"}'
+          $lines = @($request | & $exe)
+          if ($LASTEXITCODE -ne 0) {
+            throw "Browser companion smoke process exited with code $LASTEXITCODE."
+          }
+          if ($lines.Count -ne 2) {
+            throw "Expected exactly ready + shutdown result JSONL messages, received $($lines.Count)."
+          }
+          $ready = $lines[0] | ConvertFrom-Json
+          $result = $lines[1] | ConvertFrom-Json
+          if ($ready.type -ne "ready" -or $ready.protocol_version -ne 1 -or $ready.kind -ne "wco-browser-companion") {
+            throw "Browser companion ready handshake is invalid: $($lines[0])"
+          }
+          if ($result.type -ne "result" -or $result.id -ne "artifact-smoke" -or $result.value.shutdown -ne $true) {
+            throw "Browser companion shutdown result is invalid: $($lines[1])"
+          }
+
+      - name: Produce and verify SHA-256 sidecar
+        shell: pwsh
+        run: |
+          $directory = "artifacts/browser-companion"
+          $exe = Join-Path $directory $env:WCO_COMPANION_ASSET
+          $shaFile = Join-Path $directory $env:WCO_COMPANION_SHA_ASSET
+          $size = (Get-Item $exe).Length
+          if ($size -le 0 -or $size -gt 268435456) {
+            throw "Browser companion executable size $size is outside the bootstrap limit."
+          }
+          $actual = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLowerInvariant()
+          "$actual  $env:WCO_COMPANION_ASSET" | Set-Content -Encoding ascii $shaFile
+          $sidecar = (Get-Content -Raw $shaFile).Trim()
+          if ($sidecar -notmatch '^([0-9a-f]{64})\s+wco-browser-companion-windows-x64\.exe$') {
+            throw "Checksum sidecar has an invalid release format: '$sidecar'."
+          }
+          if ($Matches[1] -ne $actual) {
+            throw "Checksum sidecar does not match the executable."
+          }
+          Write-Host "SHA-256: $actual"
+          Write-Host "Size: $size bytes"
+
+      - name: Upload companion candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: wco-browser-companion-windows-x64
+          path: |
+            artifacts/browser-companion/wco-browser-companion-windows-x64.exe
+            artifacts/browser-companion/wco-browser-companion-windows-x64.exe.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-release-assets:
+    if: github.event_name == 'release' && github.event.action == 'published'
+    needs: build-windows-x64
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download qualified companion artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: wco-browser-companion-windows-x64
+          path: companion
+
+      - name: Reverify checksum before release upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd companion
+          test -f wco-browser-companion-windows-x64.exe
+          test -f wco-browser-companion-windows-x64.exe.sha256
+          sha256sum --check wco-browser-companion-windows-x64.exe.sha256
+
+      - name: Attach exact companion assets to published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          WCO_RELEASE_TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "$WCO_RELEASE_TAG" \
+            companion/wco-browser-companion-windows-x64.exe \
+            companion/wco-browser-companion-windows-x64.exe.sha256 \
+            --repo "$GH_REPO" \
+            --clobber
