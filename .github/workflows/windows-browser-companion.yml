@@ -176,13 +176,12 @@ jobs:
             throw "Browser companion executable size $size is outside the bootstrap limit."
           }
           $actual = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLowerInvariant()
-          "$actual  $env:WCO_COMPANION_ASSET" | Set-Content -Encoding ascii $shaFile
-          $sidecar = (Get-Content -Raw $shaFile).Trim()
-          if ($sidecar -notmatch '^([0-9a-f]{64})\s+wco-browser-companion-windows-x64\.exe$') {
-            throw "Checksum sidecar has an invalid release format: '$sidecar'."
-          }
-          if ($Matches[1] -ne $actual) {
-            throw "Checksum sidecar does not match the executable."
+          $written = (node scripts/write-companion-sha256.mjs $exe $shaFile $env:WCO_COMPANION_ASSET).Trim()
+          if ($written -ne $actual) { throw "Checksum sidecar does not match the executable." }
+          $expected = [System.Text.Encoding]::ASCII.GetBytes("$actual  $env:WCO_COMPANION_ASSET`n")
+          $sidecar = [System.IO.File]::ReadAllBytes($shaFile)
+          if ($sidecar.Length -ne $expected.Length -or -not [System.Linq.Enumerable]::SequenceEqual([byte[]]$sidecar, [byte[]]$expected)) {
+            throw "Checksum sidecar must be the canonical portable GNU sha256sum byte sequence."
           }
           Write-Host "SHA-256: $actual"
           Write-Host "Size: $size bytes"
