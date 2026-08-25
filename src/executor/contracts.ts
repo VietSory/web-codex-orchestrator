@@ -56,6 +56,12 @@ export interface ExecutorReceipt {
   reviewer_selection?: { kind: "terra" | "sol"; model: string; reasoning_effort: ReasoningEffort; };
   repair?: ExecutorRepairReceipt;
   repair_history?: ExecutorRepairHistoryEntry[];
+  /**
+   * Browser PAIR keeps the original REVISE evidence immutable in the selected
+   * reviewer receipt. If that reviewer-authored repair is applied, this
+   * separate receipt records the fresh review of the exact repaired digest.
+   */
+  repair_reapproval?: ExecutorReviewReceipt;
   verification: { rounds: number; passed: boolean; change_set_digest: string | null; evidence_sha256: string | null; };
   terra_review: ExecutorReviewReceipt;
   sol_review: ExecutorReviewReceipt;
