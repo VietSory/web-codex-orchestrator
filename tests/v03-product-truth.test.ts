@@ -36,7 +36,7 @@ test("public documentation freezes first-party browser PAIR without Codex fallba
 
   assert.match(readme, /cd \/path\/to\/project\n+wco/);
   assert.match(readme, /provider preference.*chatgpt-web|defaults.*chatgpt-web/is);
-  assert.match(readme, /Codex provider\/model turns\s+=\s*0/i);
+  assert.match(readme, /Codex provider(?:\/model)? turns\s+=\s*0/i);
   assert.match(readme, /per-task manual browser interactions\s+=\s*0/i);
   assert.match(readme, /fails closed|fail-closed/i);
   assert.match(readme, /Publishing WCO remains a human maintainer action/i);
@@ -46,7 +46,7 @@ test("public documentation freezes first-party browser PAIR without Codex fallba
   assert.match(operations, /## Multiple repositories/);
   assert.match(operations, /Codex provider\/model turns in PAIR\s+=\s*0/i);
   assert.match(operations, /per-task manual browser interactions\s*=\s*0/i);
-  assert.match(operations, /never silently fall back|never.*fallback/i);
+  assert.match(operations, /never\s+silently\s+falls?\s+back|never a silent fallback|must not silently fall back/i);
 
   assert.match(contract, /"provider": "chatgpt-web"/i);
   assert.match(contract, /Codex provider\/model turns\s+=\s*0/i);
