@@ -105,7 +105,7 @@ export async function performFirstRunSetup(options: { cwd: string; configPath?: 
   // Provider preference is committed only after trusted repository/config setup
   // succeeds, so a failed registration cannot leave a half-applied UX switch.
   if (!previousPreferences || previousPreferences.provider !== provider) await writeProviderPreferences(paths.state, provider);
-  await atomicWriteJson(paths.install_manifest, { schema_version: "1.0", product: "web-codex-orchestrator", version: "0.3.3", home: paths.home, owned_paths: [paths.config, paths.credentials, paths.state, paths.cache, paths.logs, paths.bridge, providerPreferencesPath(paths.state), paths.install_manifest] });
+  await atomicWriteJson(paths.install_manifest, { schema_version: "1.0", product: "web-codex-orchestrator", version: "0.4.0", home: paths.home, owned_paths: [paths.config, paths.credentials, paths.state, paths.cache, paths.logs, paths.bridge, providerPreferencesPath(paths.state), paths.install_manifest] });
 
   // Codex authorization is only needed when Codex is the selected daily
   // provider. Direct ChatGPT Web PAIR owns a separate browser profile/session.

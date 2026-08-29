@@ -44,8 +44,9 @@ function assertMeasuredUsageWithinBudget(receipt: ExecutorReceipt, reviewer: Exe
 function assertNoAmbiguousReviewResume(receipt: ExecutorReceipt, reviewer: ExecutorReviewerPort): void {
   if (!reviewer.budget_policy) return;
   const kind = receipt.reviewer_selection?.kind ?? reviewer.reviewer_kind;
-  if ((kind === undefined || kind === "terra") && receipt.state === "REVIEWING_TERRA" && receipt.terra_review.verdict === null) throw new ExecutorError("EXECUTOR_AMBIGUOUS_RECOVERY", "A Terra review turn may have started before interruption but no durable verdict exists; WCO will not replay an ambiguous model call.");
-  if ((kind === undefined || kind === "sol") && receipt.state === "REVIEWING_SOL" && receipt.sol_review.verdict === null) throw new ExecutorError("EXECUTOR_AMBIGUOUS_RECOVERY", "A Sol review turn may have started before interruption but no durable verdict exists; WCO will not replay an ambiguous model call.");
+  const pendingRepairReapproval = reviewer.repair_reapproval_required === true && receipt.repair_reapproval?.verdict === null;
+  if ((kind === undefined || kind === "terra") && receipt.state === "REVIEWING_TERRA" && (receipt.terra_review.verdict === null || pendingRepairReapproval)) throw new ExecutorError("EXECUTOR_AMBIGUOUS_RECOVERY", pendingRepairReapproval ? "A repaired-digest ChatGPT Web reapproval turn may have started before interruption but no durable verdict exists; WCO will not replay an ambiguous model call." : "A Terra review turn may have started before interruption but no durable verdict exists; WCO will not replay an ambiguous model call.");
+  if ((kind === undefined || kind === "sol") && receipt.state === "REVIEWING_SOL" && (receipt.sol_review.verdict === null || pendingRepairReapproval)) throw new ExecutorError("EXECUTOR_AMBIGUOUS_RECOVERY", pendingRepairReapproval ? "A repaired-digest reapproval turn may have started before interruption but no durable verdict exists; WCO will not replay an ambiguous model call." : "A Sol review turn may have started before interruption but no durable verdict exists; WCO will not replay an ambiguous model call.");
 }
 async function reserveReviewTurn(receipt: ExecutorReceipt, reviewer: ExecutorReviewerPort, stateDirectory: string, now: () => Date): Promise<void> {
   const policy = assertBudgetPolicy(reviewer); if (!policy) return;
@@ -67,7 +68,10 @@ function selectedReviewReady(receipt: ExecutorReceipt, digest: string, kind: "te
   if (finalWebRepairCompletesModelAuthority(receipt, digest)) return true;
   const review = kind === "terra" ? receipt.terra_review : receipt.sol_review;
   if (review.verdict === "APPROVE" && review.change_set_digest === digest) return true;
-  return Boolean(receipt.repair?.state === "VERIFIED" && receipt.repair.reviewer === kind && receipt.repair.final_change_set_digest === digest && review.verdict === "REVISE" && review.change_set_digest === receipt.repair.source_change_set_digest && review.evidence_sha256 === receipt.repair.source_review_evidence_sha256);
+  const selectedRepairReady = Boolean(receipt.repair?.state === "VERIFIED" && receipt.repair.reviewer === kind && receipt.repair.final_change_set_digest === digest && review.verdict === "REVISE" && review.change_set_digest === receipt.repair.source_change_set_digest && review.evidence_sha256 === receipt.repair.source_review_evidence_sha256);
+  if (!selectedRepairReady) return false;
+  if (receipt.reviewer_selection?.model !== "chatgpt-web") return true;
+  return Boolean(receipt.repair_reapproval?.rounds === 1 && receipt.repair_reapproval.verdict === "APPROVE" && receipt.repair_reapproval.change_set_digest === digest && receipt.repair_reapproval.evidence_sha256);
 }
 function assertReadyEvidence(receipt: ExecutorReceipt): void {
   const digest = receipt.change_set_digest;
@@ -83,8 +87,16 @@ function assertReadyEvidence(receipt: ExecutorReceipt): void {
   if (receipt.terra_review.verdict !== "APPROVE" || receipt.terra_review.change_set_digest !== digest || receipt.sol_review.verdict !== "APPROVE" || receipt.sol_review.change_set_digest !== digest) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Legacy READY executor is missing Terra and Sol approvals for the exact digest.");
 }
 function canBindStrategy(receipt: ExecutorReceipt): boolean { return receipt.reviewer_selection === undefined && receipt.terra_review.rounds === 0 && receipt.sol_review.rounds === 0 && receipt.terra_review.verdict === null && receipt.sol_review.verdict === null && ["PREPARED", "APPLYING", "APPLIED", "VERIFYING"].includes(receipt.state); }
+function effectiveDeletedPaths(receipt: ExecutorReceipt): string[] {
+  const changed = new Set(effectiveExecutorChangedPaths(receipt));
+  return receipt.operations.filter((operation) => {
+    if (!changed.has(operation.path)) return false;
+    const repair = receipt.repair?.operations.find((candidate) => candidate.path === operation.path);
+    return (repair?.kind ?? operation.kind) === "delete_file";
+  }).map((operation) => operation.path).sort();
+}
 
-async function completeAdaptiveRepair(options: { receipt: ExecutorReceipt; stateDirectory: string; verifier: ExecutorVerifierPort; pack: WebImplementationPack; acceptedBundlePath: string; signal?: AbortSignal; now: () => Date }): Promise<ExecutorReceipt> {
+async function completeAdaptiveRepair(options: { receipt: ExecutorReceipt; stateDirectory: string; verifier: ExecutorVerifierPort; reviewer?: ExecutorReviewerPort; pack: WebImplementationPack; acceptedBundlePath: string; signal?: AbortSignal; now: () => Date }): Promise<ExecutorReceipt> {
   let receipt = options.receipt; const repair = receipt.repair;
   if (!repair) throw new ExecutorError("EXECUTOR_REPAIR_INVALID", "Adaptive repair completion has no durable proposal.");
   if (repair.state === "PROPOSED" || repair.state === "APPLYING") receipt = await applyReviewerRepair({ stateDirectory: options.stateDirectory, receipt, pack: options.pack, now: options.now });
@@ -99,6 +111,48 @@ async function completeAdaptiveRepair(options: { receipt: ExecutorReceipt; state
     receipt.repair.state = "VERIFIED"; receipt.updated_at = timestamp(options.now); await writeExecutorReceipt(options.stateDirectory, receipt);
   }
   if (receipt.repair?.state !== "VERIFIED" || receipt.repair.final_change_set_digest === null) throw new ExecutorError("EXECUTOR_REPAIR_INVALID", "Adaptive repair did not reach a verified final digest.");
+
+  const reviewer = options.reviewer;
+  if (reviewer?.repair_reapproval_required === true && receipt.repair.reviewer === receipt.reviewer_selection?.kind) {
+    const kind = receipt.reviewer_selection.kind;
+    const finalDigest = receipt.repair.final_change_set_digest;
+    if (!receipt.repair_reapproval) {
+      receipt.repair_reapproval = { rounds: 0, verdict: null, change_set_digest: finalDigest, evidence_sha256: null };
+      receipt.state = kind === "terra" ? "REVIEWING_TERRA" : "REVIEWING_SOL";
+      receipt.updated_at = timestamp(options.now);
+      await writeExecutorReceipt(options.stateDirectory, receipt);
+      await reserveReviewTurn(receipt, reviewer, options.stateDirectory, options.now);
+
+      const changedPaths = effectiveExecutorChangedPaths(receipt);
+      const priorEvidence = [receipt.verification.evidence_sha256, receipt.repair.source_review_evidence_sha256].filter((value): value is string => Boolean(value));
+      const result = await reviewer.review({
+        run_id: receipt.run_id,
+        artifact_sha256: receipt.artifact_sha256,
+        worktree_path: receipt.worktree_path,
+        accepted_bundle_path: options.acceptedBundlePath,
+        change_set_digest: finalDigest,
+        changed_paths: changedPaths,
+        deleted_paths: effectiveDeletedPaths(receipt),
+        reviewer: kind,
+        prior_evidence_sha256: priorEvidence,
+        context_selection: selectSmartContext(options.pack, changedPaths),
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+      await reattestDigest(receipt, finalDigest);
+      recordUsage(receipt, result.usage);
+      assertMeasuredUsageWithinBudget(receipt, reviewer);
+      const evidence = boundedEvidence(result.evidence);
+      await persistExecutorEvidence({ stateDirectory: options.stateDirectory, receipt, name: "repair-reapproval-1", bytes: evidence.bytes, expectedSha256: evidence.sha256 });
+      const accepted = result.verdict === "APPROVE" && (result.repair_operations?.length ?? 0) === 0;
+      receipt.repair_reapproval = { rounds: 1, verdict: accepted ? "APPROVE" : "ESCALATE", change_set_digest: finalDigest, evidence_sha256: evidence.sha256 };
+      receipt.updated_at = timestamp(options.now);
+      if (!accepted) return await failToWeb(receipt, options.stateDirectory, "EXECUTOR_REVIEW_REJECTED", "The fresh repaired-digest reviewer did not APPROVE the exact deterministically verified repair; publication is blocked.", options.now);
+      await writeExecutorReceipt(options.stateDirectory, receipt);
+    }
+    const reapproval = receipt.repair_reapproval;
+    if (reapproval.rounds !== 1 || reapproval.verdict !== "APPROVE" || reapproval.change_set_digest !== finalDigest || !reapproval.evidence_sha256) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Browser PAIR repair lacks one durable exact-digest reapproval.");
+  }
+
   assertReadyEvidence(receipt); await reattestDigest(receipt, receipt.repair.final_change_set_digest); receipt.state = "READY_FOR_PUBLISH"; receipt.updated_at = timestamp(options.now); await writeExecutorReceipt(options.stateDirectory, receipt); return receipt;
 }
 
@@ -138,7 +192,7 @@ export async function executeRegisteredWebPack(options: { runId: string; artifac
     if ((strategy === "model" || strategy === "web") && receipt.repair) {
       if (strategy === "web" && receipt.repair.reviewer !== "web") throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", "Web-review Harness repair authority must come from Web.");
       if (strategy === "model" && receipt.repair.reviewer !== "web" && receipt.repair.reviewer !== receipt.reviewer_selection?.kind) throw new ExecutorError("EXECUTOR_CANONICAL_AUTHORITY_DRIFT", "Model-review Harness repair authority is neither the frozen selected reviewer nor final Web authority.");
-      return await completeAdaptiveRepair({ receipt, stateDirectory: options.stateDirectory, verifier: options.verifier, pack: source.pack, acceptedBundlePath: source.trusted.runReceipt.accepted_bundle_path, ...(options.signal ? { signal: options.signal } : {}), now });
+      return await completeAdaptiveRepair({ receipt, stateDirectory: options.stateDirectory, verifier: options.verifier, ...(options.reviewer ? { reviewer: options.reviewer } : {}), pack: source.pack, acceptedBundlePath: source.trusted.runReceipt.accepted_bundle_path, ...(options.signal ? { signal: options.signal } : {}), now });
     }
     if (["PREPARED", "APPLYING"].includes(receipt.state)) receipt = await applyExecutorTransaction({ stateDirectory: options.stateDirectory, receipt, pack: source.pack, now });
     if (!["APPLIED", "VERIFYING", "REVIEWING_TERRA", "REVIEWING_SOL"].includes(receipt.state)) throw new ExecutorError("EXECUTOR_STATE_INVALID", `Unexpected executor state '${receipt.state}'.`);
@@ -159,7 +213,7 @@ export async function executeRegisteredWebPack(options: { runId: string; artifac
       if (result.verdict === "APPROVE") { receipt!.updated_at = timestamp(now); await writeExecutorReceipt(options.stateDirectory, receipt!); return null; }
       if (strategy === "model" && result.verdict === "REVISE" && result.repair_operations?.length) {
         receipt = await bindReviewerRepair({ stateDirectory: options.stateDirectory, receipt: receipt!, reviewer: kind, sourceChangeSetDigest: digest, sourceReviewEvidenceSha256: evidence.sha256, operations: result.repair_operations, now });
-        return await completeAdaptiveRepair({ receipt, stateDirectory: options.stateDirectory, verifier: options.verifier, pack: source.pack, acceptedBundlePath: source.trusted.runReceipt.accepted_bundle_path, ...(options.signal ? { signal: options.signal } : {}), now });
+        return await completeAdaptiveRepair({ receipt, stateDirectory: options.stateDirectory, verifier: options.verifier, reviewer, pack: source.pack, acceptedBundlePath: source.trusted.runReceipt.accepted_bundle_path, ...(options.signal ? { signal: options.signal } : {}), now });
       }
       return await failToWeb(receipt!, options.stateDirectory, "EXECUTOR_REVIEW_REJECTED", `${kind === "terra" ? "Terra" : "Sol"} review returned ${result.verdict}; no bounded adaptive repair authority was accepted.`, now);
     };

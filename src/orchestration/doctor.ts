@@ -3,9 +3,27 @@ import { BoundedResourcePool } from "./resource-pool.js";
 export type DoctorSeverity = "OK" | "WARN" | "FAIL";
 export interface DoctorCheckResult { id: string; severity: DoctorSeverity; summary: string; duration_ms: number; details?: Record<string, unknown>; }
 /** A probe must honor the supplied signal so a Doctor deadline cancels the
- * underlying work rather than merely abandoning its Promise. */
-export interface DoctorProbe { id: string; run(signal?: AbortSignal): Promise<Omit<DoctorCheckResult, "id" | "duration_ms">>; }
+ * underlying work rather than merely abandoning its Promise. A production
+ * probe may request a larger minimum timeout when its external dependency has a
+ * documented bounded readiness budget. */
+export interface DoctorProbe { id: string; timeout_ms?: number; run(signal?: AbortSignal): Promise<Omit<DoctorCheckResult, "id" | "duration_ms">>; }
 export interface DoctorReport { status: DoctorSeverity; checks: DoctorCheckResult[]; generated_at: string; }
+
+// The installed ChatGPT Web launcher may need to hydrate a real Temporary Chat
+// and inspect account/model controls before it can prove readiness. Its 3.0.3
+// launcher contract budgets up to 120s for capability inspection. The normal
+// production Doctor calls probes with an 8s baseline, so chatgpt-web receives a
+// scoped 130s minimum there. Deliberately shorter caller deadlines remain exact
+// overrides; this is important for cancellation tests and bounded embedding
+// callers that explicitly choose not to wait for interactive browser readiness.
+export const CHATGPT_WEB_DOCTOR_PROBE_TIMEOUT_MS = 130_000;
+export const CHATGPT_WEB_DOCTOR_POLICY_THRESHOLD_MS = 8_000;
+
+export function doctorProbeTimeoutMs(probeId: string, configuredTimeoutMs: number): number {
+  return probeId === "chatgpt-web" && configuredTimeoutMs >= CHATGPT_WEB_DOCTOR_POLICY_THRESHOLD_MS
+    ? Math.max(configuredTimeoutMs, CHATGPT_WEB_DOCTOR_PROBE_TIMEOUT_MS)
+    : configuredTimeoutMs;
+}
 
 function worst(left: DoctorSeverity, right: DoctorSeverity): DoctorSeverity {
   const rank: Record<DoctorSeverity, number> = { OK: 0, WARN: 1, FAIL: 2 };
@@ -53,8 +71,10 @@ export async function runDoctor(probes: DoctorProbe[], options: { maximum_concur
   const pool = new BoundedResourcePool(maximum, Math.max(0, probes.length));
   const checks = await Promise.all(probes.map((probe) => pool.run(async () => {
     const started = Date.now();
+    const configuredProbeTimeout = probe.timeout_ms === undefined ? timeout : Math.max(timeout, probe.timeout_ms);
+    const probeTimeout = doctorProbeTimeoutMs(probe.id, configuredProbeTimeout);
     try {
-      const result = normalizeReadiness(probe.id, await withDeadline((signal) => probe.run(signal), timeout));
+      const result = normalizeReadiness(probe.id, await withDeadline((signal) => probe.run(signal), probeTimeout));
       return { id: probe.id, ...result, duration_ms: Math.max(0, Date.now() - started) } satisfies DoctorCheckResult;
     } catch (error) {
       return { id: probe.id, severity: "FAIL", summary: error instanceof Error ? error.message : String(error), duration_ms: Math.max(0, Date.now() - started) } satisfies DoctorCheckResult;

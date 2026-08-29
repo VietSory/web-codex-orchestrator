@@ -29,6 +29,10 @@ const STATES = new Set<ExecutorState>(["VALIDATING","PREPARED","APPLYING","APPLI
 function validDigest(value: string | null): boolean { return value === null || SHA256.test(value); }
 function safeRelative(value: string): boolean { return value.length > 0 && value.length <= 4096 && !value.includes("\u0000") && !value.includes("\\") && !path.posix.isAbsolute(value) && !path.win32.isAbsolute(value) && !/^[A-Za-z]:/.test(value) && !value.split("/").includes(".."); }
 function selectedReview(receipt: ExecutorReceipt) { return receipt.reviewer_selection?.kind === "terra" ? receipt.terra_review : receipt.reviewer_selection?.kind === "sol" ? receipt.sol_review : null; }
+function browserRepairReapproved(receipt: ExecutorReceipt, digest: string): boolean {
+  const reapproval = receipt.repair_reapproval;
+  return Boolean(reapproval?.rounds === 1 && reapproval.verdict === "APPROVE" && reapproval.change_set_digest === digest && reapproval.evidence_sha256 && SHA256.test(reapproval.evidence_sha256));
+}
 
 function validateRepairHistory(receipt: ExecutorReceipt): void {
   const history = receipt.repair_history;
@@ -117,10 +121,26 @@ function validateRepair(receipt: ExecutorReceipt, originalPaths: Set<string>): v
   if (repair.state === "VERIFIED" && (repair.final_change_set_digest === null || receipt.change_set_digest !== repair.final_change_set_digest || !receipt.verification.passed || receipt.verification.change_set_digest !== repair.final_change_set_digest)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Verified repair is not chained to deterministic verification of the final digest.");
 }
 
+function validateRepairReapproval(receipt: ExecutorReceipt): void {
+  const reapproval = receipt.repair_reapproval;
+  if (reapproval === undefined) return;
+  const selected = receipt.reviewer_selection;
+  const repair = receipt.repair;
+  if (receipt.review_strategy !== "model" || selected?.model !== "chatgpt-web" || !repair || repair.reviewer !== selected.kind || repair.state !== "VERIFIED" || repair.final_change_set_digest === null || receipt.change_set_digest !== repair.final_change_set_digest || !receipt.verification.passed || receipt.verification.change_set_digest !== repair.final_change_set_digest) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Repaired-digest reapproval is not bound to a verified browser-PAIR repair.");
+  if (!Number.isSafeInteger(reapproval.rounds) || reapproval.rounds < 0 || reapproval.rounds > 1 || !validDigest(reapproval.change_set_digest) || !validDigest(reapproval.evidence_sha256) || reapproval.change_set_digest !== repair.final_change_set_digest) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Repaired-digest reapproval identity is invalid.");
+  const expectedReviewState = selected.kind === "terra" ? "REVIEWING_TERRA" : "REVIEWING_SOL";
+  if (reapproval.verdict === null) {
+    if (reapproval.rounds !== 0 || reapproval.evidence_sha256 !== null || ![expectedReviewState, "FAILED", "ESCALATE_TO_WEB"].includes(receipt.state)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Pending repaired-digest reapproval has an inconsistent durable checkpoint.");
+    return;
+  }
+  if (!["APPROVE", "ESCALATE"].includes(reapproval.verdict) || reapproval.rounds !== 1 || reapproval.evidence_sha256 === null || !SHA256.test(reapproval.evidence_sha256)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Completed repaired-digest reapproval is invalid.");
+}
+
 function selectedModelAuthorityCoversDigest(receipt: ExecutorReceipt, digest: string, kind: "terra" | "sol"): boolean {
   const review = kind === "terra" ? receipt.terra_review : receipt.sol_review;
   if (review.verdict === "APPROVE" && review.change_set_digest === digest) return true;
-  if (receipt.repair?.state === "VERIFIED" && receipt.repair.reviewer === kind && receipt.repair.final_change_set_digest === digest && review.verdict === "REVISE" && review.change_set_digest === receipt.repair.source_change_set_digest && review.evidence_sha256 === receipt.repair.source_review_evidence_sha256) return true;
+  const selectedRepairReady = Boolean(receipt.repair?.state === "VERIFIED" && receipt.repair.reviewer === kind && receipt.repair.final_change_set_digest === digest && review.verdict === "REVISE" && review.change_set_digest === receipt.repair.source_change_set_digest && review.evidence_sha256 === receipt.repair.source_review_evidence_sha256);
+  if (selectedRepairReady) return receipt.reviewer_selection?.model === "chatgpt-web" ? browserRepairReapproved(receipt, digest) : true;
   if (receipt.repair?.state === "VERIFIED" && receipt.repair.reviewer === "web" && receipt.repair.final_change_set_digest === digest) {
     const history = receipt.repair_history ?? [];
     const previous = history.at(-1);
@@ -130,7 +150,10 @@ function selectedModelAuthorityCoversDigest(receipt: ExecutorReceipt, digest: st
   const history = receipt.repair_history;
   if (!history?.length || history.at(-1)!.final_change_set_digest !== digest) return false;
   const first = history[0]!;
-  if (first.reviewer === kind) return review.verdict === "REVISE" && review.change_set_digest === first.source_change_set_digest && review.evidence_sha256 === first.source_review_evidence_sha256;
+  if (first.reviewer === kind) {
+    const baseAuthority = review.verdict === "REVISE" && review.change_set_digest === first.source_change_set_digest && review.evidence_sha256 === first.source_review_evidence_sha256;
+    return receipt.reviewer_selection?.model === "chatgpt-web" ? baseAuthority && browserRepairReapproved(receipt, first.final_change_set_digest) : baseAuthority;
+  }
   return first.reviewer === "web" && review.verdict === "APPROVE" && review.change_set_digest === first.source_change_set_digest;
 }
 
@@ -140,7 +163,7 @@ function validateGateConsistency(receipt: ExecutorReceipt): void {
   if (receipt.terra_review.verdict !== null && (receipt.terra_review.rounds < 1 || receipt.terra_review.change_set_digest === null || receipt.terra_review.evidence_sha256 === null)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Persisted Terra verdict lacks immutable evidence identity.");
   if (receipt.sol_review.verdict !== null && (receipt.sol_review.rounds < 1 || receipt.sol_review.change_set_digest === null || receipt.sol_review.evidence_sha256 === null)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Persisted Sol verdict lacks immutable evidence identity.");
   if (receipt.review_strategy === "web") {
-    if (receipt.reviewer_selection !== undefined || receipt.terra_review.rounds !== 0 || receipt.sol_review.rounds !== 0 || receipt.terra_review.verdict !== null || receipt.sol_review.verdict !== null || receipt.terra_review.change_set_digest !== null || receipt.sol_review.change_set_digest !== null || receipt.terra_review.evidence_sha256 !== null || receipt.sol_review.evidence_sha256 !== null || receipt.repair !== undefined && receipt.repair.reviewer !== "web") throw new ExecutorError("EXECUTOR_STATE_INVALID", "Web-review Harness receipt contains model-review authority.");
+    if (receipt.reviewer_selection !== undefined || receipt.repair_reapproval !== undefined || receipt.terra_review.rounds !== 0 || receipt.sol_review.rounds !== 0 || receipt.terra_review.verdict !== null || receipt.sol_review.verdict !== null || receipt.terra_review.change_set_digest !== null || receipt.sol_review.change_set_digest !== null || receipt.terra_review.evidence_sha256 !== null || receipt.sol_review.evidence_sha256 !== null || receipt.repair !== undefined && receipt.repair.reviewer !== "web") throw new ExecutorError("EXECUTOR_STATE_INVALID", "Web-review Harness receipt contains model-review authority.");
   }
   if (receipt.review_strategy === "model" && receipt.reviewer_selection === undefined) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Model-review Harness receipt is missing its frozen reviewer selection.");
   if (receipt.terra_review.verdict === "APPROVE" && receipt.reviewer_selection?.kind !== "terra" && (!receipt.verification.passed || digest === null || receipt.verification.change_set_digest !== digest || receipt.terra_review.change_set_digest !== digest)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Terra approval is not chained to an approved verification of the exact current digest.");
@@ -167,13 +190,14 @@ function validateReceipt(receipt: ExecutorReceipt): void {
   if (receipt.executor_version !== "1.0" || !STATES.has(receipt.state) || receipt.run_id !== `${receipt.task_id}:${receipt.task_bundle_sha256}` || !SHA256.test(receipt.task_bundle_sha256) || !SHA256.test(receipt.artifact_sha256) || !SHA256.test(receipt.registration_manifest_sha256) || !GIT_SHA.test(receipt.base_commit) || !GIT_SHA.test(receipt.base_tree_sha) || !receipt.repository_id || !receipt.base_branch || !receipt.worktree_path) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor receipt identity/state is invalid.");
   if (receipt.review_strategy !== undefined && receipt.review_strategy !== "web" && receipt.review_strategy !== "model") throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor review strategy is invalid.");
   if (!Array.isArray(receipt.operations) || receipt.operations.length > 256 || !Array.isArray(receipt.errors) || receipt.errors.length > MAX_ERRORS) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor receipt arrays exceed their bounds.");
-  if (!validDigest(receipt.change_set_digest) || !validDigest(receipt.verification.change_set_digest) || !validDigest(receipt.verification.evidence_sha256) || !validDigest(receipt.terra_review.change_set_digest) || !validDigest(receipt.terra_review.evidence_sha256) || !validDigest(receipt.sol_review.change_set_digest) || !validDigest(receipt.sol_review.evidence_sha256)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor receipt contains an invalid digest.");
+  if (!validDigest(receipt.change_set_digest) || !validDigest(receipt.verification.change_set_digest) || !validDigest(receipt.verification.evidence_sha256) || !validDigest(receipt.terra_review.change_set_digest) || !validDigest(receipt.terra_review.evidence_sha256) || !validDigest(receipt.sol_review.change_set_digest) || !validDigest(receipt.sol_review.evidence_sha256) || receipt.repair_reapproval !== undefined && (!validDigest(receipt.repair_reapproval.change_set_digest) || !validDigest(receipt.repair_reapproval.evidence_sha256))) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor receipt contains an invalid digest.");
   if (!Number.isSafeInteger(receipt.verification.rounds) || receipt.verification.rounds < 0 || receipt.verification.rounds > 32 || !Number.isSafeInteger(receipt.terra_review.rounds) || receipt.terra_review.rounds < 0 || receipt.terra_review.rounds > 32 || !Number.isSafeInteger(receipt.sol_review.rounds) || receipt.sol_review.rounds < 0 || receipt.sol_review.rounds > 32) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor gate round counters are invalid.");
   if (![null,"APPROVE","REVISE","ESCALATE"].includes(receipt.terra_review.verdict) || ![null,"APPROVE","REVISE","ESCALATE"].includes(receipt.sol_review.verdict)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor review verdict is invalid.");
   if (receipt.reviewer_selection !== undefined) {
     const selected = receipt.reviewer_selection;
     if (!selected || !["terra", "sol"].includes(selected.kind) || !SAFE_MODEL.test(selected.model) || !EFFORTS.has(selected.reasoning_effort)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor reviewer selection is invalid.");
-    if (selected.kind === "terra" && selected.model !== "gpt-5.6-terra" || selected.kind === "sol" && selected.model !== "gpt-5.6-sol") throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor reviewer model does not match its selected reviewer kind.");
+    const modelMatches = selected.kind === "terra" ? selected.model === "gpt-5.6-terra" || selected.model === "chatgpt-web" : selected.model === "gpt-5.6-sol";
+    if (!modelMatches || selected.model === "chatgpt-web" && receipt.review_strategy !== "model") throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor reviewer model does not match its selected reviewer kind/strategy.");
   }
   if (receipt.usage !== undefined && (!receipt.usage || typeof receipt.usage !== "object" || !Number.isSafeInteger(receipt.usage.model_turns) || receipt.usage.model_turns < 0 || receipt.usage.model_turns > MAX_MODEL_TURNS || !Number.isSafeInteger(receipt.usage.input_tokens) || receipt.usage.input_tokens < 0 || receipt.usage.input_tokens > MAX_INPUT_TOKENS || !Number.isSafeInteger(receipt.usage.output_tokens) || receipt.usage.output_tokens < 0 || receipt.usage.output_tokens > MAX_OUTPUT_TOKENS)) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor usage counters are invalid or exceed trusted hard ceilings.");
   const paths = new Set<string>(); const ids = new Set<string>();
@@ -183,6 +207,7 @@ function validateReceipt(receipt: ExecutorReceipt): void {
     ids.add(operation.op_id); paths.add(operation.path);
   }
   validateRepair(receipt, paths);
+  validateRepairReapproval(receipt);
   for (const error of receipt.errors) if (!error.code || error.code.length > 128 || error.message.length > MAX_DIAGNOSTIC_CHARS || !Number.isFinite(Date.parse(error.at))) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor diagnostic is invalid or oversized.");
   if (!Number.isFinite(Date.parse(receipt.created_at)) || !Number.isFinite(Date.parse(receipt.updated_at))) throw new ExecutorError("EXECUTOR_STATE_INVALID", "Executor receipt timestamps are invalid.");
   validateGateConsistency(receipt);

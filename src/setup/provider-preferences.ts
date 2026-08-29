@@ -93,5 +93,8 @@ export async function writeProviderPreferences(stateDirectory: string, provider:
 export function browserProviderSelected(stateDirectory: string, env: NodeJS.ProcessEnv = process.env): boolean {
   const override = env.WCO_CHATGPT_BROWSER?.trim().toLowerCase();
   if (override === "1" || override === "true" || override === "yes" || override === "on") return true;
-  return readProviderPreferencesSync(stateDirectory)?.provider === "chatgpt-web";
+  const preferences = readProviderPreferencesSync(stateDirectory);
+  // Missing preferences are an upgrade/recovery state, not authorization to spend
+  // Codex provider quota. Only an explicit persisted `codex` choice selects Codex.
+  return preferences?.provider !== "codex";
 }

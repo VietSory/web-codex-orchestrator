@@ -39,7 +39,7 @@ test("doctor rejects invalid modes and mode outside doctor", () => {
   );
 });
 
-test("zero-config PAIR Doctor uses the local ChatGPT/Codex transport and never asks for hosted Web infrastructure", async (t) => {
+test("zero-config PAIR Doctor defaults safely to ChatGPT Web and never asks for Codex or hosted Web infrastructure", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-doctor-local-pair-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const configPath = path.join(root, "config.json");
@@ -54,9 +54,14 @@ test("zero-config PAIR Doctor uses the local ChatGPT/Codex transport and never a
 
   const runtime = probes.find((probe) => probe.id === "codex-runtime");
   const auth = probes.find((probe) => probe.id === "codex-auth");
-  assert.ok(runtime, "local PAIR must include the pinned Codex runtime readiness check");
-  assert.ok(auth, "local PAIR must include ChatGPT authorization readiness");
-  assert.doesNotMatch((await runtime.run()).summary, /does not require/i);
+  assert.ok(runtime, "PAIR doctor must report the Codex-runtime requirement explicitly");
+  assert.ok(auth, "PAIR doctor must report the Codex-auth requirement explicitly");
+  const runtimeResult = await runtime.run();
+  const authResult = await auth.run();
+  assert.equal(runtimeResult.severity, "OK");
+  assert.match(runtimeResult.summary, /does not require the local Codex runtime/i);
+  assert.equal(authResult.severity, "OK");
+  assert.match(authResult.summary, /Codex authentication is not required/i);
 
   for (const [id, pattern] of [
     ["wco-relay-service", /no relay or hosted service required/i],

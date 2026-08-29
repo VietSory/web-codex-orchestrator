@@ -30,6 +30,12 @@ export interface ExecutorReviewRequest extends ExecutorVerificationRequest {
   deleted_paths?: string[];
   prior_evidence_sha256: string[];
   context_selection: SmartContextSelection;
+  /**
+   * Browser PAIR sets this only for the fresh post-repair review of the exact
+   * deterministically verified final digest. That pass may APPROVE or escalate,
+   * but it cannot authorize another adaptive repair generation.
+   */
+  final_reapproval?: boolean;
 }
 
 export interface ExecutorReviewResult {
@@ -57,6 +63,13 @@ export interface ExecutorReviewerPort {
   /** Optional trusted policy. When present, the executor durably reserves one
    * turn in its own receipt before each review call. */
   budget_policy?: ExecutorReviewBudgetPolicy;
+  /**
+   * Opt-in contract used by browser PAIR only: a reviewer-authored repair is
+   * not publication authority until a fresh review APPROVEs the repaired exact
+   * digest. Legacy/AUTOPILOT reviewers leave this unset and retain their
+   * historical adaptive-repair semantics.
+   */
+  repair_reapproval_required?: boolean;
   review(request: ExecutorReviewRequest): Promise<ExecutorReviewResult>;
 }
 

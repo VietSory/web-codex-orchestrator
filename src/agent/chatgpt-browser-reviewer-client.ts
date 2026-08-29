@@ -1,24 +1,28 @@
-import { ChatGptBrowserAgentClient } from "./chatgpt-browser-client.js";
+import { WcoBrowserCompanionAgentClient } from "./wco-browser-companion-client.js";
 import type { AgentClient, AgentTurnRequest, AgentTurnResponse } from "./contracts.js";
 
 /**
- * Reviewer-only browser adapter.
+ * Reviewer-only ChatGPT Web adapter.
  *
- * ChatGptBrowserAgentClient attaches the bounded repository context pack for
- * implementation turns. The pre-publish reviewer needs the same bounded local
- * evidence but must remain semantically an internal reviewer to the rest of
- * WCO. This wrapper keeps that authority split explicit while reusing the
- * browser transport's context attachment path.
+ * Browser PAIR authoring and review use the same first-party WCO Windows
+ * companion transport, while each review request starts without a provider
+ * thread id so the native transport opens a fresh ChatGPT Temporary Chat.
+ *
+ * The companion itself receives only prepared prompt text. This wrapper maps
+ * the reviewer request to role=implementer only on the WSL side so WCO can add
+ * its bounded repository context before serialization; no workspace/bundle path
+ * crosses into Windows.
  */
 export class ChatGptBrowserReviewerAgentClient implements AgentClient {
-  private readonly delegate: ChatGptBrowserAgentClient;
+  private readonly delegate: AgentClient;
 
   constructor(options: { stateDirectory: string; env?: NodeJS.ProcessEnv }) {
-    this.delegate = new ChatGptBrowserAgentClient(options);
+    void options.stateDirectory;
+    this.delegate = new WcoBrowserCompanionAgentClient({ env: options.env ?? process.env });
   }
 
-  async checkAvailability(): Promise<void> {
-    await this.delegate.checkAvailability();
+  async checkAvailability(options: { signal?: AbortSignal } = {}): Promise<void> {
+    await this.delegate.checkAvailability(options);
   }
 
   async turn(request: AgentTurnRequest): Promise<AgentTurnResponse> {
@@ -28,11 +32,7 @@ export class ChatGptBrowserReviewerAgentClient implements AgentClient {
         { code: "WEB_CHATGPT_BROWSER_REVIEW_ROLE_INVALID" },
       );
     }
-
-    // The browser transport uses role=implementer only to decide whether the
-    // bounded context attachment is required. The supplied prompt/output schema
-    // remain the independent review contract and the Harness remains the only
-    // mutation authority.
-    return await this.delegate.turn({ ...request, role: "implementer" });
+    const { thread_id: _ignoredThreadId, ...freshRequest } = request;
+    return await this.delegate.turn({ ...freshRequest, role: "implementer" });
   }
 }

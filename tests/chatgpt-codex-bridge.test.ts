@@ -7,6 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { prepareTask } from "../src/run/preparation-service.js";
+import { writeProviderPreferences } from "../src/setup/provider-preferences.js";
 import { createConfiguredWebBridge } from "../src/web-bridge/bridge-factory.js";
 import { ChatGptCodexWebBridge } from "../src/web-bridge/chatgpt-codex-bridge.js";
 import { WEB_BRIDGE_PROTOCOL_VERSION, type WebContractEnvelope, type WebImplementationSubmission, type WebVerdictEnvelope } from "../src/web-bridge/contracts.js";
@@ -89,6 +90,7 @@ async function fixture(mode: "PAIR" | "AUTOPILOT") {
     ui: { interactive: true },
   };
   await writeFile(configPath, JSON.stringify(config));
+  await writeProviderPreferences(state, "codex");
 
   const bridge = createConfiguredWebBridge(config, bridgeDirectory, process.env, state) as ChatGptCodexWebBridge;
   const identity = await bridge.createAuthoringJob({ owner: "local-user", repository: { repository_id: "repo", base_branch: "main", base_commit: base }, user_intent: "replace app content", ttl_seconds: 86_400, orchestration_mode: mode }, `create-${mode}`);

@@ -1,6 +1,6 @@
 import path from "node:path";
-import { ChatGptBrowserAgentClient } from "../agent/chatgpt-browser-client.js";
 import type { AgentClient } from "../agent/contracts.js";
+import { WcoBrowserCompanionAgentClient } from "../agent/wco-browser-companion-client.js";
 import type { TrustedConfig } from "../config/contracts.js";
 import { ChatGptCodexWebBridge } from "./chatgpt-codex-bridge.js";
 import type { AuthoringEvent, BridgeConnectionStatus, BridgeJobIdentity, FinalReviewRequest, RepositoryCommandResult, WebContractEnvelope, WebImplementationSubmission, WebVerdictEnvelope } from "./contracts.js";
@@ -13,22 +13,34 @@ function truthyEnvironmentFlag(value: string | undefined): boolean {
 }
 
 /**
- * Core, opt-in ChatGPT Web transport for the user's own interactive browser
- * session. It deliberately reuses WCO's mature semantic/implementation state
- * machine while replacing the provider turn boundary with ChatGPT Web.
+ * Core ChatGPT Web transport for PAIR.
  *
- * No cookies, bearer tokens, private ChatGPT endpoints, CAPTCHA bypasses, or
- * anti-bot workarounds are read or implemented here. Browser state lives in a
- * dedicated persistent Chromium profile owned by the local user. If ChatGPT
- * presents a protective verification step, the provider fails closed.
+ * Normal browser PAIR always routes model turns through WCO's own Windows-native
+ * browser companion over bounded stdin/stdout. WSL builds repository context and
+ * retains mutation, verification, Git and publication authority. The companion
+ * receives only prepared prompt text plus bounded model metadata and controls its
+ * loopback-only CDP endpoint on Windows; WSL never connects to browser CDP.
+ *
+ * A browserAgent can be injected only by tests/maintainer harnesses. Production
+ * construction has no Codex or legacy direct-browser fallback.
  */
 export class ChatGptBrowserWebBridge implements PreparedRunAwareWebBridge {
   private readonly delegate: ChatGptCodexWebBridge;
-  private readonly agent: ChatGptBrowserAgentClient;
+  private readonly agent: AgentClient;
 
-  constructor(config: TrustedConfig, bridgeDirectory: string, stateDirectory: string, private readonly env: NodeJS.ProcessEnv = process.env, browserAgent?: ChatGptBrowserAgentClient) {
-    this.agent = browserAgent ?? new ChatGptBrowserAgentClient({ stateDirectory, env });
-    this.delegate = new ChatGptCodexWebBridge(config, path.join(bridgeDirectory, "chatgpt-browser-provider"), stateDirectory);
+  constructor(
+    config: TrustedConfig,
+    bridgeDirectory: string,
+    stateDirectory: string,
+    private readonly env: NodeJS.ProcessEnv = process.env,
+    browserAgent?: AgentClient,
+  ) {
+    this.agent = browserAgent ?? new WcoBrowserCompanionAgentClient({ env });
+    this.delegate = new ChatGptCodexWebBridge(
+      config,
+      path.join(bridgeDirectory, "chatgpt-browser-provider"),
+      stateDirectory,
+    );
 
     const providerHooks = this.delegate as unknown as Record<string, unknown>;
     if (typeof providerHooks.rawAgent !== "function" || typeof providerHooks.ensureAuthorizedForProviderTurn !== "function") {
@@ -94,14 +106,13 @@ export class ChatGptBrowserWebBridge implements PreparedRunAwareWebBridge {
 
   async getConnectionStatus(signal?: AbortSignal): Promise<BridgeConnectionStatus> {
     // Generic CI qualification must never launch the user's browser or contact
-    // chatgpt.com. Real browser dogfood is intentionally a local, interactive
-    // qualification step using the user's dedicated signed-in profile.
+    // chatgpt.com. Real Web dogfood is intentionally a local interactive gate.
     if (truthyEnvironmentFlag(this.env.CI)) {
       return { configured: true, connected: false, account: "CI browser probe disabled" };
     }
     try {
       await this.agent.checkAvailability(signal ? { signal } : {});
-      return { configured: true, connected: true, account: "ChatGPT Web browser" };
+      return { configured: true, connected: true, account: "WCO Windows ChatGPT browser companion" };
     } catch {
       return { configured: true, connected: false };
     }

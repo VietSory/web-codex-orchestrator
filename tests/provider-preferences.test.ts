@@ -27,14 +27,15 @@ function config(repositoryPath: string): TrustedConfig {
   };
 }
 
-test("provider preference persists direct ChatGPT Web routing without an environment flag", async () => {
+test("missing provider preference defaults safely to ChatGPT Web; only explicit codex selects Codex", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-provider-pref-"));
   try {
     const state = path.join(root, "state");
     const bridge = path.join(root, "bridge");
     await mkdir(state, { recursive: true });
     assert.equal(await readProviderPreferences(state), null);
-    assert.equal(browserProviderSelected(state, {}), false);
+    assert.equal(browserProviderSelected(state, {}), true);
+    assert.ok(createConfiguredWebBridge(config(root), bridge, {}, state) instanceof ChatGptBrowserWebBridge);
 
     await writeProviderPreferences(state, "chatgpt-web");
     assert.deepEqual(await readProviderPreferences(state), { schema_version: "1.0", provider: "chatgpt-web" });
@@ -71,15 +72,36 @@ test("browser provider makes legacy Codex login preflight a no-op", async () => 
   }
 });
 
+test("missing provider preference also prevents legacy Codex login preflight", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wco-provider-login-missing-"));
+  try {
+    const state = path.join(root, "state");
+    await mkdir(state, { recursive: true });
+    let calls = 0;
+    const result = await ensureChatGptLogin({
+      config: config(root),
+      stateDirectory: state,
+      interactive: false,
+      runCommand: async () => { calls += 1; return 1; },
+    });
+    assert.equal(result, true);
+    assert.equal(calls, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("PAIR doctor does not require Codex runtime or Codex authentication for saved browser provider", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wco-provider-doctor-"));
   try {
     const state = path.join(root, "state");
+    const configPath = path.join(root, "config.json");
     await mkdir(state, { recursive: true });
+    await writeFile(configPath, JSON.stringify(config(root)));
     await writeProviderPreferences(state, "chatgpt-web");
     const probes = productionDoctorProbes({
       stateDirectory: state,
-      configPath: path.join(root, "missing-config.json"),
+      configPath,
       json: false,
       doctorMode: "PAIR",
       maxTransitions: 8,

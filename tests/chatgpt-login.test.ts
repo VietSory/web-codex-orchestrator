@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { chatGptLoginCanOwnTerminal, ensureChatGptLogin, releaseParentInputForChatGptLogin, type ChatGptLoginRunner } from "../src/runtime/chatgpt-login.js";
+import { writeProviderPreferences } from "../src/setup/provider-preferences.js";
 
 const config = { runtime: { source: "bundled" } } as any;
 
@@ -16,9 +17,15 @@ function scriptedRunner(statuses: number[], calls: Array<{ args: string[]; stdio
   };
 }
 
-test("existing ChatGPT authorization is reused without another browser login", async (t) => {
-  const state = await mkdtemp(path.join(os.tmpdir(), "wco-chatgpt-login-reuse-"));
+async function codexState(prefix: string, t: { after(callback: () => unknown): unknown }): Promise<string> {
+  const state = await mkdtemp(path.join(os.tmpdir(), prefix));
   t.after(() => rm(state, { recursive: true, force: true }));
+  await writeProviderPreferences(state, "codex");
+  return state;
+}
+
+test("existing ChatGPT authorization is reused without another browser login", async (t) => {
+  const state = await codexState("wco-chatgpt-login-reuse-", t);
   const calls: Array<{ args: string[]; stdio: string }> = [];
 
   const authorized = await ensureChatGptLogin({
@@ -33,8 +40,7 @@ test("existing ChatGPT authorization is reused without another browser login", a
 });
 
 test("interactive first use releases parent stdin, performs one official login, then verifies it", async (t) => {
-  const state = await mkdtemp(path.join(os.tmpdir(), "wco-chatgpt-login-first-use-"));
-  t.after(() => rm(state, { recursive: true, force: true }));
+  const state = await codexState("wco-chatgpt-login-first-use-", t);
   const previousCi = process.env.CI;
   delete process.env.CI;
   t.after(() => { if (previousCi === undefined) delete process.env.CI; else process.env.CI = previousCi; });
@@ -71,8 +77,7 @@ test("interactive first use releases parent stdin, performs one official login, 
 });
 
 test("non-interactive callers never start a browser authorization flow", async (t) => {
-  const state = await mkdtemp(path.join(os.tmpdir(), "wco-chatgpt-login-noninteractive-"));
-  t.after(() => rm(state, { recursive: true, force: true }));
+  const state = await codexState("wco-chatgpt-login-noninteractive-", t);
   const calls: Array<{ args: string[]; stdio: string }> = [];
 
   const authorized = await ensureChatGptLogin({
@@ -103,8 +108,7 @@ test("parent stdin release only pauses an eligible non-raw TTY", () => {
 });
 
 test("CI never opens the interactive login flow even when interactive=true", async (t) => {
-  const state = await mkdtemp(path.join(os.tmpdir(), "wco-chatgpt-login-ci-"));
-  t.after(() => rm(state, { recursive: true, force: true }));
+  const state = await codexState("wco-chatgpt-login-ci-", t);
   const previousCi = process.env.CI;
   process.env.CI = "true";
   t.after(() => { if (previousCi === undefined) delete process.env.CI; else process.env.CI = previousCi; });

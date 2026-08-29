@@ -38,4 +38,5 @@ export async function attestPersistedExecutorGateEvidence(stateDirectory: string
   if (receipt.verification.evidence_sha256 !== null) await assertOneEvidence(stateDirectory, receipt, `verification-${receipt.verification.rounds}`, receipt.verification.evidence_sha256);
   if (receipt.terra_review.evidence_sha256 !== null) await assertOneEvidence(stateDirectory, receipt, `terra-${receipt.terra_review.rounds}`, receipt.terra_review.evidence_sha256);
   if (receipt.sol_review.evidence_sha256 !== null) await assertOneEvidence(stateDirectory, receipt, `sol-${receipt.sol_review.rounds}`, receipt.sol_review.evidence_sha256);
+  if (receipt.repair_reapproval?.evidence_sha256 !== null && receipt.repair_reapproval?.evidence_sha256 !== undefined) await assertOneEvidence(stateDirectory, receipt, `repair-reapproval-${receipt.repair_reapproval.rounds}`, receipt.repair_reapproval.evidence_sha256);
 }
