@@ -17,7 +17,7 @@ import { isRelayJobPending, type RelayJobRecord } from "./relay/protocol.js";
 import { ExactRepositoryReadService } from "./repo-read-service.js";
 
 const SERVER_NAME = "wco-web-native";
-const SERVER_VERSION = "0.3.3";
+const SERVER_VERSION = "0.4.0";
 const MODERN_PROTOCOL = "2026-07-28";
 const LEGACY_PROTOCOL = "2025-11-25";
 const MAX_STDIN_LINE_BYTES = 16 * 1024 * 1024;

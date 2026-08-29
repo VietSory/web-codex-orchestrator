@@ -1,12 +1,28 @@
 # Operations and user workflow
 
-WCO is single-user and local-first. Repository state, durable task/session state, exact-read receipts, context cache, Harness state and deterministic verification stay on the user's machine.
+WCO is single-user and local-first. Repository state, durable task/session state, exact-read receipts, Harness state, deterministic verification, Git and Draft-PR authority stay on the user's machine.
 
-ADR 0004 defines the normal-user transport implemented on this branch. A fresh config intentionally has no `web_bridge` field; absence selects the local ChatGPT/Codex transport. Release readiness remains gated on exact-head deterministic CI plus a real local one-authorization acceptance.
+The normal PAIR provider is ChatGPT Web through WCO's first-party Windows browser companion. Codex remains an explicit provider choice and an AUTOPILOT reviewer dependency; it is not a fallback for PAIR.
+
+## Normal PAIR host boundary
+
+The current first-party PAIR transport is designed for WSL on Windows:
+
+```text
+WCO / WSL
+  -> bounded JSONL
+  -> WCO-owned Windows companion
+  -> loopback-only Chrome/Edge CDP
+  -> ChatGPT Temporary Chat
+```
+
+WSL remains the deterministic execution host because verification uses Bubblewrap. Native Windows owns only the bounded browser companion process. The companion has no repository, worktree, shell, Git, verifier or publication authority.
+
+Native Linux can execute WCO's Linux verification path, but the current first-party browser companion requires a Windows host reachable through normal WSL interop. A native-Linux user may explicitly select the Codex provider instead.
 
 ## Normal interactive workflow
 
-After a human maintainer publishes a qualified GitHub Release, download the packaged `.tgz` artifact and install that exact release once:
+After a human maintainer publishes a qualified release:
 
 ```bash
 npm install -g ./web-codex-orchestrator-<version>.tgz
@@ -14,56 +30,95 @@ cd /path/to/project
 wco
 ```
 
-Normal users do not clone/build WCO and should not use GitHub's automatic source-code archives as the CLI package.
+Fresh setup defaults the owner-local provider preference to `chatgpt-web`. Trusted repository config intentionally contains no `web_bridge` field for the normal path.
 
-### First use only
+### First browser sign-in
 
-The normal path permits one provider-owned ChatGPT authorization interaction. WCO delegates it to the bundled pinned official Codex runtime and does not read, copy or persist the provider token itself. Interactive first use requests the official authorization automatically when needed; `wco web connect` remains an explicit reauthorization command.
+PAIR does not delegate sign-in to Codex. WCO bootstraps the first-party Windows companion, verifies its checksum and uses a WCO-owned browser profile.
 
-Normal-user manual setup budget:
+If the profile is not signed in to ChatGPT, finish sign-in in the WCO Chrome/Edge window. WCO never copies cookies/tokens or reuses the user's ordinary browser profile.
 
-```text
-ChatGPT browser authorization        = 1 on first use when required
-Cloudflare/ngrok/VPS/domain/DNS      = 0
-relay/GPT URL inputs                 = 0
-tunnel IDs                           = 0
-API/bearer keys                      = 0
-MCP App setup                        = 0
-Workspace Agent/trigger setup        = 0
-OAuth client setup                   = 0
-browser cookie/profile import        = 0
-public workstation endpoint          = 0
-```
-
-After authorization:
+Manual setup budget:
 
 ```text
-per-task browser interactions = 0
-per-task credential inputs    = 0
-per-task infrastructure setup = 0
+ChatGPT sign-in in WCO browser profile = once when required
+Cloudflare/ngrok/VPS/domain/DNS         = 0
+relay/GPT URL inputs                    = 0
+tunnel IDs                              = 0
+API/bearer keys                         = 0
+MCP App setup                           = 0
+Workspace Agent/trigger setup           = 0
+copied browser credentials              = 0
+Codex provider authentication for PAIR  = 0
 ```
 
-If the bundled official runtime cannot use the authorized ChatGPT account, WCO fails closed. It must not silently fall back to hosting, relay, tunnel, browser scraping or manual credentials.
+After readiness:
+
+```text
+per-task manual browser interactions = 0
+per-task credential inputs           = 0
+per-task infrastructure setup        = 0
+Codex provider/model turns in PAIR    = 0
+```
+
+The companion still automates browser turns. Each semantic/review turn uses a fresh ChatGPT Temporary Chat.
+
+### Readiness
+
+Use:
+
+```bash
+wco web status
+wco doctor --mode PAIR
+```
+
+PAIR readiness requires the first-party companion/browser session, provider-independent verification isolation, Git and GitHub publication prerequisites. It does **not** require Codex auth/runtime.
+
+If browser/helper readiness fails, WCO fails closed. It never silently falls back to Codex, a legacy helper, relay or advanced profile.
 
 ### Start a task
 
-The user types only a goal:
+The user types a goal:
 
 ```text
 > Add rate limiting to POST /login and add regression tests.
 ```
 
-WCO creates durable semantic state locally. The local ChatGPT/Codex transport supplies bounded architecture, repository-analysis and review decisions through the official runtime. WCO's existing repository-read protocol supplies only requested exact context: summary, bounded tree/search, full-file or byte-region reads and digest references.
+or explicitly:
 
-The current release candidate deliberately keeps semantic and implementation-planning Codex turns read-only, no-approval, no-network and with provider Web search disabled. External live-Web research is therefore not a release capability of this transport. If added later, it must be a separately reviewed semantic-only capability and must not widen Harness or repository authority.
+```text
+/new Add rate limiting to POST /login and add regression tests
+```
 
-Provider output is not repository authority by itself. Semantic author output is restricted to repository-context requests or a sealed contract. The Harness-side implementation planner produces a separately structured implementation proposal after the canonical run is prepared. Repository-command, contract, implementation and verdict payloads are parsed again through WCO's strict validators and exact identity/digest bindings before workflow authority can advance.
+PAIR path:
 
-Harness remains the only worktree mutation, command, deterministic verification and Git authority. Sensitive-path, traversal/symlink, preimage/postimage, stale-digest and sandbox checks remain unchanged.
+```text
+ChatGPT Web author
+→ bounded exact repository reads
+→ sealed contract + bounded implementation authority
+→ Harness apply
+→ deterministic verification
+→ independent ChatGPT Web code review
+→ exact Draft PR / Result Bundle
+→ original ChatGPT Web final intent review
+→ READY_FOR_YOU
+```
 
-PAIR uses independent review state where required by its policy. AUTOPILOT keeps its bounded reviewer/repair policy. Final intent review remains bound to exact durable intent/run/result evidence. Semantic thread IDs are continuity metadata, not mutation authority.
+Provider output is not repository authority by itself. WCO validates closed schemas, exact job/run identities, path policy, preimages/postimages and digests before Harness may mutate anything.
 
-Final APPROVE ends at `READY_FOR_YOU`. REVISE uses bounded Harness-applied same-PR repair plus fresh verification. ESCALATE stops for a human decision. Only the human decides merge/release.
+Final APPROVE ends at `READY_FOR_YOU`. REVISE uses bounded Harness-applied repair plus fresh verification. ESCALATE/BLOCK stops for a human decision. Only the human decides merge/release.
+
+## AUTOPILOT
+
+AUTOPILOT is explicit:
+
+```text
+/auto <goal>
+```
+
+It keeps the ChatGPT Web author/final-review boundary but adds exactly one selected Sol/Terra adaptive review pass on the normal path. That selected reviewer requires the corresponding Codex runtime/auth/quota.
+
+PAIR does not inherit this requirement.
 
 ## Returning user
 
@@ -72,47 +127,41 @@ cd /path/to/project
 wco
 ```
 
-Then type a goal. No normal returning-user configuration step is allowed. If authorization has been revoked and cannot be silently refreshed by the official runtime, WCO requests the same provider-owned ChatGPT authorization again; it must not request another kind of setup.
+Then type a goal. Normal PAIR should not require relay configuration, manual browser actions per task, or Codex authentication.
 
-Important commands remain:
+Important commands:
 
-- `/status`: current progress and next task state;
+- `/status`: current progress and required user action;
 - `/task`: current goal and plan state;
-- `/continue`: continue only the current unfinished saved task; it never switches to history implicitly;
-- `/resume`: explicitly choose a saved/history task to resume; `/resume <number>` selects that history item;
-- `/review`: verification, review and Draft-PR evidence;
-- `/pause`: pause the current task at the next safe boundary while preserving progress;
-- `/doctor`: selected-mode/transport diagnosis;
-- `/auth status` / `/auth connect`: inspect or renew normal ChatGPT authorization;
-- `/history`: bounded read-only task history.
+- `/continue`: continue only the current unfinished task;
+- `/resume`: explicitly select saved history;
+- `/review`: verification/review/Draft-PR evidence;
+- `/pause`: pause at a safe boundary;
+- `/doctor`: readiness for the selected mode;
+- `/auth status` / `/auth connect`: provider readiness/sign-in recovery;
+- `/history`: read-only task history.
 
-The legacy `/run` spelling remains parser-compatible for older callers but is intentionally not taught in the normal-user workflow. `wco web status` distinguishes a healthy local runtime from a missing/expired ChatGPT authorization. `wco web connect` is the normal explicit shell reauthorization command and never changes the transport profile.
+`/run` remains parser-compatible with `/continue`, but normal user guidance teaches `/continue`.
 
-## Failure and restart behavior
+## Provider switching
 
-After terminal loss/process death/restart, run `wco` again. WCO reads durable local state and resumes from completed checkpoints instead of blindly replaying completed authority-bearing model turns. Use `/continue` to continue the current saved task; use `/resume` only when you deliberately want to select a saved task from history.
+Default/normal PAIR:
 
-Persisted semantic thread identities are conversation bindings only. They never create filesystem, command, Git, verifier, publication or merge authority.
-
-The current implementation uses the bundled official Codex CLI/SDK for login and resumable threads. A future app-server adapter may reuse equivalent official login/thread/fork/compact/review primitives without changing `WebBridge` authority semantics, but app-server-specific behavior is not required for this release candidate.
-
-Original uncommitted user work is not overwritten; implementation uses the existing isolated worktree/Harness path.
-
-## Multiple repositories
-
-Running `wco` in another repository registers it while preserving trusted configuration. Each task remains bound to its exact repository/base identity. Runtime account authorization may be reused locally where safe, but repository authority never crosses task bindings.
-
-## Optional Web profiles
-
-Normal zero-config selection:
-
-```text
-web_bridge absent -> local ChatGPT/Codex
+```bash
+wco setup --provider chatgpt-web
 ```
 
-The internal transport identity is `chatgpt_codex`; no normal-user transport credential or endpoint is written to trusted config.
+Explicit Codex semantic provider:
 
-Explicit compatibility/operator profiles remain available only when deliberately selected:
+```bash
+wco setup --provider codex
+```
+
+Only the persisted `codex` choice authorizes use of Codex for the semantic provider. Missing preferences are not treated as permission to spend Codex quota.
+
+## Optional compatibility profiles
+
+Explicit `web_bridge` profiles remain advanced only:
 
 ```text
 web_native_mcp
@@ -122,71 +171,66 @@ actions_relay
 manual_file
 ```
 
-None is an automatic fallback from the local transport.
+None is an automatic fallback from first-party browser PAIR.
 
-## Doctor
+## Failure and restart behavior
 
-For the zero-config local transport, Doctor checks only the bundled runtime, ChatGPT account authorization/readiness, local semantic state and ordinary WCO/Harness prerequisites. It must not ask for a relay, tunnel, API key, MCP App, Workspace Agent, hosted service or browser cookie.
+Durable state is written before authority-bearing side effects. After terminal/process loss, run `wco` again and use `/continue` for the current task. WCO re-attests exact durable identities instead of blindly replaying completed or ambiguous provider turns.
 
-Every mutation path still requires the existing deterministic verifier boundary; there is no unrestricted host fallback.
+A persistent ChatGPT browser profile is session continuity only. Browser UI state is never repository or shipment authority.
 
-## Uninstall
+Original uncommitted user work is not overwritten; implementation uses the isolated worktree/Harness path.
 
-Interactive:
+## Multiple repositories
 
-```text
-/uninstall
+Running WCO in another repository registers that repository while preserving trusted owner-local provider preferences. Every task remains bound to its exact repository/base identity.
+
+Provider session reuse never crosses repository authority boundaries.
+
+## Doctor modes
+
+PAIR:
+
+```bash
+wco doctor --mode PAIR
 ```
 
-Automation:
+must not require Codex authentication for the default `chatgpt-web` provider.
+
+AUTOPILOT:
+
+```bash
+wco doctor --mode AUTOPILOT
+```
+
+adds the selected Sol/Terra reviewer runtime/auth checks.
+
+## Uninstall
 
 ```bash
 wco uninstall --purge
 wco uninstall --purge --yes
 ```
 
-WCO removes only WCO-owned local resources after safety checks. It never removes source repositories, Git history, remote branches, PRs or deployments.
-
-## Advanced deterministic automation
-
-Internal Task Bundle/run IDs remain available for CI/protocol development, not normal use:
-
-```bash
-wco preview ./task-bundle.zip --state-dir /absolute/state
-wco run ./task-bundle.zip --state-dir /absolute/state --config /absolute/config.json
-wco status --run-id '<task-id>:<bundle-sha256>' --state-dir /absolute/state
-wco continue --run-id '<task-id>:<bundle-sha256>' --state-dir /absolute/state --config /absolute/config.json
-```
-
-Transport/chat text never substitutes for canonical artifact identities.
+WCO removes only WCO-owned local resources after safety checks. It never removes source repositories, Git history, remote branches, PRs or releases.
 
 ## Release-candidate validation
 
-The normal local transport is not release-qualified until exact-head evidence proves:
+The first-party PAIR path is not release-qualified until exact-head evidence proves:
 
 ```text
-normal-user authorization interaction    = one provider-owned ChatGPT flow
-manual credential/ID/endpoint inputs      = 0
-Cloudflare/VPS/domain/DNS requirements    = 0
-tunnel/MCP/App/Agent setup requirements   = 0
-per-task browser interactions             = 0
-browser DOM/output scraping               = 0
-repository mutation outside Harness       = 0
-force push / auto merge / release         = 0
-crash/restart requires reconfiguration    = 0
-PAIR and AUTOPILOT deterministic suites   = PASS
-clean packed install                       = PASS
-zero-config daily-user contract            = PASS
+first-party Windows companion build       = PASS
+companion native JSONL smoke               = PASS
+companion SHA-256 sidecar                  = PASS
+final companion Authenticode state         = clean unsigned or intentionally signed
+PAIR Codex provider turns                  = 0
+missing helper/browser fallback to Codex   = 0
+per-task manual browser interactions       = 0
+repository mutation outside Harness        = 0
+automatic merge/release                    = 0
+Main deterministic CI                      = PASS
+Advanced compatibility CI                  = PASS
+real signed-in Windows/WSL PAIR dogfood    = PASS
 ```
 
-Deterministic gates:
-
-```bash
-npm ci
-npm run check
-npm run pack:check
-npm run pack:smoke
-npm run test:user:contract
-```
-
-GitHub CI also runs the clean packed-install and zero-config contract as explicit steps. A real local acceptance remains required because CI cannot prove an actual user's browser authorization/account session. A missing provider/runtime capability is reported as a capability blocker; it is never converted into a requirement for the user to deploy infrastructure.
+CI proves build/protocol/deterministic behavior but cannot prove an actual signed-in ChatGPT browser session. Real Windows/WSL acceptance remains a required local gate.
