@@ -33,6 +33,123 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function median(values) {
+  const ordered = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(ordered.length / 2);
+  return ordered.length % 2 === 0 ? (ordered[middle - 1] + ordered[middle]) / 2 : ordered[middle];
+}
+
+function measureCommand(command, args, options = {}, samples = 5) {
+  const elapsedMs = [];
+  let result;
+  for (let index = 0; index < samples; index += 1) {
+    const started = process.hrtime.bigint();
+    result = run(command, args, options);
+    elapsedMs.push(Number(process.hrtime.bigint() - started) / 1_000_000);
+  }
+  return {
+    result,
+    first_ms: Number(elapsedMs[0].toFixed(1)),
+    median_ms: Number(median(elapsedMs).toFixed(1)),
+    max_ms: Number(Math.max(...elapsedMs).toFixed(1)),
+  };
+}
+
+function packedInteractivePtySmoke(bin, project, env) {
+  if (process.platform !== "linux") return null;
+  const python = spawnSync("python3", ["--version"], { encoding: "utf8", stdio: "pipe" });
+  if (python.error || python.status !== 0) return null;
+
+  const driver = String.raw`
+import base64, fcntl, json, os, pty, select, signal, struct, sys, termios, time
+bin_path = sys.argv[1]
+started = time.monotonic()
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv(bin_path, [bin_path])
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 80, 0, 0))
+buf = bytearray()
+def drain(timeout=0.05):
+    ready, _, _ = select.select([fd], [], [], timeout)
+    if not ready: return
+    try: chunk = os.read(fd, 4096)
+    except OSError: return
+    if chunk: buf.extend(chunk)
+def wait(marker, start=0, timeout=8.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        pos = bytes(buf).find(marker, start)
+        if pos >= 0: return pos
+        drain()
+    raise RuntimeError("timeout waiting for %r; transcript=%r" % (marker, bytes(buf)[-1600:]))
+def rss_kb():
+    try:
+        with open("/proc/%d/status" % pid, "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1])
+    except (FileNotFoundError, ProcessLookupError, ValueError):
+        pass
+    return None
+try:
+    prompt = wait(b"> ")
+    prompt_ms = (time.monotonic() - started) * 1000.0
+    idle_rss_kb = rss_kb()
+    os.write(fd, b"/")
+    palette = wait(b"/new", prompt)
+    quit_started = time.monotonic()
+    os.write(fd, b"quit\r")
+    wait(b"bye", palette)
+    deadline = time.time() + 5.0
+    status = None
+    while time.time() < deadline:
+        drain()
+        done, value = os.waitpid(pid, os.WNOHANG)
+        if done == pid:
+            status = value
+            break
+    timed_out = status is None
+    if timed_out:
+        try: os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError: pass
+        _, status = os.waitpid(pid, 0)
+    print(json.dumps({
+        "exit_code": os.waitstatus_to_exitcode(status),
+        "timed_out": timed_out,
+        "prompt_ms": round(prompt_ms, 1),
+        "idle_rss_kb": idle_rss_kb,
+        "quit_ms": round((time.monotonic() - quit_started) * 1000.0, 1),
+        "total_ms": round((time.monotonic() - started) * 1000.0, 1),
+        "transcript": base64.b64encode(bytes(buf)).decode("ascii"),
+    }))
+finally:
+    try: os.close(fd)
+    except OSError: pass
+`;
+  const result = spawnSync("python3", ["-c", driver, bin], {
+    cwd: project,
+    env,
+    encoding: "utf8",
+    stdio: "pipe",
+    shell: false,
+    timeout: 20_000,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`Packed interactive PTY smoke failed.\nstdout:\n${result.stdout ?? ""}\nstderr:\n${result.stderr ?? ""}`);
+  let parsed;
+  try { parsed = JSON.parse((result.stdout ?? "").trim()); }
+  catch { throw new Error(`Packed interactive PTY smoke returned invalid JSON.\nstdout:\n${result.stdout ?? ""}\nstderr:\n${result.stderr ?? ""}`); }
+  const transcript = Buffer.from(parsed.transcript ?? "", "base64").toString("utf8");
+  assert(parsed.timed_out === false, `Packed interactive WCO did not exit cleanly.\n${transcript}`);
+  assert(parsed.exit_code === 0, `Packed interactive WCO exited with ${String(parsed.exit_code)}.\n${transcript}`);
+  assert(Number.isFinite(parsed.prompt_ms) && parsed.prompt_ms >= 0, "Packed interactive WCO did not report prompt startup latency.");
+  assert(parsed.idle_rss_kb === null || Number.isSafeInteger(parsed.idle_rss_kb) && parsed.idle_rss_kb > 0, "Packed interactive WCO reported invalid idle RSS.");
+  assert(Number.isFinite(parsed.quit_ms) && parsed.quit_ms >= 0, "Packed interactive WCO did not report clean-exit latency.");
+  assert(/\/new/.test(transcript), "Packed interactive WCO did not render the slash palette.");
+  assert(/bye/.test(transcript), "Packed interactive WCO did not complete /quit cleanly.");
+  return { prompt_ms: parsed.prompt_ms, idle_rss_kb: parsed.idle_rss_kb, quit_ms: parsed.quit_ms, total_ms: parsed.total_ms };
+}
+
 try {
   const packed = run(npm, ["pack", "--json"], { capture: true });
   const parsed = JSON.parse(packed.stdout);
@@ -44,9 +161,10 @@ try {
     ? path.join(temp, "node_modules", ".bin", "wco.cmd")
     : path.join(temp, "node_modules", ".bin", "wco");
 
-  const version = run(bin, ["--version"], { cwd: temp, capture: true }).stdout.trim();
+  const versionTiming = measureCommand(bin, ["--version"], { cwd: temp, capture: true });
+  const version = versionTiming.result.stdout.trim();
   if (version !== pkg.version) throw new Error(`Packed CLI version '${version}' != package version '${pkg.version}'.`);
-  run(bin, ["--help"], { cwd: temp, capture: true });
+  const helpTiming = measureCommand(bin, ["--help"], { cwd: temp, capture: true });
 
   // Exercise the actual packed first-run path without network or provider auth.
   // A local bare Git remote is enough to seal repository identity while keeping
@@ -92,7 +210,7 @@ try {
   const webStatus = run(bin, ["web", "status"], { cwd: project, capture: true, env: isolatedEnv, expectedStatuses: [1] });
   assert(/Mode\s+local ChatGPT\/Codex/i.test(webStatus.stdout), "Packed web status did not report the local ChatGPT/Codex transport.");
   assert(/ChatGPT authorization\s+required/i.test(webStatus.stdout), "Packed web status did not fail closed on missing ChatGPT authorization.");
-  assert(/Per-task browser\s+not required/i.test(webStatus.stdout), "Packed web status regressed to a per-task browser workflow.");
+  assert(/Per-task browser\s+not required/i.test(webStatus.stdout), "Packed zero-config status regressed to a per-task browser workflow.");
   assert(!/managed|MCP|relay URL|tunnel/i.test(webStatus.stdout), "Packed zero-config status leaked an advanced transport requirement.");
 
   // Linux CI has util-linux `script`, which gives the installed packed binary a
@@ -123,8 +241,16 @@ try {
     assert(/no saved tasks are available to resume/i.test(resumeOutput), "Packed `wco --resume` did not enter the interactive saved-task resume path inside a PTY.");
     assert(!/require(?:s|d) a TTY/i.test(resumeOutput), "Packed `wco --resume` incorrectly rejected a real PTY.");
   }
+  // Exercise the installed compiled CLI through a real Linux PTY. This catches
+  // package-only regressions in raw-mode ownership, slash discovery, and clean exit.
+  const interactiveTiming = packedInteractivePtySmoke(bin, project, isolatedEnv);
 
   console.log(`Packed CLI clean-install + zero-config first-run smoke PASS (${pkg.name}@${pkg.version}).`);
+  console.log(`Packed CLI process metrics ${JSON.stringify({
+    version: { first_ms: versionTiming.first_ms, median_ms: versionTiming.median_ms, max_ms: versionTiming.max_ms },
+    help: { first_ms: helpTiming.first_ms, median_ms: helpTiming.median_ms, max_ms: helpTiming.max_ms },
+    interactive: interactiveTiming,
+  })}`);
 } finally {
   if (tarball) {
     try { unlinkSync(tarball); } catch {}
