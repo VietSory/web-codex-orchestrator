@@ -34,9 +34,11 @@ Before installing WCO, make sure the machine has:
 
 - **Node.js 22 or newer** and npm
 - **Git**
-- platform sandbox prerequisites required by the selected execution mode
+- **Linux or WSL with Bubblewrap (`bwrap`) for the normal PAIR/AUTOPILOT deterministic task workflow**
 - a ChatGPT account for the bundled Codex authorization flow
 - GitHub authentication only when Draft-PR delivery is requested
+
+Native Windows PowerShell and macOS can install the packaged CLI, but this build does **not** support the normal deterministic task workflow on those native hosts because verification requires Linux/WSL Bubblewrap isolation. On Windows, open the project from WSL and run `wco` there.
 
 Check the basic prerequisites:
 
@@ -44,9 +46,10 @@ Check the basic prerequisites:
 node --version
 git --version
 npm --version
+bwrap --version
 ```
 
-`node --version` must report Node.js 22 or newer.
+`node --version` must report Node.js 22 or newer. For normal task execution, `bwrap --version` must succeed inside Linux/WSL.
 
 ## 2. Download WCO
 
@@ -80,9 +83,9 @@ A successful verification should report `OK`.
 
 ## 3. Install WCO
 
-WCO is installed globally once so the `wco` command can be used from any project directory.
+WCO is installed globally once so the `wco` command can be used from project directories on a supported execution host.
 
-### WSL / Linux / macOS
+### WSL / Linux
 
 Go to the directory containing the downloaded `.tgz` file and install it with a Unix-style relative path:
 
@@ -102,7 +105,9 @@ npm install -g ./web-codex-orchestrator-0.3.3.tgz
 >
 > In Bash, `.\web-codex-orchestrator-0.3.3.tgz` is interpreted incorrectly and npm may try to open a file named `.web-codex-orchestrator-0.3.3.tgz`, producing an `ENOENT` error.
 
-### Windows PowerShell
+### Native Windows PowerShell or macOS: package installation only
+
+The package can be installed from these hosts for inspection/compatibility tooling, but the normal deterministic PAIR/AUTOPILOT workflow is not supported natively by this build. Normal execution requires Linux/WSL Bubblewrap.
 
 PowerShell uses the Windows-style relative path:
 
@@ -111,11 +116,11 @@ cd $HOME\Downloads
 npm install -g .\web-codex-orchestrator-0.3.3.tgz
 ```
 
-So the rule is:
+For Windows normal task execution, install/run WCO inside WSL instead:
 
-```text
-WSL / Linux / macOS : ./web-codex-orchestrator-0.3.3.tgz
-PowerShell          : .\web-codex-orchestrator-0.3.3.tgz
+```bash
+cd /mnt/c/Users/<windows-user>/Downloads
+npm install -g ./web-codex-orchestrator-0.3.3.tgz
 ```
 
 ### Normal users do not clone WCO
@@ -133,21 +138,21 @@ That is the contributor/developer workflow, not the end-user installation flow.
 
 ## 4. Run WCO inside your project
 
-After WCO is installed, move into the repository that you actually want WCO to work on.
+Run normal WCO tasks from Linux/WSL. Move into the repository that you actually want WCO to work on:
 
-### WSL example
+```bash
+cd /path/to/my-project
+wco
+```
+
+On Windows, use the WSL-mounted project path, for example:
 
 ```bash
 cd /mnt/d/Coding/my-project
 wco
 ```
 
-### PowerShell example
-
-```powershell
-cd D:\Coding\my-project
-wco
-```
+Do not run the normal task workflow from native PowerShell on this build; verification will fail closed because Bubblewrap isolation is unavailable there.
 
 Do not run WCO from the Downloads directory unless the Downloads directory itself is intentionally the project you want WCO to operate on.
 
@@ -337,6 +342,12 @@ WCO never silently falls back from the normal local path to an advanced compatib
 
 ## Troubleshooting
 
+### Native Windows/macOS normal task execution is unavailable
+
+If setup reports that the execution host requires Linux/WSL, that is an intentional safety boundary rather than a missing configuration value. The normal verifier uses Bubblewrap for filesystem/network isolation and does not fall back to unrestricted host execution.
+
+On Windows, open the repository from WSL and run `wco` there. On another native host, use a Linux environment for the normal task workflow.
+
 ### `ENOENT ... .web-codex-orchestrator-0.3.3.tgz`
 
 If WSL/Linux reports something similar to:
@@ -378,7 +389,7 @@ command -v wco
 npm prefix -g
 ```
 
-On PowerShell:
+On PowerShell (package-installation diagnostics only for this build):
 
 ```powershell
 Get-Command wco
