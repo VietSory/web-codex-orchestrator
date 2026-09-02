@@ -6,10 +6,14 @@ import { commandPalette, parseInteractiveInput, slashCommandSuggestions } from "
 const MAX_VISIBLE_SUGGESTIONS = 8;
 const MAX_SESSION_HISTORY = 100;
 const ARGUMENT_COMMANDS = new Set(["/new", "/auto", "/mode"]);
+const COMPOSER_INTERRUPT = "WCO_COMPOSER_INTERRUPT";
+const COMPOSER_EXIT = "WCO_COMPOSER_EXIT";
 
 type Keypress = { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean; sequence?: string };
 type CompletionKind = "enter" | "tab";
 type ExternalComposerWriter = (value: string) => void;
+type ComposerSignal = "interrupt" | "exit" | null;
+interface ComposerOptions { allowedCommands?: ReadonlySet<string> | undefined; }
 
 function promptColumn(prompt: string): number {
   const newline = prompt.lastIndexOf("\n");
@@ -27,7 +31,14 @@ function fitLine(value: string, columns: number): string {
 }
 
 function normalizeInlineInput(value: string): string {
-  return value.replace(/[\r\n]+/gu, " ");
+  return value.replace(/\r\n?/gu, "\n");
+}
+
+function composerSignal(error: unknown): ComposerSignal {
+  const code = error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code) : "";
+  if (code === COMPOSER_INTERRUPT) return "interrupt";
+  if (code === COMPOSER_EXIT) return "exit";
+  return null;
 }
 
 function isReadlineClosed(error: unknown): boolean {
@@ -36,9 +47,35 @@ function isReadlineClosed(error: unknown): boolean {
   return code === "ERR_USE_AFTER_CLOSE" || /readline was closed/i.test(message);
 }
 
+function composerSignalError(signal: Exclude<ComposerSignal, null>): Error & { code: string } {
+  const error = new Error(signal === "interrupt" ? "interactive input interrupted" : "interactive input closed") as Error & { code: string };
+  error.code = signal === "interrupt" ? COMPOSER_INTERRUPT : COMPOSER_EXIT;
+  return error;
+}
+
 export function splitComposerPrompt(value: string): { prefix: string; prompt: string } {
   const prompt = value.replace(/^[\r\n]+/u, "");
   return { prefix: value.slice(0, value.length - prompt.length), prompt };
+}
+
+function displayPosition(prompt: string, value: string, offset: number, columns: number): { row: number; column: number } {
+  const safeColumns = Math.max(1, Math.trunc(columns));
+  const bounded = Math.max(0, Math.min(value.length, offset));
+  let row = 0;
+  let column = promptColumn(prompt);
+  for (const char of value.slice(0, bounded)) {
+    if (char === "\n") {
+      row += 1;
+      column = 0;
+      continue;
+    }
+    column += 1;
+    if (column >= safeColumns) {
+      row += 1;
+      column = 0;
+    }
+  }
+  return { row, column };
 }
 
 export function composerCursorGeometry(
@@ -47,15 +84,10 @@ export function composerCursorGeometry(
   cursor: number,
   columns: number,
 ): { cursorRow: number; endRow: number; cursorColumn: number } {
-  const safeColumns = Math.max(1, Math.trunc(columns));
   const boundedCursor = Math.max(0, Math.min(value.length, cursor));
-  const absoluteCursor = promptColumn(prompt) + boundedCursor;
-  const absoluteEnd = promptColumn(prompt) + value.length;
-  return {
-    cursorRow: Math.floor(absoluteCursor / safeColumns),
-    endRow: Math.floor(absoluteEnd / safeColumns),
-    cursorColumn: absoluteCursor % safeColumns,
-  };
+  const atCursor = displayPosition(prompt, value, boundedCursor, columns);
+  const atEnd = displayPosition(prompt, value, value.length, columns);
+  return { cursorRow: atCursor.row, endRow: atEnd.row, cursorColumn: atCursor.column };
 }
 
 export function restoreComposerInput(
@@ -65,6 +97,19 @@ export function restoreComposerInput(
   if (wasRaw) return;
   input.setRawMode(false);
   input.pause();
+}
+
+export function findReverseHistoryMatch(
+  history: readonly string[],
+  query: string,
+  afterIndex = -1,
+): { index: number; value: string } | null {
+  const needle = query.toLowerCase();
+  for (let index = Math.max(0, afterIndex + 1); index < history.length; index += 1) {
+    const value = history[index]!;
+    if (value.toLowerCase().includes(needle)) return { index, value };
+  }
+  return null;
 }
 
 /** Pure completion rule used by the live TTY and UX regression tests. */
@@ -88,6 +133,7 @@ async function liveSlashComposer(
   prompt: string,
   history: string[],
   setExternalWriter?: (writer: ExternalComposerWriter | null) => void,
+  options: ComposerOptions = {},
 ): Promise<string> {
   const input = process.stdin;
   const output = process.stdout;
@@ -105,9 +151,11 @@ async function liveSlashComposer(
     let settled = false;
     let historyIndex = -1;
     let historyDraft = "";
+    let reverseSearchIndex = -1;
+    let reverseSearchQuery = "";
     let renderedCursorRow = 0;
 
-    const currentSuggestions = () => paletteSuppressed ? [] : slashCommandSuggestions(value);
+    const currentSuggestions = () => paletteSuppressed ? [] : slashCommandSuggestions(value, options.allowedCommands);
 
     const clearRenderedBlock = (): void => {
       if (renderedCursorRow > 0) moveCursor(output, 0, -renderedCursorRow);
@@ -187,15 +235,18 @@ async function liveSlashComposer(
       resolve(answer);
     };
 
-    const abort = (): void => {
+    const abort = (signal: Exclude<ComposerSignal, null>): void => {
       if (settled) return;
       settled = true;
       clearRenderedBlock();
       output.write("\n");
       cleanup();
-      const error = new Error("readline was closed") as Error & { code?: string };
-      error.code = "ERR_USE_AFTER_CLOSE";
-      reject(error);
+      reject(composerSignalError(signal));
+    };
+
+    const resetHistorySearch = (): void => {
+      reverseSearchIndex = -1;
+      reverseSearchQuery = "";
     };
 
     const changed = (): void => {
@@ -203,6 +254,7 @@ async function liveSlashComposer(
       paletteSuppressed = false;
       historyIndex = -1;
       historyDraft = "";
+      resetHistorySearch();
       render();
     };
 
@@ -211,7 +263,14 @@ async function liveSlashComposer(
       cursor = value.length;
       selected = 0;
       paletteSuppressed = false;
+      resetHistorySearch();
       render();
+    };
+
+    const insertText = (text: string): void => {
+      value = value.slice(0, cursor) + text + value.slice(cursor);
+      cursor += text.length;
+      changed();
     };
 
     const acceptSelected = (kind: CompletionKind): boolean => {
@@ -226,10 +285,27 @@ async function liveSlashComposer(
 
     const navigateHistory = (direction: "up" | "down"): void => {
       if (history.length === 0) return;
+      resetHistorySearch();
       if (historyIndex < 0) historyDraft = value;
       if (direction === "up") historyIndex = Math.min(history.length - 1, historyIndex + 1);
       else historyIndex = Math.max(-1, historyIndex - 1);
       value = historyIndex < 0 ? historyDraft : history[historyIndex]!;
+      cursor = value.length;
+      selected = 0;
+      paletteSuppressed = false;
+      render();
+    };
+
+    const reverseSearchHistory = (): void => {
+      if (history.length === 0) return;
+      const query = reverseSearchIndex < 0 ? value : reverseSearchQuery;
+      const match = findReverseHistoryMatch(history, query, reverseSearchIndex);
+      if (!match) return;
+      reverseSearchQuery = query;
+      reverseSearchIndex = match.index;
+      historyIndex = -1;
+      historyDraft = "";
+      value = match.value;
       cursor = value.length;
       selected = 0;
       paletteSuppressed = false;
@@ -247,13 +323,29 @@ async function liveSlashComposer(
     };
 
     const onKeypress = (text: string | undefined, key: Keypress): void => {
-      if (key.ctrl && key.name === "c") { abort(); return; }
+      if (key.ctrl && key.name === "c") {
+        if (value.length > 0) setValue("");
+        else abort("interrupt");
+        return;
+      }
       if (key.ctrl && key.name === "d") {
-        if (value.length === 0) { abort(); return; }
+        if (value.length === 0) { abort("exit"); return; }
         if (cursor < value.length) {
           value = value.slice(0, cursor) + value.slice(cursor + 1);
           changed();
         }
+        return;
+      }
+      if ((key.ctrl && key.name === "j") || ((key.name === "return" || key.name === "enter") && key.shift)) {
+        insertText("\n");
+        return;
+      }
+      if (key.ctrl && key.name === "r") {
+        reverseSearchHistory();
+        return;
+      }
+      if (key.ctrl && key.name === "l") {
+        render();
         return;
       }
 
@@ -337,9 +429,7 @@ async function liveSlashComposer(
       if (key.ctrl || key.meta || !text) return;
       const inserted = normalizeInlineInput(text);
       if (!inserted) return;
-      value = value.slice(0, cursor) + inserted + value.slice(cursor);
-      cursor += inserted.length;
-      changed();
+      insertText(inserted);
     };
 
     input.on("keypress", onKeypress);
@@ -354,7 +444,7 @@ export interface InteractiveIo {
   output: NodeJS.WritableStream;
   write(value: string): void;
   question(prompt: string): Promise<string>;
-  composer?(prompt: string): Promise<string>;
+  composer?(prompt: string, options?: ComposerOptions): Promise<string>;
   secret?(prompt: string): Promise<string>;
   close(): void;
 }
@@ -371,14 +461,14 @@ export function terminalIo(): InteractiveIo {
     try { return await questionWithoutEcho(hidden, prompt, (value) => process.stdout.write(value)); }
     finally { hidden.close(); }
   };
-  const composer = async (prompt: string): Promise<string> => {
+  const composer = async (prompt: string, options?: ComposerOptions): Promise<string> => {
     if (!process.stdin.isTTY || !process.stdout.isTTY || typeof process.stdin.setRawMode !== "function") {
       return await get().question(prompt);
     }
     reset();
     const parts = splitComposerPrompt(prompt);
     if (parts.prefix) process.stdout.write(parts.prefix);
-    return await liveSlashComposer(parts.prompt, history, (writer) => { externalWriter = writer; });
+    return await liveSlashComposer(parts.prompt, history, (writer) => { externalWriter = writer; }, options);
   };
   return {
     input: process.stdin,
@@ -392,10 +482,11 @@ export function terminalIo(): InteractiveIo {
 }
 
 export interface InteractiveHandlers {
-  state(): Promise<{ active: boolean; sealed: boolean; summary: string }>;
+  state(): Promise<{ active: boolean; sealed: boolean; summary: string; availableCommands?: readonly string[] | undefined }>;
   newTask(goal: string): Promise<string>;
   clarify(value: string): Promise<string>;
   command(command: string, args: string): Promise<{ message: string; quit?: boolean }>;
+  interruptRequest?(): Promise<{ message?: string }>;
   exitRequest?(): Promise<{ message?: string; quit: boolean }>;
 }
 
@@ -410,19 +501,26 @@ export async function runInteractiveSession(io: InteractiveIo, handlers: Interac
         io.write(`${state.summary}\n`);
         previousSummary = state.summary;
       }
+      const allowedCommands = state.availableCommands ? new Set(state.availableCommands) : undefined;
 
       let raw: string;
       try {
-        raw = io.composer ? await io.composer("\n> ") : await io.question("\n> ");
+        raw = io.composer ? await io.composer("\n> ", { allowedCommands }) : await io.question("\n> ");
       } catch (error) {
-        if (!isReadlineClosed(error)) throw error;
+        const signal = composerSignal(error);
+        if (signal === "interrupt") {
+          const interrupted = handlers.interruptRequest ? await handlers.interruptRequest() : { message: "Input cancelled." };
+          if (interrupted.message) io.write(`${interrupted.message}\n`);
+          continue;
+        }
+        if (signal !== "exit" && !isReadlineClosed(error)) throw error;
         const exit = handlers.exitRequest ? await handlers.exitRequest() : { quit: true };
         if (exit.message) io.write(`${exit.message}\n`);
         if (exit.quit) return;
         continue;
       }
 
-      if (raw.trim() === "/") { io.write(`\n${commandPalette()}\n`); continue; }
+      if (raw.trim() === "/") { io.write(`\n${commandPalette(allowedCommands)}\n`); continue; }
       const parsed = parseInteractiveInput(raw, state);
       if (parsed.kind === "empty") continue;
       if (parsed.kind === "new") { io.write(`${await handlers.newTask(parsed.goal!)}\n`); continue; }
